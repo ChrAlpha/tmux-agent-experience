@@ -47,6 +47,12 @@ func world(specs ...paneSpec) *World {
 	return &World{Panes: panes, Proc: proc.NewTable(ps)}
 }
 
+// resolveWith resolves r with the given Codex thread index.
+func resolveWith(w *World, t Threads, r Request) Result {
+	w.Threads = t
+	return Resolve(w, r)
+}
+
 // threads is an in-memory thread index.
 type threads map[string]string
 
@@ -94,7 +100,7 @@ func TestNestedAgentDoesNotBindByProcess(t *testing.T) {
 			proc.Process{PID: 103, PPID: 102, Comm: nested, Args: nested + " exec"},
 			proc.Process{PID: 104, PPID: 103, Comm: "tmag"},
 		))
-		if r := Resolve(w, Request{Agent: nested, SessionID: sid, PID: 104, Threads: threads{}}); r.Evidence != Unbound {
+		if r := resolveWith(w, threads{}, Request{Agent: nested, SessionID: sid, PID: 104}); r.Evidence != Unbound {
 			t.Fatalf("nested %s bound to %+v", nested, r)
 		}
 	}
@@ -119,7 +125,7 @@ func TestDaemonHookNeverBindsByProcess(t *testing.T) {
 		}
 	}
 	w.Proc = proc.NewTable(procs)
-	r := Resolve(w, Request{Agent: proc.Codex, SessionID: sid, PID: 902, Threads: threads{}})
+	r := resolveWith(w, threads{}, Request{Agent: proc.Codex, SessionID: sid, PID: 902})
 	if r.Evidence != Unbound {
 		t.Fatalf("daemon hook bound to %+v", r)
 	}
@@ -130,7 +136,7 @@ func TestTitleIDEvidence(t *testing.T) {
 		paneSpec{agent: "codex", title: "codex"},
 		paneSpec{agent: "codex", title: sid[:29] + "... Working", path: "/elsewhere"},
 	)
-	r := Resolve(w, Request{Agent: proc.Codex, SessionID: sid, Cwd: "/repo", PID: 902, Threads: threads{}})
+	r := resolveWith(w, threads{}, Request{Agent: proc.Codex, SessionID: sid, Cwd: "/repo", PID: 902})
 	if r.Evidence != TitleID || r.Pane.ID != "%2" {
 		t.Fatalf("got %+v", r)
 	}
@@ -143,12 +149,12 @@ func TestTitleNameEvidence(t *testing.T) {
 		paneSpec{agent: "codex", title: "⠋ Refactor parser module | repo", path: "/repo"},
 		paneSpec{agent: "claude", title: "Refactor parser module", path: "/repo"},
 	)
-	r := Resolve(w, Request{Agent: proc.Codex, SessionID: sid, Cwd: "/repo", PID: 902, Threads: threads(idx)})
+	r := resolveWith(w, threads(idx), Request{Agent: proc.Codex, SessionID: sid, Cwd: "/repo", PID: 902})
 	if r.Evidence != TitleName || r.Pane.ID != "%2" {
 		t.Fatalf("got %+v", r)
 	}
 	// Wrong cwd: no binding.
-	r = Resolve(w, Request{Agent: proc.Codex, SessionID: sid, Cwd: "/other", PID: 902, Threads: threads(idx)})
+	r = resolveWith(w, threads(idx), Request{Agent: proc.Codex, SessionID: sid, Cwd: "/other", PID: 902})
 	if r.Evidence != Unbound {
 		t.Fatalf("cwd mismatch bound %+v", r)
 	}
@@ -158,13 +164,13 @@ func TestTitleNameRefusesAmbiguity(t *testing.T) {
 	title := "Refactor parser module"
 	// Two panes show the same name.
 	w := world(paneSpec{agent: "codex", title: title, path: "/repo"}, paneSpec{agent: "codex", title: title, path: "/repo"})
-	r := Resolve(w, Request{Agent: proc.Codex, SessionID: sid, Cwd: "/repo", PID: 902, Threads: threads{sid: title}})
+	r := resolveWith(w, threads{sid: title}, Request{Agent: proc.Codex, SessionID: sid, Cwd: "/repo", PID: 902})
 	if r.Evidence != Unbound {
 		t.Fatalf("two matching panes bound %+v", r)
 	}
 	// Two threads share the name.
 	w = world(paneSpec{agent: "codex", title: title, path: "/repo"})
-	r = Resolve(w, Request{Agent: proc.Codex, SessionID: sid, Cwd: "/repo", PID: 902, Threads: threads{sid: title, other: title}})
+	r = resolveWith(w, threads{sid: title, other: title}, Request{Agent: proc.Codex, SessionID: sid, Cwd: "/repo", PID: 902})
 	if r.Evidence != Unbound {
 		t.Fatalf("duplicate thread name bound %+v", r)
 	}
@@ -173,13 +179,13 @@ func TestTitleNameRefusesAmbiguity(t *testing.T) {
 func TestSessionEvidenceRequiresLiveAgent(t *testing.T) {
 	opts := map[string]string{"agent": "codex", "session": sid, "pid": "101"}
 	w := world(paneSpec{agent: "codex", opts: opts})
-	r := Resolve(w, Request{Agent: proc.Codex, SessionID: sid, PID: 902, Threads: threads{}})
+	r := resolveWith(w, threads{}, Request{Agent: proc.Codex, SessionID: sid, PID: 902})
 	if r.Evidence != Session || r.Pane.ID != "%1" {
 		t.Fatalf("got %+v", r)
 	}
 	// The agent exited: the stale record proves nothing.
 	w = world(paneSpec{agent: "", opts: opts})
-	r = Resolve(w, Request{Agent: proc.Codex, SessionID: sid, PID: 902, Threads: threads{}})
+	r = resolveWith(w, threads{}, Request{Agent: proc.Codex, SessionID: sid, PID: 902})
 	if r.Evidence != Unbound {
 		t.Fatalf("stale record bound %+v", r)
 	}
@@ -201,12 +207,12 @@ func TestRecordOfReplacedAgentIsStale(t *testing.T) {
 func TestTitleNameMatchesWholeSegments(t *testing.T) {
 	idx := threads{sid: "test"}
 	w := world(paneSpec{agent: "codex", title: "fix tests | repo", path: "/repo"})
-	if r := Resolve(w, Request{Agent: proc.Codex, SessionID: sid, Cwd: "/repo", PID: 902, Threads: idx}); r.Evidence != Unbound {
+	if r := resolveWith(w, idx, Request{Agent: proc.Codex, SessionID: sid, Cwd: "/repo", PID: 902}); r.Evidence != Unbound {
 		t.Fatalf("substring bound %+v", r)
 	}
 	idx = threads{sid: "Ship release"}
 	w = world(paneSpec{agent: "codex", title: "⠙ Ship release | repo", path: "/repo"})
-	if r := Resolve(w, Request{Agent: proc.Codex, SessionID: sid, Cwd: "/repo", PID: 902, Threads: idx}); r.Evidence != TitleName {
+	if r := resolveWith(w, idx, Request{Agent: proc.Codex, SessionID: sid, Cwd: "/repo", PID: 902}); r.Evidence != TitleName {
 		t.Fatalf("segment not matched: %+v", r)
 	}
 }
@@ -216,16 +222,16 @@ func TestSessionEvidenceYieldsToThreadSwitch(t *testing.T) {
 	opts := map[string]string{"agent": "codex", "session": sid, "pid": "101"}
 	// The TUI now shows another thread: the record no longer proves sid.
 	w := world(paneSpec{agent: "codex", title: "New thread | repo", path: "/repo", opts: opts})
-	if r := Resolve(w, Request{Agent: proc.Codex, SessionID: sid, Cwd: "/repo", PID: 902, Threads: idx}); r.Evidence != Unbound {
+	if r := resolveWith(w, idx, Request{Agent: proc.Codex, SessionID: sid, Cwd: "/repo", PID: 902}); r.Evidence != Unbound {
 		t.Fatalf("stale session bound %+v", r)
 	}
 	// The other thread binds by its name.
-	if r := Resolve(w, Request{Agent: proc.Codex, SessionID: other, Cwd: "/repo", PID: 902, Threads: idx}); r.Evidence != TitleName {
+	if r := resolveWith(w, idx, Request{Agent: proc.Codex, SessionID: other, Cwd: "/repo", PID: 902}); r.Evidence != TitleName {
 		t.Fatalf("new thread not bound: %+v", r)
 	}
 	// A title without thread information keeps the binding.
 	w = world(paneSpec{agent: "codex", title: "⠋ repo", path: "/repo", opts: opts})
-	if r := Resolve(w, Request{Agent: proc.Codex, SessionID: sid, Cwd: "/repo", PID: 902, Threads: idx}); r.Evidence != Session {
+	if r := resolveWith(w, idx, Request{Agent: proc.Codex, SessionID: sid, Cwd: "/repo", PID: 902}); r.Evidence != Session {
 		t.Fatalf("binding lost on a neutral title: %+v", r)
 	}
 }
@@ -240,6 +246,81 @@ func TestTitleSegments(t *testing.T) {
 	} {
 		if got := strings.Join(TitleSegments(title), "|"); got != want {
 			t.Errorf("TitleSegments(%q) = %q, want %q", title, got, want)
+		}
+	}
+}
+
+func TestRecordYieldsToThreadSwitch(t *testing.T) {
+	// The same Codex TUI moved from sid to other before any hook of other
+	// arrived: every reader, not only the hook resolver, must drop sid.
+	opts := map[string]string{"agent": "codex", "session": sid, "pid": "101", "state": "idle"}
+	for _, title := range []string{other[:29] + "... | repo", "⠋ New thread | repo"} {
+		w := world(paneSpec{agent: "codex", title: title, path: "/repo", opts: opts})
+		w.Threads = threads{sid: "Old thread", other: "New thread"}
+		if _, ok := w.Record(w.Panes[0]); ok {
+			t.Errorf("title %q: record of the previous thread accepted", title)
+		}
+	}
+	// A title naming no thread keeps the record.
+	w := world(paneSpec{agent: "codex", title: "⠋ repo", path: "/repo", opts: opts})
+	w.Threads = threads{sid: "Old thread", other: "New thread"}
+	if _, ok := w.Record(w.Panes[0]); !ok {
+		t.Error("record lost on a title without thread information")
+	}
+}
+
+func TestTitleNameNeverOverridesAnotherThreadID(t *testing.T) {
+	// The title shows other's id; sid's unique name happens to equal the
+	// project name, and in a second case appears in the title as well.
+	for name, title := range map[string]string{
+		"repo":       other[:29] + "... | repo",
+		"Fix parser": other[:29] + "... | Fix parser | repo",
+	} {
+		w := world(paneSpec{agent: "codex", title: title, path: "/repo"})
+		if r := resolveWith(w, threads{sid: name}, Request{Agent: proc.Codex, SessionID: sid, Cwd: "/repo", PID: 902}); r.Evidence != Unbound {
+			t.Errorf("name %q bound against the title's thread id: %+v", name, r)
+		}
+	}
+}
+
+func TestProjectNameIsNotAThreadName(t *testing.T) {
+	w := world(paneSpec{agent: "codex", title: "⠋ repo", path: "/repo"})
+	if r := resolveWith(w, threads{sid: "repo"}, Request{Agent: proc.Codex, SessionID: sid, Cwd: "/repo", PID: 902}); r.Evidence != Unbound {
+		t.Fatalf("project segment bound as a thread name: %+v", r)
+	}
+}
+
+func TestAmbiguityIsNotResolvedByWeakerEvidence(t *testing.T) {
+	// Two TUIs show the thread id; one pane still carries a record of it.
+	opts := map[string]string{"agent": "codex", "session": sid, "pid": "101"}
+	title := sid[:29] + "... | repo"
+	w := world(
+		paneSpec{agent: "codex", title: title, path: "/repo", opts: opts},
+		paneSpec{agent: "codex", title: title, path: "/repo"},
+	)
+	if r := resolveWith(w, threads{}, Request{Agent: proc.Codex, SessionID: sid, Cwd: "/repo", PID: 902}); r.Evidence != Unbound {
+		t.Fatalf("ambiguous title id fell through to %+v", r)
+	}
+}
+
+func TestOwnRecordSurvivesMisleadingTitles(t *testing.T) {
+	opts := map[string]string{"agent": "codex", "session": sid, "pid": "101", "state": "idle"}
+	for name, c := range map[string]struct {
+		title, path string
+		idx         threads
+	}{
+		// A worktree directory named like a thread id is the project segment.
+		"uuid project": {"⠋ Fix parser | " + other, "/w/" + other, threads{sid: "Fix parser"}},
+		// The thread was named moments ago; the index still lacks it, and an
+		// older thread carries the same name.
+		"index behind title": {"⠋ Fix tests | repo", "/repo", threads{other: "Fix tests"}},
+		// The title shows a shorter prefix of this thread's own id.
+		"short own id": {sid[:13] + "... | repo", "/repo", threads{}},
+	} {
+		w := world(paneSpec{agent: "codex", title: c.title, path: c.path, opts: opts})
+		w.Threads = c.idx
+		if _, ok := w.Record(w.Panes[0]); !ok {
+			t.Errorf("%s: own record judged stale", name)
 		}
 	}
 }

@@ -13,7 +13,6 @@ import (
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/adapter"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/bind"
-	"github.com/ChrAlpha/tmux-agent-experience/internal/codexidx"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/registry"
@@ -67,11 +66,7 @@ func Run(in Input) error {
 	if err != nil {
 		return err
 	}
-	req := bind.Request{Agent: in.Agent, SessionID: p.SessionID, Cwd: p.Cwd, PID: in.PID}
-	if in.Agent == proc.Codex {
-		req.Threads = &lazyThreads{home: codexidx.Home()}
-	}
-	res := bind.Resolve(w, req)
+	res := bind.Resolve(w, bind.Request{Agent: in.Agent, SessionID: p.SessionID, Cwd: p.Cwd, PID: in.PID})
 
 	ev := eventlog.Event{
 		Agent: in.Agent, Session: p.SessionID, Event: p.HookEventName,
@@ -185,26 +180,6 @@ func releaseOthers(ctx context.Context, w *bind.World, keep tmux.Pane, agent, se
 		}
 	}
 }
-
-// lazyThreads loads the Codex thread index on first use.
-type lazyThreads struct {
-	home  string
-	names *codexidx.Names
-}
-
-func (l *lazyThreads) load() *codexidx.Names {
-	if l.names == nil {
-		n, err := codexidx.Load(l.home)
-		if err != nil {
-			n = codexidx.Empty() // an unreadable index proves nothing
-		}
-		l.names = n
-	}
-	return l.names
-}
-
-func (l *lazyThreads) Name(id string) (string, bool)     { return l.load().Name(id) }
-func (l *lazyThreads) ByName(name string) (string, bool) { return l.load().ByName(name) }
 
 // maxErrLog bounds hook.log; it is truncated when exceeded.
 const maxErrLog = 256 << 10

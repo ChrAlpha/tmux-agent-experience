@@ -3,6 +3,7 @@ package bind
 import (
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"unicode"
 
@@ -22,7 +23,8 @@ const (
 	// Codex its title does not show another thread.
 	Session = "session"
 	// TitleName: the pane runs Codex in the session's cwd and a title segment
-	// is exactly the thread's name, which no other thread shares.
+	// other than the project name is exactly the thread's name, which no other
+	// thread shares.
 	TitleName = "title-name"
 	// Unbound: no evidence, or evidence pointing at more than one pane.
 	Unbound = "unbound"
@@ -54,8 +56,6 @@ type Request struct {
 	Cwd       string
 	// PID is the process to start the ancestry walk from (the hook itself).
 	PID int
-	// Threads is required for Codex title evidence; nil disables it.
-	Threads Threads
 }
 
 // Result is the chosen pane and its primary agent process, or Evidence == Unbound.
@@ -65,28 +65,29 @@ type Result struct {
 	Evidence string
 }
 
-// Resolve applies the evidence rules in order of strength.
+// Resolve applies the evidence rules in order of strength. The first rule
+// that matches decides: one pane binds, several panes leave the session
+// unbound rather than letting weaker evidence pick one of them.
 func Resolve(w *World, r Request) Result {
-	found := func(p tmux.Pane, evidence string) Result {
-		agent, _, _ := w.Proc.FindAgent(p.PID)
-		return Result{Pane: p, AgentPID: agent.PID, Evidence: evidence}
+	rules := []struct {
+		evidence string
+		match    func() []tmux.Pane
+	}{
+		{Process, func() []tmux.Pane { return byProcess(w, r.Agent, r.PID) }},
+		{TitleID, func() []tmux.Pane { return byTitle(w, r, showsID) }},
+		{Session, func() []tmux.Pane { return bySession(w, r) }},
+		{TitleName, func() []tmux.Pane { return byTitle(w, r, showsName) }},
 	}
-	if p, ok := byProcess(w, r.Agent, r.PID); ok {
-		return found(p, Process)
-	}
-	codex := r.Agent == proc.Codex && r.Threads != nil
-	if codex {
-		if p, ok := byTitleID(w, r.SessionID); ok {
-			return found(p, TitleID)
+	for _, rule := range rules {
+		panes := rule.match()
+		if len(panes) == 0 {
+			continue
 		}
-	}
-	if p, ok := bySession(w, r); ok {
-		return found(p, Session)
-	}
-	if codex {
-		if p, ok := byTitleName(w, r); ok {
-			return found(p, TitleName)
+		if len(panes) > 1 {
+			return Result{Evidence: Unbound}
 		}
+		agent, _, _ := w.Proc.FindAgent(panes[0].PID)
+		return Result{Pane: panes[0], AgentPID: agent.PID, Evidence: rule.evidence}
 	}
 	return Result{Evidence: Unbound}
 }
@@ -125,23 +126,45 @@ func enclosing(w *World, pid int) (tmux.Pane, *proc.Process, bool) {
 // byProcess binds when the hook's nearest agent ancestor is the pane's own
 // agent. A hook from an agent nested inside another agent's pane (say, codex
 // exec run by Claude's Bash tool) proves nothing about that pane.
-func byProcess(w *World, agent string, pid int) (tmux.Pane, bool) {
+func byProcess(w *World, agent string, pid int) []tmux.Pane {
 	pane, hookAgent, ok := enclosing(w, pid)
 	if !ok || hookAgent == nil {
-		return tmux.Pane{}, false
+		return nil
 	}
 	primary, kind, found := w.Proc.FindAgent(pane.PID)
 	if !found || kind != agent || primary.PID != hookAgent.PID {
-		return tmux.Pane{}, false
+		return nil
 	}
-	return pane, true
+	return []tmux.Pane{pane}
 }
 
-func single(panes []tmux.Pane) (tmux.Pane, bool) {
-	if len(panes) == 1 {
-		return panes[0], true
+// byTitle matches Codex panes whose title shows the thread the given way. A
+// name only counts in the session's cwd, where the TUI runs.
+func byTitle(w *World, r Request, want claim) []tmux.Pane {
+	if r.Agent != proc.Codex {
+		return nil
 	}
-	return tmux.Pane{}, false
+	var matches []tmux.Pane
+	for _, p := range w.Panes {
+		if w.AgentIn(p) != proc.Codex || w.titleClaim(p, r.SessionID) != want {
+			continue
+		}
+		if want == showsName && !samePath(p.Path, r.Cwd) {
+			continue
+		}
+		matches = append(matches, p)
+	}
+	return matches
+}
+
+func bySession(w *World, r Request) []tmux.Pane {
+	var matches []tmux.Pane
+	for _, p := range w.Panes {
+		if rec, ok := w.Record(p); ok && rec.Session == r.SessionID && rec.Agent == r.Agent {
+			matches = append(matches, p)
+		}
+	}
+	return matches
 }
 
 // TitleSegments splits a Codex terminal title into its items, dropping a
@@ -175,90 +198,74 @@ func isSpinner(r rune) bool {
 	return (r >= 0x2800 && r <= 0x28ff) || unicode.Is(unicode.So, r) || unicode.Is(unicode.Sm, r)
 }
 
-func showsID(title, sessionID string) bool {
-	if len(sessionID) < codexTitleIDLen {
-		return false
-	}
-	prefix := sessionID[:codexTitleIDLen]
-	for _, seg := range TitleSegments(title) {
-		if strings.HasPrefix(seg, prefix) {
-			return true
-		}
-	}
-	return false
-}
+// claim is what a Codex pane title says about one thread.
+type claim int
 
-func showsName(title, name string) bool {
-	if len(name) < minTitleNameLen {
-		return false
-	}
-	for _, seg := range TitleSegments(title) {
-		if seg == name {
-			return true
-		}
-	}
-	return false
-}
+const (
+	silent     claim = iota // the title identifies no thread
+	showsID                 // a segment shows the thread's id
+	showsName               // a segment is the thread's unique name
+	showsOther              // a segment identifies another thread
+)
 
-// showsOtherThread reports whether a Codex title positively identifies a
-// thread other than sessionID: another thread id, or another thread's unique name.
-func showsOtherThread(title, sessionID string, threads Threads) bool {
-	if showsID(title, sessionID) {
-		return false
-	}
-	if name, _ := threads.Name(sessionID); name != "" && showsName(title, name) {
-		return false
-	}
-	for _, seg := range TitleSegments(title) {
-		if uuidPrefixRE.MatchString(seg) {
-			return true
+// titleClaim reads a Codex pane title for session. Ids outrank names, and a
+// segment equal to the project name (the basename of the pane's directory) is
+// never read as an id or a name: the default title ends with it.
+func (w *World) titleClaim(p tmux.Pane, session string) claim {
+	project := filepath.Base(p.Path)
+	var segs []string
+	for _, seg := range TitleSegments(p.Title) {
+		if seg != project {
+			segs = append(segs, seg)
 		}
+	}
+	for _, seg := range segs {
+		if len(session) >= codexTitleIDLen && strings.HasPrefix(seg, session[:codexTitleIDLen]) {
+			return showsID
+		}
+	}
+	for _, seg := range segs {
+		if id := leadingID(seg); uuidPrefixRE.MatchString(id) && !strings.HasPrefix(session, id) {
+			return showsOther
+		}
+	}
+	if w.Threads == nil {
+		return silent
+	}
+	var names []string
+	for _, seg := range segs {
 		if len(seg) >= minTitleNameLen {
-			if id, unique := threads.ByName(seg); unique && id != sessionID {
-				return true
-			}
+			names = append(names, seg)
 		}
 	}
-	return false
+	name, unique := w.Threads.Name(session)
+	if unique && slices.Contains(names, name) {
+		return showsName
+	}
+	// Another thread's name proves a switch only while this thread's own name
+	// is known: a thread named moments ago shows a name the index may not
+	// hold yet, and an older thread may carry the same one.
+	if name == "" {
+		return silent
+	}
+	for _, seg := range names {
+		if id, unique := w.Threads.ByName(seg); unique && id != session {
+			return showsOther
+		}
+	}
+	return silent
 }
 
-func byTitleID(w *World, sessionID string) (tmux.Pane, bool) {
-	var matches []tmux.Pane
-	for _, p := range w.Panes {
-		if w.AgentIn(p) == proc.Codex && showsID(p.Title, sessionID) {
-			matches = append(matches, p)
-		}
+// leadingID returns the thread-id characters a title segment starts with,
+// without the "..." of a truncated id or any text after it.
+func leadingID(seg string) string {
+	end := strings.IndexFunc(seg, func(r rune) bool {
+		return (r < '0' || r > '9') && (r < 'a' || r > 'f') && r != '-'
+	})
+	if end < 0 {
+		return seg
 	}
-	return single(matches)
-}
-
-func bySession(w *World, r Request) (tmux.Pane, bool) {
-	var matches []tmux.Pane
-	for _, p := range w.Panes {
-		rec, ok := w.Record(p)
-		if !ok || rec.Session != r.SessionID || rec.Agent != r.Agent {
-			continue
-		}
-		if r.Agent == proc.Codex && r.Threads != nil && showsOtherThread(p.Title, r.SessionID, r.Threads) {
-			continue // the TUI switched threads; the record is stale
-		}
-		matches = append(matches, p)
-	}
-	return single(matches)
-}
-
-func byTitleName(w *World, r Request) (tmux.Pane, bool) {
-	name, unique := r.Threads.Name(r.SessionID)
-	if !unique {
-		return tmux.Pane{}, false
-	}
-	var matches []tmux.Pane
-	for _, p := range w.Panes {
-		if w.AgentIn(p) == proc.Codex && samePath(p.Path, r.Cwd) && showsName(p.Title, name) {
-			matches = append(matches, p)
-		}
-	}
-	return single(matches)
+	return seg[:end]
 }
 
 func samePath(a, b string) bool {
@@ -275,8 +282,10 @@ func canonical(p string) string {
 	return filepath.Clean(p)
 }
 
-// Record returns the pane's record if it belongs to the agent process that
-// currently runs in the pane. Records of exited or replaced agents are stale.
+// Record returns the pane's record if it still describes the pane: it belongs
+// to the agent process that runs there now and, for Codex, the title does not
+// show another thread. Records of exited or replaced agents, or of a thread
+// the TUI has switched away from, are stale.
 func (w *World) Record(p tmux.Pane) (registry.Record, bool) {
 	rec := registry.FromPane(p)
 	if !rec.Bound() {
@@ -284,6 +293,9 @@ func (w *World) Record(p tmux.Pane) (registry.Record, bool) {
 	}
 	agent, kind, ok := w.Proc.FindAgent(p.PID)
 	if !ok || kind != rec.Agent || agent.PID != rec.PID {
+		return rec, false
+	}
+	if kind == proc.Codex && w.titleClaim(p, rec.Session) == showsOther {
 		return rec, false
 	}
 	return rec, true
