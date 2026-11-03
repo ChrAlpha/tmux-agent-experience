@@ -146,13 +146,41 @@ Removed outright:
   names they read. Names are derived from the user's first prompt, so
   dropping them also keeps prompt-derived text out of the contract.
 
-What a default-configuration Codex user gets: every session listed with
-correct state, and each Codex pane listed as a client with no attachment.
-Bells, `prefix + A`, the pane border and `send` need an attachment.
-`tmag doctor` and the setup popup show the two ways to provide one: add
-`thread-id` to `terminal_title`, or launch with `--no-daemon`. tmag prints
-both and edits neither. This is a deliberate loss compared with v0.1's name
-matching, which looked like coverage but was not proof.
+### Codex onboarding: one guided setting
+
+Codex in its default daemon mode gives no proof of which pane shows a thread,
+and no tmux-level switch changes that. The only ways to force embedded mode
+are CLI arguments and `CODEX_EXEC_SERVER_URL`, which selects a different
+executor (`codex-rs/tui/src/daemon_startup.rs:61-126`). tmag therefore asks
+the user once to turn on the `thread-id` title item, and never applies it
+silently.
+
+- **The user applies it through Codex itself.** `/title` ("configure which
+  items appear in the terminal title", `codex-rs/tui/src/slash_command.rs:127`)
+  lets the user pick items. Codex writes the choice to the user's
+  `config.toml` as `[tui] terminal_title`
+  (`codex-rs/tui/src/app/event_dispatch.rs:3411-3431`,
+  `codex-rs/core/src/config/edit.rs:134-141`). tmag edits nothing; the
+  equivalent TOML is shown for people who prefer to edit by hand.
+- **Where tmag asks:**
+  - the setup popup (`prefix + M-a`), right after it connects the Codex
+    plugin;
+  - `tmag doctor`;
+  - the picker and `tmag list`, beside a Codex pane that has no attachment;
+  - `SKILL.md`, where the installing agent tells the user to run `/title`
+    rather than editing Codex's configuration itself.
+- **How tmag knows it worked:** by what it sees, not what the config says.
+  A Codex pane whose title shows a known session's id prefix is attached.
+  Profiles, project config or a later `/title` may override the user file.
+- **What keeps it one-time:** `tmag doctor` flags a regression when
+  daemon-mode Codex sessions are active and no Codex pane shows an id, and
+  when the Codex version is outside the tested range. A change in Codex
+  behaviour surfaces as a diagnosis, not as silent misbinding.
+- **Until the setting is on:** every Codex session is listed with correct
+  state, and each Codex pane is listed as a client with no attachment.
+  Bells, `prefix + A`, the pane border and `send` need an attachment. Codex
+  launched with `--no-daemon` needs no setting: its hooks prove the pane by
+  process.
 
 ### State machine
 
@@ -247,25 +275,22 @@ afresh rather than versioned:
 | `codexidx`, title-name parsing | Delete |
 | `e2e` | Keep the harness; rewrite scenarios around sessions without panes |
 
-## Decisions for the owner
+## Decisions
 
-1. **Default Codex gets state without attachment.** No tmux-level switch can
-   change this. The only ways to force embedded mode are CLI arguments and
-   `CODEX_EXEC_SERVER_URL`, which selects a different executor
-   (`codex-rs/tui/src/daemon_startup.rs:61-126`), so the plugin cannot
-   `set-environment` its way out.
-   - Recommended: document the one-time `thread-id` title setting as the
-     path for daemon users. It keeps the daemon's features and the user's
-     launch habit.
-   - Alternative: relax the "no wrapper" invariant for an optional launcher
-     that adds `--no-daemon`.
-   - Not recommended: a cwd-based display hint. It is not proof, and tmux
-     surfaces cannot mark it as unverified.
-2. **Should `title-id` unlock `send`?** It is a TUI claim that any program
+Decided by the owner:
+
+- **Codex daemon users get a guided one-time setting** (see Codex
+  onboarding). Silent configuration is out, and so is a launcher. A
+  cwd-based display hint is out as well: it is not proof, and tmux surfaces
+  cannot mark it as unverified.
+
+Open:
+
+1. **Should `title-id` unlock `send`?** It is a TUI claim that any program
    writing OSC 0 to the pane could fake, but `send` also requires the Codex
    TUI to hold the foreground, and the TUI rewrites its title on every
    refresh. Recommended: yes, with re-verification.
-3. **Claude's registry**: use `claude agents --json` as attachment evidence
+2. **Claude's registry**: use `claude agents --json` as attachment evidence
    (documented), keep `~/.claude/sessions/*.json` out (undocumented), or
    use neither until background sessions matter. Recommended: decide after
    spike 2.
@@ -273,6 +298,8 @@ afresh rather than versioned:
 ## Spikes before implementation
 
 1. **Codex daemon + `thread-id` title, live.**
+   - Whether `/title` offers `thread-id` and applies it to the running TUI
+     without a restart.
    - What the title shows while a subagent thread is displayed, and how
      that id relates to the hook's `agent_id`.
    - Title after the TUI exits, and under `allow-set-title off`.
