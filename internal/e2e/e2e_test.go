@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ChrAlpha/tmux-agent-experience/internal/attach"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/query"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
@@ -827,5 +828,43 @@ func TestWorksWithoutUTF8Locale(t *testing.T) {
 	pane := h.spawn(dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_HOOKS": "1"}, filepath.Join(bin, "claude"))
 	if p, _ := h.waitPane(pane, "idle", "process"); p.Cwd != dir {
 		t.Fatalf("cwd = %q", p.Cwd)
+	}
+}
+
+func TestAttachNeedsItsClientStillRunning(t *testing.T) {
+	// A hook proved the pane's agent, then the agent was replaced before the
+	// hook took the pane's lock: its proof no longer stands.
+	h := start(t)
+	pane := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA}, filepath.Join(bin, "claude"))
+	h.waitPane(pane, "", "")
+	ctx := context.Background()
+	env := attach.Env{Log: eventlog.Open(h.state), Store: session.Store{Dir: h.state}}
+	rec := session.Record{Agent: "claude", ID: sidA, Main: "idle"}
+	if err := env.Store.Put(rec); err != nil {
+		t.Fatal(err)
+	}
+	w, err := attach.Load(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var client attach.Client
+	for _, c := range w.Clients() {
+		if c.Pane.ID == pane {
+			client = c
+		}
+	}
+	gone := client
+	gone.Process.Start += "0" // the same pid, another process
+	if err := env.Attach(ctx, w, gone, rec, attach.Process); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.tmux("display-message", "-p", "-t", pane, "#{@tmag_session}"); got != "" {
+		t.Fatalf("attached for a process that is gone: %q", got)
+	}
+	if err := env.Attach(ctx, w, client, rec, attach.Process); err != nil {
+		t.Fatal(err)
+	}
+	if p, s := h.waitPane(pane, "idle", "process"); s.ID != sidA || p.Session != sidA {
+		t.Fatalf("pane %+v shows %+v", p, s)
 	}
 }

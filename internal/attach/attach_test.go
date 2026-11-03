@@ -1,10 +1,13 @@
 package attach
 
 import (
+	"context"
 	"reflect"
+	"slices"
 	"strconv"
 	"testing"
 
+	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/tmux"
@@ -194,5 +197,44 @@ func TestLiveDropsSessionsWhoseHostExited(t *testing.T) {
 	live, exited := Live(w, []session.Record{running, restarted, unknown})
 	if len(live) != 2 || len(exited) != 1 || exited[0].ID != "b" {
 		t.Fatalf("live %v, exited %v", live, exited)
+	}
+}
+
+func TestReconcileFinishesWhatAWriterLeft(t *testing.T) {
+	dir := t.TempDir()
+	env := Env{Log: eventlog.Open(dir), Store: session.Store{Dir: dir}}
+	ctx := context.Background()
+	// Crashed between storing and logging: a change, an end, and a session
+	// whose process exited without either.
+	unlogged := session.Record{Agent: proc.Codex, ID: "a", Main: "idle", Change: "Stop"}
+	ended := session.Record{Agent: proc.Codex, ID: "b", Main: "idle", Logged: session.Report{State: "idle"}, Ended: eventlog.End}
+	exited := session.Record{Agent: proc.Claude, ID: "c", Main: "idle", Logged: session.Report{State: "idle"}, Host: session.Host{PID: 77, Start: "1"}}
+	for _, r := range []session.Record{unlogged, ended, exited} {
+		if err := env.Store.Put(r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w := &World{Proc: proc.NewTable(nil)}
+	if live, gone := Live(w, []session.Record{unlogged, ended, exited}); len(live) != 1 || len(gone) != 2 {
+		t.Fatalf("live %v, gone %v", live, gone)
+	}
+	Reconcile(ctx, env, w)
+	Reconcile(ctx, env, w) // a second reconciliation finds nothing left to do
+
+	all, _, err := env.Log.Since(ctx, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, e := range all {
+		got = append(got, e.Session+":"+e.Event+":"+e.State)
+	}
+	slices.Sort(got)
+	if want := []string{"a:Stop:idle", "b:SessionEnd:", "c:Exit:"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("events %q, want %q", got, want)
+	}
+	recs, _ := env.Store.All()
+	if len(recs) != 1 || recs[0].ID != "a" || recs[0].Unlogged() {
+		t.Fatalf("sessions left: %+v", recs)
 	}
 }

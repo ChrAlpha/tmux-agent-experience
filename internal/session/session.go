@@ -54,7 +54,31 @@ type Record struct {
 	Since time.Time `json:"since"`
 	// Sent is when tmag last submitted a prompt that no turn has confirmed.
 	Sent time.Time `json:"sent,omitzero"`
+
+	// Logged is what the event log last reported of the session. A record
+	// that reports otherwise has a change its writer did not get to log;
+	// Change names the event that made it. See Store.Save.
+	Logged Report `json:"logged"`
+	Change string `json:"change,omitempty"`
+	// Ended names the event that ends the session (SessionEnd or Exit) once
+	// that is decided. The record is deleted after the event is logged; until
+	// then it counts as gone. See Store.End.
+	Ended string `json:"ended,omitempty"`
 }
+
+// Report is what an event reports of a session.
+type Report struct {
+	State string `json:"state,omitempty"`
+	Kind  string `json:"kind,omitempty"`
+	Turn  string `json:"turn,omitempty"`
+}
+
+// Reports is what the session's next event would report.
+func (r Record) Reports() Report { return Report{State: r.State(), Kind: r.Kind(), Turn: r.Turn} }
+
+// Unlogged reports whether the event log does not yet report the session as
+// it is.
+func (r Record) Unlogged() bool { return r.Reports() != r.Logged }
 
 // maxSubagents bounds Record.Subagents.
 const maxSubagents = 32
@@ -240,5 +264,6 @@ func (r Record) equal(o Record) bool {
 		r.Main == o.Main && r.MainKind == o.MainKind && r.Turn == o.Turn &&
 		slices.Equal(r.Pending, o.Pending) && slices.Equal(r.Calls, o.Calls) &&
 		slices.Equal(r.Done, o.Done) && slices.Equal(r.Background, o.Background) &&
-		slices.Equal(r.Subagents, o.Subagents) && r.Since.Equal(o.Since) && r.Sent.Equal(o.Sent)
+		slices.Equal(r.Subagents, o.Subagents) && r.Since.Equal(o.Since) && r.Sent.Equal(o.Sent) &&
+		r.Logged == o.Logged && r.Change == o.Change && r.Ended == o.Ended
 }

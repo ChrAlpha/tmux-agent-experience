@@ -77,12 +77,27 @@ func Run(in Input) error {
 	host, hostKnown := w.Proc.HostOf(in.PID)
 	ev := eventlog.Event{Agent: in.Agent, Session: p.SessionID, Event: p.HookEventName, Cwd: p.Cwd}
 
+	// get reads the session and finishes whatever a writer that died left
+	// undone (see session.Store.Save), so that this hook starts from a
+	// record the log reports. The caller holds the session's lock.
+	get := func() (session.Record, bool, error) {
+		cur, found, err := env.Store.Get(in.Agent, p.SessionID)
+		if err != nil || !found {
+			return cur, false, err
+		}
+		return env.Store.Settle(ctx, in.Log, cur)
+	}
+
 	if tr.Action == adapter.End {
 		err := env.Store.Lock(ctx, in.Agent, p.SessionID, func() error {
-			if err := env.Store.Delete(in.Agent, p.SessionID); err != nil {
+			cur, found, err := get()
+			if err != nil {
 				return err
 			}
-			return in.Log.Append(ctx, &ev)
+			if !found {
+				return in.Log.Append(ctx, &ev)
+			}
+			return env.Store.End(ctx, in.Log, cur, ev)
 		})
 		if err != nil {
 			return err
@@ -92,7 +107,7 @@ func Run(in Input) error {
 
 	var prev, rec session.Record
 	err = env.Store.Lock(ctx, in.Agent, p.SessionID, func() error {
-		cur, found, err := env.Store.Get(in.Agent, p.SessionID)
+		cur, found, err := get()
 		if err != nil {
 			return err
 		}
@@ -110,15 +125,14 @@ func Run(in Input) error {
 		if found && !changed && base.Cwd == cur.Cwd && base.Host == cur.Host {
 			return nil
 		}
-		if err := env.Store.Put(next); err != nil {
+		// Calls, background work and the host change without an event; a new
+		// state, kind or turn is logged.
+		saved, err := env.Store.Save(ctx, in.Log, next, ev)
+		if err != nil {
 			return err
 		}
-		prev, rec = cur, next
-		if found && next.State() == cur.State() && next.Kind() == cur.Kind() && next.Turn == cur.Turn {
-			return nil // bookkeeping only: calls, background work, host
-		}
-		ev.State, ev.Kind, ev.Turn = next.State(), next.Kind(), next.Turn
-		return in.Log.Append(ctx, &ev)
+		prev, rec = cur, saved
+		return nil
 	})
 	if err != nil || rec.ID == "" {
 		return err

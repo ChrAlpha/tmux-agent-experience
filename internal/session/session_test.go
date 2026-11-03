@@ -1,11 +1,14 @@
 package session
 
 import (
+	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/adapter"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
 )
 
@@ -271,5 +274,64 @@ func TestStore(t *testing.T) {
 	}
 	if matches, _ := filepath.Glob(filepath.Join(s.Dir, "sessions", "*", ".tmp-*")); len(matches) > 0 {
 		t.Fatalf("temporary files left: %v", matches)
+	}
+}
+
+func TestSaveLeavesNoChangeUnlogged(t *testing.T) {
+	dir := t.TempDir()
+	s, log := Store{Dir: dir}, eventlog.Open(dir)
+	ctx := context.Background()
+	events := func() string {
+		all, _, err := log.Since(ctx, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var names []string
+		for _, e := range all {
+			names = append(names, e.Event+":"+e.State)
+		}
+		return strings.Join(names, " ")
+	}
+
+	rec, _ := Apply(Record{Agent: proc.Claude, ID: "s1"}, adapter.Transition{Action: adapter.Set, State: adapter.Idle}, t0)
+	if !rec.Unlogged() {
+		t.Fatal("a new session counts as logged")
+	}
+	rec, err := s.Save(ctx, log, rec, eventlog.Event{Event: "SessionStart"})
+	if err != nil || rec.Unlogged() || events() != "SessionStart:idle" {
+		t.Fatalf("Save = %+v, %v; events %s", rec, err, events())
+	}
+	// Bookkeeping alone logs nothing.
+	busy, _ := Apply(rec, startOf("", "Read", "r1"), t0)
+	if _, err := s.Save(ctx, log, busy, eventlog.Event{Event: "PreToolUse"}); err != nil || events() != "SessionStart:idle" {
+		t.Fatalf("bookkeeping logged: %v %s", err, events())
+	}
+
+	// A writer that dies after storing a change and before logging it.
+	working, _ := Apply(rec, submit, t0)
+	working.Change = "UserPromptSubmit"
+	if err := s.Put(working); err != nil {
+		t.Fatal(err)
+	}
+	stored, _, _ := s.Get(proc.Claude, "s1")
+	settled, ok, err := s.Settle(ctx, log, stored)
+	if err != nil || !ok || settled.Unlogged() || events() != "SessionStart:idle UserPromptSubmit:working" {
+		t.Fatalf("Settle = %+v, %v, %v; events %s", settled, ok, err, events())
+	}
+	if again, _, _ := s.Settle(ctx, log, settled); again.Unlogged() || events() != "SessionStart:idle UserPromptSubmit:working" {
+		t.Fatalf("a settled record logged again: %s", events())
+	}
+
+	// A writer that dies after deciding the end and before logging it.
+	settled.Ended = eventlog.End
+	if err := s.Put(settled); err != nil {
+		t.Fatal(err)
+	}
+	stored, _, _ = s.Get(proc.Claude, "s1")
+	if _, ok, err := s.Settle(ctx, log, stored); ok || err != nil {
+		t.Fatalf("an ended session lives on: %v %v", ok, err)
+	}
+	if _, found, _ := s.Get(proc.Claude, "s1"); found || !strings.HasSuffix(events(), "SessionEnd:") {
+		t.Fatalf("end not finished: found %v, events %s", found, events())
 	}
 }

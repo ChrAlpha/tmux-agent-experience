@@ -39,17 +39,17 @@ func (w *World) Attached(rec session.Record) []Shown {
 	return out
 }
 
-// Live splits sessions into those whose host process still runs and those
-// whose host is gone without SessionEnd.
-func Live(w *World, recs []session.Record) (live, exited []session.Record) {
+// Live splits sessions into those that run and those that are gone: ended,
+// or whose host process exited without SessionEnd.
+func Live(w *World, recs []session.Record) (live, gone []session.Record) {
 	for _, r := range recs {
-		if r.Host.PID > 0 && !w.Proc.Alive(r.Host.PID, r.Host.Start) {
-			exited = append(exited, r)
+		if r.Ended != "" || (r.Host.PID > 0 && !w.Proc.Alive(r.Host.PID, r.Host.Start)) {
+			gone = append(gone, r)
 		} else {
 			live = append(live, r)
 		}
 	}
-	return live, exited
+	return live, gone
 }
 
 // Link is an agent client in a pane and the session it shows, if any, as
@@ -105,6 +105,7 @@ func Links(w *World, live []session.Record) []Link {
 
 // Reconcile brings every pane in w in line with the sessions:
 //
+//   - a change or an end a writer did not get to log is logged;
 //   - a session whose host process is gone without SessionEnd ends (Exit);
 //   - a pane whose stored attachment Links no longer confirms loses it
 //     (Detach), and one Links attaches by title gains it (Attach);
@@ -119,9 +120,14 @@ func Reconcile(ctx context.Context, env Env, w *World) {
 	if err != nil {
 		return
 	}
-	live, exited := Live(w, recs)
-	for _, r := range exited {
+	live, gone := Live(w, recs)
+	for _, r := range gone {
 		env.exit(ctx, r)
+	}
+	for _, r := range live {
+		if r.Unlogged() {
+			env.settle(ctx, r)
+		}
 	}
 	linked := map[[2]string]bool{}
 	for _, l := range Links(w, live) {
@@ -162,7 +168,8 @@ func (env Env) Attach(ctx context.Context, w *World, c Client, rec session.Recor
 		if err != nil {
 			return err
 		}
-		if fresh.PID != c.Pane.PID {
+		// The proof was the client process; it must still run in the pane.
+		if fresh.PID != c.Pane.PID || !proc.Running(c.Process.PID, c.Process.Start) {
 			return nil
 		}
 		if evidence == TitleID {
@@ -243,17 +250,34 @@ func (env Env) detach(ctx context.Context, p tmux.Pane, a Attachment) error {
 	})
 }
 
-// exit ends a session whose host process is gone, if it still is.
+// exit ends a session that is gone: it finishes an end already decided, or
+// ends a session whose host process exited, if it still has.
 func (env Env) exit(ctx context.Context, r session.Record) {
 	_ = env.Store.Lock(ctx, r.Agent, r.ID, func() error {
 		cur, ok, err := env.Store.Get(r.Agent, r.ID)
-		if err != nil || !ok || cur.Host != r.Host {
+		if err != nil || !ok {
 			return err
 		}
-		if err := env.Store.Delete(r.Agent, r.ID); err != nil {
+		if cur.Ended != "" {
+			_, _, err := env.Store.Settle(ctx, env.Log, cur)
 			return err
 		}
-		return env.append(ctx, eventlog.Event{Agent: r.Agent, Session: r.ID, Event: eventlog.Exit, Cwd: r.Cwd})
+		if cur.Host != r.Host {
+			return nil // reported from another process since
+		}
+		return env.Store.End(ctx, env.Log, cur, eventlog.Event{Event: eventlog.Exit})
+	})
+}
+
+// settle logs a change its writer did not get to log, if it still is not.
+func (env Env) settle(ctx context.Context, r session.Record) {
+	_ = env.Store.Lock(ctx, r.Agent, r.ID, func() error {
+		cur, ok, err := env.Store.Get(r.Agent, r.ID)
+		if err != nil || !ok {
+			return err
+		}
+		_, _, err = env.Store.Settle(ctx, env.Log, cur)
+		return err
 	})
 }
 

@@ -98,7 +98,7 @@ func watchLiveness(ctx context.Context, cancel context.CancelCauseFunc, store se
 			if err != nil {
 				continue
 			}
-			if !ok {
+			if !ok || rec.Ended != "" {
 				cancel(fmt.Errorf("%w: %s", ErrEnded, s.ID))
 				return
 			}

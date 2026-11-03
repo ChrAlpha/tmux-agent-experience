@@ -265,7 +265,10 @@ events to the snapshot and replaces its pane list with each `panes` document
 stays current. Changes that come without a hook (a pane closes, an agent is
 killed, a title shows another thread) are found by whichever tmag process
 looks next, `watch` itself every two seconds, and recorded once as events.
-After a disconnect, `tmag watch --since <last seq>` replays what was missed
+A change is logged even when the tmag process that made it dies before
+logging it: the next one to touch the session logs it. An event may therefore
+repeat, but none is lost. After a disconnect, `tmag watch --since <last seq>`
+replays what was missed
 and sends the pane list, or starts over with a new snapshot if those events
 were already rotated away.
 

@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/lockfile"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
 )
@@ -105,6 +106,77 @@ func (s Store) Delete(agent, id string) error {
 		return err
 	}
 	return nil
+}
+
+// Save stores rec and, when its state is one the event log does not report
+// yet, logs ev for it, in an order that leaves no change unreported: the
+// record first, marked with the change, then the event, then the record
+// with the mark cleared. A writer that dies in between leaves the mark, and
+// the next holder of the lock logs the change (Settle); at worst an event is
+// logged twice, never not at all. The caller holds the session's lock. It
+// returns the record as stored.
+func (s Store) Save(ctx context.Context, log *eventlog.Log, rec Record, ev eventlog.Event) (Record, error) {
+	if !rec.Unlogged() {
+		rec.Change = ""
+		return rec, s.Put(rec)
+	}
+	rec.Change = ev.Event
+	if err := s.Put(rec); err != nil {
+		return rec, err
+	}
+	return s.logged(ctx, log, rec, ev)
+}
+
+func (s Store) logged(ctx context.Context, log *eventlog.Log, rec Record, ev eventlog.Event) (Record, error) {
+	ev.Agent, ev.Session = rec.Agent, rec.ID
+	rep := rec.Reports()
+	ev.State, ev.Kind, ev.Turn = rep.State, rep.Kind, rep.Turn
+	if err := log.Append(ctx, &ev); err != nil {
+		return rec, err
+	}
+	rec.Logged, rec.Change = rep, ""
+	return rec, s.Put(rec)
+}
+
+// End ends the session with ev (SessionEnd or Exit): the record is marked
+// ended, the event logged, the record deleted. A writer that dies in between
+// leaves the marked record, which readers treat as gone and the next holder
+// of the lock finishes (Settle). The caller holds the session's lock.
+func (s Store) End(ctx context.Context, log *eventlog.Log, rec Record, ev eventlog.Event) error {
+	rec.Ended = ev.Event
+	if err := s.Put(rec); err != nil {
+		return err
+	}
+	return s.ended(ctx, log, rec, ev)
+}
+
+func (s Store) ended(ctx context.Context, log *eventlog.Log, rec Record, ev eventlog.Event) error {
+	ev.Agent, ev.Session, ev.Event = rec.Agent, rec.ID, rec.Ended
+	if ev.Cwd == "" {
+		ev.Cwd = rec.Cwd
+	}
+	if err := log.Append(ctx, &ev); err != nil {
+		return err
+	}
+	return s.Delete(rec.Agent, rec.ID)
+}
+
+// Settle finishes what a writer of rec did not: it logs a change left
+// unlogged, or completes an end. It returns the record as it stands after,
+// and false when the session is gone. The caller holds the session's lock.
+func (s Store) Settle(ctx context.Context, log *eventlog.Log, rec Record) (Record, bool, error) {
+	if rec.Ended != "" {
+		return Record{}, false, s.ended(ctx, log, rec, eventlog.Event{})
+	}
+	if rec.Unlogged() {
+		change := rec.Change
+		if change == "" {
+			change = "Unlogged"
+		}
+		rec, err := s.logged(ctx, log, rec, eventlog.Event{Event: change, Cwd: rec.Cwd})
+		return rec, true, err
+	}
+	return rec, true, nil
 }
 
 // All reads every session. Unreadable files are skipped: one corrupt session

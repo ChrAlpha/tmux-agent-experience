@@ -60,7 +60,9 @@ a design problem, not a test problem.
   reconciliation, `send`). Whoever takes both takes the pane's first. Every
   change is decided again under the lock against fresh state, and its event
   is appended before the lock is released, so the log orders events as they
-  happened.
+  happened. Sessions change only through `session.Store.Save` and `End`, which
+  mark a change before logging it, so a writer that dies leaves it for the
+  next one to log rather than unreported.
 - **Nothing edits user configuration.** Install and uninstall go through each
   host's own mechanism (`claude plugin`, `codex plugin`, TPM).
 - **The contract is versioned.** Changing a JSON field's meaning or removing
