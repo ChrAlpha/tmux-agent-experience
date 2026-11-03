@@ -21,25 +21,28 @@ func setupPlan(h host) [][]string {
 	if !h.Present || !h.Listed {
 		return nil
 	}
-	current := h.Installed && h.Enabled && (h.PluginVer == "" || h.PluginVer == version.Version)
-	if current {
+	outdated := h.PluginVer != "" && h.PluginVer != version.Version
+	if h.Installed && h.Enabled && !outdated {
 		return nil
 	}
 	switch h.CLI {
 	case "claude":
-		switch {
-		case !h.Installed:
+		if !h.Installed {
 			return [][]string{
 				{"claude", "plugin", "marketplace", "add", repo, "--sparse", ".claude-plugin", "plugins/claude"},
 				{"claude", "plugin", "install", pluginID},
 			}
-		case !h.Enabled:
-			return [][]string{{"claude", "plugin", "enable", pluginID}}
 		}
-		return [][]string{
-			{"claude", "plugin", "marketplace", "update", marketplace},
-			{"claude", "plugin", "update", pluginID},
+		var plan [][]string
+		if outdated {
+			plan = append(plan,
+				[]string{"claude", "plugin", "marketplace", "update", marketplace},
+				[]string{"claude", "plugin", "update", pluginID})
 		}
+		if !h.Enabled {
+			plan = append(plan, []string{"claude", "plugin", "enable", pluginID})
+		}
+		return plan
 	case "codex":
 		if !h.Installed {
 			return [][]string{

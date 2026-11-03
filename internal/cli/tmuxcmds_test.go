@@ -82,6 +82,7 @@ func TestSetupPlan(t *testing.T) {
 		{"claude install", host{CLI: "claude", Present: true, Listed: true}, "claude plugin marketplace add " + repo + " --sparse .claude-plugin plugins/claude", 2},
 		{"claude current", host{CLI: "claude", Present: true, Listed: true, Installed: true, Enabled: true, PluginVer: version.Version}, "", 0},
 		{"claude disabled", host{CLI: "claude", Present: true, Listed: true, Installed: true, PluginVer: version.Version}, "claude plugin enable " + pluginID, 1},
+		{"claude disabled and outdated", host{CLI: "claude", Present: true, Listed: true, Installed: true, PluginVer: "0.0.1"}, "claude plugin marketplace update " + marketplace, 3},
 		{"claude outdated", host{CLI: "claude", Present: true, Listed: true, Installed: true, Enabled: true, PluginVer: "0.0.1"}, "claude plugin marketplace update " + marketplace, 2},
 		{"codex install", host{CLI: "codex", Present: true, Listed: true}, "codex plugin marketplace add " + repo + " --sparse .agents --sparse plugins/codex", 2},
 		{"codex outdated", host{CLI: "codex", Present: true, Listed: true, Installed: true, Enabled: true, PluginVer: "0.0.1"}, "codex plugin marketplace upgrade " + marketplace, 2},
@@ -91,7 +92,11 @@ func TestSetupPlan(t *testing.T) {
 			t.Errorf("%s: plan %v", c.name, plan)
 		}
 	}
-	plan := setupPlan(host{CLI: "codex", Present: true, Listed: true})
+	plan := setupPlan(host{CLI: "claude", Present: true, Listed: true, Installed: true, PluginVer: "0.0.1"})
+	if !reflect.DeepEqual(plan[2], []string{"claude", "plugin", "enable", pluginID}) {
+		t.Errorf("disabled outdated claude plugin ends with %v", plan[2])
+	}
+	plan = setupPlan(host{CLI: "codex", Present: true, Listed: true})
 	if !reflect.DeepEqual(plan[1], []string{"codex", "plugin", "add", pluginID}) {
 		t.Errorf("codex install ends with %v", plan[1])
 	}
