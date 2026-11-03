@@ -25,6 +25,31 @@ and, since background sessions, none for some Claude sessions either. Three
 review rounds patched answers to a question the hosts do not support. The
 model has to change.
 
+## Principle: pane-native surface, session-true core
+
+The pane-centric design came from a goal that still stands: tmag is a tmux
+plugin, not a new environment.
+
+- People keep managing agents with plain tmux.
+- LLMs bring deep prior knowledge of tmux.
+- tmag adds only awareness and coordination, and reuses tmux for everything
+  else.
+
+What failed was making the pane the *store and source of truth* for agent
+state. The pane stays the *interface*:
+
+| Goal | How the redesign keeps it |
+| --- | --- |
+| Existing tmux habits are untouched | No wrapper, no launcher, no new entry point; agents start however the user starts them. Pane ids and `session:window.pane` remain the primary targets of every command. The picker is still a tree of panes. |
+| Agents work well inside tmux | The display projection in pane options is a **public, read-only tmux interface**: `tmux list-panes -a -F '#{pane_id} #{@tmag_agent} #{@tmag_state}'` answers "who is blocked" with no knowledge of tmag. `tmag` adds only what tmux cannot do safely: gated `send`, `wait`, the event stream. |
+| Remote is possible later | A remote client lists conversations, not panes. Codex daemon threads and Claude background sessions have no pane at all. The contract therefore carries sessions, with panes as their attachments. |
+
+Sessions without a pane are first-class in the contract and second-class in
+tmux. They appear in `tmag list` and as a count in the picker, but never
+invent tmux UI. tmux surfaces (border, bell, status) show only proven
+attachments, because they cannot show doubt: a bell on the wrong window
+cannot carry a question mark.
+
 ## Why the fixes did not converge
 
 Each root cause is visible in `feat/v0.1`.
@@ -151,7 +176,7 @@ matching, which looked like coverage but was not proof.
 | --- | --- | --- |
 | Session record | `$XDG_STATE_HOME/tmag/sessions/<host>/<id>.json`, written under its lock | Survives without a pane; O(1) on the hook path |
 | Attachment | Pane options `@tmag_attach_*` | Dies with the pane, which is the correct detach |
-| Display projection | Pane options (`@tmag-pane-status`, inputs of `#{tmag_status}`) | Written from session + attachment; tmux formats read it without running tmag |
+| Display projection | Pane options (`@tmag_agent`, `@tmag_session`, `@tmag_state`, `@tmag_kind`, `@tmag_since`, `@tmag-pane-status`) | Written from session + attachment. tmux formats, `list-panes -F` and scripts read it without running tmag. Part of the versioned contract. |
 | Events | Existing event log | Unchanged mechanics |
 
 - **Event types**: `state` (session transition), `attach`, `detach`, `end`,
@@ -171,8 +196,9 @@ matching, which looked like coverage but was not proof.
 
 ### Control
 
-`send` targets a session (or a pane, resolved to its attachment) and refuses
-unless all of the following hold:
+`send` targets what a tmux user names: a pane (`%N`, `session:window.pane`),
+resolved to its attachment. A session id or prefix also works, for scripts
+and remote clients. It refuses unless all of the following hold:
 
 - exactly one attachment;
 - evidence that unlocks `send`;
@@ -223,9 +249,18 @@ afresh rather than versioned:
 
 ## Decisions for the owner
 
-1. **Default Codex gets state without attachment.** Accept the loss of
-   name-based pane binding (recommended), or relax the "no wrapper"
-   invariant for an optional launcher that adds `--no-daemon`.
+1. **Default Codex gets state without attachment.** No tmux-level switch can
+   change this. The only ways to force embedded mode are CLI arguments and
+   `CODEX_EXEC_SERVER_URL`, which selects a different executor
+   (`codex-rs/tui/src/daemon_startup.rs:61-126`), so the plugin cannot
+   `set-environment` its way out.
+   - Recommended: document the one-time `thread-id` title setting as the
+     path for daemon users. It keeps the daemon's features and the user's
+     launch habit.
+   - Alternative: relax the "no wrapper" invariant for an optional launcher
+     that adds `--no-daemon`.
+   - Not recommended: a cwd-based display hint. It is not proof, and tmux
+     surfaces cannot mark it as unverified.
 2. **Should `title-id` unlock `send`?** It is a TUI claim that any program
    writing OSC 0 to the pane could fake, but `send` also requires the Codex
    TUI to hold the foreground, and the TUI rewrites its title on every
