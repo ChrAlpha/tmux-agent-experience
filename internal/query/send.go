@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/adapter"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/codexsvc"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/driver"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
@@ -43,7 +44,23 @@ func Send(ctx context.Context, log *eventlog.Log, target, text string, from *eve
 	if err != nil {
 		return Delivery{}, err
 	}
-	if driver.Channel(s.Agent, s.Runtime, driver.Send) == driver.Pane {
+	switch driver.Channel(s.Agent, s.Runtime, driver.Send) {
+	case driver.Service:
+		return throughService(ctx, log, v, s, serviceVerb{
+			gate: idleGate,
+			check: func(ctx context.Context, c *codexsvc.Client) error {
+				return threadIn(ctx, c, s, RefuseBusy, codexsvc.StatusIdle)
+			},
+			mark: func(rec *session.Record) eventlog.Event {
+				rec.Sent = time.Now().UTC().Truncate(time.Second)
+				return eventlog.Event{Event: eventlog.Send, Cwd: rec.Cwd, From: from, Bytes: len(text)}
+			},
+			deliver: func(ctx context.Context, c *codexsvc.Client) error {
+				_, err := c.StartTurn(ctx, s.ID, text)
+				return err
+			},
+		})
+	case driver.Pane:
 		store := session.Store{Dir: log.Dir}
 		return throughPane(ctx, log, v, s, named, idleGate, func(ctx context.Context, s Session, p Pane, rec session.Record) (eventlog.Event, error) {
 			// Hold off other senders before typing: a prompt recorded as sent

@@ -186,7 +186,8 @@ is tmag's business, chosen for the session's agent and runtime:
 | --- | --- | --- |
 | Claude Code, terminal | pane | pane |
 | Claude Code, background | — | — |
-| Codex | pane | pane |
+| Codex, daemon (`runtime: service`) | service | service |
+| Codex, `--no-daemon` | pane | pane |
 
 A session's `capabilities` list the verbs some channel carries to it; a verb
 nothing carries is refused with `unsupported`. Every delivery reports its
@@ -218,6 +219,22 @@ command, releases the session after 15 seconds, and `send --wait` then
 reports `"started": false`.
 
 `wait` and `send --wait` end with error code `ended` when the session ends.
+
+#### Through the Codex daemon
+
+A thread in Codex's daemon takes prompts and interrupts through the daemon's
+control socket (`$CODEX_HOME/app-server-control/app-server-control.sock`),
+whether or not a pane shows it; its terminals show the turn as if typed.
+tmag connects for one command and leaves. It acts only when the socket's
+process is the one the thread's hooks run in, or an ancestor of it, and asks
+the daemon first whether the thread is idle (for `send`) or running (for
+`interrupt`). The daemon steers a running turn instead of refusing a prompt,
+so tmag's own idle gate stays: a prompt typed in a terminal at the same
+moment can still be merged into the same turn. The `Send` or `Halt` event is
+logged before the daemon is asked, since the daemon runs the turn's hooks
+before it answers. The first client to connect to a fresh daemon may be
+recorded as the originator of its later threads; tmag connects only to a
+daemon that already runs the thread.
 
 #### Interrupting
 
@@ -301,8 +318,8 @@ of them is such an event. `event` is the hook's name, or one of:
 | --- | --- |
 | `Attach` | A pane (`pane`) started showing the session, by `evidence`. |
 | `Detach` | A pane (`pane`) stopped showing the session. |
-| `Send` | `tmag send` delivered a prompt, through `pane` if `via` is `pane`, from the sending pane `from`, `bytes` long. |
-| `Halt` | `tmag interrupt` delivered an interrupt, through `pane` if `via` is `pane`, from `from`. |
+| `Send` | `tmag send` delivered a prompt `via` `pane` (then through `pane`) or `service`, from the sending pane `from`, `bytes` long. |
+| `Halt` | `tmag interrupt` delivered an interrupt `via` `pane` (then through `pane`) or `service`, from `from`. |
 | `Exit` | The session's process exited without `SessionEnd`; the session is gone. |
 
 A session changes only through events, so a client that applies

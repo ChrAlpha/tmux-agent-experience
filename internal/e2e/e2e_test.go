@@ -483,9 +483,14 @@ func TestCodexDaemonSessions(t *testing.T) {
 	if p, _, _ := h.paneIn(named); p.Session != "" {
 		t.Fatalf("named pane attached to %s", p.Session)
 	}
-	if r := h.tmag("", "send", h.target(byID), "--json", "hello"); r.code != 0 {
-		t.Fatalf("send through title-id: %d %s", r.code, r.out)
+	// A daemon's thread takes prompts through the daemon, whatever its pane
+	// shows; its turn comes after the Send.
+	if r := h.tmag("", "send", h.target(byID), "--json", "hello"); r.code != 0 || !strings.Contains(r.out, `"via":"service"`) || !strings.Contains(r.out, `"pane":null`) {
+		t.Fatalf("send to a daemon's thread: %d %s", r.code, r.out)
 	}
+	h.eventually("the daemon's turn", func() bool {
+		return strings.HasSuffix(h.eventNames(sidB), "Send: UserPromptSubmit:working Stop:idle")
+	})
 
 	// Watching a subagent: still the session's pane, but it takes no input.
 	sub := "0f000000-0000-7000-8000-00000000000f"
@@ -501,8 +506,8 @@ func TestCodexDaemonSessions(t *testing.T) {
 	if p, _ := h.waitPane(byID, "idle", "title-id"); p.View != "subagent" || p.Session != sidB {
 		t.Fatalf("subagent view = %+v", p)
 	}
-	if r := h.tmag("", "send", h.target(byID), "hello"); r.code != 3 || !strings.Contains(r.out, "subagent") {
-		t.Fatalf("send to a subagent view: %d %s", r.code, r.out)
+	if r := h.tmag("", "send", h.target(byID), "--json", "hello"); r.code != 0 || !strings.Contains(r.out, `"via":"service"`) {
+		t.Fatalf("send while the pane shows a subagent: %d %s", r.code, r.out)
 	}
 
 	// Showing another thread moves the pane to it.
@@ -529,6 +534,43 @@ func TestCodexDaemonSessions(t *testing.T) {
 	if v := h.view(); len(v.Sessions) != 0 {
 		t.Fatalf("sessions outlived their daemon: %+v", v.Sessions)
 	}
+}
+
+// The Codex daemon carries prompts and interrupts for its threads, once its
+// control socket proves to be served by the process the thread runs in.
+func TestCodexDaemonCarriesSendAndInterrupt(t *testing.T) {
+	t.Setenv("FAKE_TURN_MS", "20000")
+	h := start(t)
+	d := h.daemon()
+	d.hook(map[string]any{"hook_event_name": "SessionStart", "session_id": sidC, "source": "startup"})
+	s := h.waitSession(sidC, "idle")
+	if !slices.Equal(s.Capabilities, []string{"send", "interrupt"}) {
+		t.Fatalf("daemon session capabilities = %v", s.Capabilities)
+	}
+	if r := h.tmag("", "interrupt", sidC[:8]); r.code != 3 || !strings.Contains(r.out, "idle") {
+		t.Fatalf("interrupt an idle thread: %d %s", r.code, r.out)
+	}
+	if r := h.tmag("", "send", sidC[:8], "--json", "long work"); r.code != 0 || !strings.Contains(r.out, `"via":"service"`) {
+		t.Fatalf("send: %d %s", r.code, r.out)
+	}
+	h.waitSession(sidC, "working")
+	if r := h.tmag("", "send", sidC[:8], "more"); r.code != 3 || !strings.Contains(r.out, "busy") {
+		t.Fatalf("send to a busy thread: %d %s", r.code, r.out)
+	}
+	if r := h.tmag("", "interrupt", sidC[:8], "--json"); r.code != 0 || !strings.Contains(r.out, `"via":"service"`) {
+		t.Fatalf("interrupt: %d %s", r.code, r.out)
+	}
+	h.waitSession(sidC, "idle")
+	if got := h.eventNames(sidC); !strings.HasSuffix(got, "Send: UserPromptSubmit:working Halt: Interrupt:idle") {
+		t.Fatalf("events = %s", got)
+	}
+
+	// Another daemon now answers on the socket: it does not run the thread.
+	h.daemon()
+	h.eventually("the second daemon listens", func() bool {
+		r := h.tmag("", "send", sidC[:8], "hello")
+		return r.code == 3 && strings.Contains(r.out, "unbound") && strings.Contains(r.out, "does not run")
+	})
 }
 
 func TestDaemonInsidePaneDoesNotAttach(t *testing.T) {

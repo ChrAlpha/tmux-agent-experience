@@ -23,7 +23,8 @@ Every change must keep these. Tests guard most of them; treat a failing one as
 a design problem, not a test problem.
 
 - **tmux stays the entry point.** No daemon, no wrapper around agents, no
-  second session model. Anything resident is out of scope.
+  second session model. Anything resident is out of scope. A tmag command may
+  connect to an agent's own service for its duration and no longer.
 - **Users only ever get released binaries.** The plugin downloads the archive
   for its own version and verifies its checksum; there is no build-from-source
   fallback. To try an unreleased checkout, a developer builds `bin/tmag`
@@ -51,13 +52,18 @@ a design problem, not a test problem.
 - **tmux surfaces show only proven attachments.** Bells, the pane border, the
   picker, the status line and `jump` act on attached panes; a pane tmag cannot
   prove anything about shows `unknown`.
-- **Control is gated.** `send` delivers only to an idle session through its
-  one attached pane, by `process` or `title-id`, showing the main agent and
-  holding its terminal's foreground, after re-verifying all of it under the
-  pane's lock and the session's; `wait` refuses a pane that shows no session.
-- **Locks.** A session changes only under its session lock (hooks, `send`); a
-  pane's attachment and projection only under its pane lock (hooks,
-  reconciliation, `send`). Whoever takes both takes the pane's first. Every
+- **Control is gated.** `send` and `interrupt` act only through a channel
+  proven to reach the session: its one attached pane (by `process` or
+  `title-id`, showing the main agent, holding its terminal's foreground), or
+  the agent service it runs in (a socket whose peer is the session's host or
+  an ancestor of it). Each checks the state it needs (`send` idle, `interrupt`
+  working or blocked), checks all of it again under the pane's lock and the
+  session's, and logs its event before releasing them. `internal/driver`
+  alone decides which channel carries a verb. `wait` refuses a pane that
+  shows no session.
+- **Locks.** A session changes only under its session lock (hooks, control
+  verbs); a pane's attachment and projection only under its pane lock (hooks,
+  reconciliation, control verbs through a pane). Whoever takes both takes the pane's first. Every
   change is decided again under the lock against fresh state, and its event
   is appended before the lock is released, so the log orders events as they
   happened. Sessions change only through `session.Store.Save` and `End`, and
@@ -84,6 +90,7 @@ a design problem, not a test problem.
 | `internal/attach` | Clients, attachments and their evidence, the `@tmag_*` pane projection, reconciliation |
 | `internal/query` | list / send / wait / snapshot over sessions and panes; the control verbs' gates |
 | `internal/driver` | Which channel (pane, service, hook) carries each verb for each agent and runtime |
+| `internal/codexsvc` | One-command client of the Codex daemon's control socket (JSON-RPC over WebSocket) |
 | `internal/eventlog` | Append-only, sequence-numbered event log |
 | `internal/tmux` | tmux CLI wrapper; sanitises every free-text field |
 | `internal/proc` | Process table, agent clients and services, hook hosts |
@@ -132,7 +139,9 @@ claude plugin validate .      # marketplace and plugin manifests
   `TMUX_TMPDIR`) and run `internal/e2e/fakeagent` installed as `claude` and
   `codex`, so process names and `pane_current_command` match real agents. Run
   as `codex app-server …` it is a Codex daemon outside every pane that runs
-  hooks for any thread. The same binary answers `--version` and `plugin …` as
+  hooks for any thread and serves a control socket under `CODEX_HOME`
+  (`internal/codexsvc/svctest` is its server end); `FAKE_KEYS=1` makes the
+  interactive fake read keys like a TUI, so Escape interrupts its turn. The same binary answers `--version` and `plugin …` as
   a fake host CLI. Plugin tests lay out a TPM directory and serve a local
   release over `file://`.
 - `#()` status jobs run only for attached clients; to see the status line,

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/adapter"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/codexsvc"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/driver"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
@@ -38,7 +39,23 @@ func Interrupt(ctx context.Context, log *eventlog.Log, target string, from *even
 	if err != nil {
 		return Delivery{}, err
 	}
-	if driver.Channel(s.Agent, s.Runtime, driver.Interrupt) == driver.Pane {
+	switch driver.Channel(s.Agent, s.Runtime, driver.Interrupt) {
+	case driver.Service:
+		var turn string
+		return throughService(ctx, log, v, s, serviceVerb{
+			gate: runningGate,
+			check: func(ctx context.Context, c *codexsvc.Client) error {
+				return threadIn(ctx, c, s, RefuseIdle, codexsvc.StatusActive)
+			},
+			mark: func(rec *session.Record) eventlog.Event {
+				rec.Halted, turn = time.Now().UTC().Truncate(time.Second), rec.Turn
+				return eventlog.Event{Event: eventlog.Halt, Cwd: rec.Cwd, From: from}
+			},
+			deliver: func(ctx context.Context, c *codexsvc.Client) error {
+				return c.InterruptTurn(ctx, s.ID, turn)
+			},
+		})
+	case driver.Pane:
 		store := session.Store{Dir: log.Dir}
 		return throughPane(ctx, log, v, s, named, runningGate, func(ctx context.Context, s Session, p Pane, rec session.Record) (eventlog.Event, error) {
 			rec.Halted = time.Now().UTC().Truncate(time.Second)

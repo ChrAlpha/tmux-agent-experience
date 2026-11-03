@@ -47,7 +47,10 @@ func Channel(agent, runtime, verb string) string {
 		}
 		return Pane
 	case "codex":
-		if verb == Answer {
+		switch {
+		case service:
+			return Service
+		case verb == Answer:
 			// An embedded app-server listens nowhere, and a dialog's keys
 			// cannot be bound to a particular request.
 			return ""
