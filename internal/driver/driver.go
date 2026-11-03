@@ -60,6 +60,11 @@ func Channel(agent, runtime, verb string) string {
 	return ""
 }
 
+// ReportsInterrupt says whether the agent reports an interrupted turn to its
+// hooks. Codex does (Interrupt); Claude Code reports nothing, not even its
+// idle notification, so tmag records the interrupt it delivered itself.
+func ReportsInterrupt(agent string) bool { return agent == "codex" }
+
 // Capabilities lists the verbs some channel carries to a session of agent
 // with runtime. Each verb still checks its own gate when used.
 func Capabilities(agent, runtime string) []string {

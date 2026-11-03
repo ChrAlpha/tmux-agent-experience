@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/ChrAlpha/tmux-agent-experience/internal/adapter"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/answer"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/codexsvc"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/driver"
@@ -60,6 +61,9 @@ func Show(ctx context.Context, log *eventlog.Log, target, id string) (Asked, err
 	}
 	switch driver.Channel(s.Agent, s.Runtime, driver.Answer) {
 	case driver.Hook:
+		if !answer.Waiting(log.Dir, id) {
+			return Asked{}, noHook(s, id)
+		}
 		ctx, cancel := context.WithTimeout(ctx, answerTimeout)
 		defer cancel()
 		a, err := answer.Show(ctx, log.Dir, id)
@@ -103,11 +107,12 @@ func Answer(ctx context.Context, log *eventlog.Log, target, id string, d answer.
 }
 
 // answerHook hands the decision to the answer hook waiting on the request,
-// under the session's lock: the hook prints it and leaves, and what the
-// agent then does reaches tmag through hooks that wait for the same lock.
+// under the session's lock: the hook prints it and leaves, the request
+// closes, and what the agent then does reaches tmag through hooks that wait
+// for the same lock.
 func answerHook(ctx context.Context, log *eventlog.Log, s Session, id string, d answer.Decision) (Delivery, error) {
 	if !answer.Waiting(log.Dir, id) {
-		return Delivery{}, &RefusedError{RefuseUnsupported, fmt.Sprintf("no answer hook waits on request %s of %s: answering is off (@tmag-answer), or the hook gave up", id, s.ID)}
+		return Delivery{}, noHook(s, id)
 	}
 	store := session.Store{Dir: log.Dir}
 	var dl Delivery
@@ -124,14 +129,21 @@ func answerHook(ctx context.Context, log *eventlog.Log, s Session, id string, d 
 		if err := answer.Decide(ctx, log.Dir, id, d); err != nil {
 			return hookError(s, id, err)
 		}
-		ev := eventlog.Event{Agent: s.Agent, Session: s.ID, Event: eventlog.Answer, Cwd: rec.Cwd, Via: driver.Hook, Request: id, Decision: d.Behavior}
-		if err := log.Append(ctx, &ev); err != nil {
+		// The agent has the decision, and its next hooks wait for this lock;
+		// the request is answered.
+		after, _ := session.Apply(rec, adapter.Transition{Action: adapter.Answer, Request: id}, time.Now())
+		ev := eventlog.Event{Event: eventlog.Answer, Via: driver.Hook, Request: id, Decision: d.Behavior}
+		if _, err := store.Report(ctx, log, after, &ev); err != nil {
 			return fmt.Errorf("answer delivered but not logged: %w", err)
 		}
 		dl = Delivery{Session: s, Via: driver.Hook, Seq: ev.Seq}
 		return nil
 	})
 	return dl, err
+}
+
+func noHook(s Session, id string) error {
+	return &RefusedError{RefuseUnsupported, fmt.Sprintf("no answer hook waits on request %s of %s: answering is off (@tmag-answer), or the hook gave up; answer it in the agent", id, s.ID)}
 }
 
 func hookError(s Session, id string, err error) error {

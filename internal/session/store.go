@@ -136,6 +136,24 @@ func (s Store) logged(ctx context.Context, log *eventlog.Log, rec Record, ev eve
 	return rec, s.Put(rec)
 }
 
+// Report stores rec and logs ev reporting it, whether or not what it
+// reports changed: ev is a delivery of tmag's (an interrupt, an answer) and
+// rec what it did to the session, which the agent does not report itself.
+// Like Save, it marks the change before logging it. ev receives its sequence
+// number. The caller holds the session's lock.
+func (s Store) Report(ctx context.Context, log *eventlog.Log, rec Record, ev *eventlog.Event) (Record, error) {
+	rec.Change = ev.Event
+	if err := s.Put(rec); err != nil {
+		return rec, err
+	}
+	rec.Report(ev)
+	if err := log.Append(ctx, ev); err != nil {
+		return rec, err
+	}
+	rec.Logged, rec.Change = rec.Reports(), ""
+	return rec, s.Put(rec)
+}
+
 // End ends the session with ev (SessionEnd or Exit): the record is marked
 // ended, the event logged, the record deleted. A writer that dies in between
 // leaves the marked record, which readers treat as gone and the next holder

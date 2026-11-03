@@ -267,9 +267,13 @@ after its hooks have run, so no hook waits there. A Codex decision carries no
 message, and a Codex session run with `--no-daemon` can be answered only in
 the agent.
 
-`answer` checks under the session's lock that the request is still open, and
-logs `Answer` once the hook has taken the decision, or before the daemon is
-told. A request answered in the
+`answer` checks under the session's lock that the request is still open.
+Through the hook it logs `Answer` once the hook has taken the decision, and
+the request closes with it: the event reports the session, working on if
+the prompt was its last. Through the daemon it logs `Answer` before the
+daemon is told, and the request closes when Codex reports what followed (the
+call, or the agent moving on); Codex 0.166 takes `decline` although its
+approvals do not list it. A request answered in the
 terminal a moment before may still take one that the agent then ignores;
 what the agent did shows in the events that follow. A sandboxed command's
 network request reaches no hook, and can be answered only in the agent.
@@ -282,9 +286,9 @@ under the same gate as `send` except for the state: the main agent must be
 working or blocked, and an idle session is refused with `idle`. Escape twice
 on an empty composer opens a menu in both agents, so after an interrupt
 another is refused until the agent reports again, or for 90 seconds. Codex
-then reports `Interrupt` and the session is idle; Claude Code reports nothing,
-and the session shows `working` until its idle notification, about a minute
-later.
+then reports `Interrupt` and the session is idle. Claude Code reports
+nothing, not even its idle notification, so tmag records what it delivered:
+the `Halt` event reports the session idle, its prompts declined.
 
 ## Machine contract
 
@@ -362,8 +366,8 @@ of them is such an event. `event` is the hook's name, or one of:
 | `Attach` | A pane (`pane`) started showing the session, by `evidence`. |
 | `Detach` | A pane (`pane`) stopped showing the session. |
 | `Send` | `tmag send` delivered a prompt `via` `pane` (then through `pane`) or `service`, from the sending pane `from`, `bytes` long. |
-| `Halt` | `tmag interrupt` delivered an interrupt `via` `pane` (then through `pane`) or `service`, from `from`. |
-| `Answer` | `tmag answer` delivered a `decision` (`allow` or `deny`) on `request`, `via` `hook` or `service`. |
+| `Halt` | `tmag interrupt` delivered an interrupt `via` `pane` (then through `pane`) or `service`, from `from`. For Claude Code it reports the session, now idle. |
+| `Answer` | `tmag answer` delivered a `decision` (`allow` or `deny`) on `request`, `via` `hook` or `service`. Through the hook it reports the session, the request closed. |
 | `Exit` | The session's process exited without `SessionEnd`; the session is gone. |
 
 A session changes only through events, so a client that applies
@@ -414,8 +418,10 @@ timeout. With `--json`, errors are also printed as
 
 - Before an agent's first hook (startup, folder-trust dialogs) it shows as
   `unknown`.
-- Claude Code does not report a turn interrupted with Esc; the agent returns to
-  `idle` when Claude sends its idle notification about a minute later.
+- Claude Code does not report a turn interrupted with Esc, and may not send its
+  idle notification afterwards either: a session interrupted in its terminal
+  shows `working` until its next prompt. One interrupted with `tmag interrupt`
+  is idle at once.
 - The Codex title items are not a stable interface. tmag reads the
   `thread-id` item of Codex 0.166: the thread id's first 29 characters and
   `...`, in any position. If a Codex release changes it, Codex panes stop

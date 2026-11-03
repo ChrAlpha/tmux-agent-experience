@@ -295,6 +295,19 @@ func Apply(cur Record, tr adapter.Transition, now time.Time) (Record, bool) {
 	case adapter.Settle:
 		rec.settle(tr.Call.Agent)
 	case adapter.Answer:
+		if tr.Request != "" {
+			// Decided through tmag: the request closes, and its prompt with
+			// it unless another request waits on the same prompt.
+			q, ok := rec.Request(tr.Request)
+			if !ok {
+				return cur, false
+			}
+			rec.Requests = slices.DeleteFunc(rec.Requests, func(o Request) bool { return o.ID == q.ID })
+			if !slices.ContainsFunc(rec.Requests, func(o Request) bool { return o.Prompt == q.Prompt }) {
+				rec.Pending = slices.DeleteFunc(rec.Pending, func(p adapter.Prompt) bool { return p == q.Prompt })
+			}
+			break
+		}
 		if i := slices.Index(rec.Pending, tr.Prompt); i >= 0 {
 			rec.Pending = slices.Delete(rec.Pending, i, i+1)
 		} else {

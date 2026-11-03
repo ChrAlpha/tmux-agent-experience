@@ -467,3 +467,27 @@ func TestRequestsNameOpenPrompts(t *testing.T) {
 		t.Fatalf("request id %q", id)
 	}
 }
+
+func TestAnsweringARequestClosesItsPromptOnce(t *testing.T) {
+	ask := func(id string) adapter.Transition {
+		tr := askFor("", "Bash")
+		tr.Request, tr.Waits = id, true
+		return tr
+	}
+	answered := func(id string) adapter.Transition { return adapter.Transition{Action: adapter.Answer, Request: id} }
+	// Two dialogs for equal prompts: the first answer leaves the other open.
+	rec := play(t, ask("h1"), ask("h2"))
+	rec, _ = Apply(rec, answered("h1"), t0)
+	if len(rec.Requests) != 1 || rec.Requests[0].ID != "h2" {
+		t.Fatalf("after one answer: %+v", rec.Requests)
+	}
+	is(t, rec, adapter.Blocked, adapter.KindPermission)
+	rec, _ = Apply(rec, answered("h2"), t0)
+	if len(rec.Requests) != 0 || len(rec.Pending) != 0 {
+		t.Fatalf("after both answers: %+v %+v", rec.Pending, rec.Requests)
+	}
+	is(t, rec, adapter.Working, "")
+	if _, changed := Apply(rec, answered("h2"), t0); changed {
+		t.Fatal("answering a closed request changed the session")
+	}
+}

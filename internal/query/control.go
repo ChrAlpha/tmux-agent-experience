@@ -93,9 +93,11 @@ func paneOf(s Session, named *Pane, v View) (Pane, error) {
 // stateGate checks that a session is in a state a verb acts on.
 type stateGate func(s Session, v View, now time.Time) error
 
-// typing delivers a verb into a pane and returns its event, unlogged. It
-// runs under the pane's lock and the session's, with the session as stored.
-type typing func(ctx context.Context, s Session, p Pane, rec session.Record) (eventlog.Event, error)
+// typing delivers a verb into a pane and returns its event, unlogged, and
+// what the delivery made of the session when the agent does not report it
+// (nil otherwise). It runs under the pane's lock and the session's, with the
+// session as stored.
+type typing func(ctx context.Context, s Session, p Pane, rec session.Record) (eventlog.Event, *session.Record, error)
 
 // throughPane delivers a verb through the one pane that shows s. The gate:
 // the pane proves it shows the session (process or title-id), shows its main
@@ -143,13 +145,17 @@ func throughPane(ctx context.Context, log *eventlog.Log, v View, s Session, name
 			if err != nil || !ok {
 				return &RefusedError{RefuseChanged, fmt.Sprintf("%s has ended", s.ID)}
 			}
-			ev, err := deliver(ctx, fs, fp, rec)
+			ev, after, err := deliver(ctx, fs, fp, rec)
 			if err != nil {
 				return err
 			}
 			ev.Agent, ev.Session, ev.Via = fs.Agent, fs.ID, driver.Pane
 			ev.Pane = &eventlog.PaneRef{Server: fp.Server, ID: fp.ID}
-			if err := log.Append(ctx, &ev); err != nil {
+			if after != nil {
+				if _, err := store.Report(ctx, log, *after, &ev); err != nil {
+					return fmt.Errorf("%s delivered to %s but not logged; do not repeat it: %w", ev.Event, fp.ID, err)
+				}
+			} else if err := log.Append(ctx, &ev); err != nil {
 				return fmt.Errorf("%s delivered to %s but not logged; do not repeat it: %w", ev.Event, fp.ID, err)
 			}
 			d = Delivery{Session: fs, Pane: &fp, Via: driver.Pane, Seq: ev.Seq}

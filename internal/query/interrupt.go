@@ -57,15 +57,24 @@ func Interrupt(ctx context.Context, log *eventlog.Log, target string, from *even
 		})
 	case driver.Pane:
 		store := session.Store{Dir: log.Dir}
-		return throughPane(ctx, log, v, s, named, runningGate, func(ctx context.Context, s Session, p Pane, rec session.Record) (eventlog.Event, error) {
-			rec.Halted = time.Now().UTC().Truncate(time.Second)
+		return throughPane(ctx, log, v, s, named, runningGate, func(ctx context.Context, s Session, p Pane, rec session.Record) (eventlog.Event, *session.Record, error) {
+			now := time.Now()
+			rec.Halted = now.UTC().Truncate(time.Second)
 			if err := store.Put(rec); err != nil {
-				return eventlog.Event{}, err
+				return eventlog.Event{}, nil, err
 			}
 			if err := (tmux.Server{Socket: p.Server}).Interrupt(ctx, p.ID); err != nil {
-				return eventlog.Event{}, fmt.Errorf("pressing Escape in %s failed: %w", p.ID, err)
+				return eventlog.Event{}, nil, fmt.Errorf("pressing Escape in %s failed: %w", p.ID, err)
 			}
-			return eventlog.Event{Event: eventlog.Halt, Cwd: p.Cwd, From: from}, nil
+			ev := eventlog.Event{Event: eventlog.Halt, Cwd: p.Cwd, From: from}
+			if driver.ReportsInterrupt(s.Agent) {
+				return ev, nil, nil
+			}
+			// The agent reports nothing of it: its turn is over, and with it
+			// whatever it asked the user.
+			after, _ := session.Apply(rec, adapter.Transition{Action: adapter.Set, State: adapter.Idle, Turn: rec.Turn}, now)
+			after.Halted = rec.Halted
+			return ev, &after, nil
 		})
 	}
 	return Delivery{}, unsupported(s, driver.Interrupt)

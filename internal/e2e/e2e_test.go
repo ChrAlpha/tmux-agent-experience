@@ -340,13 +340,16 @@ func TestInterruptThroughThePane(t *testing.T) {
 		got, _ := os.ReadFile(out)
 		return string(got) == "long work\ninterrupted\n"
 	})
-	// Claude Code reports nothing: the session stays working, and a second
-	// interrupt, which could open a menu, waits for the agent to report.
-	if got := h.eventNames(sidA); !strings.HasSuffix(got, "Send: UserPromptSubmit:working Halt:") {
+	// Claude Code reports nothing, so tmag reports the session idle itself;
+	// a second interrupt, which could open a menu, is refused.
+	if got := h.eventNames(sidA); !strings.HasSuffix(got, "Send: UserPromptSubmit:working Halt:idle") {
 		t.Fatalf("events = %s", got)
 	}
-	if r := h.tmag("", "interrupt", sidA[:8]); r.code != 3 || !strings.Contains(r.out, "busy") {
+	if r := h.tmag("", "interrupt", sidA[:8]); r.code != 3 || !strings.Contains(r.out, "idle") {
 		t.Fatalf("second interrupt: %d %s", r.code, r.out)
+	}
+	if r := h.tmag("", "send", sidA[:8], "next"); r.code != 0 {
+		t.Fatalf("send after an interrupt: %d %s", r.code, r.out)
 	}
 
 	// Codex reports the interrupt, and the session is idle.
@@ -412,8 +415,12 @@ func TestClaudeAnswersThroughTheHook(t *testing.T) {
 	}
 	received("hook:allow")
 	h.waitSession(sidA, "idle")
-	if got := h.eventNames(sidA); !strings.HasSuffix(got, "PermissionRequest:blocked Answer: PostToolUse:working Stop:idle") {
+	// The answer closes the request at once; the call runs on.
+	if got := h.eventNames(sidA); !strings.HasSuffix(got, "PermissionRequest:blocked Answer:working Stop:idle") {
 		t.Fatalf("events = %s", got)
+	}
+	if r := h.tmag("", "answer", sidA[:8], req.ID, "allow"); r.code != 3 || !strings.Contains(r.out, "changed") {
+		t.Fatalf("answering twice: %d %s", r.code, r.out)
 	}
 
 	req = open("block")
@@ -437,8 +444,11 @@ func TestClaudeAnswersThroughTheHook(t *testing.T) {
 	if req.Kind != "question" || req.Tool != "AskUserQuestion" {
 		t.Fatalf("question request = %+v", req)
 	}
-	if r := h.tmag("", "answer", sidA[:8], req.ID, "allow"); r.code != 2 || !strings.Contains(r.out, "answers") {
+	if r := h.tmag("", "answer", sidA[:8], req.ID, "allow"); r.code != 2 || !strings.Contains(r.out, `no answer to "Pick a color"`) {
 		t.Fatalf("a question answered without answers: %d %s", r.code, r.out)
+	}
+	if r := h.tmag("", "answer", sidA[:8], req.ID, "allow", "--answers", `{"Pick a colour":"blue"}`); r.code != 2 || !strings.Contains(r.out, "not one of the questions") {
+		t.Fatalf("an answer to another question: %d %s", r.code, r.out)
 	}
 	if r := h.tmag("", "answer", sidA[:8], req.ID, "allow", "--answers", `{"Pick a color":"blue"}`); r.code != 0 {
 		t.Fatalf("answer a question: %d %s", r.code, r.out)
@@ -455,6 +465,9 @@ func TestClaudeAnswersThroughTheHook(t *testing.T) {
 	}
 	if r := h.tmag("", "answer", sidA[:8], s.Requests[0].ID, "allow"); r.code != 3 || !strings.Contains(r.out, "unsupported") {
 		t.Fatalf("answer with answering off: %d %s", r.code, r.out)
+	}
+	if r := h.tmag("", "request", sidA[:8], s.Requests[0].ID); r.code != 3 || !strings.Contains(r.out, "unsupported") {
+		t.Fatalf("request with answering off: %d %s", r.code, r.out)
 	}
 	h.tmux("send-keys", "-t", pane, "no", "Enter")
 	received("terminal:no")

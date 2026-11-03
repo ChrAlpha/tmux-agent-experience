@@ -22,6 +22,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/tmux"
@@ -102,12 +103,12 @@ func Output(a Asked, d Decision) ([]byte, error) {
 		}
 		switch a.Tool {
 		case askUserQuestion:
-			if len(d.Answers) == 0 {
-				return nil, fmt.Errorf("%w: a question is answered with answers", ErrInvalid)
-			}
 			input := map[string]any{}
 			if err := json.Unmarshal(a.Input, &input); err != nil {
 				return nil, fmt.Errorf("the question's input is not an object: %w", err)
+			}
+			if err := answersFit(a.Input, d.Answers); err != nil {
+				return nil, err
 			}
 			input["answers"] = d.Answers
 			dec["updatedInput"] = input
@@ -130,6 +131,35 @@ func Output(a Asked, d Decision) ([]byte, error) {
 		return nil, fmt.Errorf("%w: behavior %q is neither allow nor deny", ErrInvalid, d.Behavior)
 	}
 	return json.Marshal(map[string]any{"hookSpecificOutput": map[string]any{"hookEventName": "PermissionRequest", "decision": dec}})
+}
+
+// answersFit checks that answers answer every question of the input, keyed
+// by question text, each with a label: Claude Code drops answers to
+// questions it did not ask and counts the question as unanswered.
+func answersFit(input json.RawMessage, answers map[string]string) error {
+	var in struct {
+		Questions []struct {
+			Question string `json:"question"`
+		} `json:"questions"`
+	}
+	if err := json.Unmarshal(input, &in); err != nil || len(in.Questions) == 0 {
+		return fmt.Errorf("%w: the request lists no questions", ErrInvalid)
+	}
+	asked := map[string]bool{}
+	for _, q := range in.Questions {
+		asked[q.Question] = true
+	}
+	for q := range answers {
+		if !asked[q] {
+			return fmt.Errorf("%w: %q is not one of the questions", ErrInvalid, q)
+		}
+	}
+	for _, q := range in.Questions {
+		if answers[q.Question] == "" {
+			return fmt.Errorf("%w: no answer to %q; answer each question, keyed by its text", ErrInvalid, q.Question)
+		}
+	}
+	return nil
 }
 
 type message struct {
@@ -183,7 +213,7 @@ func serve(conn net.Conn, a Asked, emit func([]byte) error) (done, emitted bool)
 		}
 		out, err := Output(a, *m.Decision)
 		if err != nil {
-			_ = enc.Encode(reply{Error: err.Error()})
+			_ = enc.Encode(reply{Error: strings.TrimPrefix(err.Error(), ErrInvalid.Error()+": ")})
 			return false, false
 		}
 		if err := emit(out); err != nil {
