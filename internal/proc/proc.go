@@ -20,6 +20,9 @@ type Process struct {
 	PPID int
 	Comm string // executable base name
 	Args string // full command line, space separated
+	// Argv is the command line split into its arguments, when the platform
+	// keeps their boundaries (Linux); otherwise Args split on spaces.
+	Argv []string
 }
 
 // Table is an immutable process snapshot indexed by pid and parent.
@@ -109,20 +112,22 @@ const (
 
 // AgentKind classifies an interactive coding-agent process, or returns "".
 func AgentKind(p Process) string {
-	comm := p.Comm
 	switch {
-	case comm == "claude":
+	case p.Comm == "claude":
 		return Claude
-	case strings.HasPrefix(comm, "codex"):
+	case strings.HasPrefix(p.Comm, "codex"):
 		if IsCodexService(p) {
 			return ""
 		}
 		return Codex
-	case comm == "node" || comm == "bun":
+	case p.Comm == "node" || p.Comm == "bun":
 		switch {
 		case strings.Contains(p.Args, "claude-code") || claudeScriptRE.MatchString(p.Args):
 			return Claude
-		case strings.Contains(p.Args, "@openai/codex"):
+		case strings.Contains(p.Args, codexPackage):
+			if IsCodexService(p) {
+				return ""
+			}
 			return Codex
 		}
 	}
@@ -133,18 +138,40 @@ func AgentKind(p Process) string {
 // "node /opt/homebrew/bin/claude" or "node /usr/local/bin/claude --resume".
 var claudeScriptRE = regexp.MustCompile(`/claude(\s|$)`)
 
-// IsCodexService reports whether p is a Codex background service (app-server daemon,
-// exec server, code-mode host) rather than an interactive client.
+// codexPackage marks Codex run through its npm launcher.
+const codexPackage = "@openai/codex"
+
+// codexServices are the Codex subcommands that run a background service
+// rather than an interactive client.
+var codexServices = map[string]bool{"app-server": true, "exec-server": true, "code-mode-host": true}
+
+// IsCodexService reports whether p is a Codex background service (app-server
+// daemon, exec server, code-mode host) rather than an interactive client. The
+// service is named by the subcommand, the first argument after the codex
+// executable or launcher script; a prompt that merely mentions one is not a
+// service.
 func IsCodexService(p Process) bool {
-	if !strings.HasPrefix(p.Comm, "codex") {
-		return false
+	if strings.HasPrefix(p.Comm, "codex-code-mode") {
+		return true
 	}
-	for _, marker := range []string{"app-server", "exec-server", "code-mode-host"} {
-		if strings.Contains(p.Args, marker) || strings.Contains(p.Comm, marker) {
-			return true
+	argv, split := p.Argv, false
+	if argv == nil {
+		// ps joins arguments with spaces, so a prompt may look like several.
+		argv, split = strings.Fields(p.Args), true
+	}
+	for i, arg := range argv {
+		if !strings.HasPrefix(filepath.Base(arg), "codex") && !strings.Contains(arg, codexPackage) {
+			continue
 		}
+		if i+1 >= len(argv) || !codexServices[argv[i+1]] {
+			return false
+		}
+		// Without argument boundaries, accept only what a service is started
+		// with: nothing more, flags, or the daemon's own subcommand.
+		rest := argv[i+2:]
+		return !split || len(rest) == 0 || strings.HasPrefix(rest[0], "-") || rest[0] == "daemon"
 	}
-	return strings.HasPrefix(p.Comm, "codex-code-mode")
+	return false
 }
 
 // FindAgent returns the nearest agent process at or below root.
@@ -201,7 +228,8 @@ func readProcEntry(pid int) (Process, bool) {
 	}
 	p := Process{PID: pid, PPID: ppid, Comm: string(stat[open+1 : end])}
 	if cmdline, err := os.ReadFile(dir + "/cmdline"); err == nil {
-		p.Args = strings.TrimSpace(strings.ReplaceAll(string(cmdline), "\x00", " "))
+		p.Argv = strings.Split(strings.TrimRight(string(cmdline), "\x00"), "\x00")
+		p.Args = strings.TrimSpace(strings.Join(p.Argv, " "))
 	}
 	return p, true
 }

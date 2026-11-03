@@ -24,11 +24,29 @@ func TestAgentKind(t *testing.T) {
 		{"codex", "codex app-server --listen unix:// --managed-daemon", ""},
 		{"codex", "codex app-server daemon pid-update-loop", ""},
 		{"codex-code-mode", "/x/codex-code-mode-host", ""},
+		{"node", "node /usr/lib/node_modules/@openai/codex/bin/codex.js app-server", ""},
 		{"zsh", "-zsh", ""},
 	} {
 		if got := AgentKind(Process{Comm: c.comm, Args: c.args}); got != c.want {
 			t.Errorf("AgentKind(%q, %q) = %q, want %q", c.comm, c.args, got, c.want)
 		}
+	}
+}
+
+func TestPromptNamingAServiceIsNotAService(t *testing.T) {
+	// codex "fix app-server issue": the prompt is one argument.
+	p := Process{Comm: "codex", Argv: []string{"/usr/bin/codex", "fix app-server issue"}, Args: "/usr/bin/codex fix app-server issue"}
+	if got := AgentKind(p); got != Codex {
+		t.Fatalf("AgentKind = %q, want codex", got)
+	}
+	// Without argument boundaries (ps), a prompt starting with a service name.
+	p = Process{Comm: "codex", Args: "/usr/bin/codex app-server is down"}
+	if got := AgentKind(p); got != Codex {
+		t.Fatalf("space-joined prompt: AgentKind = %q", got)
+	}
+	p = Process{Comm: "codex", Argv: []string{"/usr/bin/codex", "resume", "app-server"}}
+	if got := AgentKind(p); got != Codex {
+		t.Fatalf("a later argument named a service: AgentKind = %q", got)
 	}
 }
 
