@@ -211,16 +211,16 @@ func (a *app) cmdWatch(args []string) int {
 
 	// mu orders output: events, and snapshots taken between them.
 	var (
-		mu     sync.Mutex
-		last   int64  // seq of the last event written, or of the snapshot
-		roster string // the agent set the client was last shown; "" when unknown
+		mu    sync.Mutex
+		last  int64  // seq of the last event written, or of the snapshot
+		shown string // the agent list of the last snapshot sent; "" when none
 	)
 	snapshot := func() error {
 		snap, err := query.TakeSnapshot(ctx, a.log)
 		if err != nil {
 			return err
 		}
-		last, roster = snap.Seq, rosterOf(snap.Agents)
+		last, shown = snap.Seq, listing(snap.Agents)
 		return writeSnapshot(snap.Seq, snap.Agents)
 	}
 	if *since >= 0 {
@@ -243,10 +243,12 @@ func (a *app) cmdWatch(args []string) int {
 		return a.fail("watch", err)
 	}
 
-	// Agents also appear, vanish or lose their binding without an event: a
-	// pane closes, an agent is killed, a new one has not reported yet. A fresh
-	// snapshot reports such changes. It is listed under mu, after every event
-	// written so far, whose records were all written before their events.
+	// The list also changes without an event: a pane closes, an agent is
+	// killed or not yet reporting, a submitted prompt starts no turn before
+	// its window passes, a pane is moved or retitled. A fresh snapshot
+	// reports any difference from the last one sent, events included. It is
+	// listed under mu, after every event written so far, whose records were
+	// all written before their events.
 	go func() {
 		tick := time.NewTicker(watchRescan)
 		defer tick.Stop()
@@ -258,8 +260,8 @@ func (a *app) cmdWatch(args []string) int {
 			}
 			mu.Lock()
 			if w, err := bind.Load(ctx); err == nil {
-				if agents := query.Agents(w); rosterOf(agents) != roster {
-					roster = rosterOf(agents)
+				if agents := query.Agents(w); listing(agents) != shown {
+					shown = listing(agents)
 					if err := writeSnapshot(last, agents); err != nil {
 						stop(err)
 					}
@@ -290,14 +292,10 @@ func (a *app) cmdWatch(args []string) int {
 // watchRescan is how often watch looks for agents that changed without an event.
 const watchRescan = 2 * time.Second
 
-// rosterOf identifies the set of agents and their bindings, but not their
-// states, which events report.
-func rosterOf(agents []query.Agent) string {
-	var b strings.Builder
-	for _, ag := range agents {
-		fmt.Fprintf(&b, "%s\x00%s\x00%s\x00%s\x00%s\n", ag.Pane.Server, ag.Pane.ID, ag.Agent, ag.ID, ag.Binding)
-	}
-	return b.String() + "."
+// listing is the agent list as a client sees it, for comparison.
+func listing(agents []query.Agent) string {
+	b, _ := json.Marshal(agents)
+	return string(b)
 }
 
 func isClosedPipe(err error) bool {

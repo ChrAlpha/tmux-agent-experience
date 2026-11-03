@@ -220,12 +220,14 @@ Every JSON document carries `"schema": "tmag/v1"`.
 `tmag watch --since <last seq>` replays what was missed, or starts over with a
 new snapshot if those events were already rotated away.
 
-Agents also come and go without events: a pane is closed, an agent is killed,
-a new one has not reported yet. `watch` checks for that every two seconds and
-then sends a new snapshot, which replaces the client's list; a resumed watch
-sends one at its first check. Its `seq` is that of the last event already
-sent, and events keep following it. A client that keeps its list from `watch`
-alone therefore stays current.
+The list also changes without events: a pane is closed, an agent is killed or
+has not reported yet, a submitted prompt that started no turn stops counting as
+`working/submitted`, a pane is moved or retitled. Every two seconds `watch`
+compares the list with the last snapshot it sent and, if anything differs,
+events included, sends a new snapshot, which replaces the client's list; a
+resumed watch sends one at its first check. Its `seq` is that of the last event
+already sent, and events keep following it. A client that keeps its list from
+`watch` alone therefore stays current.
 
 Over SSH, a remote client needs nothing else: `ssh host tmag watch`.
 

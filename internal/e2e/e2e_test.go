@@ -473,6 +473,32 @@ func TestWatchReportsAgentsThatChangeWithoutEvents(t *testing.T) {
 	w.stop()
 }
 
+func TestWatchReportsSubmittedPromptsThatStartNoTurn(t *testing.T) {
+	h := start(t)
+	pane := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_HOOKS": "1"}, filepath.Join(bin, "claude"))
+	h.waitState(pane, "idle", "process")
+	// A prompt submitted 14s ago that started no turn, say a slash command:
+	// it shows as working until its window passes, with no event either way.
+	sent := time.Now().Add(-query.PendingWindow + time.Second).Unix()
+	h.tmux("set-option", "-p", "-t", pane, "@tmag_sent", fmt.Sprint(sent))
+	w := h.watch()
+	stateIn := func(doc map[string]any) string {
+		list, _ := doc["agents"].([]any)
+		if doc["type"] != "snapshot" || len(list) != 1 {
+			t.Fatalf("expected a snapshot of one agent, got %v", doc)
+		}
+		a := list[0].(map[string]any)
+		return fmt.Sprint(a["state"], "/", a["kind"])
+	}
+	if got := stateIn(w.next()); got != "working/submitted" {
+		t.Fatalf("initial snapshot: %s", got)
+	}
+	if got := stateIn(w.next()); got != "idle/<nil>" {
+		t.Fatalf("after the window: %s", got)
+	}
+	w.stop()
+}
+
 func TestRestartedAgentDoesNotInheritRecord(t *testing.T) {
 	h := start(t)
 	out := filepath.Join(h.dir, "received")
