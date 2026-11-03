@@ -16,6 +16,7 @@ import (
 	"github.com/ChrAlpha/tmux-agent-experience/internal/bind"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/query"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/registry"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/tmux"
 )
@@ -74,6 +75,13 @@ func Run(in Input) error {
 		Cwd: p.Cwd, Binding: res.Evidence, Turn: tr.Turn, State: tr.State, Kind: tr.Kind,
 	}
 
+	// Housekeeping on the world as loaded, once the hook's own work is done:
+	// records of agents gone from their pane, which a new agent's hooks clear
+	// even before they can bind, and once the session is placed, its records
+	// on panes it has left.
+	var moved func(tmux.Pane, registry.Record) bool
+	defer func() { query.Prune(ctx, in.Log.Dir, w, moved) }()
+
 	if res.Evidence == bind.Unbound {
 		if tr.Action == adapter.Answer || tr.Reminder {
 			return nil // what it changes depends on a record there is none of
@@ -82,6 +90,9 @@ func Run(in Input) error {
 	}
 
 	pane := res.Pane
+	moved = func(o tmux.Pane, rec registry.Record) bool {
+		return (o.Server != pane.Server || o.ID != pane.ID) && rec.Agent == in.Agent && rec.Session == p.SessionID
+	}
 	ev.Pane = &eventlog.PaneRef{Server: pane.Server, ID: pane.ID}
 	ring := ""
 	err = registry.Lock(ctx, in.Log.Dir, pane.Server, pane.ID, func() error {
@@ -130,9 +141,6 @@ func Run(in Input) error {
 	})
 	if err != nil {
 		return err
-	}
-	if tr.Action != adapter.End {
-		releaseOthers(ctx, w, pane, in.Agent, p.SessionID)
 	}
 	alert(ctx, tmux.Server{Socket: pane.Server}, pane, ring)
 	return nil
@@ -215,20 +223,6 @@ func alert(ctx context.Context, srv tmux.Server, pane tmux.Pane, kind string) {
 		if strings.TrimSpace(enabled) == kind {
 			_ = pane.Bell()
 			return
-		}
-	}
-}
-
-// releaseOthers clears records of the same session left on other panes, e.g.
-// after a Codex thread moved to another terminal.
-func releaseOthers(ctx context.Context, w *bind.World, keep tmux.Pane, agent, session string) {
-	for _, p := range w.Panes {
-		if p.Server == keep.Server && p.ID == keep.ID {
-			continue
-		}
-		rec := registry.FromPane(p)
-		if rec.Session == session && rec.Agent == agent {
-			_ = tmux.Server{Socket: p.Server}.ClearPaneOptions(ctx, p.ID)
 		}
 	}
 }

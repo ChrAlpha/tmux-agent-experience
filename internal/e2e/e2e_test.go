@@ -569,6 +569,44 @@ func TestSendRefusesSuspendedAgent(t *testing.T) {
 	}
 }
 
+func TestStaleRecordIsClearedForTmuxDisplays(t *testing.T) {
+	// Pane borders and the picker read @tmag_* options straight from tmux,
+	// checking only that the pane still runs a command of the recorded name.
+	for trigger, clear := range map[string]func(h *harness){
+		"status job": func(h *harness) {
+			if r := h.tmag("", "status", "--tmux"); r.code != 0 {
+				h.t.Fatalf("status: %d %s", r.code, r.out)
+			}
+		},
+		"another agent's hook": func(h *harness) {
+			h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidB, "FAKE_HOOKS": "1"}, filepath.Join(bin, "codex"))
+		},
+	} {
+		t.Run(trigger, func(t *testing.T) {
+			h := start(t)
+			claude := filepath.Join(bin, "claude")
+			pane := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_HOOKS": "1"},
+				"sh", "-c", claude+"; FAKE_HOOKS=0 FAKE_SESSION= "+claude)
+			h.waitState(pane, "idle", "process")
+			h.tmux("send-keys", "-t", pane, "block", "Enter")
+			h.waitState(pane, "blocked", "process")
+			// Killed while blocked, without SessionEnd; a silent claude follows.
+			if err := exec.Command("pkill", "-KILL", "-o", "-f", "^"+claude+"$").Run(); err != nil {
+				t.Fatalf("pkill: %v", err)
+			}
+			h.waitState(pane, "unknown", "unbound")
+			display := "#{?#{==:#{pane_current_command},#{@tmag_cmd}},#{@tmag_state},}"
+			if got := h.tmux("display-message", "-p", "-t", pane, display); got != "blocked" {
+				t.Fatalf("precondition: tmux shows %q", got)
+			}
+			clear(h)
+			h.eventually("the stale record to be cleared", func() bool {
+				return h.tmux("display-message", "-p", "-t", pane, display) == ""
+			})
+		})
+	}
+}
+
 func TestSendCannotEscapeBracketedPaste(t *testing.T) {
 	h := start(t)
 	out := filepath.Join(h.dir, "received")

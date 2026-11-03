@@ -34,8 +34,10 @@ fi
 # Agent hooks read this to decide when to ring a pane's bell.
 tmux set-option -g @tmag-alert "$(option @tmag-alert blocked,finished)"
 
-# A pane's live state, for pane-border-format and friends. It is empty when the
-# agent that wrote it has exited.
+# A pane's live state, for pane-border-format and friends. It is empty once the
+# agent that wrote it has exited: at once when another program takes the pane,
+# and at the next tmag hook or status refresh when an agent of the same name
+# replaced it without the first reporting its exit.
 if [ -z "$(tmux show-option -gqv @tmag-pane-status)" ]; then
 	tmux set-option -g @tmag-pane-status '#{?#{&&:#{@tmag_state},#{==:#{pane_current_command},#{@tmag_cmd}}},#{@tmag_agent} #{@tmag_state}#{?#{@tmag_kind}, #{@tmag_kind},},}'
 fi

@@ -20,9 +20,12 @@ func agentsOn(ctx context.Context, server string) ([]query.Agent, error) {
 	if err != nil {
 		return nil, err
 	}
-	all := query.Agents(w)
+	return onServer(query.Agents(w), server), nil
+}
+
+func onServer(all []query.Agent, server string) []query.Agent {
 	if server == "" {
-		return all, nil
+		return all
 	}
 	socket := tmux.ServerByName(server).Socket
 	var out []query.Agent
@@ -31,10 +34,12 @@ func agentsOn(ctx context.Context, server string) ([]query.Agent, error) {
 			out = append(out, a)
 		}
 	}
-	return out, nil
+	return out
 }
 
-// cmdStatus prints a one-line summary for the status line.
+// cmdStatus prints a one-line summary for the status line. tmux runs it every
+// status-interval, so it also clears records of agents that left their pane
+// without a word: pane borders and the picker read those records directly.
 func (a *app) cmdStatus(args []string) int {
 	fs := flag.NewFlagSet("status", flag.ContinueOnError)
 	styled := fs.Bool("tmux", false, "")
@@ -44,11 +49,12 @@ func (a *app) cmdStatus(args []string) int {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	agents, err := agentsOn(ctx, *server)
+	w, err := bind.Load(ctx)
 	if err != nil {
 		return a.fail("status", err)
 	}
-	fmt.Fprintln(a.stdout, Summary(agents, *styled))
+	fmt.Fprintln(a.stdout, Summary(onServer(query.Agents(w), *server), *styled))
+	query.Prune(ctx, a.log.Dir, w, nil)
 	return ExitOK
 }
 

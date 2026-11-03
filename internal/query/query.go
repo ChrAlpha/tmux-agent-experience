@@ -240,6 +240,29 @@ func describe(a Agent) string {
 	return a.State
 }
 
+// Prune clears pane records that no longer describe their pane: the agent
+// exited or was replaced, or the Codex TUI shows another thread. moved, when
+// set, marks live records to clear as well, such as a session's record left
+// on a pane it has moved away from. A record is cleared only if, under the
+// pane's lock, it is still the one judged stale: whatever a hook wrote since
+// is newer than w and stays.
+func Prune(ctx context.Context, stateDir string, w *bind.World, moved func(tmux.Pane, registry.Record) bool) {
+	for _, p := range w.Panes {
+		rec, live := w.Record(p)
+		if !rec.Bound() || (live && (moved == nil || !moved(p, rec))) {
+			continue
+		}
+		srv := tmux.Server{Socket: p.Server}
+		_ = registry.Lock(ctx, stateDir, p.Server, p.ID, func() error {
+			fresh, err := srv.Pane(ctx, p.ID)
+			if err != nil || !registry.FromPane(fresh).Equal(rec) {
+				return err
+			}
+			return srv.ClearPaneOptions(ctx, p.ID)
+		})
+	}
+}
+
 // Sender returns the pane the calling process runs in, if any, for provenance.
 func Sender(w *bind.World) *eventlog.PaneRef {
 	if p, ok := bind.Enclosing(w, os.Getpid()); ok {
