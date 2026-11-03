@@ -132,8 +132,13 @@ func Apply(cur Record, tr adapter.Transition, now time.Time) (Record, bool) {
 
 	switch tr.Action {
 	case adapter.Set:
+		// Stop and UserPromptSubmit run synchronously, so they arrive in turn
+		// order; a late notification about an earlier turn changes nothing.
+		if tr.Late && tr.Turn != "" && cur.Turn != "" && tr.Turn != cur.Turn {
+			return cur, false
+		}
 		if tr.Fresh {
-			rec.Background = nil
+			rec.Background, rec.Turn = nil, ""
 		}
 		if tr.Background != nil {
 			rec.Background = slices.Clone(*tr.Background)
@@ -144,7 +149,7 @@ func Apply(cur Record, tr adapter.Transition, now time.Time) (Record, bool) {
 		rec.Pending = slices.DeleteFunc(rec.Pending, func(p adapter.Prompt) bool { return !keep(p.Agent) })
 		rec.Calls = slices.DeleteFunc(rec.Calls, func(c adapter.Call) bool { return !keep(c.Agent) })
 		rec.Done = nil
-		rec.Main, rec.MainKind, rec.Turn = tr.State, tr.Kind, tr.Turn
+		rec.Main, rec.MainKind = tr.State, tr.Kind
 		if tr.State == adapter.Working {
 			rec.Sent = time.Time{} // the turn confirms the prompt tmag sent
 		}
@@ -209,11 +214,12 @@ func Apply(cur Record, tr adapter.Transition, now time.Time) (Record, bool) {
 	return rec, !rec.equal(cur)
 }
 
-// running records that a call proves a turn is under way, for a session
-// first seen in the middle of one.
+// running records that a main-agent call proves a turn is under way: in a
+// session first seen in the middle of one, or in a turn that started without
+// a prompt of its own, as Claude's queued prompts do.
 func (r *Record) running(main bool) {
-	if main && r.Main == "" {
-		r.Main = adapter.Working
+	if main && r.Main != adapter.Working {
+		r.Main, r.MainKind = adapter.Working, ""
 	}
 }
 

@@ -43,7 +43,7 @@ func TestMap(t *testing.T) {
 		{"claude subagent start", "claude", map[string]any{"hook_event_name": "SubagentStart", "agent_id": "a1", "agent_type": "Explore"}, Transition{Action: Spawn, Call: Call{Agent: "a1"}}},
 		{"claude subagent stop", "claude", map[string]any{"hook_event_name": "SubagentStop", "agent_id": "a1"}, Transition{Action: Reap, Call: Call{Agent: "a1"}}},
 		{"claude internal agent stop without id ignored", "claude", map[string]any{"hook_event_name": "SubagentStop"}, Transition{}},
-		{"claude idle notification", "claude", map[string]any{"hook_event_name": "Notification", "notification_type": "idle_prompt"}, Transition{Action: Set, State: Idle}},
+		{"claude idle notification", "claude", map[string]any{"hook_event_name": "Notification", "notification_type": "idle_prompt", "prompt_id": "p1"}, Transition{Action: Set, State: Idle, Turn: "p1", Late: true}},
 		{"claude permission notification", "claude", map[string]any{"hook_event_name": "Notification", "notification_type": "permission_prompt"}, Transition{Action: Ask, State: Blocked, Kind: KindPermission, Reminder: true}},
 		{"claude other notification", "claude", map[string]any{"hook_event_name": "Notification", "notification_type": "auth_success"}, Transition{}},
 		{"claude stop", "claude", map[string]any{"hook_event_name": "Stop", "prompt_id": "p1", "background_tasks": []any{}}, Transition{Action: Set, State: Idle, Turn: "p1", Background: &[]string{}}},

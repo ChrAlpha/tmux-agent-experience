@@ -233,6 +233,35 @@ func TestCallStartedMidTurnShowsWorking(t *testing.T) {
 	is(t, rec, adapter.Unknown, "")
 }
 
+func TestQueuedPromptRunsWithoutItsOwnSubmit(t *testing.T) {
+	// Claude reports a prompt queued during a turn with that turn's id; once
+	// the turn stops, the queued prompt runs without another UserPromptSubmit.
+	// Its first call shows the session at work again.
+	stopped := play(t, stopWith())
+	is(t, stopped, adapter.Idle, "")
+	start := startOf("", "Bash", "c9")
+	start.Turn = "p9"
+	rec, _ := Apply(stopped, start, t0)
+	is(t, rec, adapter.Working, "")
+	if rec.Turn != "p9" {
+		t.Fatalf("turn %q", rec.Turn)
+	}
+}
+
+func TestLateIdleNotification(t *testing.T) {
+	idle := adapter.Transition{Action: adapter.Set, State: adapter.Idle, Turn: "p1", Late: true}
+	// About this turn: it ended without Stop.
+	is(t, play(t, idle), adapter.Idle, "")
+	// About the turn before: the session has moved on.
+	rec := play(t, submit, idle)
+	is(t, rec, adapter.Working, "")
+	// Without a turn to compare, and without replacing the one there is.
+	idle.Turn = ""
+	if rec = play(t, idle); rec.State() != adapter.Idle || rec.Turn != "p1" {
+		t.Fatalf("turnless notification left %+v", rec)
+	}
+}
+
 func TestSinceChangesWithTheReportedState(t *testing.T) {
 	later := t0.Add(time.Minute)
 	rec, changed := Apply(play(t), startOf("", "Read", "r1"), later)
@@ -302,7 +331,7 @@ func TestSaveLeavesNoChangeUnlogged(t *testing.T) {
 		t.Fatalf("Save = %+v, %v; events %s", rec, err, events())
 	}
 	// Bookkeeping alone logs nothing.
-	busy, _ := Apply(rec, startOf("", "Read", "r1"), t0)
+	busy, _ := Apply(rec, startOf("a1", "Read", "r1"), t0)
 	if _, err := s.Save(ctx, log, busy, eventlog.Event{Event: "PreToolUse"}); err != nil || events() != "SessionStart:idle" {
 		t.Fatalf("bookkeeping logged: %v %s", err, events())
 	}

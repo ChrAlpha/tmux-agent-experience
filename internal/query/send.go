@@ -115,18 +115,25 @@ func Send(ctx context.Context, log *eventlog.Log, target, text string, from *eve
 			if err != nil || !ok {
 				return &RefusedError{RefuseChanged, fmt.Sprintf("%s has ended", s.ID)}
 			}
-			if err := (tmux.Server{Socket: fp.Server}).Submit(ctx, fp.ID, text); err != nil {
+			// Hold off other senders before typing: a prompt recorded as sent
+			// but never delivered costs a pending window, a prompt delivered
+			// but not recorded could be delivered twice.
+			unsent := rec
+			rec.Sent = time.Now().UTC().Truncate(time.Second)
+			if err := store.Put(rec); err != nil {
 				return err
+			}
+			if err := (tmux.Server{Socket: fp.Server}).Submit(ctx, fp.ID, text); err != nil {
+				return errors.Join(err, store.Put(unsent))
 			}
 			// From here on the prompt is delivered: a failure must not read as
 			// one a caller could retry.
-			rec.Sent = time.Now().UTC().Truncate(time.Second)
 			ev := eventlog.Event{
 				Agent: s.Agent, Session: s.ID, Event: eventlog.Send, Cwd: fp.Cwd,
 				Pane: &eventlog.PaneRef{Server: fp.Server, ID: fp.ID}, From: from, Bytes: len(text),
 			}
-			if err := errors.Join(store.Put(rec), log.Append(ctx, &ev)); err != nil {
-				return fmt.Errorf("prompt delivered to %s but not recorded; do not send it again: %w", fp.ID, err)
+			if err := log.Append(ctx, &ev); err != nil {
+				return fmt.Errorf("prompt delivered to %s but not logged; do not send it again: %w", fp.ID, err)
 			}
 			d.Session, d.Pane, d.Seq = fs, fp, ev.Seq
 			return nil

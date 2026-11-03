@@ -868,3 +868,39 @@ func TestAttachNeedsItsClientStillRunning(t *testing.T) {
 		t.Fatalf("pane %+v shows %+v", p, s)
 	}
 }
+
+func TestAttachmentEventsSurviveACrash(t *testing.T) {
+	// A writer died after changing a pane's attachment and before logging
+	// it; the next reconciliation logs what the pane is marked with.
+	h := start(t)
+	pane := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_HOOKS": "1"}, filepath.Join(bin, "claude"))
+	h.waitPane(pane, "idle", "process")
+	count := func(event string) int {
+		n := 0
+		for _, e := range h.events(sidA) {
+			if e.Event == event {
+				n++
+			}
+		}
+		return n
+	}
+	h.tmux("set-option", "-p", "-t", pane, "@tmag_change", "Attach")
+	h.tmag("", "status")
+	if n := count("Attach"); n != 2 || h.tmux("display-message", "-p", "-t", pane, "#{@tmag_change}") != "" {
+		t.Fatalf("pending Attach: %d Attach events, marker %q", n, h.tmux("display-message", "-p", "-t", pane, "#{@tmag_change}"))
+	}
+	h.tmux("set-option", "-p", "-t", pane, "@tmag_change", "Detach")
+	if p, _, _ := h.paneIn(pane); p.Session != "" {
+		t.Fatalf("a pane being detached still shows %s", p.Session)
+	}
+	h.tmag("", "status")
+	if n := count("Detach"); n != 1 || h.tmux("display-message", "-p", "-t", pane, "#{@tmag_session}") != "" {
+		t.Fatalf("pending Detach: %d Detach events", n)
+	}
+	// The agent's next hook proves the pane again.
+	h.tmux("send-keys", "-t", pane, "hello", "Enter")
+	h.waitPane(pane, "idle", "process")
+	if n := count("Attach"); n != 3 {
+		t.Fatalf("reattached with %d Attach events", n)
+	}
+}

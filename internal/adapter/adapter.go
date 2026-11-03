@@ -139,6 +139,9 @@ type Transition struct {
 	// Fresh marks a Set that starts a session process anew: nothing it ran
 	// before is still running.
 	Fresh bool
+	// Late marks a Set from an event that may arrive after the next turn has
+	// begun: it applies only while the session is still in Turn.
+	Late bool
 }
 
 // Map returns the transition for a payload from the given agent.
@@ -254,8 +257,10 @@ func mapClaude(p Payload) Transition {
 		switch p.NotificationType {
 		case "idle_prompt":
 			// Safety net for turns that ended without Stop, e.g. user
-			// interrupts. Claude sends none while a prompt is on screen.
-			return Transition{Action: Set, State: Idle}
+			// interrupts. Claude sends none while a prompt is on screen, and
+			// sends it a minute late, asynchronously: by then another turn
+			// may run.
+			return Transition{Action: Set, State: Idle, Turn: turn(p), Late: true}
 		case "permission_prompt":
 			// A prompt left open for a few seconds. It is the only signal for a
 			// sandboxed command's network request, which raises no

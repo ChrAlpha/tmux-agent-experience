@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/lockfile"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
@@ -43,7 +44,21 @@ type Attachment struct {
 	PID      int
 	Start    string
 	Evidence string
+	// Change is the event (Attach or Detach) the attachment is in the middle
+	// of: written to the pane before it is logged, cleared once it is. An
+	// attachment being detached no longer holds.
+	Change string
 }
+
+// same reports whether a and b are the same attachment, whatever event
+// either is in the middle of.
+func (a Attachment) same(b Attachment) bool {
+	a.Change, b.Change = "", ""
+	return a == b
+}
+
+// holds reports whether the attachment is not being detached.
+func (a Attachment) holds() bool { return a.Change != eventlog.Detach }
 
 // Pane options. The attachment and the display projection share the pane,
 // and both vanish with it. The projection (state, kind, since, cmd) is a
@@ -58,12 +73,13 @@ const (
 	optKind     = "kind"
 	optSince    = "since"
 	optCmd      = "cmd"
+	optChange   = "change"
 )
 
 // FromPane reads the attachment stored on a pane.
 func FromPane(p tmux.Pane) (Attachment, bool) {
 	o := p.Options
-	a := Attachment{Agent: o[optAgent], Session: o[optSession], Start: o[optStart], Evidence: o[optEvidence]}
+	a := Attachment{Agent: o[optAgent], Session: o[optSession], Start: o[optStart], Evidence: o[optEvidence], Change: o[optChange]}
 	a.PID, _ = strconv.Atoi(o[optPID])
 	if a.Agent == "" || a.Session == "" || a.PID <= 0 || (a.Evidence != Process && a.Evidence != TitleID) {
 		return Attachment{}, false
@@ -109,6 +125,7 @@ func write(ctx context.Context, srv tmux.Server, pane, cmd string, a Attachment,
 		}
 	}
 	opt(optStart, a.Start)
+	opt(optChange, a.Change)
 	opt(optKind, pr.Kind)
 	since := ""
 	if !pr.Since.IsZero() {

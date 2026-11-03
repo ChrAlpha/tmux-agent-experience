@@ -238,3 +238,27 @@ func TestReconcileFinishesWhatAWriterLeft(t *testing.T) {
 		t.Fatalf("sessions left: %+v", recs)
 	}
 }
+
+func TestAttachmentBeingDetachedNoLongerHolds(t *testing.T) {
+	rec := session.Record{Agent: proc.Claude, ID: "c1", Main: "idle"}
+	a := Attachment{Agent: proc.Claude, Session: "c1", PID: 101, Start: "s%1", Evidence: Process}
+	for change, want := range map[string]bool{"": true, eventlog.Attach: true, eventlog.Detach: false} {
+		opts := stored(a)
+		if change != "" {
+			opts[optChange] = change
+		}
+		var f fixture
+		f.pane("%1", 100, proc.Claude, 101, "", opts)
+		w := f.world()
+		got, ok := FromPane(f.panes[0])
+		if !ok || got.Change != change || !got.same(a) {
+			t.Fatalf("change %q read as %+v, %v", change, got, ok)
+		}
+		if l := linkOf(t, Links(w, []session.Record{rec}), "%1"); (l.Session != nil) != want {
+			t.Errorf("change %q: link %+v", change, l)
+		}
+		if shown := w.Attached(rec); (len(shown) == 1) != want {
+			t.Errorf("change %q: attached %+v", change, shown)
+		}
+	}
+}
