@@ -6,9 +6,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"path/filepath"
+	"slices"
 	"strconv"
+	"strings"
 	"time"
 
+	"github.com/ChrAlpha/tmux-agent-experience/internal/adapter"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/lockfile"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/tmux"
 )
@@ -20,7 +23,7 @@ type Record struct {
 	PID     int    // the agent process the record belongs to
 	State   string
 	Kind    string
-	Tool    string // tool awaiting permission while blocked
+	Pending []adapter.Prompt // prompts awaiting the user while blocked, oldest first
 	Turn    string
 	Since   time.Time // when State last changed
 	Sent    time.Time // when tmag last submitted a prompt not yet confirmed by a hook
@@ -33,9 +36,10 @@ func (r Record) Bound() bool { return r.Session != "" && r.Agent != "" && r.PID 
 
 // Equal reports whether two records hold the same values.
 func (r Record) Equal(o Record) bool {
-	a, b := r, o
-	a.Since, a.Sent, b.Since, b.Sent = time.Time{}, time.Time{}, time.Time{}, time.Time{}
-	return a == b && r.Since.Equal(o.Since) && r.Sent.Equal(o.Sent)
+	return r.Agent == o.Agent && r.Session == o.Session && r.PID == o.PID &&
+		r.State == o.State && r.Kind == o.Kind && slices.Equal(r.Pending, o.Pending) &&
+		r.Turn == o.Turn && r.Since.Equal(o.Since) && r.Sent.Equal(o.Sent) &&
+		r.Binding == o.Binding && r.Command == o.Command
 }
 
 // FromPane decodes the record from a pane's tmag options.
@@ -43,12 +47,32 @@ func FromPane(p tmux.Pane) Record {
 	o := p.Options
 	r := Record{
 		Agent: o["agent"], Session: o["session"], State: o["state"], Kind: o["kind"],
-		Tool: o["tool"], Turn: o["turn"], Binding: o["bind"], Command: o["cmd"],
+		Pending: decodePrompts(o["pending"]), Turn: o["turn"], Binding: o["bind"], Command: o["cmd"],
 	}
 	r.PID, _ = strconv.Atoi(o["pid"])
 	r.Since = unix(o["since"])
 	r.Sent = unix(o["sent"])
 	return r
+}
+
+// Prompts are stored as space-separated agent/tool pairs; neither agent ids
+// nor tool names contain either separator.
+func encodePrompts(ps []adapter.Prompt) string {
+	parts := make([]string, len(ps))
+	for i, p := range ps {
+		parts[i] = p.Agent + "/" + p.Tool
+	}
+	return strings.Join(parts, " ")
+}
+
+func decodePrompts(s string) []adapter.Prompt {
+	var out []adapter.Prompt
+	for _, f := range strings.Fields(s) {
+		if agent, tool, ok := strings.Cut(f, "/"); ok {
+			out = append(out, adapter.Prompt{Agent: agent, Tool: tool})
+		}
+	}
+	return out
 }
 
 func unix(s string) time.Time {
@@ -62,7 +86,7 @@ func unix(s string) time.Time {
 func Write(ctx context.Context, s tmux.Server, pane string, r Record) error {
 	values := map[string]string{
 		"agent": r.Agent, "session": r.Session, "state": r.State, "kind": r.Kind,
-		"tool": r.Tool, "turn": r.Turn, "bind": r.Binding, "cmd": r.Command,
+		"pending": encodePrompts(r.Pending), "turn": r.Turn, "bind": r.Binding, "cmd": r.Command,
 	}
 	if r.PID > 0 {
 		values["pid"] = strconv.Itoa(r.PID)

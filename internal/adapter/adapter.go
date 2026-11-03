@@ -59,9 +59,35 @@ type Action int
 
 const (
 	Ignore Action = iota // event carries no state information
-	Set                  // set state, kind and turn
+	Set                  // set state, kind and turn; every open prompt is over
+	Ask                  // a prompt for the user opened; the agent is blocked
+	Answer               // a prompt was answered; the agent works on once none is open
 	End                  // the session ended; drop the record
 )
+
+// Prompt is something an agent waits on the user for: a tool permission, a
+// question or an MCP elicitation, raised by the main agent or a subagent.
+type Prompt struct {
+	// Agent is the subagent that asked, "" for the main agent.
+	Agent string
+	// Tool is the tool asked about, or "" when the event does not say; any
+	// completed tool answers an unnamed prompt.
+	Tool string
+}
+
+// Pseudo tool names for prompts that are not tool calls.
+const elicitation = "@elicitation"
+
+// askUserQuestion is Claude Code's tool for asking the user a question.
+const askUserQuestion = "AskUserQuestion"
+
+// Kind is the record kind a prompt blocks with.
+func (p Prompt) Kind() string {
+	if p.Tool == askUserQuestion || p.Tool == elicitation {
+		return KindQuestion
+	}
+	return KindPermission
+}
 
 // Transition is the effect of one hook event.
 type Transition struct {
@@ -69,11 +95,11 @@ type Transition struct {
 	State  string
 	Kind   string
 	Turn   string
-	// OnlyFrom restricts the transition to records currently in this state.
-	OnlyFrom string
-	// Tool is the tool a permission prompt is for, or, with OnlyFrom, the tool
-	// whose completion releases the block. Empty matches any tool.
-	Tool string
+	// Prompt is the prompt an Ask opens or an Answer closes.
+	Prompt Prompt
+	// Reminder marks an Ask that may repeat a prompt already open: it opens
+	// one only during a turn with no prompt pending.
+	Reminder bool
 }
 
 // Map returns the transition for a payload from the given agent.
@@ -107,8 +133,14 @@ func subagentLifecycle(p Payload) bool {
 	return false
 }
 
-// askUserQuestion is Claude Code's tool for asking the user a question.
-const askUserQuestion = "AskUserQuestion"
+func ask(p Payload, tool string) Transition {
+	pr := Prompt{Agent: p.AgentID, Tool: tool}
+	return Transition{Action: Ask, State: Blocked, Kind: pr.Kind(), Turn: turn(p), Prompt: pr}
+}
+
+func answer(p Payload, tool string) Transition {
+	return Transition{Action: Answer, Turn: turn(p), Prompt: Prompt{Agent: p.AgentID, Tool: tool}}
+}
 
 func mapClaude(p Payload) Transition {
 	if subagentLifecycle(p) {
@@ -124,26 +156,30 @@ func mapClaude(p Payload) Transition {
 		return Transition{Action: Set, State: Working, Turn: turn(p)}
 	case "PreToolUse":
 		if p.ToolName == askUserQuestion {
-			return Transition{Action: Set, State: Blocked, Kind: KindQuestion, Turn: turn(p)}
+			return ask(p, askUserQuestion)
 		}
 	case "PermissionRequest":
 		// AskUserQuestion also passes through the permission flow; it is
 		// still a question for the user, not a tool approval.
-		kind := KindPermission
-		if p.ToolName == askUserQuestion {
-			kind = KindQuestion
-		}
-		return Transition{Action: Set, State: Blocked, Kind: kind, Turn: turn(p), Tool: p.ToolName}
+		return ask(p, p.ToolName)
 	case "Elicitation":
-		return Transition{Action: Set, State: Blocked, Kind: KindQuestion, Turn: turn(p)}
+		return ask(p, elicitation)
 	case "PostToolUse", "PostToolUseFailure":
-		return Transition{Action: Set, State: Working, Turn: turn(p), OnlyFrom: Blocked, Tool: p.ToolName}
+		return answer(p, p.ToolName)
 	case "ElicitationResult":
-		return Transition{Action: Set, State: Working, Turn: turn(p), OnlyFrom: Blocked}
+		return answer(p, elicitation)
 	case "Notification":
-		if p.NotificationType == "idle_prompt" {
+		switch p.NotificationType {
+		case "idle_prompt":
 			// Safety net for turns that ended without Stop, e.g. user interrupts.
 			return Transition{Action: Set, State: Idle}
+		case "permission_prompt":
+			// A prompt left open for a few seconds. It is the only signal for a
+			// sandboxed command's network request, which raises no
+			// PermissionRequest; for a tool it repeats one already pending.
+			tr := ask(p, "")
+			tr.Reminder = true
+			return tr
 		}
 	case "Stop":
 		if hasBackgroundTasks(p.BackgroundTasks) {
@@ -171,9 +207,9 @@ func mapCodex(p Payload) Transition {
 	case "UserPromptSubmit":
 		return Transition{Action: Set, State: Working, Turn: turn(p)}
 	case "PermissionRequest":
-		return Transition{Action: Set, State: Blocked, Kind: KindPermission, Turn: turn(p), Tool: p.ToolName}
+		return ask(p, p.ToolName)
 	case "PostToolUse":
-		return Transition{Action: Set, State: Working, Turn: turn(p), OnlyFrom: Blocked, Tool: p.ToolName}
+		return answer(p, p.ToolName)
 	case "Stop", "Interrupt":
 		return Transition{Action: Set, State: Idle, Turn: turn(p)}
 	case "SessionEnd":

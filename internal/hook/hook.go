@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -70,15 +71,12 @@ func Run(in Input) error {
 
 	ev := eventlog.Event{
 		Agent: in.Agent, Session: p.SessionID, Event: p.HookEventName,
-		Cwd: p.Cwd, Binding: res.Evidence, Turn: tr.Turn,
-	}
-	if tr.Action == adapter.Set {
-		ev.State, ev.Kind = tr.State, tr.Kind
+		Cwd: p.Cwd, Binding: res.Evidence, Turn: tr.Turn, State: tr.State, Kind: tr.Kind,
 	}
 
 	if res.Evidence == bind.Unbound {
-		if tr.OnlyFrom != "" {
-			return nil // cannot check the precondition without a record
+		if tr.Action == adapter.Answer || tr.Reminder {
+			return nil // what it changes depends on a record there is none of
 		}
 		return in.Log.Append(ctx, &ev)
 	}
@@ -95,75 +93,103 @@ func Run(in Input) error {
 			return err
 		}
 		cur, live := w.Record(fresh)
-		same := live && cur.Session == p.SessionID && cur.Agent == in.Agent
-		if !same && res.Evidence == bind.Session {
-			// The record that placed the session here has been replaced since:
-			// nothing ties the session to this pane any more.
-			ev.Binding, ev.Pane = bind.Unbound, nil
-			if tr.OnlyFrom != "" {
-				return nil
+		if !live || cur.Session != p.SessionID || cur.Agent != in.Agent {
+			if res.Evidence == bind.Session {
+				// The record that placed the session here has been replaced
+				// since: nothing ties the session to this pane any more.
+				ev.Binding, ev.Pane = bind.Unbound, nil
+				if tr.Action == adapter.Answer || tr.Reminder {
+					return nil
+				}
+				return in.Log.Append(ctx, &ev)
 			}
-			return in.Log.Append(ctx, &ev)
+			cur = registry.Record{}
 		}
-
-		switch tr.Action {
-		case adapter.End:
-			if same {
+		if tr.Action == adapter.End {
+			if cur.Bound() {
 				if err := srv.ClearPaneOptions(ctx, pane.ID); err != nil {
 					return err
 				}
 			}
-		case adapter.Set:
-			if tr.OnlyFrom != "" {
-				if !same || cur.State != tr.OnlyFrom {
-					return nil
-				}
-				if tr.Tool != "" && cur.Tool != "" && tr.Tool != cur.Tool {
-					return nil // another tool finished; the prompt is still open
-				}
-			}
-			rec := registry.Record{
-				Agent: in.Agent, Session: p.SessionID, PID: res.AgentPID,
-				State: tr.State, Kind: tr.Kind, Turn: tr.Turn,
-				Since:   now().UTC().Truncate(time.Second),
-				Binding: res.Evidence, Command: fresh.Command,
-			}
-			if tr.State == adapter.Blocked {
-				rec.Tool = tr.Tool
-			}
-			prev := ""
-			if same {
-				prev = cur.State
-				if rec.Turn == "" {
-					rec.Turn = cur.Turn
-				}
-				if cur.State == rec.State {
-					rec.Since = cur.Since
-				}
-				// Only the start of a turn confirms a submitted prompt.
-				if rec.State == adapter.Idle {
-					rec.Sent = cur.Sent
-				}
-				if rec.Equal(cur) {
-					return nil // nothing changed
-				}
-			}
-			if err := registry.Write(ctx, srv, pane.ID, rec); err != nil {
-				return err
-			}
-			ev.Turn = rec.Turn
-			ring = Alert(prev, rec.State)
+			return in.Log.Append(ctx, &ev)
 		}
+		rec, changed := next(cur, tr, registry.Record{
+			Agent: in.Agent, Session: p.SessionID, PID: res.AgentPID,
+			Since:   now().UTC().Truncate(time.Second),
+			Binding: res.Evidence, Command: fresh.Command,
+		})
+		if !changed {
+			return nil
+		}
+		if err := registry.Write(ctx, srv, pane.ID, rec); err != nil {
+			return err
+		}
+		ev.State, ev.Kind, ev.Turn = rec.State, rec.Kind, rec.Turn
+		ring = Alert(cur.State, rec.State)
 		return in.Log.Append(ctx, &ev)
 	})
 	if err != nil {
 		return err
 	}
-	if tr.Action == adapter.Set {
+	if tr.Action != adapter.End {
 		releaseOthers(ctx, w, pane, in.Agent, p.SessionID)
 	}
 	alert(ctx, tmux.Server{Socket: pane.Server}, pane, ring)
 	return nil
+}
+
+// next applies tr to cur, the session's current record in the pane (zero when
+// the pane holds none), and reports whether anything changed. id carries the
+// record's identity and the time of the event.
+func next(cur registry.Record, tr adapter.Transition, id registry.Record) (registry.Record, bool) {
+	rec := id
+	switch tr.Action {
+	case adapter.Set:
+		rec.State, rec.Kind, rec.Turn = tr.State, tr.Kind, tr.Turn
+	case adapter.Ask:
+		// A reminder cannot be told apart from a prompt already pending, and
+		// outside a turn it cannot be about one.
+		if tr.Reminder && (len(cur.Pending) > 0 || cur.State != adapter.Working) {
+			return cur, false
+		}
+		rec.Pending = cur.Pending
+		if !slices.Contains(rec.Pending, tr.Prompt) {
+			rec.Pending = append(slices.Clone(rec.Pending), tr.Prompt)
+		}
+		rec.State, rec.Kind, rec.Turn = adapter.Blocked, rec.Pending[0].Kind(), tr.Turn
+	case adapter.Answer:
+		i := slices.Index(cur.Pending, tr.Prompt)
+		if i < 0 {
+			// An unnamed prompt says nothing about the tool, and a reminder
+			// does not reliably name the agent that asked: any completed tool
+			// answers it.
+			i = slices.IndexFunc(cur.Pending, func(p adapter.Prompt) bool { return p.Tool == "" })
+		}
+		if i < 0 {
+			return cur, false // not what the user is being asked
+		}
+		rec.Pending = slices.Delete(slices.Clone(cur.Pending), i, i+1)
+		rec.State, rec.Turn = adapter.Working, tr.Turn
+		if len(rec.Pending) > 0 {
+			rec.State, rec.Kind = adapter.Blocked, rec.Pending[0].Kind()
+		}
+	default:
+		return cur, false
+	}
+	if !cur.Bound() {
+		return rec, true
+	}
+	if rec.Turn == "" {
+		rec.Turn = cur.Turn
+	}
+	if rec.State == cur.State {
+		rec.Since = cur.Since
+	}
+	// Only the start of a turn confirms a submitted prompt.
+	if rec.State == adapter.Idle {
+		rec.Sent = cur.Sent
+	}
+	return rec, !rec.Equal(cur)
 }
 
 // Alert names the change worth a bell, or "": "blocked" when an agent starts
