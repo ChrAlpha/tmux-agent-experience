@@ -447,6 +447,32 @@ func TestWatchResumes(t *testing.T) {
 	}
 }
 
+func TestWatchReportsAgentsThatChangeWithoutEvents(t *testing.T) {
+	h := start(t)
+	w := h.watch()
+	agentsIn := func(doc map[string]any) []any {
+		if doc["type"] != "snapshot" {
+			t.Fatalf("expected a snapshot, got %v", doc)
+		}
+		list, _ := doc["agents"].([]any)
+		return list
+	}
+	if n := len(agentsIn(w.next())); n != 0 {
+		t.Fatalf("initial snapshot lists %d agents", n)
+	}
+	// An agent whose hooks never run: no event will ever mention it.
+	pane := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA}, filepath.Join(bin, "claude"))
+	list := agentsIn(w.next())
+	if len(list) != 1 || list[0].(map[string]any)["pane"].(map[string]any)["id"] != pane {
+		t.Fatalf("new agent missing: %v", list)
+	}
+	h.tmux("kill-pane", "-t", pane)
+	if list := agentsIn(w.next()); len(list) != 0 {
+		t.Fatalf("closed pane still listed: %v", list)
+	}
+	w.stop()
+}
+
 func TestRestartedAgentDoesNotInheritRecord(t *testing.T) {
 	h := start(t)
 	out := filepath.Join(h.dir, "received")

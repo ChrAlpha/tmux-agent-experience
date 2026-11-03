@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"text/tabwriter"
 	"time"
@@ -188,6 +189,8 @@ func (a *app) cmdWatch(args []string) int {
 	a.json = true
 	ctx, cancel := signalContext()
 	defer cancel()
+	ctx, stop := context.WithCancelCause(ctx)
+	defer stop(nil)
 
 	out := bufio.NewWriter(a.stdout)
 	enc := json.NewEncoder(out)
@@ -199,15 +202,27 @@ func (a *app) cmdWatch(args []string) int {
 		}
 		return out.Flush()
 	}
-	snapshot := func() (int64, error) {
-		snap, err := query.TakeSnapshot(ctx, a.log)
-		if err != nil {
-			return 0, err
+	writeSnapshot := func(seq int64, agents []query.Agent) error {
+		if agents == nil {
+			agents = []query.Agent{}
 		}
-		return snap.Seq, write(map[string]any{"type": "snapshot", "seq": snap.Seq, "agents": snap.Agents})
+		return write(map[string]any{"type": "snapshot", "seq": seq, "agents": agents})
 	}
 
-	var last int64
+	// mu orders output: events, and snapshots taken between them.
+	var (
+		mu     sync.Mutex
+		last   int64  // seq of the last event written, or of the snapshot
+		roster string // the agent set the client was last shown; "" when unknown
+	)
+	snapshot := func() error {
+		snap, err := query.TakeSnapshot(ctx, a.log)
+		if err != nil {
+			return err
+		}
+		last, roster = snap.Seq, rosterOf(snap.Agents)
+		return writeSnapshot(snap.Seq, snap.Agents)
+	}
 	if *since >= 0 {
 		events, complete, err := a.log.Since(ctx, *since)
 		if err != nil {
@@ -221,20 +236,68 @@ func (a *app) cmdWatch(args []string) int {
 				}
 				last = e.Seq
 			}
-		} else if last, err = snapshot(); err != nil {
+		} else if err = snapshot(); err != nil {
 			return a.fail("watch", err)
 		}
-	} else if last, err = snapshot(); err != nil {
+	} else if err = snapshot(); err != nil {
 		return a.fail("watch", err)
 	}
 
+	// Agents also appear, vanish or lose their binding without an event: a
+	// pane closes, an agent is killed, a new one has not reported yet. A fresh
+	// snapshot reports such changes. It is listed under mu, after every event
+	// written so far, whose records were all written before their events.
+	go func() {
+		tick := time.NewTicker(watchRescan)
+		defer tick.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-tick.C:
+			}
+			mu.Lock()
+			if w, err := bind.Load(ctx); err == nil {
+				if agents := query.Agents(w); rosterOf(agents) != roster {
+					roster = rosterOf(agents)
+					if err := writeSnapshot(last, agents); err != nil {
+						stop(err)
+					}
+				}
+			}
+			mu.Unlock()
+		}
+	}()
+
 	err = a.log.Follow(ctx, last, 200*time.Millisecond, func(e eventlog.Event) error {
-		return write(map[string]any{"type": "event", "event": e})
+		mu.Lock()
+		defer mu.Unlock()
+		if err := write(map[string]any{"type": "event", "event": e}); err != nil {
+			return err
+		}
+		last = e.Seq
+		return nil
 	})
+	if cause := context.Cause(ctx); cause != nil && !errors.Is(cause, context.Canceled) {
+		err = cause
+	}
 	if err != nil && !errors.Is(err, context.Canceled) && !isClosedPipe(err) {
 		return a.fail("watch", err)
 	}
 	return ExitOK
+}
+
+// watchRescan is how often watch looks for agents that changed without an event.
+const watchRescan = 2 * time.Second
+
+// rosterOf identifies the set of agents and their bindings, but not their
+// states, which events report.
+func rosterOf(agents []query.Agent) string {
+	var b strings.Builder
+	for _, ag := range agents {
+		fmt.Fprintf(&b, "%s\x00%s\x00%s\x00%s\x00%s\n", ag.Pane.Server, ag.Pane.ID, ag.Agent, ag.ID, ag.Binding)
+	}
+	return b.String() + "."
 }
 
 func isClosedPipe(err error) bool {
