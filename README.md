@@ -141,7 +141,7 @@ pane:
 | `process` | The hook descends from the pane's own agent process. Claude Code, and Codex run with `--no-daemon`. |
 | `title-id` | Codex: the pane's title shows the thread id (`[tui] terminal_title` with `thread-id`). |
 | `session` | The pane's current agent process already carries this session, and for Codex its title does not show another thread. |
-| `title-name` | Codex: the pane runs Codex in the session's directory and one item of its title is exactly the thread's name, which no other thread shares. |
+| `title-name` | Codex: the pane runs Codex in the session's directory and its title shows the thread's name the way Codex displays it (truncated past 48 characters), which no other thread's name displays as. |
 | `unbound` | No proof. The agent is listed, but `send` and `wait` refuse it. |
 
 By default Codex runs threads in a shared app-server daemon, which also runs
@@ -259,8 +259,10 @@ timeout. With `--json`, errors are also printed as
 - Claude Code does not report a turn interrupted with Esc; the agent returns to
   `idle` when Claude sends its idle notification about a minute later.
 - Codex thread names and title formats are not a stable interface. tmag reads
-  the format of Codex 0.166 (items joined by ` | `); `tmag doctor` reports what
-  it sees.
+  the title layouts of Codex 0.166 shown above: the default one, optionally
+  with `thread-id` first, items joined by ` | ` and the project last. A custom
+  `terminal_title` that ends with another item, or leaves out the thread name,
+  gives no name evidence. `tmag doctor` reports what it sees.
 
 ## Contributing
 

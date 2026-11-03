@@ -1,4 +1,5 @@
-// Package codexidx reads Codex's thread index to resolve thread ids to names.
+// Package codexidx reads Codex's thread index to resolve thread ids to names
+// and names, as the Codex TUI shows them, back to threads.
 package codexidx
 
 import (
@@ -26,16 +27,16 @@ type entry struct {
 	Name string `json:"thread_name"`
 }
 
-// Names maps thread ids to their latest names and names back to the threads
-// carrying them.
+// Names maps thread ids to their latest names, and the form Codex shows a
+// name in back to the threads that show it.
 type Names struct {
-	byID   map[string]string
-	byName map[string][]string
+	byID    map[string]string
+	byShown map[string][]string
 }
 
 // Empty is an index without threads.
 func Empty() *Names {
-	return &Names{byID: map[string]string{}, byName: map[string][]string{}}
+	return &Names{byID: map[string]string{}, byShown: map[string][]string{}}
 }
 
 // Load reads session_index.jsonl under codexHome. A missing file yields an empty index.
@@ -62,24 +63,16 @@ func Load(codexHome string) (*Names, error) {
 		return nil, err
 	}
 	for id, name := range n.byID {
-		if name != "" {
-			n.byName[name] = append(n.byName[name], id)
+		if shown := Display(name); shown != "" {
+			n.byShown[shown] = append(n.byShown[shown], id)
 		}
 	}
 	return n, nil
 }
 
-// Name returns the thread's name and whether that name is unique among threads.
-func (n *Names) Name(id string) (name string, unique bool) {
-	name = n.byID[id]
-	return name, name != "" && len(n.byName[name]) == 1
-}
+// Name returns the thread's name, or "" when it has none.
+func (n *Names) Name(id string) string { return n.byID[id] }
 
-// ByName returns the thread carrying name, if exactly one does.
-func (n *Names) ByName(name string) (id string, unique bool) {
-	ids := n.byName[name]
-	if len(ids) != 1 {
-		return "", false
-	}
-	return ids[0], true
-}
+// Showing returns the threads whose name Codex displays as shown. Several
+// threads may display alike, a long name by its truncated head.
+func (n *Names) Showing(shown string) []string { return n.byShown[shown] }

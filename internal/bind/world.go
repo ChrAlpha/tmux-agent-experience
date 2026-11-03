@@ -90,5 +90,5 @@ func (c *codexThreads) load() *codexidx.Names {
 	return c.names
 }
 
-func (c *codexThreads) Name(id string) (string, bool)     { return c.load().Name(id) }
-func (c *codexThreads) ByName(name string) (string, bool) { return c.load().ByName(name) }
+func (c *codexThreads) Name(id string) string         { return c.load().Name(id) }
+func (c *codexThreads) Showing(shown string) []string { return c.load().Showing(shown) }

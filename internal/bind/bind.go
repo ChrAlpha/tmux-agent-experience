@@ -5,8 +5,8 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-	"unicode"
 
+	"github.com/ChrAlpha/tmux-agent-experience/internal/codexidx"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/registry"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/tmux"
@@ -17,14 +17,14 @@ const (
 	// Process: the hook descends from the pane's own agent process, with no
 	// shared agent service or nested agent in between.
 	Process = "process"
-	// TitleID: the pane runs Codex and a title segment shows the thread id.
+	// TitleID: the pane runs Codex and a title item shows the thread id.
 	TitleID = "title-id"
 	// Session: the pane's live agent already carries this session, and for
 	// Codex its title does not show another thread.
 	Session = "session"
-	// TitleName: the pane runs Codex in the session's cwd and a title segment
-	// other than the project name is exactly the thread's name, which no other
-	// thread shares.
+	// TitleName: the pane runs Codex in the session's cwd and a title item
+	// other than the project shows the thread's name as Codex displays it,
+	// which no other thread's name displays as.
 	TitleName = "title-name"
 	// Unbound: no evidence, or evidence pointing at more than one pane.
 	Unbound = "unbound"
@@ -42,11 +42,13 @@ const codexTitleSep = " | "
 
 var uuidPrefixRE = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-`)
 
-// Threads resolves Codex thread names. Both lookups report uniqueness: a name
-// shared by several threads identifies none of them.
+// Threads resolves Codex thread names.
 type Threads interface {
-	Name(id string) (name string, unique bool)
-	ByName(name string) (id string, unique bool)
+	// Name returns the thread's name, or "" when it has none.
+	Name(id string) string
+	// Showing returns the threads whose name the Codex title displays as
+	// shown (see codexidx.Display); one name may stand for several threads.
+	Showing(shown string) []string
 }
 
 // Request describes the session to place.
@@ -167,35 +169,82 @@ func bySession(w *World, r Request) []tmux.Pane {
 	return matches
 }
 
-// TitleSegments splits a Codex terminal title into its items, dropping a
-// leading activity spinner.
-func TitleSegments(title string) []string {
-	parts := strings.Split(title, codexTitleSep)
-	out := make([]string, 0, len(parts))
-	for i, s := range parts {
-		s = strings.TrimSpace(s)
-		if i == 0 {
-			if r, size := firstRune(s); size > 0 && isSpinner(r) {
-				s = strings.TrimSpace(s[size:])
+// codexTitle is a Codex 0.166 terminal title in the layouts tmag reads: the
+// default items (activity, thread-name, project-name), optionally with
+// thread-id first. Items are joined by " | ", the activity glyphs by spaces,
+// and the project label always comes last. Its value depends on the thread's
+// repository root and truncation, so it is located by position, never by
+// guessing the label from a directory name.
+type codexTitle struct {
+	items   []string // every item but the project, in order
+	project string
+}
+
+// readTitle splits a title into its items, dropping activity glyphs and the
+// action-required prefix the TUI shows while it waits for the user.
+func readTitle(title string) codexTitle {
+	var parts []string
+	for i, item := range strings.Split(title, codexTitleSep) {
+		for _, part := range splitActivity(item) {
+			if i == 0 && len(parts) == 0 && actionRequired[part] {
+				continue
 			}
+			parts = append(parts, part)
 		}
-		if s != "" {
-			out = append(out, s)
+	}
+	if len(parts) == 0 {
+		return codexTitle{}
+	}
+	return codexTitle{items: parts[:len(parts)-1], project: parts[len(parts)-1]}
+}
+
+// actionRequired holds both frames of the prefix Codex blinks in the title
+// while an approval waits.
+var actionRequired = map[string]bool{"[ ! ] Action Required": true, "[ . ] Action Required": true}
+
+// splitActivity cuts an item at activity glyphs standing alone between spaces,
+// where the TUI joins its activity indicator to the items around it.
+func splitActivity(item string) []string {
+	var out, words []string
+	flush := func() {
+		if len(words) > 0 {
+			out = append(out, strings.Join(words, " "))
+			words = nil
+		}
+	}
+	for _, word := range strings.Split(item, " ") {
+		if word != "" && strings.IndexFunc(word, func(r rune) bool { return !isActivity(r) }) < 0 {
+			flush()
+			continue
+		}
+		words = append(words, word)
+	}
+	flush()
+	trimmed := out[:0]
+	for _, s := range out {
+		if s = strings.TrimSpace(s); s != "" {
+			trimmed = append(trimmed, s)
+		}
+	}
+	return trimmed
+}
+
+// isActivity matches the title's activity glyphs: Braille spinner frames and
+// the dictation dot.
+func isActivity(r rune) bool { return (r >= 0x2800 && r <= 0x28ff) || r == '●' }
+
+// shownNames returns the item runs that may be a thread name: single items
+// and, for names that contain the separator, adjacent items joined by it.
+func (t codexTitle) shownNames() []string {
+	var out []string
+	for i := range t.items {
+		for j := i + 1; j <= len(t.items); j++ {
+			if s := strings.Join(t.items[i:j], codexTitleSep); len(s) >= minTitleNameLen {
+				out = append(out, s)
+			}
 		}
 	}
 	return out
-}
-
-func firstRune(s string) (rune, int) {
-	for _, r := range s {
-		return r, len(string(r))
-	}
-	return 0, 0
-}
-
-// isSpinner matches the Braille and symbol glyphs used as activity frames.
-func isSpinner(r rune) bool {
-	return (r >= 0x2800 && r <= 0x28ff) || unicode.Is(unicode.So, r) || unicode.Is(unicode.Sm, r)
 }
 
 // claim is what a Codex pane title says about one thread.
@@ -203,60 +252,53 @@ type claim int
 
 const (
 	silent     claim = iota // the title identifies no thread
-	showsID                 // a segment shows the thread's id
-	showsName               // a segment is the thread's unique name
-	showsOther              // a segment identifies another thread
+	showsID                 // an item shows the thread's id
+	showsName               // an item is the thread's name, shown by no other thread
+	showsOther              // an item identifies another thread
 )
 
-// titleClaim reads a Codex pane title for session. Ids outrank names, and a
-// segment equal to the project name (the basename of the pane's directory) is
-// never read as an id or a name: the default title ends with it.
+// titleClaim reads a Codex pane title for session. Ids outrank names. Only a
+// match with this session's own id may come from the project item: a project
+// directory can look like any other id, or carry any name.
 func (w *World) titleClaim(p tmux.Pane, session string) claim {
-	project := filepath.Base(p.Path)
-	var segs []string
-	for _, seg := range TitleSegments(p.Title) {
-		if seg != project {
-			segs = append(segs, seg)
+	t := readTitle(p.Title)
+	if len(session) >= codexTitleIDLen {
+		for _, item := range append(slices.Clone(t.items), t.project) {
+			if strings.HasPrefix(item, session[:codexTitleIDLen]) {
+				return showsID
+			}
 		}
 	}
-	for _, seg := range segs {
-		if len(session) >= codexTitleIDLen && strings.HasPrefix(seg, session[:codexTitleIDLen]) {
-			return showsID
-		}
-	}
-	for _, seg := range segs {
-		if id := leadingID(seg); uuidPrefixRE.MatchString(id) && !strings.HasPrefix(session, id) {
+	for _, item := range t.items {
+		if id := leadingID(item); uuidPrefixRE.MatchString(id) && !strings.HasPrefix(session, id) {
 			return showsOther
 		}
 	}
 	if w.Threads == nil {
 		return silent
 	}
-	var names []string
-	for _, seg := range segs {
-		if len(seg) >= minTitleNameLen {
-			names = append(names, seg)
+	shown := t.shownNames()
+	for _, s := range shown {
+		if ids := w.Threads.Showing(s); len(ids) == 1 && ids[0] == session {
+			return showsName
 		}
 	}
-	name, unique := w.Threads.Name(session)
-	if unique && slices.Contains(names, name) {
-		return showsName
-	}
 	// Another thread's name proves a switch only while this thread's own name
-	// is known: a thread named moments ago shows a name the index may not
-	// hold yet, and an older thread may carry the same one.
-	if name == "" {
+	// is known and not on display: a thread named moments ago shows a name the
+	// index may not hold yet, and an older thread may carry the same one.
+	own := codexidx.Display(w.Threads.Name(session))
+	if own == "" || slices.Contains(shown, own) {
 		return silent
 	}
-	for _, seg := range names {
-		if id, unique := w.Threads.ByName(seg); unique && id != session {
+	for _, s := range shown {
+		if len(w.Threads.Showing(s)) > 0 {
 			return showsOther
 		}
 	}
 	return silent
 }
 
-// leadingID returns the thread-id characters a title segment starts with,
+// leadingID returns the thread-id characters a title item starts with,
 // without the "..." of a truncated id or any text after it.
 func leadingID(seg string) string {
 	end := strings.IndexFunc(seg, func(r rune) bool {

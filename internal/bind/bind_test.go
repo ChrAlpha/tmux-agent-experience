@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ChrAlpha/tmux-agent-experience/internal/codexidx"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/tmux"
 )
@@ -56,26 +57,16 @@ func resolveWith(w *World, t Threads, r Request) Result {
 // threads is an in-memory thread index.
 type threads map[string]string
 
-func (t threads) ids(name string) []string {
+func (t threads) Name(id string) string { return t[id] }
+
+func (t threads) Showing(shown string) []string {
 	var ids []string
 	for id, n := range t {
-		if n == name {
+		if codexidx.Display(n) == shown {
 			ids = append(ids, id)
 		}
 	}
 	return ids
-}
-
-func (t threads) Name(id string) (string, bool) {
-	n := t[id]
-	return n, n != "" && len(t.ids(n)) == 1
-}
-
-func (t threads) ByName(name string) (string, bool) {
-	if ids := t.ids(name); len(ids) == 1 {
-		return ids[0], true
-	}
-	return "", false
 }
 
 func TestProcessEvidence(t *testing.T) {
@@ -161,16 +152,17 @@ func TestTitleNameEvidence(t *testing.T) {
 }
 
 func TestTitleNameRefusesAmbiguity(t *testing.T) {
-	title := "Refactor parser module"
+	name := "Refactor parser module"
+	title := name + " | repo"
 	// Two panes show the same name.
 	w := world(paneSpec{agent: "codex", title: title, path: "/repo"}, paneSpec{agent: "codex", title: title, path: "/repo"})
-	r := resolveWith(w, threads{sid: title}, Request{Agent: proc.Codex, SessionID: sid, Cwd: "/repo", PID: 902})
+	r := resolveWith(w, threads{sid: name}, Request{Agent: proc.Codex, SessionID: sid, Cwd: "/repo", PID: 902})
 	if r.Evidence != Unbound {
 		t.Fatalf("two matching panes bound %+v", r)
 	}
 	// Two threads share the name.
 	w = world(paneSpec{agent: "codex", title: title, path: "/repo"})
-	r = resolveWith(w, threads{sid: title, other: title}, Request{Agent: proc.Codex, SessionID: sid, Cwd: "/repo", PID: 902})
+	r = resolveWith(w, threads{sid: name, other: name}, Request{Agent: proc.Codex, SessionID: sid, Cwd: "/repo", PID: 902})
 	if r.Evidence != Unbound {
 		t.Fatalf("duplicate thread name bound %+v", r)
 	}
@@ -204,7 +196,7 @@ func TestRecordOfReplacedAgentIsStale(t *testing.T) {
 	}
 }
 
-func TestTitleNameMatchesWholeSegments(t *testing.T) {
+func TestTitleNameMatchesWholeItems(t *testing.T) {
 	idx := threads{sid: "test"}
 	w := world(paneSpec{agent: "codex", title: "fix tests | repo", path: "/repo"})
 	if r := resolveWith(w, idx, Request{Agent: proc.Codex, SessionID: sid, Cwd: "/repo", PID: 902}); r.Evidence != Unbound {
@@ -213,7 +205,7 @@ func TestTitleNameMatchesWholeSegments(t *testing.T) {
 	idx = threads{sid: "Ship release"}
 	w = world(paneSpec{agent: "codex", title: "⠙ Ship release | repo", path: "/repo"})
 	if r := resolveWith(w, idx, Request{Agent: proc.Codex, SessionID: sid, Cwd: "/repo", PID: 902}); r.Evidence != TitleName {
-		t.Fatalf("segment not matched: %+v", r)
+		t.Fatalf("item not matched: %+v", r)
 	}
 }
 
@@ -236,16 +228,22 @@ func TestSessionEvidenceYieldsToThreadSwitch(t *testing.T) {
 	}
 }
 
-func TestTitleSegments(t *testing.T) {
+func TestReadTitle(t *testing.T) {
 	for title, want := range map[string]string{
-		"⠋ Return PONG | github":             "Return PONG|github",
-		"Return PONG | github":               "Return PONG|github",
-		"github":                             "github",
-		"⠦ github":                           "github",
-		"019a2b3c-4d5e-7f60-8a9b-0c1... | x": "019a2b3c-4d5e-7f60-8a9b-0c1...|x",
+		"⠋ Return PONG | github":                         "Return PONG/github",
+		"Return PONG | github":                           "Return PONG/github",
+		"github":                                         "/github",
+		"⠦ github":                                       "/github",
+		"● ⠦ Fix → parser | github":                      "Fix → parser/github",
+		"[ ! ] Action Required | Fix tests | repo":       "Fix tests/repo",
+		"● [ . ] Action Required | repo":                 "/repo",
+		"019a2b3c-4d5e-7f60-8a9b-0c1... ⠋ Fix | x":       "019a2b3c-4d5e-7f60-8a9b-0c1...|Fix/x",
+		"019a2b3c-4d5e-7f60-8a9b-0c1... | Fix tests | x": "019a2b3c-4d5e-7f60-8a9b-0c1...|Fix tests/x",
+		"": "/",
 	} {
-		if got := strings.Join(TitleSegments(title), "|"); got != want {
-			t.Errorf("TitleSegments(%q) = %q, want %q", title, got, want)
+		r := readTitle(title)
+		if got := strings.Join(r.items, "|") + "/" + r.project; got != want {
+			t.Errorf("readTitle(%q) = %q, want %q", title, got, want)
 		}
 	}
 }
@@ -286,7 +284,7 @@ func TestTitleNameNeverOverridesAnotherThreadID(t *testing.T) {
 func TestProjectNameIsNotAThreadName(t *testing.T) {
 	w := world(paneSpec{agent: "codex", title: "⠋ repo", path: "/repo"})
 	if r := resolveWith(w, threads{sid: "repo"}, Request{Agent: proc.Codex, SessionID: sid, Cwd: "/repo", PID: 902}); r.Evidence != Unbound {
-		t.Fatalf("project segment bound as a thread name: %+v", r)
+		t.Fatalf("project item bound as a thread name: %+v", r)
 	}
 }
 
@@ -309,7 +307,7 @@ func TestOwnRecordSurvivesMisleadingTitles(t *testing.T) {
 		title, path string
 		idx         threads
 	}{
-		// A worktree directory named like a thread id is the project segment.
+		// A worktree directory named like a thread id is the project item.
 		"uuid project": {"⠋ Fix parser | " + other, "/w/" + other, threads{sid: "Fix parser"}},
 		// The thread was named moments ago; the index still lacks it, and an
 		// older thread carries the same name.
@@ -342,5 +340,74 @@ func TestForegroundFollowsTheTerminal(t *testing.T) {
 	set(100)
 	if w.Foreground(w.Panes[0]) {
 		t.Fatal("suspended agent counted as foreground")
+	}
+}
+
+func TestProjectItemIsLocatedByPosition(t *testing.T) {
+	// Codex labels the project by its repository root, truncated to 24
+	// characters, so the label need not be the pane directory's name.
+	for name, c := range map[string]struct{ title, path string }{
+		"repository subdirectory": {"Fix tests | my-project", "/work/my-project/src"},
+		"long project name":       {"Fix tests | an-exceedingly-long-proj...", "/work/an-exceedingly-long-project-name"},
+		"thread in another repo":  {"Fix tests | elsewhere", "/work/my-project"},
+	} {
+		label := readTitle(c.title).project
+		idx := threads{sid: label, other: "Fix tests"}
+		opts := map[string]string{"agent": "codex", "session": sid, "pid": "101", "state": "idle"}
+		w := world(paneSpec{agent: "codex", title: c.title, path: c.path, opts: opts})
+		w.Threads = idx
+		// The pane shows other: sid's record, named like the project, is stale.
+		if _, ok := w.Record(w.Panes[0]); ok {
+			t.Errorf("%s: record of a thread named like the project accepted", name)
+		}
+		w = world(paneSpec{agent: "codex", title: c.title, path: c.path})
+		if r := resolveWith(w, idx, Request{Agent: proc.Codex, SessionID: sid, Cwd: c.path, PID: 902}); r.Evidence != Unbound {
+			t.Errorf("%s: project label bound as a thread name: %+v", name, r)
+		}
+		if r := resolveWith(w, idx, Request{Agent: proc.Codex, SessionID: other, Cwd: c.path, PID: 902}); r.Evidence != TitleName {
+			t.Errorf("%s: displayed thread not bound: %+v", name, r)
+		}
+	}
+}
+
+func TestLongThreadNamesMatchTheirDisplay(t *testing.T) {
+	long := "Fix every integration test in the frontend workspace before release"
+	title := "Fix every integration test in the frontend wo... | repo"
+	opts := map[string]string{"agent": "codex", "session": sid, "pid": "101", "state": "idle"}
+	idx := threads{sid: "Original task", other: long}
+	w := world(paneSpec{agent: "codex", title: title, path: "/repo", opts: opts})
+	w.Threads = idx
+	if _, ok := w.Record(w.Panes[0]); ok {
+		t.Fatal("record survived a switch to a thread with a truncated name")
+	}
+	w = world(paneSpec{agent: "codex", title: title, path: "/repo"})
+	if r := resolveWith(w, idx, Request{Agent: proc.Codex, SessionID: other, Cwd: "/repo", PID: 902}); r.Evidence != TitleName {
+		t.Fatalf("truncated name not bound: %+v", r)
+	}
+	// Two names that truncate alike identify neither thread.
+	third := "019a2b3c-7777-7f60-8a9b-0c1d2e3f4a5b"
+	idx[third] = long[:45] + " and the backend too"
+	if r := resolveWith(w, idx, Request{Agent: proc.Codex, SessionID: other, Cwd: "/repo", PID: 902}); r.Evidence != Unbound {
+		t.Fatalf("shared display bound: %+v", r)
+	}
+	// It still shows that sid is not on screen.
+	w = world(paneSpec{agent: "codex", title: title, path: "/repo", opts: opts})
+	w.Threads = idx
+	if _, ok := w.Record(w.Panes[0]); ok {
+		t.Fatal("record survived a title shared by two other threads")
+	}
+}
+
+func TestThreadNamesMayContainTheSeparator(t *testing.T) {
+	idx := threads{sid: "Old thread", other: "Parse a | b"}
+	opts := map[string]string{"agent": "codex", "session": sid, "pid": "101", "state": "idle"}
+	w := world(paneSpec{agent: "codex", title: "⠋ Parse a | b | repo", path: "/repo", opts: opts})
+	w.Threads = idx
+	if _, ok := w.Record(w.Panes[0]); ok {
+		t.Fatal("record survived a switch to a name with the separator")
+	}
+	w = world(paneSpec{agent: "codex", title: "Parse a | b | repo", path: "/repo"})
+	if r := resolveWith(w, idx, Request{Agent: proc.Codex, SessionID: other, Cwd: "/repo", PID: 902}); r.Evidence != TitleName {
+		t.Fatalf("name with the separator not bound: %+v", r)
 	}
 }
