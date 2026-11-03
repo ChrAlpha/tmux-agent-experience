@@ -782,14 +782,14 @@ func TestSendCannotEscapeBracketedPaste(t *testing.T) {
 
 func TestPaneFieldsCannotBeForged(t *testing.T) {
 	h := start(t)
-	// A directory name carrying the field separator and forged option values.
-	evil := filepath.Join(h.dir, "x\x1f"+sidB+"\x1fidle\x1fprocess")
+	// A directory name carrying field separators and forged option values.
+	evil := filepath.Join(h.dir, "x\t"+sidB+"\tidle\x1fprocess\t")
 	if err := os.MkdirAll(evil, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	pane := h.spawn(evil, map[string]string{}, filepath.Join(bin, "codex"))
 	p, _ := h.waitPane(pane, "", "")
-	if p.Session != "" || strings.ContainsRune(p.Cwd, 0x1f) {
+	if p.Session != "" || strings.ContainsAny(p.Cwd, "\t\x1f") {
 		t.Fatalf("forged fields: %+v", p)
 	}
 }
@@ -826,7 +826,11 @@ func TestWorksWithoutUTF8Locale(t *testing.T) {
 		t.Fatal(err)
 	}
 	pane := h.spawn(dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_HOOKS": "1"}, filepath.Join(bin, "claude"))
-	if p, _ := h.waitPane(pane, "idle", "process"); p.Cwd != dir {
+	want, err := filepath.EvalSymlinks(dir) // macOS: /var is /private/var
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p, _ := h.waitPane(pane, "idle", "process"); p.Cwd != want {
 		t.Fatalf("cwd = %q", p.Cwd)
 	}
 }

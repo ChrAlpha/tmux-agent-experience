@@ -56,7 +56,11 @@ const OptionPrefix = "@tmag_"
 // kind, since, cmd).
 var OptionKeys = []string{"agent", "session", "pid", "start", "evidence", "change", "replaced", "state", "kind", "since", "cmd"}
 
-const sep = "\x1f"
+// sep separates the fields of a pane line. It must be a byte every tmux
+// prints as is: tmux 3.4 writes other control characters in -F output as
+// octal escapes without escaping backslashes, which no parser could undo,
+// but leaves tabs alone. clean() removes it from every free-text field.
+const sep = "\t"
 
 // clean strips C0 controls and DEL from a free-text format value, so text set
 // by programs in a pane (paths, titles, names) can never inject the field
