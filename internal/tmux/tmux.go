@@ -236,20 +236,24 @@ func (s Server) GlobalOption(ctx context.Context, name string) string {
 }
 
 // Bell rings the pane's terminal bell, which tmux turns into the window's
-// alert flag. A single BEL byte is written to the pane's terminal.
+// alert flag. A single BEL byte is written to the pane's terminal without
+// waiting: when the terminal cannot take it at once (output stopped, buffer
+// full), the bell is dropped rather than holding up the caller.
 func (p Pane) Bell() error {
 	if !strings.HasPrefix(p.TTY, "/dev/") {
 		return fmt.Errorf("pane %s has no terminal", p.ID)
 	}
-	f, err := os.OpenFile(p.TTY, os.O_WRONLY|syscall.O_NOCTTY, 0)
+	// Raw system calls: an *os.File would park on EAGAIN until the terminal
+	// drains, which is exactly the wait to avoid.
+	fd, err := syscall.Open(p.TTY, syscall.O_WRONLY|syscall.O_NOCTTY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return err
 	}
-	if _, err := f.Write([]byte{'\a'}); err != nil {
-		f.Close()
-		return err
+	defer syscall.Close(fd)
+	if _, err := syscall.Write(fd, []byte{'\a'}); err != nil {
+		return fmt.Errorf("bell %s: %w", p.TTY, err)
 	}
-	return f.Close()
+	return nil
 }
 
 // Version reports the server's tmux version string, e.g. "3.3a".
