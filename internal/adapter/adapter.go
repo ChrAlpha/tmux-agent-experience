@@ -1,7 +1,8 @@
 // Package adapter maps agent hook payloads onto tmag state transitions.
 //
 // Payload deliberately declares no prompt, message or tool-input fields: content
-// is discarded at decode time and can never reach tmux options or the event log.
+// is discarded at decode time and can never reach tmux options or the event
+// log. It keeps where the agent's transcript is, which is a path.
 package adapter
 
 import (
@@ -40,6 +41,9 @@ type Payload struct {
 	ToolName         string `json:"tool_name"`
 	ToolUseID        string `json:"tool_use_id"`
 	NotificationType string `json:"notification_type"`
+	// TranscriptPath is where the agent writes the session's transcript: a
+	// path, not content.
+	TranscriptPath string `json:"transcript_path"`
 	// BackgroundTasks lists the tasks a Stop reports still running; nil when
 	// the payload does not say.
 	BackgroundTasks *[]Task `json:"background_tasks"`

@@ -58,7 +58,7 @@ func main() {
 		if os.Getenv("FAKE_HOOKS") != "1" {
 			return
 		}
-		payload := map[string]any{"hook_event_name": event, "session_id": session, "cwd": cwd}
+		payload := map[string]any{"hook_event_name": event, "session_id": session, "cwd": cwd, "transcript_path": filepath.Join(cwd, session+".jsonl")}
 		for k, v := range extra {
 			payload[k] = v
 		}

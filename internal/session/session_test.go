@@ -367,3 +367,43 @@ func TestSaveLeavesNoChangeUnlogged(t *testing.T) {
 		t.Fatalf("end not finished: found %v, events %s", found, events())
 	}
 }
+
+func TestEventsReportTheWholeSession(t *testing.T) {
+	dir := t.TempDir()
+	s, log := Store{Dir: dir}, eventlog.Open(dir)
+	ctx := context.Background()
+	last := func() eventlog.Event {
+		all, _, err := log.Since(ctx, 0)
+		if err != nil || len(all) == 0 {
+			t.Fatalf("events: %v %v", all, err)
+		}
+		return all[len(all)-1]
+	}
+
+	rec, _ := Apply(Record{Agent: proc.Codex, ID: "s1", Cwd: "/a", Host: Host{PID: 9, Role: proc.Service}, Transcript: "/t.jsonl"},
+		adapter.Transition{Action: adapter.Set, State: adapter.Idle}, t0)
+	rec, err := s.Save(ctx, log, rec, eventlog.Event{Event: "SessionStart"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ev := last()
+	if ev.Cwd != "/a" || ev.Runtime != "service" || ev.Transcript == nil ||
+		*ev.Transcript != (eventlog.Transcript{Path: "/t.jsonl", Format: "codex-rollout"}) || ev.Subagents != nil {
+		t.Fatalf("first event = %+v", ev)
+	}
+
+	// Each of these changes nothing but what an event reports, and is logged.
+	moved := rec
+	moved.Cwd = "/b"
+	if rec, err = s.Save(ctx, log, moved, eventlog.Event{Event: "PreToolUse"}); err != nil || last().Event != "PreToolUse" || last().Cwd != "/b" {
+		t.Fatalf("cwd change: %v %+v", err, last())
+	}
+	spawned, _ := Apply(rec, spawnOf("a1"), t0)
+	if rec, err = s.Save(ctx, log, spawned, eventlog.Event{Event: "SubagentStart"}); err != nil || strings.Join(last().Subagents, ",") != "a1" {
+		t.Fatalf("subagent start: %v %+v", err, last())
+	}
+	reaped, _ := Apply(rec, reapOf("a1"), t0)
+	if _, err = s.Save(ctx, log, reaped, eventlog.Event{Event: "SubagentStop"}); err != nil || last().Event != "SubagentStop" || last().Subagents != nil {
+		t.Fatalf("subagent stop: %v %+v", err, last())
+	}
+}

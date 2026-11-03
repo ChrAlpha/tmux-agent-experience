@@ -220,6 +220,10 @@ Every JSON document carries `"schema": "tmag/v1"`.
       "since": "2026-11-03T05:20:28Z",
       "cwd": "/home/me/src/api",
       "runtime": "terminal",
+      "transcript": {
+        "path": "/home/me/.claude/projects/-home-me-src-api/1787a44e-244c-4c3c-aeea-40a74ff7ef8c.jsonl",
+        "format": "claude-jsonl"
+      },
       "panes": [
         { "server": "/tmp/tmux-1000/default", "id": "%3", "evidence": "process", "view": "main" }
       ]
@@ -243,7 +247,11 @@ Every JSON document carries `"schema": "tmag/v1"`.
 
 `runtime` is `terminal` for a session in its terminal's own agent process and
 `service` for one in a background service (the Codex daemon, Claude Code's
-supervisor). A pane without `session` runs an agent tmag has no proof for.
+supervisor). `transcript` is where the agent writes the session's transcript,
+in the agent's own format (`claude-jsonl` or `codex-rollout`); tmag only says
+where it is, and the file may not exist before the first turn. `subagents`
+lists the session's running subagents. A pane without `session` runs an agent
+tmag has no proof for.
 
 `tmag watch` prints one JSON document per line: first
 `{"type":"snapshot","seq":N,"sessions":[…],"panes":[…]}`, then
@@ -251,8 +259,10 @@ supervisor). A pane without `session` runs an agent tmag has no proof for.
 `{"type":"panes","panes":[…]}` whenever the pane list changes (an agent starts
 or exits in a pane, a pane moves or closes, a pane switches between a
 session's main agent and a subagent). Events carry `seq`, `time`, `agent`,
-`session`, `event`, `state`, `kind`, `turn` and `cwd`. `event` is the hook's
-name, or one of:
+`session` and `event`. An event with `state` reports the session in full:
+`state`, `kind`, `turn`, `cwd`, `runtime`, `transcript` and `subagents` are
+then what the session is, and a field left out is empty. Every change to any
+of them is such an event. `event` is the hook's name, or one of:
 
 | Event | Meaning |
 | --- | --- |
@@ -261,7 +271,7 @@ name, or one of:
 | `Send` | `tmag send` delivered a prompt through `pane`, from the sending pane `from`, `bytes` long. |
 | `Exit` | The session's process exited without `SessionEnd`; the session is gone. |
 
-A session's state changes only through events, so a client that applies
+A session changes only through events, so a client that applies
 events to the snapshot and replaces its pane list with each `panes` document
 stays current. Changes that come without a hook (a pane closes, an agent is
 killed, a title shows another thread) are found by whichever tmag process

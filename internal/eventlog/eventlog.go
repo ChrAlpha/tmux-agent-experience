@@ -27,9 +27,20 @@ type PaneRef struct {
 	ID     string `json:"id"`
 }
 
+// Transcript is where an agent writes a session's transcript, in the agent's
+// own format.
+type Transcript struct {
+	Path   string `json:"path"`
+	Format string `json:"format"` // claude-jsonl or codex-rollout
+}
+
 // Event is one line of the log: a session's state changed (Event names the
 // hook), tmag sent it a prompt, a pane started or stopped showing it, or it
 // ended.
+//
+// An event that carries State reports the session in full: State, Kind, Turn,
+// Cwd, Runtime, Transcript and Subagents are then what the session is, and a
+// field left out is empty.
 type Event struct {
 	Seq     int64     `json:"seq"`
 	Time    time.Time `json:"time"`
@@ -40,6 +51,11 @@ type Event struct {
 	Kind    string    `json:"kind,omitempty"`
 	Turn    string    `json:"turn,omitempty"`
 	Cwd     string    `json:"cwd,omitempty"`
+	// Runtime is how the session runs: terminal or service.
+	Runtime    string      `json:"runtime,omitempty"`
+	Transcript *Transcript `json:"transcript,omitempty"`
+	// Subagents are the session's running subagents.
+	Subagents []string `json:"subagents,omitempty"`
 	// Pane is the pane an Attach, Detach or Send is about.
 	Pane *PaneRef `json:"pane,omitempty"`
 	// Evidence is what an Attach rests on.

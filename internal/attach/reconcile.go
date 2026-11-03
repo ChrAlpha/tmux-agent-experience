@@ -256,7 +256,7 @@ func (env Env) finish(ctx context.Context, srv tmux.Server, fresh tmux.Pane, a A
 		}
 		ev := eventlog.Event{Agent: a.Agent, Session: a.Session, Event: eventlog.Attach, Pane: ref(fresh), Evidence: a.Evidence}
 		if rec, ok, _ := env.Store.Get(a.Agent, a.Session); ok {
-			ev.State, ev.Kind, ev.Turn = rec.State(), rec.Kind(), rec.Turn
+			rec.Report(&ev)
 		}
 		if err := env.append(ctx, ev); err != nil {
 			return err

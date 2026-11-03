@@ -7,9 +7,11 @@ package session
 
 import (
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/adapter"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
 )
 
@@ -28,6 +30,9 @@ type Record struct {
 	ID    string `json:"id"`
 	Cwd   string `json:"cwd,omitempty"`
 	Host  Host   `json:"host"`
+	// Transcript is the path of the agent's transcript of the session, as its
+	// hooks report it. The file may not exist before the first turn.
+	Transcript string `json:"transcript,omitempty"`
 
 	// Main is the main agent's own state (working, idle or unknown) and
 	// MainKind qualifies it (error after a failed turn).
@@ -66,15 +71,58 @@ type Record struct {
 	Ended string `json:"ended,omitempty"`
 }
 
-// Report is what an event reports of a session.
+// Report is what an event reports of a session. Lists are joined, so that
+// reports compare with ==.
 type Report struct {
-	State string `json:"state,omitempty"`
-	Kind  string `json:"kind,omitempty"`
-	Turn  string `json:"turn,omitempty"`
+	State      string `json:"state,omitempty"`
+	Kind       string `json:"kind,omitempty"`
+	Turn       string `json:"turn,omitempty"`
+	Cwd        string `json:"cwd,omitempty"`
+	Runtime    string `json:"runtime,omitempty"`
+	Transcript string `json:"transcript,omitempty"`
+	Subagents  string `json:"subagents,omitempty"`
 }
 
 // Reports is what the session's next event would report.
-func (r Record) Reports() Report { return Report{State: r.State(), Kind: r.Kind(), Turn: r.Turn} }
+func (r Record) Reports() Report {
+	return Report{
+		State: r.State(), Kind: r.Kind(), Turn: r.Turn, Cwd: r.Cwd, Runtime: string(r.Host.Role),
+		Transcript: r.Transcript, Subagents: strings.Join(r.RunningSubagents(), "\n"),
+	}
+}
+
+// Report fills ev with everything an event reports of the session.
+func (r Record) Report(ev *eventlog.Event) {
+	ev.Agent, ev.Session = r.Agent, r.ID
+	ev.State, ev.Kind, ev.Turn, ev.Cwd = r.State(), r.Kind(), r.Turn, r.Cwd
+	ev.Runtime = string(r.Host.Role)
+	ev.Transcript = r.TranscriptRef()
+	ev.Subagents = r.RunningSubagents()
+}
+
+// TranscriptRef locates the session's transcript and names its format, or
+// returns nil when the hooks did not say where it is.
+func (r Record) TranscriptRef() *eventlog.Transcript {
+	if r.Transcript == "" {
+		return nil
+	}
+	format := "claude-jsonl"
+	if r.Agent == proc.Codex {
+		format = "codex-rollout"
+	}
+	return &eventlog.Transcript{Path: r.Transcript, Format: format}
+}
+
+// RunningSubagents are the session's subagents still running, oldest first.
+func (r Record) RunningSubagents() []string {
+	var out []string
+	for _, s := range r.Subagents {
+		if slices.Contains(r.Background, s) {
+			out = append(out, s)
+		}
+	}
+	return out
+}
 
 // Unlogged reports whether the event log does not yet report the session as
 // it is.
@@ -266,7 +314,7 @@ func normalize(r *Record) {
 }
 
 func (r Record) equal(o Record) bool {
-	return r.Agent == o.Agent && r.ID == o.ID && r.Cwd == o.Cwd && r.Host == o.Host &&
+	return r.Agent == o.Agent && r.ID == o.ID && r.Cwd == o.Cwd && r.Host == o.Host && r.Transcript == o.Transcript &&
 		r.Main == o.Main && r.MainKind == o.MainKind && r.Turn == o.Turn &&
 		slices.Equal(r.Pending, o.Pending) && slices.Equal(r.Calls, o.Calls) &&
 		slices.Equal(r.Done, o.Done) && slices.Equal(r.Background, o.Background) &&

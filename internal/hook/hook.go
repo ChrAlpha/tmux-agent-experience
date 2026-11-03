@@ -121,12 +121,15 @@ func Run(in Input) error {
 		if hostKnown {
 			base.Host = session.Host{PID: host.Process.PID, Start: host.Process.Start, Role: host.Role}
 		}
+		if p.TranscriptPath != "" {
+			base.Transcript = p.TranscriptPath
+		}
 		next, changed := session.Apply(base, tr, now())
-		if found && !changed && base.Cwd == cur.Cwd && base.Host == cur.Host {
+		if found && !changed && base.Cwd == cur.Cwd && base.Host == cur.Host && base.Transcript == cur.Transcript {
 			return nil
 		}
-		// Calls, background work and the host change without an event; a new
-		// state, kind or turn is logged.
+		// Calls and other background work change without an event; whatever
+		// an event reports of the session (session.Report) is logged.
 		saved, err := env.Store.Save(ctx, in.Log, next, ev)
 		if err != nil {
 			return err

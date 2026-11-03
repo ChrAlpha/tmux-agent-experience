@@ -39,6 +39,10 @@ type Session struct {
 	// Runtime is how the session runs: in a terminal's own agent process, or
 	// in a background service; "" when its hooks did not say.
 	Runtime string `json:"runtime,omitempty"`
+	// Transcript is where the agent writes the session's transcript.
+	Transcript *eventlog.Transcript `json:"transcript,omitempty"`
+	// Subagents are the session's running subagents.
+	Subagents []string `json:"subagents,omitempty"`
 	// Panes are the panes that show the session.
 	Panes []Shown `json:"panes"`
 }
@@ -87,7 +91,8 @@ func Build(w *attach.World, recs []session.Record) View {
 	for _, r := range live {
 		s := Session{
 			ID: r.ID, Agent: r.Agent, State: r.State(), Kind: r.Kind(), Turn: r.Turn,
-			Cwd: r.Cwd, Runtime: string(r.Host.Role), Panes: shown[[2]string{r.Agent, r.ID}],
+			Cwd: r.Cwd, Runtime: string(r.Host.Role), Transcript: r.TranscriptRef(), Subagents: r.RunningSubagents(),
+			Panes: shown[[2]string{r.Agent, r.ID}],
 		}
 		if s.Panes == nil {
 			s.Panes = []Shown{}

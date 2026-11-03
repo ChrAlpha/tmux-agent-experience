@@ -128,13 +128,11 @@ func (s Store) Save(ctx context.Context, log *eventlog.Log, rec Record, ev event
 }
 
 func (s Store) logged(ctx context.Context, log *eventlog.Log, rec Record, ev eventlog.Event) (Record, error) {
-	ev.Agent, ev.Session = rec.Agent, rec.ID
-	rep := rec.Reports()
-	ev.State, ev.Kind, ev.Turn = rep.State, rep.Kind, rep.Turn
+	rec.Report(&ev)
 	if err := log.Append(ctx, &ev); err != nil {
 		return rec, err
 	}
-	rec.Logged, rec.Change = rep, ""
+	rec.Logged, rec.Change = rec.Reports(), ""
 	return rec, s.Put(rec)
 }
 
@@ -173,7 +171,7 @@ func (s Store) Settle(ctx context.Context, log *eventlog.Log, rec Record) (Recor
 		if change == "" {
 			change = "Unlogged"
 		}
-		rec, err := s.logged(ctx, log, rec, eventlog.Event{Event: change, Cwd: rec.Cwd})
+		rec, err := s.logged(ctx, log, rec, eventlog.Event{Event: change})
 		return rec, true, err
 	}
 	return rec, true, nil

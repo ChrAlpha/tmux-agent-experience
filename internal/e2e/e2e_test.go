@@ -253,6 +253,13 @@ func TestClaudeInProcess(t *testing.T) {
 	if s.ID != sidA || s.Agent != "claude" || s.Runtime != "terminal" || p.Command != "claude" || p.View != "main" {
 		t.Fatalf("pane %+v shows %+v", p, s)
 	}
+	transcript := eventlog.Transcript{Path: filepath.Join(h.dir, sidA+".jsonl"), Format: "claude-jsonl"}
+	if s.Transcript == nil || *s.Transcript != transcript {
+		t.Fatalf("transcript = %+v", s.Transcript)
+	}
+	if ev := h.events(sidA)[0]; ev.Runtime != "terminal" || ev.Transcript == nil || *ev.Transcript != transcript || ev.Cwd != h.dir {
+		t.Fatalf("first event does not report the session: %+v", ev)
+	}
 
 	r := h.tmag("", "send", sidA[:8], "--wait", "--json", "review", "the", "diff")
 	if r.code != 0 || !strings.Contains(r.out, `"state":"idle"`) {
