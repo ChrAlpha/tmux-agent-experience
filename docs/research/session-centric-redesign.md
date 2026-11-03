@@ -319,23 +319,33 @@ Settled by observation:
   model handles this with no special case: one session ends with its
   attachment, and an unattached one begins.
 
-## Spikes before implementation
+## Live findings that shape the implementation
 
-1. **Codex daemon + `thread-id` title, live.**
-   - Whether `/title` offers `thread-id` and applies it to the running TUI
-     without a restart.
-   - What the title shows while a subagent thread is displayed, and how
-     that id relates to the hook's `agent_id`.
-   - Title after the TUI exits, and under `allow-set-title off`.
-   - That closing the last TUI on a thread yields `SessionEnd` about 60 s
-     later. `hooks().shutdown()` runs before `run_session_end_hooks`
-     (`core/src/session/handlers.rs:311, 338`), so the source alone does
-     not settle it.
-   - Whether `--no-daemon` TUIs coexist with a running daemon on one
-     CODEX_HOME.
-   - A real Codex turn exercising the `PreToolUse` / `PreModelRequest` /
-     `SubagentStop` mapping, which the review noted is verified only from
-     source.
-2. **Claude hook reordering.** How often parallel and async hooks
-   (`PostToolUse` for parallel calls, background `SessionStart`) arrive out
-   of order in practice, to size the turn-guard and tombstone rules.
+Codex, from [codex-pane-identity.md](codex-pane-identity.md) "Live
+observations":
+
+- **A client can name its session before the session exists.** The title
+  shows the thread id from TUI startup, but `SessionStart` waits for the
+  first prompt. The attachment is formed when the session first appears and
+  a client's title already shows its id.
+- **Viewing a subagent keeps the attachment.** The title then shows the
+  subagent's thread id, which equals the hook `agent_id` of a known
+  subagent of the attached session. The client stays attached, marked as
+  viewing a subagent, and `send` refuses because the TUI disables input
+  there. An id that is neither the session's nor one of its subagents'
+  means the client shows another thread, so the attachment ends.
+- **Subagents outlive turns on both hosts.** Codex's `Stop` can precede
+  `SubagentStart` and carries no task list. The session keeps the set of
+  running subagents (`SubagentStart` adds, `SubagentStop` removes). An idle
+  main agent with running subagents is `working/background`.
+- **`PreModelRequest` is not "all calls over".** A background terminal's
+  `PostToolUse` arrives after later model requests. It does mean the agent
+  is not waiting on the user, so closing that agent's prompts on it stays
+  correct.
+- **Session end:** `SessionEnd` arrives about 60 s after the last TUI
+  leaves a daemon thread, and at once with `--no-daemon`. Subagents end
+  with `SubagentStop` only.
+
+Claude: hook reordering is defended against by design (turn guards, call
+tombstones). Its frequency is measured from the event log during
+implementation rather than in a separate spike.

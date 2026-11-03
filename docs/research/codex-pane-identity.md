@@ -563,22 +563,64 @@ How each channel holds up under the scenarios in question 7:
 - Daemon restart: the title is unaffected, since it is client-side state, and
   the TUI reconnects. Embedded mode has no daemon to restart.
 
-## Open questions / needs live verification
+## Live observations (0.166.0, daemon mode, 2026-11-03)
 
-- No TUI was running during this research, so the TUI↔daemon socket pairing
-  (`ss -xp`) and a live TUI's argv and fds were not observed.
-- Whether tmux stores the OSC 0 title as `#{pane_title}` under the user's
-  config (`allow-set-title`, `set-titles`), and whether other programs in the
-  pane overwrite it after Codex clears it on exit.
-- Exact title text when a subagent or side thread is displayed, compared with
-  the hook's `session_id` / `agent_id`.
-- Whether `--no-daemon` TUIs coexist cleanly with a running daemon on the same
-  CODEX_HOME, including rollout writer locks when both touch one thread.
-- Whether OSC 7501 passes through tmux, and whether it is visible to
-  `tmux` formats (no thread id either way).
-- Whether daemon `logs_2.sqlite` rows reliably pair `app_server.connection_id`
-  with `thread_id`. Even if they do, no peer pid is recorded, so the pairing
-  still does not identify a pane.
-- The local `app-server-daemon/` directory had no `daemon.pid` file while the
-  daemon was running (expected names are at
-  `codex-rs/app-server-daemon/src/lib.rs:62-64`); not investigated further.
+Setup:
+
+- the user's running daemon, a private tmux server and a scratch, trusted
+  project;
+- a probe in the project's `.codex/hooks.json` recording, per event, the
+  key names, ids, ancestry and `TMUX_PANE`;
+- `[tui] terminal_title = ["activity", "thread-name", "project-name",
+  "thread-id"]`, set by the user;
+- YOLO permissions, so no `PermissionRequest` occurred.
+
+Afterwards the threads were deleted, the history lines removed, and
+`config.toml` restored byte for byte.
+
+- **The title shows the thread id from TUI startup**, before any hook:
+  `proj | 01a1a0b8-ed6f-7b52-b68a-fe4c0...`. `SessionStart`
+  (`source: startup`) fires only when the first prompt is submitted. After
+  the first turn the `thread-name` item appears, derived from the prompt.
+- **Hooks run under the daemon.** Every daemon-mode hook descends from the
+  daemon (`codex app-server … --managed-daemon`), without `TMUX_PANE`.
+  `session_id` is the root thread in every event, subagents' included.
+- **Main-agent sequence of a turn with one tool call:** `UserPromptSubmit`
+  → `PreModelRequest` → `PreToolUse` (`Bash`, `tool_use_id` `exec-…`) →
+  `PostToolUse` → `PreModelRequest` → `Stop`. Every event carries the same
+  `turn_id`.
+- **A long command becomes a background terminal.** Its `PreToolUse` is
+  followed by `PreModelRequest`s, and its `PostToolUse` arrives only when it
+  ends (for a subagent's `sleep 90`: `PreModelRequest` at 09:27:44,
+  `PostToolUse` at 09:28:11). `PreModelRequest` therefore does not mean
+  every call is over. It does mean the agent is not waiting on the user.
+- **Subagents:**
+  - Spawning is a tool call (`collaborationspawn_agent`, id `call_…`).
+  - The subagent then fires `SubagentStart` with `agent_id` (its thread
+    id, UUIDv7), `agent_type`, and its own `turn_id`. Its hooks carry the
+    same `agent_id`, and it ends with `SubagentStop`.
+  - Subagents fire no `SessionEnd`.
+  - **The main agent's `Stop` can precede the subagent's `SubagentStart`**
+    (09:26:37 and 09:26:38): the subagent outlives the turn, and `Stop`
+    carries no background-task list.
+- **Viewing a subagent** (`/subagents`, `alt+←` / `alt+→`):
+  - The title's `thread-id` becomes the subagent's id, equal to the hook
+    `agent_id` prefix.
+  - The composer reads "Viewing sub-agent — direct input is disabled".
+  - Returning to the main view restores the root id.
+- **Closing the TUI** (`/quit`):
+  - Codex clears its title and the shell sets its own.
+  - In daemon mode `SessionEnd` (`reason: other`) arrives about 60 s later
+    (09:28:38 → 09:29:38), from the daemon.
+- **`codex --no-daemon` beside a running daemon** works. Hooks descend from
+  the TUI with the pane's `TMUX_PANE`, and `SessionEnd` fires at `/quit`.
+
+## Open questions
+
+- Whether tmux stores the OSC 0 title under `allow-set-title off`. The
+  default stores it, as observed above.
+- The TUI↔daemon socket pairing (`ss -xp`). Even if observed, it identifies
+  the TUI process, not its thread.
+- Whether OSC 7501 passes through tmux. It carries no thread id either way.
+- `PermissionRequest` under an approval-requiring permission mode, observed
+  live: the user's configuration runs without approvals.
