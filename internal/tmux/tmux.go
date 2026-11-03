@@ -112,29 +112,48 @@ func (s Server) Panes(ctx context.Context) ([]Pane, error) {
 	if err != nil {
 		return nil, err
 	}
-	const fixed = 9
 	var panes []Pane
 	for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
-		f := strings.Split(line, sep)
-		if len(f) != fixed+len(OptionKeys)+1 || !paneIDRE.MatchString(f[0]) {
-			continue
+		if p, ok := s.parsePane(line); ok {
+			panes = append(panes, p)
 		}
-		pid, _ := strconv.Atoi(f[1])
-		win, _ := strconv.Atoi(f[5])
-		idx, _ := strconv.Atoi(f[6])
-		p := Pane{
-			Server: s.Socket, ID: f[0], PID: pid, Command: f[2], Path: f[3],
-			Session: f[4], Window: win, Index: idx, TTY: f[7], Watched: f[8] == "1",
-			Title: f[len(f)-1], Options: map[string]string{},
-		}
-		for i, k := range OptionKeys {
-			if v := f[fixed+i]; v != "" {
-				p.Options[k] = v
-			}
-		}
-		panes = append(panes, p)
 	}
 	return panes, nil
+}
+
+// Pane reads one pane afresh.
+func (s Server) Pane(ctx context.Context, id string) (Pane, error) {
+	out, err := s.Run(ctx, "display-message", "-p", "-t", id, paneFormat)
+	if err != nil {
+		return Pane{}, err
+	}
+	p, ok := s.parsePane(strings.TrimRight(string(out), "\n"))
+	if !ok || p.ID != id {
+		return Pane{}, fmt.Errorf("pane %s: unexpected tmux output", id)
+	}
+	return p, nil
+}
+
+func (s Server) parsePane(line string) (Pane, bool) {
+	const fixed = 9
+	f := strings.Split(line, sep)
+	if len(f) != fixed+len(OptionKeys)+1 || !paneIDRE.MatchString(f[0]) {
+		return Pane{}, false
+	}
+	pid, _ := strconv.Atoi(f[1])
+	win, _ := strconv.Atoi(f[5])
+	idx, _ := strconv.Atoi(f[6])
+	p := Pane{
+		Server: s.Socket, ID: f[0], PID: pid, Command: f[2], Path: f[3],
+		Session: f[4], Window: win, Index: idx, TTY: f[7], Watched: f[8] == "1",
+		Title: f[len(f)-1], Options: map[string]string{},
+	}
+	for i, k := range OptionKeys {
+		if v := f[fixed+i]; v != "" {
+			p.Options[k] = v
+		}
+	}
+	return p, true
 }
 
 // SetPaneOptions sets and unsets tmag pane options in a single tmux invocation.

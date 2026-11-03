@@ -3,12 +3,9 @@ package query
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -17,7 +14,6 @@ import (
 	"github.com/ChrAlpha/tmux-agent-experience/internal/adapter"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/bind"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
-	"github.com/ChrAlpha/tmux-agent-experience/internal/lockfile"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/registry"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/tmux"
@@ -187,7 +183,7 @@ func Send(ctx context.Context, log *eventlog.Log, target, text string, from *eve
 	}
 
 	var seq int64
-	err = withPaneLock(ctx, log.Dir, a.Pane, func() error {
+	err = registry.Lock(ctx, log.Dir, a.Pane.Server, a.Pane.ID, func() error {
 		srv := tmux.Server{Socket: a.Pane.Server}
 		// Re-verify against fresh state: the agent may have started a turn,
 		// exited, been replaced, or received another prompt since the listing.
@@ -209,25 +205,25 @@ func Send(ctx context.Context, log *eventlog.Log, target, text string, from *eve
 		if !fresh.Foreground(p) {
 			return notForeground(a, p)
 		}
+		// The agent's hooks wait for this lock, so the turn this prompt starts
+		// is recorded and logged after the Send event, never overwritten by it.
 		if err := srv.Submit(ctx, p.ID, text); err != nil {
 			return err
 		}
 		// Hold off other senders until the agent's hook confirms the turn or
-		// the pending window passes.
-		rec.Sent = time.Now().UTC().Truncate(time.Second)
-		if err := registry.Write(ctx, srv, p.ID, rec); err != nil {
-			return err
-		}
+		// the pending window passes. From here on the prompt is delivered:
+		// a failure must not read as one a caller could retry.
+		sent := time.Now().UTC().Truncate(time.Second)
 		ev := eventlog.Event{
 			Agent: a.Agent, Session: a.ID, Event: "Send", Cwd: p.Path,
 			Pane: &eventlog.PaneRef{Server: p.Server, ID: p.ID}, Binding: rec.Binding,
 			From: from, Bytes: len(text),
 		}
-		if err := log.Append(ctx, &ev); err != nil {
-			return err
+		if err := errors.Join(registry.MarkSent(ctx, srv, p.ID, sent), log.Append(ctx, &ev)); err != nil {
+			return fmt.Errorf("prompt delivered to %s but not recorded; do not send it again: %w", p.ID, err)
 		}
 		seq = ev.Seq
-		a.State, a.Kind, a.Turn, a.Since = adapter.Working, KindSubmitted, "", &rec.Sent
+		a.State, a.Kind, a.Turn, a.Since = adapter.Working, KindSubmitted, "", &sent
 		return nil
 	})
 	return a, seq, err
@@ -242,12 +238,6 @@ func describe(a Agent) string {
 		return a.State + " (" + a.Kind + ")"
 	}
 	return a.State
-}
-
-// withPaneLock serialises senders to one pane across processes.
-func withPaneLock(ctx context.Context, dir string, p PaneInfo, fn func() error) error {
-	sum := sha256.Sum256([]byte(p.Server + "\x00" + p.ID))
-	return lockfile.With(ctx, filepath.Join(dir, "locks", hex.EncodeToString(sum[:8])), fn)
 }
 
 // Sender returns the pane the calling process runs in, if any, for provenance.
@@ -269,8 +259,9 @@ const livenessInterval = 2 * time.Second
 type WaitOptions struct {
 	States []string
 	After  int64
-	// StartGrace, when positive, fails with ErrNoTurn if the session logs no
-	// event within it.
+	// StartGrace, when positive, waits for a turn that starts after o.After:
+	// states logged before the session starts working or blocks do not count,
+	// and Wait fails with ErrNoTurn if no turn starts within StartGrace.
 	StartGrace time.Duration
 }
 
@@ -289,17 +280,20 @@ func Wait(ctx context.Context, log *eventlog.Log, a Agent, o WaitOptions) (event
 
 	var found eventlog.Event
 	errFound := errors.New("found")
-	sawEvent := false
+	started := o.StartGrace <= 0
 	err := log.Follow(ctx, o.After, 200*time.Millisecond, func(e eventlog.Event) error {
 		if e.Session != a.ID {
 			return nil
 		}
-		if !sawEvent {
-			sawEvent = true
-			close(seen)
-		}
 		if e.Event == "SessionEnd" {
 			return ErrEnded
+		}
+		if !started {
+			if e.State != adapter.Working && e.State != adapter.Blocked {
+				return nil
+			}
+			started = true
+			close(seen)
 		}
 		if want[e.State] {
 			found = e

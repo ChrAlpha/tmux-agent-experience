@@ -168,10 +168,13 @@ the terminal over.
 Delivery is a bracketed paste followed by Enter. Control characters are
 removed first, so relayed text cannot end the paste early or press keys.
 
-After delivery the agent shows as `working (submitted)` and further sends are
-refused until the agent's own hook confirms the turn. Input that starts no turn,
-such as a slash command, releases the agent after 15 seconds;
-`send --wait` then reports `"started": false`.
+Agent hooks update a pane's record under the same lock, so the turn a prompt
+starts is always logged after its `Send` event and never overwritten by the
+sender. After delivery the agent shows as `working (submitted)` and further
+sends are refused until the agent's own hook confirms the turn by starting it.
+`send --wait` waits for that turn to end; input that starts no turn, such as a
+slash command, releases the agent after 15 seconds, and `send --wait` then
+reports `"started": false`.
 
 `wait` and `send --wait` end with error code `ended` when the session ends or
 the agent leaves its pane.

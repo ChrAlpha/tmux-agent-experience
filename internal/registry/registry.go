@@ -3,9 +3,13 @@ package registry
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"path/filepath"
 	"strconv"
 	"time"
 
+	"github.com/ChrAlpha/tmux-agent-experience/internal/lockfile"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/tmux"
 )
 
@@ -26,6 +30,13 @@ type Record struct {
 
 // Bound reports whether the pane carries a record.
 func (r Record) Bound() bool { return r.Session != "" && r.Agent != "" && r.PID > 0 }
+
+// Equal reports whether two records hold the same values.
+func (r Record) Equal(o Record) bool {
+	a, b := r, o
+	a.Since, a.Sent, b.Since, b.Sent = time.Time{}, time.Time{}, time.Time{}, time.Time{}
+	return a == b && r.Since.Equal(o.Since) && r.Sent.Equal(o.Sent)
+}
 
 // FromPane decodes the record from a pane's tmag options.
 func FromPane(p tmux.Pane) Record {
@@ -72,4 +83,19 @@ func Write(ctx context.Context, s tmux.Server, pane string, r Record) error {
 		}
 	}
 	return s.SetPaneOptions(ctx, pane, set, unset)
+}
+
+// MarkSent records that tmag submitted a prompt, leaving the rest of the
+// record as it is.
+func MarkSent(ctx context.Context, s tmux.Server, pane string, t time.Time) error {
+	return s.SetPaneOptions(ctx, pane, map[string]string{"sent": strconv.FormatInt(t.Unix(), 10)}, nil)
+}
+
+// Lock runs fn holding the pane's record lock, a file under stateDir shared by
+// every tmag process. Hooks and senders read, change and report a pane's
+// record only under it, so neither overwrites an update it has not seen and
+// the event log orders their events as they happened.
+func Lock(ctx context.Context, stateDir, server, pane string, fn func() error) error {
+	sum := sha256.Sum256([]byte(server + "\x00" + pane))
+	return lockfile.With(ctx, filepath.Join(stateDir, "locks", hex.EncodeToString(sum[:8])), fn)
 }

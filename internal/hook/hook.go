@@ -84,60 +84,86 @@ func Run(in Input) error {
 	}
 
 	pane := res.Pane
-	srv := tmux.Server{Socket: pane.Server}
-	cur, live := w.Record(pane)
-	same := live && cur.Session == p.SessionID && cur.Agent == in.Agent
 	ev.Pane = &eventlog.PaneRef{Server: pane.Server, ID: pane.ID}
-
-	switch tr.Action {
-	case adapter.End:
-		if same {
-			if err := srv.ClearPaneOptions(ctx, pane.ID); err != nil {
-				return err
-			}
-		}
-	case adapter.Set:
-		if tr.OnlyFrom != "" {
-			if !same || cur.State != tr.OnlyFrom {
-				return nil
-			}
-			if tr.Tool != "" && cur.Tool != "" && tr.Tool != cur.Tool {
-				return nil // another tool finished; the prompt is still open
-			}
-		}
-		rec := registry.Record{
-			Agent: in.Agent, Session: p.SessionID, PID: res.AgentPID,
-			State: tr.State, Kind: tr.Kind, Turn: tr.Turn,
-			Since:   now().UTC().Truncate(time.Second),
-			Binding: res.Evidence, Command: pane.Command,
-		}
-		if tr.State == adapter.Blocked {
-			rec.Tool = tr.Tool
-		}
-		if same {
-			if rec.Turn == "" {
-				rec.Turn = cur.Turn
-			}
-			if cur.State == rec.State {
-				rec.Since = cur.Since
-			}
-			if cur.Sent.IsZero() && cur.State == rec.State && cur.Kind == rec.Kind &&
-				cur.Tool == rec.Tool && cur.Turn == rec.Turn && cur.Binding == rec.Binding {
-				return nil // nothing changed
-			}
-		}
-		if err := registry.Write(ctx, srv, pane.ID, rec); err != nil {
+	ring := ""
+	err = registry.Lock(ctx, in.Log.Dir, pane.Server, pane.ID, func() error {
+		// Decide on the record as it is now, not as it was when the world was
+		// loaded: a sender or another hook may have changed it since.
+		srv := tmux.Server{Socket: pane.Server}
+		fresh, err := srv.Pane(ctx, pane.ID)
+		if err != nil {
 			return err
 		}
-		ev.Turn = rec.Turn
-		releaseOthers(ctx, w, pane, in.Agent, p.SessionID)
-		prev := ""
-		if same {
-			prev = cur.State
+		cur, live := w.Record(fresh)
+		same := live && cur.Session == p.SessionID && cur.Agent == in.Agent
+		if !same && res.Evidence == bind.Session {
+			// The record that placed the session here has been replaced since:
+			// nothing ties the session to this pane any more.
+			ev.Binding, ev.Pane = bind.Unbound, nil
+			if tr.OnlyFrom != "" {
+				return nil
+			}
+			return in.Log.Append(ctx, &ev)
 		}
-		alert(ctx, srv, pane, Alert(prev, rec.State))
+
+		switch tr.Action {
+		case adapter.End:
+			if same {
+				if err := srv.ClearPaneOptions(ctx, pane.ID); err != nil {
+					return err
+				}
+			}
+		case adapter.Set:
+			if tr.OnlyFrom != "" {
+				if !same || cur.State != tr.OnlyFrom {
+					return nil
+				}
+				if tr.Tool != "" && cur.Tool != "" && tr.Tool != cur.Tool {
+					return nil // another tool finished; the prompt is still open
+				}
+			}
+			rec := registry.Record{
+				Agent: in.Agent, Session: p.SessionID, PID: res.AgentPID,
+				State: tr.State, Kind: tr.Kind, Turn: tr.Turn,
+				Since:   now().UTC().Truncate(time.Second),
+				Binding: res.Evidence, Command: fresh.Command,
+			}
+			if tr.State == adapter.Blocked {
+				rec.Tool = tr.Tool
+			}
+			prev := ""
+			if same {
+				prev = cur.State
+				if rec.Turn == "" {
+					rec.Turn = cur.Turn
+				}
+				if cur.State == rec.State {
+					rec.Since = cur.Since
+				}
+				// Only the start of a turn confirms a submitted prompt.
+				if rec.State == adapter.Idle {
+					rec.Sent = cur.Sent
+				}
+				if rec.Equal(cur) {
+					return nil // nothing changed
+				}
+			}
+			if err := registry.Write(ctx, srv, pane.ID, rec); err != nil {
+				return err
+			}
+			ev.Turn = rec.Turn
+			ring = Alert(prev, rec.State)
+		}
+		return in.Log.Append(ctx, &ev)
+	})
+	if err != nil {
+		return err
 	}
-	return in.Log.Append(ctx, &ev)
+	if tr.Action == adapter.Set {
+		releaseOthers(ctx, w, pane, in.Agent, p.SessionID)
+	}
+	alert(ctx, tmux.Server{Socket: pane.Server}, pane, ring)
+	return nil
 }
 
 // Alert names the change worth a bell, or "": "blocked" when an agent starts

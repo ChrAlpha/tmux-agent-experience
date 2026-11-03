@@ -45,6 +45,10 @@ a design problem, not a test problem.
 - **Control is gated.** `send` delivers only to a bound, idle agent that holds
   its terminal's foreground, after re-verifying it under the pane lock; `wait`
   refuses unbound targets.
+- **A pane's record changes only under its lock.** Hooks and `send` take
+  `registry.Lock`, re-read the pane, update the record and append the event
+  before releasing it, so no writer overwrites an update it has not seen and
+  the log orders events as they happened.
 - **Nothing edits user configuration.** Install and uninstall go through each
   host's own mechanism (`claude plugin`, `codex plugin`, TPM).
 - **The contract is versioned.** Changing a JSON field's meaning or removing

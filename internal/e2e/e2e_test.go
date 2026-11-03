@@ -19,6 +19,7 @@ import (
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/query"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/registry"
 )
 
 var bin string // directory holding tmag, claude and codex
@@ -466,6 +467,74 @@ func TestRestartedAgentDoesNotInheritRecord(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(out); len(b) != 0 {
 		t.Fatalf("replaced agent received %q", b)
+	}
+}
+
+func TestSendAndHooksStayOrdered(t *testing.T) {
+	// The agent starts and ends its turn as soon as the prompt arrives, so its
+	// hooks race the sender's own bookkeeping.
+	h := start(t)
+	pane := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_HOOKS": "1", "FAKE_TURN_MS": "0"}, filepath.Join(bin, "claude"))
+	h.waitState(pane, "idle", "process")
+	for i := range 8 {
+		r := h.tmag("", "send", sidA[:8], "--wait", "--json", "--timeout", "10s", fmt.Sprintf("prompt %d", i))
+		var res struct {
+			State   string `json:"state"`
+			Started bool   `json:"started"`
+			Turn    string `json:"turn"`
+		}
+		if r.code != 0 || json.Unmarshal([]byte(r.out), &res) != nil || !res.Started || res.State != "idle" || res.Turn == "" {
+			t.Fatalf("send %d: %d %s", i, r.code, r.out)
+		}
+		// The finished turn leaves no pending prompt behind: the agent takes
+		// the next one at once.
+		if a, _ := h.agentIn(pane); a.State != "idle" || a.Kind != "" {
+			t.Fatalf("after send %d the agent is %s (%s)", i, a.State, a.Kind)
+		}
+	}
+	var order []string
+	for _, e := range h.events(sidA) {
+		if e.Event != "SessionStart" {
+			order = append(order, e.Event)
+		}
+	}
+	for i := 0; i+2 < len(order); i += 3 {
+		if order[i] != "Send" || order[i+1] != "UserPromptSubmit" || order[i+2] != "Stop" {
+			t.Fatalf("events out of order: %v", order)
+		}
+	}
+	if len(order) != 3*8 {
+		t.Fatalf("got %d events: %v", len(order), order)
+	}
+}
+
+func TestHooksWaitForThePaneLock(t *testing.T) {
+	// A sender holds the pane lock from delivery until its Send event is
+	// logged; a hook arriving meanwhile must not update the record under it.
+	h := start(t)
+	pane := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_HOOKS": "1"}, filepath.Join(bin, "claude"))
+	a := h.waitState(pane, "idle", "process")
+	payload, _ := json.Marshal(map[string]any{"hook_event_name": "UserPromptSubmit", "session_id": sidA, "prompt_id": "p1"})
+	hook := exec.Command(filepath.Join(bin, "tmag"), "hook", "claude")
+	hook.Stdin = bytes.NewReader(payload)
+	err := registry.Lock(context.Background(), h.state, a.Pane.Server, pane, func() error {
+		if err := hook.Start(); err != nil {
+			return err
+		}
+		time.Sleep(500 * time.Millisecond)
+		if a, _ := h.agentIn(pane); a.State != "idle" {
+			return fmt.Errorf("hook updated a locked pane: %s", a.State)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := hook.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	if a := h.waitState(pane, "working", "session"); a.Turn != "p1" {
+		t.Fatalf("turn = %q", a.Turn)
 	}
 }
 
