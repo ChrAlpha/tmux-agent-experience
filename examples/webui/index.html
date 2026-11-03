@@ -1,0 +1,311 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>tmag sessions</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --fg: #1d1f21; --muted: #6b7075; --line: #e3e5e8; --bg: #fff; --panel: #f6f7f8;
+    --working: #2f6fdd; --blocked: #d0461c; --idle: #2e8b57; --unknown: #8a8f95;
+    font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --fg: #d8dadd; --muted: #8b9096; --line: #2c2f33; --bg: #151719; --panel: #1c1f22;
+      --working: #6d9cf0; --blocked: #f0784f; --idle: #5cc08a; }
+  }
+  body { margin: 0; padding: 16px 20px 40px; color: var(--fg); background: var(--bg); }
+  header { display: flex; flex-wrap: wrap; gap: 6px 18px; align-items: baseline; margin-bottom: 14px; }
+  h1 { font-size: 15px; margin: 0; }
+  h2 { font-size: 13px; margin: 22px 0 6px; color: var(--muted); font-weight: 600; }
+  .muted { color: var(--muted); }
+  button { font: inherit; padding: 2px 10px; cursor: pointer; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { text-align: left; padding: 3px 12px 3px 0; border-bottom: 1px solid var(--line); white-space: nowrap; vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; }
+  td.wrap { white-space: normal; word-break: break-all; }
+  .state-working { color: var(--working); }
+  .state-blocked { color: var(--blocked); font-weight: 600; }
+  .state-idle { color: var(--idle); }
+  .state-unknown { color: var(--unknown); }
+  .conn-live::before { content: "● "; color: var(--idle); }
+  .conn-down::before { content: "● "; color: var(--blocked); }
+  .empty { color: var(--muted); padding: 6px 0; }
+  #check { background: var(--panel); padding: 8px 10px; white-space: pre-wrap; margin: 0; }
+  #raw { background: var(--panel); padding: 8px 10px; max-height: 320px; overflow: auto; margin: 0; white-space: pre; }
+  details summary { cursor: pointer; color: var(--muted); margin-top: 22px; font-weight: 600; }
+  tr.flash td { animation: flash 1.2s ease-out; }
+  @keyframes flash { from { background: color-mix(in srgb, var(--working) 22%, transparent); } }
+</style>
+</head>
+<body>
+<header>
+  <h1>tmag sessions</h1>
+  <span id="conn" class="conn-down">connecting</span>
+  <span id="summary" class="muted"></span>
+  <span class="muted">seq <span id="seq">-</span></span>
+  <button id="verify" title="Compare the state rebuilt from the stream with tmag list --json">verify against list</button>
+</header>
+
+<h2>Sessions</h2>
+<table>
+  <thead><tr><th>agent</th><th>state</th><th>for</th><th>id</th><th>runtime</th><th>panes</th><th>turn</th><th>cwd</th></tr></thead>
+  <tbody id="sessions"></tbody>
+</table>
+
+<h2>Agent panes</h2>
+<table>
+  <thead><tr><th>target</th><th>pane</th><th>agent</th><th>command</th><th>session</th><th>evidence</th><th>view</th><th>server</th><th>cwd</th></tr></thead>
+  <tbody id="panes"></tbody>
+</table>
+
+<h2>Contract check</h2>
+<pre id="check" class="muted">Press "verify against list" to compare the rebuilt state with a fresh tmag list --json.</pre>
+
+<h2>Events <span class="muted">(newest first, this connection)</span></h2>
+<table>
+  <thead><tr><th>seq</th><th>time</th><th>event</th><th>agent</th><th>session</th><th>state</th><th>turn</th><th>pane</th><th>extra</th></tr></thead>
+  <tbody id="events"></tbody>
+</table>
+
+<details>
+  <summary>Raw stream (last 100 lines)</summary>
+  <pre id="raw"></pre>
+</details>
+
+<script>
+"use strict";
+const SCHEMA = "tmag/v1";
+const ENDED = new Set(["SessionEnd", "Exit"]);
+const KEEP_EVENTS = 200, KEEP_RAW = 100;
+
+// The client state, rebuilt from the watch stream alone: sessions from the
+// snapshot plus every event after it, panes from the last pane list.
+const st = { seq: null, sessions: new Map(), panes: [], events: [], raw: [], flash: new Set() };
+const skey = (agent, id) => agent + "/" + id;
+const pkey = (server, id) => server + " " + id;
+
+function onDoc(doc) {
+  if (doc.schema !== SCHEMA) console.warn("unexpected schema", doc.schema, doc);
+  if (doc.error) { setConn(false, "tmag: " + doc.error.code + ": " + doc.error.message); return; }
+  switch (doc.type) {
+    case "snapshot":
+      st.seq = doc.seq;
+      st.sessions = new Map(doc.sessions.map(s => [skey(s.agent, s.id), s]));
+      st.panes = doc.panes;
+      break;
+    case "event": applyEvent(doc.event); break;
+    case "panes": st.panes = doc.panes; break;
+    default: console.warn("unknown document type", doc);
+  }
+}
+
+function applyEvent(e) {
+  st.seq = e.seq;
+  st.events.unshift(e);
+  st.events.length = Math.min(st.events.length, KEEP_EVENTS);
+  const k = skey(e.agent, e.session);
+  if (ENDED.has(e.event)) { st.sessions.delete(k); return; }
+  let s = st.sessions.get(k);
+  // Only an event that reports a state speaks for the session as a whole;
+  // Detach and Send name a session that may already be gone.
+  if (!e.state) { if (s && e.cwd) s.cwd = e.cwd; return; }
+  if (!s) {
+    s = { id: e.session, agent: e.agent, state: "", panes: [] };
+    st.sessions.set(k, s);
+  }
+  if (s.state !== e.state || (s.kind || "") !== (e.kind || "")) s.since = e.time;
+  s.state = e.state;
+  s.kind = e.kind;
+  s.turn = e.turn;
+  if (e.cwd) s.cwd = e.cwd;
+  st.flash.add(k);
+}
+
+// A session's panes are the panes that show it: the pane list is their
+// single source, as in tmag's own view.
+function panesOf(s) {
+  return st.panes.filter(p => p.session === s.id && p.agent === s.agent)
+    .map(p => ({ server: p.server, id: p.id, evidence: p.evidence, view: p.view }));
+}
+
+// ---- connection: one tmag watch per connection, resumed with --since ----
+
+let source = null, retry = 0;
+function connect() {
+  const url = st.seq === null ? "watch" : "watch?since=" + encodeURIComponent(st.seq);
+  source = new EventSource(url);
+  source.onopen = () => { retry = 0; setConn(true, st.seq === null ? "live" : "live (resumed)"); };
+  source.onmessage = m => {
+    st.raw.push(m.data);
+    if (st.raw.length > KEEP_RAW) st.raw.shift();
+    let doc;
+    try { doc = JSON.parse(m.data); } catch (err) { console.warn("bad line", m.data); return; }
+    onDoc(doc);
+    render();
+  };
+  source.addEventListener("end", m => reconnect(JSON.parse(m.data)));
+  source.onerror = () => reconnect("connection lost");
+}
+function reconnect(why) {
+  if (source) source.close();
+  source = null;
+  const delay = Math.min(1000 * 2 ** retry++, 15000);
+  setConn(false, why + "; retrying in " + delay / 1000 + "s from seq " + (st.seq ?? "-"));
+  setTimeout(connect, delay);
+}
+function setConn(up, text) {
+  const c = document.getElementById("conn");
+  c.className = up ? "conn-live" : "conn-down";
+  c.textContent = text;
+}
+
+// ---- rendering ----
+
+function el(tag, props, ...kids) {
+  const n = document.createElement(tag);
+  Object.assign(n, props);
+  for (const k of kids) n.append(k ?? "");
+  return n;
+}
+const short = id => id ? id.slice(0, 8) : "-";
+function ago(t) {
+  if (!t) return "-";
+  let s = Math.max(0, Math.floor((Date.now() - Date.parse(t)) / 1000));
+  if (s < 60) return s + "s";
+  if ((s = Math.floor(s / 60)) < 60) return s + "m";
+  if ((s = Math.floor(s / 60)) < 24) return s + "h";
+  return Math.floor(s / 24) + "d";
+}
+const stateText = (state, kind) => (state || "-") + (kind ? " (" + kind + ")" : "");
+const targetOf = (server, id) => st.panes.find(p => p.server === server && p.id === id)?.target || id;
+const STATE_ORDER = { blocked: 0, working: 1, idle: 2, unknown: 3 };
+
+let queued = false;
+function render() {
+  if (queued) return;
+  queued = true;
+  requestAnimationFrame(() => { queued = false; draw(); });
+}
+
+function draw() {
+  document.getElementById("seq").textContent = st.seq ?? "-";
+
+  const sessions = [...st.sessions.values()].sort((a, b) =>
+    (STATE_ORDER[a.state] ?? 9) - (STATE_ORDER[b.state] ?? 9) || (a.since || "").localeCompare(b.since || ""));
+  const counts = {};
+  for (const s of sessions) counts[s.state] = (counts[s.state] || 0) + 1;
+  document.getElementById("summary").textContent =
+    ["blocked", "working", "idle", "unknown"].filter(x => counts[x]).map(x => counts[x] + " " + x).join(" · ") || "no sessions";
+
+  const rows = sessions.map(s => {
+    const panes = panesOf(s).map(p => targetOf(p.server, p.id) + " " + p.evidence + (p.view && p.view !== "main" ? "/" + p.view : "")).join(", ");
+    const tr = el("tr", {},
+      el("td", {}, s.agent),
+      el("td", { className: "state-" + s.state }, stateText(s.state, s.kind)),
+      el("td", {}, ago(s.since)),
+      el("td", { title: s.id }, short(s.id)),
+      el("td", {}, s.runtime || "?"),
+      el("td", {}, panes || "-"),
+      el("td", { title: s.turn || "" }, short(s.turn)),
+      el("td", { className: "wrap" }, s.cwd || "-"));
+    if (st.flash.has(skey(s.agent, s.id))) tr.className = "flash";
+    return tr;
+  });
+  st.flash.clear();
+  fill("sessions", rows, 8, "no live sessions");
+
+  fill("panes", st.panes.map(p => {
+    const s = p.session ? st.sessions.get(skey(p.agent, p.session)) : null;
+    return el("tr", {},
+      el("td", {}, p.target),
+      el("td", {}, p.id),
+      el("td", {}, p.agent),
+      el("td", {}, p.command),
+      el("td", { title: p.session || "", className: "state-" + (s ? s.state : "unknown") },
+        p.session ? short(p.session) + " " + stateText(s?.state, s?.kind) : "unknown"),
+      el("td", {}, p.evidence || "-"),
+      el("td", {}, p.view || "-"),
+      el("td", {}, p.server),
+      el("td", { className: "wrap" }, p.cwd));
+  }), 9, "no agent panes");
+
+  fill("events", st.events.map(e => el("tr", {},
+    el("td", {}, e.seq),
+    el("td", { title: e.time }, new Date(e.time).toLocaleTimeString()),
+    el("td", {}, e.event),
+    el("td", {}, e.agent),
+    el("td", { title: e.session }, short(e.session)),
+    el("td", { className: "state-" + e.state }, e.state ? stateText(e.state, e.kind) : ""),
+    el("td", { title: e.turn || "" }, e.turn ? short(e.turn) : ""),
+    el("td", {}, e.pane ? targetOf(e.pane.server, e.pane.id) : ""),
+    el("td", {}, [e.evidence, e.from && "from " + targetOf(e.from.server, e.from.id), e.bytes && e.bytes + " bytes"].filter(Boolean).join(" ")))),
+    9, "no events since connecting");
+
+  document.getElementById("raw").textContent = st.raw.join("\n");
+}
+
+function fill(id, rows, cols, empty) {
+  const body = document.getElementById(id);
+  body.replaceChildren(...(rows.length ? rows : [el("tr", {}, el("td", { colSpan: cols, className: "empty" }, empty))]));
+}
+
+setInterval(render, 1000); // keep "for" current
+
+// ---- contract check: rebuilt state versus a fresh tmag list --json ----
+
+const SESSION_FIELDS = ["state", "kind", "turn", "cwd", "runtime"];
+const PANE_FIELDS = ["target", "cwd", "command", "agent", "session", "evidence", "view"];
+
+async function verify() {
+  const out = document.getElementById("check");
+  out.textContent = "running tmag list --json …";
+  let list;
+  try {
+    const r = await fetch("list", { cache: "no-store" });
+    list = await r.json();
+  } catch (err) { out.textContent = "list failed: " + err; return; }
+  if (list.error) { out.textContent = "tmag list: " + list.error.code + ": " + list.error.message; return; }
+
+  const diffs = [];
+  const note = [];
+  if (list.schema !== SCHEMA) diffs.push("list schema " + list.schema);
+  if (list.seq !== st.seq) note.push("list seq " + list.seq + " ≠ stream seq " + st.seq + " (one side is ahead; differences may be in flight)");
+
+  const want = new Map(list.sessions.map(s => [skey(s.agent, s.id), s]));
+  for (const [k, s] of want) {
+    const got = st.sessions.get(k);
+    if (!got) { diffs.push("session " + k + ": missing from stream state"); continue; }
+    for (const f of SESSION_FIELDS)
+      if ((got[f] || "") !== (s[f] || "")) diffs.push("session " + short(s.id) + " " + f + ": stream " + JSON.stringify(got[f] ?? null) + ", list " + JSON.stringify(s[f] ?? null));
+    const dt = Math.abs(Date.parse(got.since || 0) - Date.parse(s.since || 0)) / 1000;
+    if (dt > 1) diffs.push("session " + short(s.id) + " since: stream " + got.since + ", list " + s.since);
+    else if (dt > 0) note.push("session " + short(s.id) + " since differs by " + dt.toFixed(3) + "s (event time vs. second-truncated state time)");
+    const gp = panesOf(got).map(p => JSON.stringify(p)).sort().join();
+    const wp = s.panes.map(p => JSON.stringify({ server: p.server, id: p.id, evidence: p.evidence, view: p.view })).sort().join();
+    if (gp !== wp) diffs.push("session " + short(s.id) + " panes: stream [" + gp + "], list [" + wp + "]");
+  }
+  for (const k of st.sessions.keys()) if (!want.has(k)) diffs.push("session " + k + ": in stream state, not in list");
+
+  const gotPanes = new Map(st.panes.map(p => [pkey(p.server, p.id), p]));
+  const wantPanes = new Map(list.panes.map(p => [pkey(p.server, p.id), p]));
+  for (const [k, p] of wantPanes) {
+    const got = gotPanes.get(k);
+    if (!got) { diffs.push("pane " + k + ": missing from stream state"); continue; }
+    for (const f of PANE_FIELDS)
+      if ((got[f] || "") !== (p[f] || "")) diffs.push("pane " + p.id + " " + f + ": stream " + JSON.stringify(got[f] ?? null) + ", list " + JSON.stringify(p[f] ?? null));
+  }
+  for (const k of gotPanes.keys()) if (!wantPanes.has(k)) diffs.push("pane " + k + ": in stream state, not in list");
+
+  out.className = diffs.length ? "" : "muted";
+  out.textContent = new Date().toLocaleTimeString() + " — " +
+    (diffs.length ? diffs.length + " difference(s)\n" + diffs.join("\n") : "stream state matches tmag list (" + want.size + " sessions, " + wantPanes.size + " panes)") +
+    (note.length ? "\n\nnotes:\n" + note.join("\n") : "");
+}
+document.getElementById("verify").onclick = verify;
+
+connect();
+</script>
+</body>
+</html>

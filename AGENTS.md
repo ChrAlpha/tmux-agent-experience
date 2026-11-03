@@ -89,6 +89,7 @@ a design problem, not a test problem.
 | `internal/lockfile` | flock bounded by a context |
 | `internal/binpath` | Where hooks look for the binary; the hook command itself |
 | `internal/e2e` | End-to-end tests with real tmux and a fake agent |
+| `examples/webui` | A web page over `tmag watch` that checks the stream against `tmag list` |
 | `plugins/claude`, `plugins/codex` | Agent plugins (hooks only) |
 | `.claude-plugin/`, `.agents/plugins/` | Marketplace manifests |
 | `SKILL.md` | Install and update procedure that agents follow from its raw URL |
