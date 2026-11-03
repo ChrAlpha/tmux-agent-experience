@@ -88,6 +88,7 @@ Each root cause is visible in `feat/v0.1`.
 | app-server keeps connection ↔ thread only in memory; no peer credentials; `initialize` has side effects | codex-pane-identity Q3 |
 | `codex --no-daemon` hosts app-server in the TUI, so hooks descend from the TUI; most `-c` overrides also force it; no config key does | codex-pane-identity Q1 |
 | `[tui] terminal_title` item `thread-id` renders the first 29 chars of a UUIDv7 + `...`, refreshed on every thread switch, following the *displayed* thread (possibly a subagent) | codex-pane-identity Q4 |
+| The daemon unloads a thread once it has had no subscriber and no activity for `thread_unload_delay_secs` (default 60), and unloading runs `SessionEnd` hooks | Codex `app-server/src/request_processors/thread_lifecycle.rs:56-60`, `core/src/config/mod.rs:4143-4144`, `core/src/session/handlers.rs:338` |
 | No TUI-executed user command receives the thread id | codex-pane-identity Q4/Q5 |
 | Claude hooks of an interactive session descend from the `claude` process in the pane; background sessions run under a supervisor | claude-session-model §1 |
 | Claude session ids change in-process (`/clear`, `/branch`, `/resume`); one id may be live in two processes | claude-session-model §4 |
@@ -326,6 +327,10 @@ Settled by observation:
    - What the title shows while a subagent thread is displayed, and how
      that id relates to the hook's `agent_id`.
    - Title after the TUI exits, and under `allow-set-title off`.
+   - That closing the last TUI on a thread yields `SessionEnd` about 60 s
+     later. `hooks().shutdown()` runs before `run_session_end_hooks`
+     (`core/src/session/handlers.rs:311, 338`), so the source alone does
+     not settle it.
    - Whether `--no-daemon` TUIs coexist with a running daemon on one
      CODEX_HOME.
    - A real Codex turn exercising the `PreToolUse` / `PreModelRequest` /
