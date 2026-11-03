@@ -255,10 +255,13 @@ func TestLateIdleNotification(t *testing.T) {
 	// About the turn before: the session has moved on.
 	rec := play(t, submit, idle)
 	is(t, rec, adapter.Working, "")
-	// Without a turn to compare, and without replacing the one there is.
+	// Without a turn it cannot be placed: it changes nothing.
 	idle.Turn = ""
-	if rec = play(t, idle); rec.State() != adapter.Idle || rec.Turn != "p1" {
-		t.Fatalf("turnless notification left %+v", rec)
+	is(t, play(t, idle), adapter.Working, "")
+	// A turnless Set that is not late keeps the turn it cannot replace.
+	turnless := adapter.Transition{Action: adapter.Set, State: adapter.Idle}
+	if rec = play(t, turnless); rec.State() != adapter.Idle || rec.Turn != "p1" {
+		t.Fatalf("turnless Set left %+v", rec)
 	}
 }
 

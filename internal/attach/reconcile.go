@@ -3,6 +3,7 @@ package attach
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
@@ -156,12 +157,31 @@ func Reconcile(ctx context.Context, env Env, w *World) {
 			}
 		}
 	}
-	// Panes whose agent is gone altogether.
+	// Panes whose agent is gone altogether, and options that are no
+	// attachment at all, which tmux would still display.
 	for _, p := range w.Panes {
 		if a, ok := FromPane(p); ok && !linked[[2]string{p.Server, p.ID}] {
 			_ = env.detach(ctx, p, a)
+		} else if !ok && len(p.Options) > 0 {
+			_ = env.clearBroken(ctx, p)
 		}
 	}
+}
+
+// clearBroken removes tmag options that hold no attachment, if they still
+// hold none.
+func (env Env) clearBroken(ctx context.Context, p tmux.Pane) error {
+	srv := tmux.Server{Socket: p.Server}
+	return Lock(ctx, env.Log.Dir, p.Server, p.ID, func() error {
+		fresh, err := srv.Pane(ctx, p.ID)
+		if err != nil {
+			return err
+		}
+		if _, ok := FromPane(fresh); ok || len(fresh.Options) == 0 {
+			return nil
+		}
+		return srv.ClearPaneOptions(ctx, fresh.ID)
+	})
 }
 
 // Attach records that c shows rec, replacing whatever the pane showed, and
@@ -203,12 +223,19 @@ func (env Env) Attach(ctx context.Context, w *World, c Client, rec session.Recor
 		if !ok || now.Agent != c.Agent || now.Process.PID != c.Process.PID || now.Process.Start != c.Process.Start {
 			return nil // the client the proof was about no longer runs in the pane
 		}
-		if had {
-			if err := env.unset(ctx, srv, fresh, cur); err != nil {
+		// One write replaces the old attachment and marks both events; a
+		// writer that dies leaves them for the next one to log.
+		if had && cur.Change != "" {
+			// Finish what the old attachment was in the middle of first.
+			if err := env.finish(ctx, srv, fresh, cur); err != nil {
 				return err
 			}
+			had = cur.holds()
 		}
 		next.Change = eventlog.Attach
+		if had {
+			next.Replaced = cur.Agent + " " + cur.Session
+		}
 		if err := write(ctx, srv, fresh.ID, fresh.Command, next, ProjectionOf(latest)); err != nil {
 			return err
 		}
@@ -222,6 +249,11 @@ func (env Env) Attach(ctx context.Context, w *World, c Client, rec session.Recor
 func (env Env) finish(ctx context.Context, srv tmux.Server, fresh tmux.Pane, a Attachment) error {
 	switch a.Change {
 	case eventlog.Attach:
+		if agent, id, ok := strings.Cut(a.Replaced, " "); ok {
+			if err := env.append(ctx, eventlog.Event{Agent: agent, Session: id, Event: eventlog.Detach, Pane: ref(fresh)}); err != nil {
+				return err
+			}
+		}
 		ev := eventlog.Event{Agent: a.Agent, Session: a.Session, Event: eventlog.Attach, Pane: ref(fresh), Evidence: a.Evidence}
 		if rec, ok, _ := env.Store.Get(a.Agent, a.Session); ok {
 			ev.State, ev.Kind, ev.Turn = rec.State(), rec.Kind(), rec.Turn
@@ -229,7 +261,7 @@ func (env Env) finish(ctx context.Context, srv tmux.Server, fresh tmux.Pane, a A
 		if err := env.append(ctx, ev); err != nil {
 			return err
 		}
-		return srv.SetPaneOptions(ctx, fresh.ID, nil, []string{optChange})
+		return srv.SetPaneOptions(ctx, fresh.ID, nil, []string{optChange, optReplaced})
 	case eventlog.Detach:
 		if err := env.append(ctx, eventlog.Event{Agent: a.Agent, Session: a.Session, Event: eventlog.Detach, Pane: ref(fresh)}); err != nil {
 			return err

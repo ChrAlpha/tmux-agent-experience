@@ -903,4 +903,23 @@ func TestAttachmentEventsSurviveACrash(t *testing.T) {
 	if n := count("Attach"); n != 3 {
 		t.Fatalf("reattached with %d Attach events", n)
 	}
+
+	// Died while replacing another session's attachment: both events follow.
+	h.tmux("set-option", "-p", "-t", pane, "@tmag_change", "Attach")
+	h.tmux("set-option", "-p", "-t", pane, "@tmag_replaced", "claude "+sidB)
+	h.tmag("", "status")
+	if got := h.eventNames(sidB); got != "Detach:" || count("Attach") != 4 {
+		t.Fatalf("replaced: %q, %d Attach events", got, count("Attach"))
+	}
+	if got := h.tmux("display-message", "-p", "-t", pane, "#{@tmag_change}#{@tmag_replaced}"); got != "" {
+		t.Fatalf("markers left: %q", got)
+	}
+
+	// Options that hold no attachment are cleared rather than displayed.
+	quiet := h.spawn(h.dir, map[string]string{}, filepath.Join(bin, "codex"))
+	h.tmux("set-option", "-p", "-t", quiet, "@tmag_state", "blocked")
+	h.tmag("", "status")
+	if got := h.tmux("display-message", "-p", "-t", quiet, "#{@tmag_state}"); got != "" {
+		t.Fatalf("broken options left: %q", got)
+	}
 }

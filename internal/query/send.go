@@ -117,14 +117,15 @@ func Send(ctx context.Context, log *eventlog.Log, target, text string, from *eve
 			}
 			// Hold off other senders before typing: a prompt recorded as sent
 			// but never delivered costs a pending window, a prompt delivered
-			// but not recorded could be delivered twice.
-			unsent := rec
+			// but not recorded could be delivered twice. A failure while
+			// typing does not say whether tmux typed it, so the mark stays.
 			rec.Sent = time.Now().UTC().Truncate(time.Second)
 			if err := store.Put(rec); err != nil {
 				return err
 			}
 			if err := (tmux.Server{Socket: fp.Server}).Submit(ctx, fp.ID, text); err != nil {
-				return errors.Join(err, store.Put(unsent))
+				return fmt.Errorf("typing into %s failed, perhaps after the prompt was delivered; %s takes no other prompt for %s: %w",
+					fp.ID, s.ID, PendingWindow, err)
 			}
 			// From here on the prompt is delivered: a failure must not read as
 			// one a caller could retry.

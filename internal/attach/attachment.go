@@ -48,12 +48,15 @@ type Attachment struct {
 	// of: written to the pane before it is logged, cleared once it is. An
 	// attachment being detached no longer holds.
 	Change string
+	// Replaced is the attachment an Attach replaced, "agent session", whose
+	// Detach is logged before the Attach.
+	Replaced string
 }
 
 // same reports whether a and b are the same attachment, whatever event
 // either is in the middle of.
 func (a Attachment) same(b Attachment) bool {
-	a.Change, b.Change = "", ""
+	a.Change, b.Change, a.Replaced, b.Replaced = "", "", "", ""
 	return a == b
 }
 
@@ -74,12 +77,13 @@ const (
 	optSince    = "since"
 	optCmd      = "cmd"
 	optChange   = "change"
+	optReplaced = "replaced"
 )
 
 // FromPane reads the attachment stored on a pane.
 func FromPane(p tmux.Pane) (Attachment, bool) {
 	o := p.Options
-	a := Attachment{Agent: o[optAgent], Session: o[optSession], Start: o[optStart], Evidence: o[optEvidence], Change: o[optChange]}
+	a := Attachment{Agent: o[optAgent], Session: o[optSession], Start: o[optStart], Evidence: o[optEvidence], Change: o[optChange], Replaced: o[optReplaced]}
 	a.PID, _ = strconv.Atoi(o[optPID])
 	if a.Agent == "" || a.Session == "" || a.PID <= 0 || (a.Evidence != Process && a.Evidence != TitleID) {
 		return Attachment{}, false
@@ -126,6 +130,7 @@ func write(ctx context.Context, srv tmux.Server, pane, cmd string, a Attachment,
 	}
 	opt(optStart, a.Start)
 	opt(optChange, a.Change)
+	opt(optReplaced, a.Replaced)
 	opt(optKind, pr.Kind)
 	since := ""
 	if !pr.Since.IsZero() {

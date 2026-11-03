@@ -134,7 +134,7 @@ func Apply(cur Record, tr adapter.Transition, now time.Time) (Record, bool) {
 	case adapter.Set:
 		// Stop and UserPromptSubmit run synchronously, so they arrive in turn
 		// order; a late notification about an earlier turn changes nothing.
-		if tr.Late && tr.Turn != "" && cur.Turn != "" && tr.Turn != cur.Turn {
+		if tr.Late && tr.Turn != cur.Turn {
 			return cur, false
 		}
 		if tr.Fresh {

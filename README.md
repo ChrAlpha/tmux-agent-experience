@@ -192,7 +192,8 @@ removed first, so relayed text cannot end the paste early or press keys.
 
 Hooks update a session under the same session lock, so the turn a prompt
 starts is always logged after its `Send` event. Further sends are refused
-until the agent's own hook confirms the turn by starting it. `send --wait`
+until the agent's own hook confirms the turn by starting it, including after
+typing reported an error, since the prompt may have arrived all the same. `send --wait`
 waits for that turn to end; input that starts no turn, such as a slash
 command, releases the session after 15 seconds, and `send --wait` then
 reports `"started": false`.
