@@ -12,7 +12,9 @@ layers, in order of importance:
    TPM, it keeps the `tmag` binary in its own directory and gives tmux users
    alerts, key bindings and status placeholders by default.
 2. **Agent plugins** (`plugins/`) are sensors: Claude Code and Codex hooks that
-   report state by calling `tmag hook`.
+   report state by calling `tmag hook`, and for Claude Code's permission
+   prompts `tmag answer-hook`, which also carries a decision made with
+   `tmag answer`.
 3. **The `tmag` binary** is the substrate: sessions and their state, which
    panes show them, the event log and a versioned JSON contract (`tmag/v1`)
    for agents, scripts and remote clients.
@@ -37,10 +39,17 @@ a design problem, not a test problem.
   its defaults; each one has an option that turns it off.
 - **Hooks fail open.** `tmag hook` always exits 0, never writes stdout (agents
   inject hook stdout into the model context), finishes within `hook.Deadline`,
-  and records failures only in `<state dir>/hook.log`.
+  and records failures only in `<state dir>/hook.log`. `tmag answer-hook`
+  also always exits 0, writes to stdout only a decision delivered by
+  `tmag answer`, and on any failure, timeout, close or signal prints nothing,
+  leaving the decision to the agent's own dialog, which is on screen
+  meanwhile.
 - **No content is stored.** Hook payloads decode into `adapter.Payload`, which
-  declares no prompt, message or tool-input fields. Never add one. Event log
-  records hold ids, states and timestamps only.
+  declares no prompt, message or tool-input fields. Never add one. Session
+  files and event log records hold ids, states, paths and timestamps only.
+  `tmag answer-hook` is the one reader of a tool input: it keeps it in memory
+  to show it to `tmag request` and to hand it back to the agent, and writes
+  it nowhere.
 - **A session's state never depends on a pane.** Hooks apply to the session
   (`internal/session`) wherever it runs: the Codex daemon and Claude's
   background supervisor run sessions no terminal owns.
@@ -52,12 +61,13 @@ a design problem, not a test problem.
 - **tmux surfaces show only proven attachments.** Bells, the pane border, the
   picker, the status line and `jump` act on attached panes; a pane tmag cannot
   prove anything about shows `unknown`.
-- **Control is gated.** `send` and `interrupt` act only through a channel
-  proven to reach the session: its one attached pane (by `process` or
-  `title-id`, showing the main agent, holding its terminal's foreground), or
-  the agent service it runs in (a socket whose peer is the session's host or
-  an ancestor of it). Each checks the state it needs (`send` idle, `interrupt`
-  working or blocked), checks all of it again under the pane's lock and the
+- **Control is gated.** `send`, `interrupt` and `answer` act only through a
+  channel proven to reach the session: its one attached pane (by `process` or
+  `title-id`, showing the main agent, holding its terminal's foreground), the
+  agent service it runs in (a socket whose peer is the session's host or an
+  ancestor of it), or the answer hook waiting on the request. Each checks the
+  state it needs (`send` idle, `interrupt` working or blocked, `answer` its
+  request open), checks all of it again under the pane's lock and the
   session's, and logs its event before releasing them. `internal/driver`
   alone decides which channel carries a verb. `wait` refuses a pane that
   shows no session.
@@ -91,13 +101,14 @@ a design problem, not a test problem.
 | `internal/query` | list / send / wait / snapshot over sessions and panes; the control verbs' gates |
 | `internal/driver` | Which channel (pane, service, hook) carries each verb for each agent and runtime |
 | `internal/codexsvc` | One-command client of the Codex daemon's control socket (JSON-RPC over WebSocket) |
+| `internal/answer` | The answer hook's socket protocol and the decision it prints for Claude Code |
 | `internal/eventlog` | Append-only, sequence-numbered event log |
 | `internal/tmux` | tmux CLI wrapper; sanitises every free-text field |
 | `internal/proc` | Process table, agent clients and services, hook hosts |
 | `internal/lockfile` | flock bounded by a context |
 | `internal/binpath` | Where hooks look for the binary; the hook command itself |
 | `internal/e2e` | End-to-end tests with real tmux and a fake agent |
-| `plugins/claude`, `plugins/codex` | Agent plugins (hooks only) |
+| `plugins/claude`, `plugins/codex` | Agent plugins (hooks only; Claude's `PermissionRequest` runs `tmag answer-hook`) |
 | `.claude-plugin/`, `.agents/plugins/` | Marketplace manifests |
 | `SKILL.md` | Install and update procedure that agents follow from its raw URL |
 

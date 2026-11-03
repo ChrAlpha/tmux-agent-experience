@@ -6,6 +6,8 @@
 package session
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"slices"
 	"strings"
 	"time"
@@ -44,6 +46,9 @@ type Record struct {
 
 	// Pending are the prompts awaiting the user, oldest first.
 	Pending []adapter.Prompt `json:"pending,omitempty"`
+	// Requests name the pending prompts, so they can be answered. A prompt
+	// two answer hooks wait on has two; each closes with its prompt.
+	Requests []Request `json:"requests,omitempty"`
 	// Calls are the tool calls started and not yet over.
 	Calls []adapter.Call `json:"calls,omitempty"`
 	// Done are calls that finished before their start was seen; a late start
@@ -75,6 +80,42 @@ type Record struct {
 	Ended string `json:"ended,omitempty"`
 }
 
+// Request is a pending prompt under the id tmag answers it by.
+type Request struct {
+	ID     string         `json:"id"`
+	Prompt adapter.Prompt `json:"prompt"`
+	Turn   string         `json:"turn,omitempty"`
+	// Hook says the id is an answer hook's, which waits for the answer.
+	Hook  bool      `json:"hook,omitempty"`
+	Since time.Time `json:"since"`
+}
+
+// NewRequestID returns a fresh request id: short, so that a socket path
+// built from it stays within the platform's limit.
+func NewRequestID() string {
+	var b [6]byte
+	_, _ = rand.Read(b[:])
+	return hex.EncodeToString(b[:])
+}
+
+// Request returns the open request with the given id.
+func (r Record) Request(id string) (Request, bool) {
+	i := slices.IndexFunc(r.Requests, func(q Request) bool { return q.ID == id })
+	if i < 0 {
+		return Request{}, false
+	}
+	return r.Requests[i], true
+}
+
+// RequestRefs are the session's requests as events and views report them.
+func (r Record) RequestRefs() []eventlog.Request {
+	var out []eventlog.Request
+	for _, q := range r.Requests {
+		out = append(out, eventlog.Request{ID: q.ID, Kind: q.Prompt.RequestKind(), Tool: q.Prompt.ToolName(), Agent: q.Prompt.Agent, Since: q.Since})
+	}
+	return out
+}
+
 // Report is what an event reports of a session. Lists are joined, so that
 // reports compare with ==.
 type Report struct {
@@ -85,6 +126,7 @@ type Report struct {
 	Runtime    string `json:"runtime,omitempty"`
 	Transcript string `json:"transcript,omitempty"`
 	Subagents  string `json:"subagents,omitempty"`
+	Requests   string `json:"requests,omitempty"`
 }
 
 // Reports is what the session's next event would report.
@@ -92,7 +134,16 @@ func (r Record) Reports() Report {
 	return Report{
 		State: r.State(), Kind: r.Kind(), Turn: r.Turn, Cwd: r.Cwd, Runtime: string(r.Host.Role),
 		Transcript: r.Transcript, Subagents: strings.Join(r.RunningSubagents(), "\n"),
+		Requests: strings.Join(r.requestIDs(), "\n"),
 	}
+}
+
+func (r Record) requestIDs() []string {
+	var out []string
+	for _, q := range r.Requests {
+		out = append(out, q.ID)
+	}
+	return out
 }
 
 // Report fills ev with everything an event reports of the session.
@@ -103,6 +154,7 @@ func (r Record) Report(ev *eventlog.Event) {
 	ev.Transcript = r.TranscriptRef()
 	ev.Subagents = r.RunningSubagents()
 	ev.Capabilities = r.Capabilities()
+	ev.Requests = r.RequestRefs()
 }
 
 // Capabilities are the verbs some channel carries to the session. They follow
@@ -181,6 +233,7 @@ func (r Record) ShowsSubagent(id string) bool { return slices.Contains(r.Subagen
 func Apply(cur Record, tr adapter.Transition, now time.Time) (Record, bool) {
 	rec := cur
 	rec.Pending = slices.Clone(cur.Pending)
+	rec.Requests = slices.Clone(cur.Requests)
 	rec.Calls = slices.Clone(cur.Calls)
 	rec.Done = slices.Clone(cur.Done)
 	rec.Background = slices.Clone(cur.Background)
@@ -217,9 +270,11 @@ func Apply(cur Record, tr adapter.Transition, now time.Time) (Record, bool) {
 			return cur, false
 		}
 		rec.Calls = startCall(rec.Calls, rec.Done, tr.Call)
-		if !slices.Contains(rec.Pending, tr.Prompt) {
+		opened := !slices.Contains(rec.Pending, tr.Prompt)
+		if opened {
 			rec.Pending = append(rec.Pending, tr.Prompt)
 		}
+		rec.Requests = request(rec.Requests, tr, opened, now)
 		rec.running(main)
 	case adapter.Start:
 		rec.Calls = startCall(rec.Calls, rec.Done, tr.Call)
@@ -267,11 +322,29 @@ func Apply(cur Record, tr adapter.Transition, now time.Time) (Record, bool) {
 	if main {
 		rec.Halted = time.Time{} // the main agent reports again
 	}
+	// A request closes with its prompt.
+	rec.Requests = slices.DeleteFunc(rec.Requests, func(q Request) bool { return !slices.Contains(rec.Pending, q.Prompt) })
 	normalize(&rec)
 	if rec.State() != cur.State() || rec.Kind() != cur.Kind() || cur.Since.IsZero() {
 		rec.Since = now.UTC().Truncate(time.Second)
 	}
 	return rec, !rec.equal(cur)
+}
+
+// request names the prompt an Ask is about. A newly opened prompt gets the
+// Ask's id; an answer hook's id names the prompt's request no hook waits on,
+// or else adds one: two hooks may wait on equal prompts.
+func request(reqs []Request, tr adapter.Transition, opened bool, now time.Time) []Request {
+	if tr.Request == "" || (!opened && !tr.Waits) {
+		return reqs
+	}
+	if tr.Waits {
+		if i := slices.IndexFunc(reqs, func(q Request) bool { return q.Prompt == tr.Prompt && !q.Hook }); i >= 0 {
+			reqs[i].ID, reqs[i].Hook = tr.Request, true
+			return reqs
+		}
+	}
+	return append(reqs, Request{ID: tr.Request, Prompt: tr.Prompt, Turn: tr.Turn, Hook: tr.Waits, Since: now.UTC().Truncate(time.Second)})
 }
 
 // running records that a main-agent call proves a turn is under way: in a
@@ -311,6 +384,9 @@ func normalize(r *Record) {
 	if len(r.Pending) == 0 {
 		r.Pending = nil
 	}
+	if len(r.Requests) == 0 {
+		r.Requests = nil
+	}
 	if len(r.Calls) == 0 {
 		r.Calls = nil
 	}
@@ -328,7 +404,7 @@ func normalize(r *Record) {
 func (r Record) equal(o Record) bool {
 	return r.Agent == o.Agent && r.ID == o.ID && r.Cwd == o.Cwd && r.Host == o.Host && r.Transcript == o.Transcript &&
 		r.Main == o.Main && r.MainKind == o.MainKind && r.Turn == o.Turn &&
-		slices.Equal(r.Pending, o.Pending) && slices.Equal(r.Calls, o.Calls) &&
+		slices.Equal(r.Pending, o.Pending) && slices.Equal(r.Requests, o.Requests) && slices.Equal(r.Calls, o.Calls) &&
 		slices.Equal(r.Done, o.Done) && slices.Equal(r.Background, o.Background) &&
 		slices.Equal(r.Subagents, o.Subagents) && r.Since.Equal(o.Since) && r.Sent.Equal(o.Sent) && r.Halted.Equal(o.Halted) &&
 		r.Logged == o.Logged && r.Change == o.Change && r.Ended == o.Ended

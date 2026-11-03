@@ -34,6 +34,9 @@ Usage:
   tmag send     <target> [--wait] [--timeout D] [--json] [text | -]
                                                submit a prompt to an idle agent
   tmag interrupt <target> [--json]             stop the agent's running turn
+  tmag request  <target> <request> [--json]    what an open request asks
+  tmag answer   <target> <request> allow|deny [--message M] [--answers JSON] [--json]
+                                               decide an open request
   tmag wait     <target> [--for STATES] [--after SEQ] [--timeout D] [--json]
                                                wait for a state (default idle,blocked)
   tmag status   [--tmux] [--server S]          one-line summary for the status line
@@ -45,6 +48,7 @@ Usage:
   tmag doctor   [--json]                       check the installation
   tmag uninstall [--purge]                     print removal steps; --purge clears tmag state
   tmag hook     <claude|codex>                 agent hook entry point (reads stdin)
+  tmag answer-hook <claude>                    Claude's PermissionRequest hook: waits for answer
   tmag version
 
 Targets: an agent id or unique prefix (>= 4 chars), a pane id %N on the current
@@ -89,6 +93,12 @@ func (a *app) run(args []string) int {
 		return a.cmdSend(rest)
 	case "interrupt":
 		return a.cmdInterrupt(rest)
+	case "answer":
+		return a.cmdAnswer(rest)
+	case "request":
+		return a.cmdRequest(rest)
+	case "answer-hook":
+		return a.cmdAnswerHook(rest)
 	case "wait":
 		return a.cmdWait(rest)
 	case "status":

@@ -14,7 +14,7 @@ const (
 )
 
 // Verbs lists every verb, in the order capabilities are reported.
-var Verbs = []string{Send, Interrupt}
+var Verbs = []string{Send, Interrupt, Answer}
 
 // Channels a verb travels by.
 const (
@@ -48,12 +48,12 @@ func Channel(agent, runtime, verb string) string {
 		return Pane
 	case "codex":
 		switch {
-		case service:
-			return Service
 		case verb == Answer:
 			// An embedded app-server listens nowhere, and a dialog's keys
 			// cannot be bound to a particular request.
 			return ""
+		case service:
+			return Service
 		}
 		return Pane
 	}

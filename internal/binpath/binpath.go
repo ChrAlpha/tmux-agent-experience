@@ -53,8 +53,14 @@ func PluginCandidates(getenv Getenv) []string {
 // HookCommand is the POSIX shell command an agent plugin runs for every hook.
 // It tries the plugin's binary in the roots of PluginCandidates, then tmag on
 // PATH, and exits 0 when none exists, so a missing tmag never disturbs the agent.
-func HookCommand(agent string) string {
+func HookCommand(agent string) string { return command("hook " + agent) }
+
+// AnswerHookCommand is the command Claude Code's plugin runs for
+// PermissionRequest instead: `tmag answer-hook`, found the same way.
+func AnswerHookCommand(agent string) string { return command("answer-hook " + agent) }
+
+func command(args string) string {
 	return `for r in "${TMUX_PLUGIN_MANAGER_PATH%/}" "$HOME/.tmux/plugins" "${XDG_CONFIG_HOME:-$HOME/.config}/tmux/plugins";` +
-		` do case $r in /*) t="$r/` + PluginDir + `/bin/tmag"; [ -x "$t" ] && exec "$t" hook ` + agent + ` 2>/dev/null;; esac; done;` +
-		` t=$(command -v tmag) && exec "$t" hook ` + agent + ` 2>/dev/null; exit 0`
+		` do case $r in /*) t="$r/` + PluginDir + `/bin/tmag"; [ -x "$t" ] && exec "$t" ` + args + ` 2>/dev/null;; esac; done;` +
+		` t=$(command -v tmag) && exec "$t" ` + args + ` 2>/dev/null; exit 0`
 }

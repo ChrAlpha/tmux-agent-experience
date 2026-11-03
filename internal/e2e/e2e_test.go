@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ChrAlpha/tmux-agent-experience/internal/answer"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/attach"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/query"
@@ -254,7 +255,7 @@ func TestClaudeInProcess(t *testing.T) {
 	if s.ID != sidA || s.Agent != "claude" || s.Runtime != "terminal" || p.Command != "claude" || p.View != "main" {
 		t.Fatalf("pane %+v shows %+v", p, s)
 	}
-	if !slices.Equal(s.Capabilities, []string{"send", "interrupt"}) {
+	if !slices.Equal(s.Capabilities, []string{"send", "interrupt", "answer"}) {
 		t.Fatalf("capabilities = %v", s.Capabilities)
 	}
 	transcript := eventlog.Transcript{Path: filepath.Join(h.dir, sidA+".jsonl"), Format: "claude-jsonl"}
@@ -364,12 +365,109 @@ func TestInterruptThroughThePane(t *testing.T) {
 	}
 }
 
-// A Claude Code background session runs in its supervisor, which no
-// terminal owns: it is tracked, and refuses what only a terminal can carry.
-func TestClaudeBackgroundSessionTakesNoInput(t *testing.T) {
+// Claude Code's answer hook waits beside the agent's dialog for a decision
+// made with tmag answer; whoever answers first decides.
+func TestClaudeAnswersThroughTheHook(t *testing.T) {
 	h := start(t)
+	out := filepath.Join(h.dir, "received")
+	pane := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_OUT": out, "FAKE_HOOKS": "1", "FAKE_ANSWER": "1"}, filepath.Join(bin, "claude"))
+	_, s := h.waitPane(pane, "idle", "process")
+	if !slices.Contains(s.Capabilities, "answer") {
+		t.Fatalf("capabilities = %v", s.Capabilities)
+	}
+	received := func(want string) {
+		t.Helper()
+		h.eventually("the agent receives "+want, func() bool {
+			got, _ := os.ReadFile(out)
+			return strings.HasSuffix(string(got), want+"\n")
+		})
+	}
+	// open types line into the agent and returns the request it opens, once
+	// its answer hook waits.
+	open := func(line string) eventlog.Request {
+		t.Helper()
+		h.tmux("send-keys", "-t", pane, line, "Enter")
+		var req eventlog.Request
+		h.eventually("a waiting request", func() bool {
+			s, ok := h.sessionOf(sidA)
+			if !ok || len(s.Requests) != 1 || !answer.Waiting(h.state, s.Requests[0].ID) {
+				return false
+			}
+			req = s.Requests[0]
+			return true
+		})
+		return req
+	}
+
+	req := open("block")
+	if req.Kind != "permission" || req.Tool != "Bash" {
+		t.Fatalf("request = %+v", req)
+	}
+	r := h.tmag("", "request", sidA[:8], req.ID, "--json")
+	if r.code != 0 || !strings.Contains(r.out, `"tool":"Bash"`) || !strings.Contains(r.out, `"input":{"command":"date"}`) {
+		t.Fatalf("request: %d %s", r.code, r.out)
+	}
+	if r := h.tmag("", "answer", sidA[:8], req.ID, "allow", "--json"); r.code != 0 || !strings.Contains(r.out, `"via":"hook"`) {
+		t.Fatalf("answer: %d %s", r.code, r.out)
+	}
+	received("hook:allow")
+	h.waitSession(sidA, "idle")
+	if got := h.eventNames(sidA); !strings.HasSuffix(got, "PermissionRequest:blocked Answer: PostToolUse:working Stop:idle") {
+		t.Fatalf("events = %s", got)
+	}
+
+	req = open("block")
+	if r := h.tmag("", "answer", h.target(pane), req.ID, "deny", "--message", "not now"); r.code != 0 {
+		t.Fatalf("deny: %d %s", r.code, r.out)
+	}
+	received("hook:deny:not now")
+
+	// The person answers in the terminal first: the hook leaves, and the
+	// request is gone.
+	req = open("block")
+	h.tmux("send-keys", "-t", pane, "yes", "Enter")
+	received("terminal:yes")
+	h.eventually("the hook leaves", func() bool { return !answer.Waiting(h.state, req.ID) })
+	if r := h.tmag("", "answer", sidA[:8], req.ID, "allow"); r.code != 3 || !strings.Contains(r.out, "changed") {
+		t.Fatalf("answer after the terminal did: %d %s", r.code, r.out)
+	}
+
+	// A question is answered with labels, keyed by its text.
+	req = open("ask")
+	if req.Kind != "question" || req.Tool != "AskUserQuestion" {
+		t.Fatalf("question request = %+v", req)
+	}
+	if r := h.tmag("", "answer", sidA[:8], req.ID, "allow"); r.code != 2 || !strings.Contains(r.out, "answers") {
+		t.Fatalf("a question answered without answers: %d %s", r.code, r.out)
+	}
+	if r := h.tmag("", "answer", sidA[:8], req.ID, "allow", "--answers", `{"Pick a color":"blue"}`); r.code != 0 {
+		t.Fatalf("answer a question: %d %s", r.code, r.out)
+	}
+	received("hook:allow Pick a color=blue")
+
+	// With answering off, the hook does not wait and the dialog alone decides.
+	h.tmux("set-option", "-g", "@tmag-answer", "off")
+	h.tmux("send-keys", "-t", pane, "block", "Enter")
+	h.waitSession(sidA, "blocked")
+	s, _ = h.sessionOf(sidA)
+	if len(s.Requests) != 1 || answer.Waiting(h.state, s.Requests[0].ID) {
+		t.Fatalf("requests with answering off = %+v", s.Requests)
+	}
+	if r := h.tmag("", "answer", sidA[:8], s.Requests[0].ID, "allow"); r.code != 3 || !strings.Contains(r.out, "unsupported") {
+		t.Fatalf("answer with answering off: %d %s", r.code, r.out)
+	}
+	h.tmux("send-keys", "-t", pane, "no", "Enter")
+	received("terminal:no")
+}
+
+// A Claude Code background session runs in its supervisor, which no
+// terminal owns: it takes no prompt or interrupt, but its answer hook runs
+// there too, so its prompts can be answered.
+func TestClaudeBackgroundSessionTakesAnswersOnly(t *testing.T) {
+	h := start(t)
+	out := filepath.Join(h.dir, "received")
 	worker := exec.Command(filepath.Join(bin, "claude"), "daemon", "run")
-	worker.Env = append(os.Environ(), "FAKE_SESSION="+sidA, "FAKE_HOOKS=1", "TMAG_BIN="+filepath.Join(bin, "tmag"))
+	worker.Env = append(os.Environ(), "FAKE_SESSION="+sidA, "FAKE_HOOKS=1", "FAKE_ANSWER=1", "FAKE_OUT="+out, "TMAG_BIN="+filepath.Join(bin, "tmag"))
 	in, err := worker.StdinPipe()
 	if err != nil {
 		t.Fatal(err)
@@ -382,12 +480,32 @@ func TestClaudeBackgroundSessionTakesNoInput(t *testing.T) {
 		_ = worker.Wait()
 	})
 	s := h.waitSession(sidA, "idle")
-	if s.Runtime != "service" || len(s.Panes) != 0 || len(s.Capabilities) != 0 {
+	if s.Runtime != "service" || len(s.Panes) != 0 || !slices.Equal(s.Capabilities, []string{"answer"}) {
 		t.Fatalf("background session = %+v", s)
 	}
 	if r := h.tmag("", "send", sidA[:8], "hello"); r.code != 3 || !strings.Contains(r.out, "unsupported") {
 		t.Fatalf("send to a background session: %d %s", r.code, r.out)
 	}
+
+	if _, err := io.WriteString(in, "block\n"); err != nil {
+		t.Fatal(err)
+	}
+	var id string
+	h.eventually("a waiting request", func() bool {
+		s, _ := h.sessionOf(sidA)
+		if len(s.Requests) == 1 && answer.Waiting(h.state, s.Requests[0].ID) {
+			id = s.Requests[0].ID
+		}
+		return id != ""
+	})
+	if r := h.tmag("", "answer", sidA[:8], id, "allow"); r.code != 0 {
+		t.Fatalf("answer a background session: %d %s", r.code, r.out)
+	}
+	h.eventually("the agent receives the answer", func() bool {
+		got, _ := os.ReadFile(out)
+		return strings.HasSuffix(string(got), "hook:allow\n")
+	})
+	h.waitSession(sidA, "idle")
 }
 
 func TestPaneWithoutProofIsVisibleButNotControllable(t *testing.T) {

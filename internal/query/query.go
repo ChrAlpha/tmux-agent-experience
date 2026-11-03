@@ -46,6 +46,9 @@ type Session struct {
 	// Capabilities are the verbs some channel carries to the session; each
 	// still checks its own gate when used.
 	Capabilities []string `json:"capabilities"`
+	// Requests are the prompts the session waits on the user for, by the ids
+	// `answer` takes.
+	Requests []eventlog.Request `json:"requests,omitempty"`
 	// Panes are the panes that show the session.
 	Panes []Shown `json:"panes"`
 }
@@ -95,7 +98,7 @@ func Build(w *attach.World, recs []session.Record) View {
 		s := Session{
 			ID: r.ID, Agent: r.Agent, State: r.State(), Kind: r.Kind(), Turn: r.Turn,
 			Cwd: r.Cwd, Runtime: string(r.Host.Role), Transcript: r.TranscriptRef(), Subagents: r.RunningSubagents(),
-			Capabilities: r.Capabilities(), Panes: shown[[2]string{r.Agent, r.ID}],
+			Capabilities: r.Capabilities(), Requests: r.RequestRefs(), Panes: shown[[2]string{r.Agent, r.ID}],
 		}
 		if s.Panes == nil {
 			s.Panes = []Shown{}

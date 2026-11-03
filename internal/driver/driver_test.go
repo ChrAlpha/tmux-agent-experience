@@ -17,12 +17,15 @@ func TestChannel(t *testing.T) {
 		{"claude", "terminal", Interrupt, Pane},
 		{"claude", "service", Interrupt, ""},
 		{"codex", "terminal", Interrupt, Pane},
+		{"claude", "terminal", Answer, Hook},
+		{"claude", "service", Answer, Hook},
+		{"codex", "terminal", Answer, ""},
 	} {
 		if got := Channel(c.agent, c.runtime, c.verb); got != c.want {
 			t.Errorf("Channel(%s, %s, %s) = %q, want %q", c.agent, c.runtime, c.verb, got, c.want)
 		}
 	}
-	if got := Capabilities("claude", "service"); !slices.Equal(got, []string{}) {
+	if got := Capabilities("claude", "service"); !slices.Equal(got, []string{Answer}) {
 		t.Errorf("a Claude background session takes %v", got)
 	}
 }

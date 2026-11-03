@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/adapter"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/answer"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/attach"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
@@ -36,6 +37,9 @@ type Input struct {
 	// PID starts the ancestry walk; normally os.Getpid().
 	PID int
 	Now func() time.Time
+	// Request is the id an answer hook waits under, for the prompt this
+	// event opens; "" for a plain hook.
+	Request string
 }
 
 // Run processes the hook within Deadline. It never writes to stdout: agents
@@ -55,6 +59,12 @@ func Run(in Input) error {
 	tr := adapter.Map(in.Agent, p)
 	if tr.Action == adapter.Ignore {
 		return nil
+	}
+	if tr.Action == adapter.Ask {
+		tr.Request, tr.Waits = in.Request, in.Request != ""
+		if !tr.Waits {
+			tr.Request = session.NewRequestID()
+		}
 	}
 	if !session.ValidID(p.SessionID) {
 		return fmt.Errorf("unusable session id %q", p.SessionID)
@@ -139,6 +149,14 @@ func Run(in Input) error {
 	})
 	if err != nil || rec.ID == "" {
 		return err
+	}
+	// An answer hook whose prompt closed (answered in the terminal, the call
+	// ran, the turn ended) would otherwise wait on: the agent ignores what it
+	// prints now.
+	for _, q := range prev.Requests {
+		if _, open := rec.Request(q.ID); !open && q.Hook {
+			answer.Close(ctx, in.Log.Dir, q.ID)
+		}
 	}
 
 	ring := Alert(prev.State(), rec.State())

@@ -418,3 +418,52 @@ func TestMainAgentReportClearsAnInterrupt(t *testing.T) {
 		t.Fatal("the main agent's Stop left the interrupt standing")
 	}
 }
+
+func TestRequestsNameOpenPrompts(t *testing.T) {
+	ask := func(tool, id string, waits bool) adapter.Transition {
+		tr := askFor("", tool)
+		tr.Request, tr.Waits = id, waits
+		return tr
+	}
+	ids := func(rec Record) string {
+		var out []string
+		for _, q := range rec.Requests {
+			out = append(out, q.ID)
+		}
+		return strings.Join(out, ",")
+	}
+
+	// A plain hook names a new prompt, not one already open.
+	rec := play(t, ask("Bash", "r1", false), ask("Bash", "r2", false))
+	if ids(rec) != "r1" {
+		t.Fatalf("requests = %s", ids(rec))
+	}
+	// An answer hook takes over the name no hook waits on, then adds its own.
+	rec, _ = Apply(rec, ask("Bash", "h1", true), t0)
+	rec, _ = Apply(rec, ask("Bash", "h2", true), t0)
+	if ids(rec) != "h1,h2" || !rec.Requests[0].Hook {
+		t.Fatalf("requests = %+v", rec.Requests)
+	}
+	// They close with their prompt.
+	rec, _ = Apply(rec, finishOf("", "Bash", "b1"), t0)
+	if len(rec.Requests) != 0 || len(rec.Pending) != 0 {
+		t.Fatalf("after the call: %+v %+v", rec.Pending, rec.Requests)
+	}
+
+	plan := play(t, ask("ExitPlanMode", "p1", true), ask("AskUserQuestion", "q1", true))
+	refs := plan.RequestRefs()
+	if len(refs) != 2 || refs[0].Kind != "plan" || refs[1].Kind != "question" || refs[1].Tool != "AskUserQuestion" {
+		t.Fatalf("refs = %+v", refs)
+	}
+	if plan.Reports().Requests != "p1\nq1" {
+		t.Fatalf("report = %+v", plan.Reports())
+	}
+	var ev eventlog.Event
+	plan.Report(&ev)
+	if len(ev.Requests) != 2 || ev.Requests[0].ID != "p1" {
+		t.Fatalf("event requests = %+v", ev.Requests)
+	}
+	if id := NewRequestID(); len(id) != 12 || id == NewRequestID() {
+		t.Fatalf("request id %q", id)
+	}
+}

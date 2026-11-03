@@ -34,13 +34,23 @@ type Transcript struct {
 	Format string `json:"format"` // claude-jsonl or codex-rollout
 }
 
+// Request is a prompt a session waits on the user for, under the id tmag
+// answers it by.
+type Request struct {
+	ID    string    `json:"id"`
+	Kind  string    `json:"kind"`            // permission, question or plan
+	Tool  string    `json:"tool,omitempty"`  // the tool asked about
+	Agent string    `json:"agent,omitempty"` // the subagent that asked
+	Since time.Time `json:"since"`
+}
+
 // Event is one line of the log: a session's state changed (Event names the
 // hook), tmag sent it a prompt, a pane started or stopped showing it, or it
 // ended.
 //
 // An event that carries State reports the session in full: State, Kind, Turn,
-// Cwd, Runtime, Transcript, Subagents and Capabilities are then what the
-// session is, and a field left out is empty.
+// Cwd, Runtime, Transcript, Subagents, Capabilities and Requests are then what
+// the session is, and a field left out is empty.
 type Event struct {
 	Seq     int64     `json:"seq"`
 	Time    time.Time `json:"time"`
@@ -58,6 +68,8 @@ type Event struct {
 	Subagents []string `json:"subagents,omitempty"`
 	// Capabilities are the verbs some channel carries to the session.
 	Capabilities []string `json:"capabilities,omitempty"`
+	// Requests are the prompts the session waits on the user for.
+	Requests []Request `json:"requests,omitempty"`
 	// Pane is the pane an Attach, Detach, Send or Halt is about.
 	Pane *PaneRef `json:"pane,omitempty"`
 	// Evidence is what an Attach rests on.
@@ -67,12 +79,17 @@ type Event struct {
 	Bytes int      `json:"bytes,omitempty"`
 	// Via is the channel tmag delivered by: pane, service or hook.
 	Via string `json:"via,omitempty"`
+	// Request is the request an Answer decided, and Decision how: allow or
+	// deny.
+	Request  string `json:"request,omitempty"`
+	Decision string `json:"decision,omitempty"`
 }
 
 // Events tmag itself records, beside those named after agent hooks.
 const (
 	Send   = "Send"   // tmag submitted a prompt to the session
 	Halt   = "Halt"   // tmag interrupted the session's turn
+	Answer = "Answer" // tmag answered a request of the session's
 	Attach = "Attach" // a pane started showing the session
 	Detach = "Detach" // a pane stopped showing the session
 	Exit   = "Exit"   // the session's process ended without SessionEnd

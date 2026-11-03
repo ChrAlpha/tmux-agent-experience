@@ -9,10 +9,14 @@
 //	FAKE_HOOKS    "1" to run `tmag hook` itself, as in-process agents do
 //	FAKE_TURN_MS  how long a turn lasts (default 200)
 //	FAKE_KEYS     "1" to read keys as a TUI does: Escape interrupts a turn
+//	FAKE_ANSWER   "1" to open "block" (Bash) and "ask" (a question) as Claude
+//	              Code does: the answer hook waits beside the dialog, and the
+//	              next line ("yes" or anything else) answers it in the terminal
 //	TMAG_BIN      tmag binary
 //
 // Lines starting with "/" behave like slash commands: no turn, no hooks. The
 // line "block" raises a permission prompt that the next line resolves.
+// Every line, and how each dialog was answered, goes to FAKE_OUT.
 //
 // Run as "codex app-server ..." it imitates Codex's shared daemon instead: it
 // runs `tmag hook codex` for every JSON payload line on stdin, as its own
@@ -62,17 +66,20 @@ func main() {
 	if title := os.Getenv("FAKE_TITLE"); title != "" {
 		fmt.Printf("\033]0;%s\007", title)
 	}
-	hook := func(event string, extra map[string]any) {
-		if os.Getenv("FAKE_HOOKS") != "1" {
-			return
-		}
+	payloadOf := func(event string, extra map[string]any) []byte {
 		payload := map[string]any{"hook_event_name": event, "session_id": session, "cwd": cwd, "transcript_path": filepath.Join(cwd, session+".jsonl")}
 		for k, v := range extra {
 			payload[k] = v
 		}
 		b, _ := json.Marshal(payload)
+		return b
+	}
+	hook := func(event string, extra map[string]any) {
+		if os.Getenv("FAKE_HOOKS") != "1" {
+			return
+		}
 		cmd := exec.Command(os.Getenv("TMAG_BIN"), "hook", agent)
-		cmd.Stdin = strings.NewReader(string(b))
+		cmd.Stdin = strings.NewReader(string(payloadOf(event, extra)))
 		_ = cmd.Run()
 	}
 	turnKey := "turn_id"
@@ -99,13 +106,51 @@ func main() {
 		turn    string
 		ends    <-chan time.Time
 		waiting []string
+		// dialog is the permission dialog on screen, as Claude Code shows it
+		// while its PermissionRequest hooks run.
+		dialog  *prompt
+		decided = make(chan decision)
 	)
+	// ask opens a dialog like Claude Code's: the call starts, the answer
+	// hook waits beside the dialog, and whichever answers first decides.
+	ask := func(tool string, input map[string]any) {
+		p := &prompt{tool: tool, call: fmt.Sprintf("u%d", n)}
+		hook("PreToolUse", map[string]any{turnKey: turn, "tool_name": tool, "tool_use_id": p.call})
+		dialog = p
+		payload := payloadOf("PermissionRequest", map[string]any{turnKey: turn, "tool_name": tool, "tool_input": input})
+		go func() {
+			cmd := exec.Command(os.Getenv("TMAG_BIN"), "answer-hook", agent)
+			cmd.Stdin = strings.NewReader(string(payload))
+			out, _ := cmd.Output()
+			decided <- decision{p, out}
+		}()
+	}
+	// settle ends the dialog's call, run if allowed and refused otherwise,
+	// and the turn with it.
+	settle := func(allowed bool) {
+		if allowed {
+			hook("PostToolUse", map[string]any{turnKey: turn, "tool_name": dialog.tool, "tool_use_id": dialog.call})
+		} else {
+			hook("PostToolBatch", map[string]any{turnKey: turn})
+		}
+		hook("Stop", map[string]any{turnKey: turn, "last_assistant_message": "done"})
+		dialog = nil
+	}
 	handle := func(line string) {
 		n++
 		record(line)
+		answering := os.Getenv("FAKE_ANSWER") == "1"
 		switch {
+		case dialog != nil:
+			// The person answers the dialog in the terminal.
+			record("terminal:" + line)
+			settle(line == "yes")
 		case strings.HasPrefix(line, "/"):
 			// slash commands start no turn
+		case line == "block" && answering:
+			ask("Bash", map[string]any{"command": "date"})
+		case line == "ask" && answering:
+			ask("AskUserQuestion", map[string]any{"questions": []map[string]any{{"question": "Pick a color", "options": []map[string]string{{"label": "red"}, {"label": "blue"}}}}})
 		case line == "block":
 			hook("PermissionRequest", map[string]any{turnKey: fmt.Sprintf("t%d", n), "tool_name": "Bash"})
 		default:
@@ -139,6 +184,35 @@ loop:
 		case <-ends:
 			ends = nil
 			hook("Stop", map[string]any{turnKey: turn, "last_assistant_message": "done"})
+		case d := <-decided:
+			// Claude Code ignores what a hook prints once its dialog closed.
+			if d.prompt != dialog || len(d.out) == 0 {
+				continue
+			}
+			var out struct {
+				HookSpecificOutput struct {
+					Decision struct {
+						Behavior     string `json:"behavior"`
+						Message      string `json:"message"`
+						UpdatedInput struct {
+							Answers map[string]string `json:"answers"`
+						} `json:"updatedInput"`
+					} `json:"decision"`
+				} `json:"hookSpecificOutput"`
+			}
+			if json.Unmarshal(d.out, &out) != nil {
+				continue
+			}
+			dec := out.HookSpecificOutput.Decision
+			got := "hook:" + dec.Behavior
+			if dec.Message != "" {
+				got += ":" + dec.Message
+			}
+			for q, a := range dec.UpdatedInput.Answers {
+				got += " " + q + "=" + a
+			}
+			record(got)
+			settle(dec.Behavior == "allow")
 		}
 		for ends == nil && len(waiting) > 0 {
 			line := waiting[0]
@@ -147,6 +221,15 @@ loop:
 		}
 	}
 	hook("SessionEnd", map[string]any{"reason": "other"})
+}
+
+// prompt is a permission dialog of a tool call.
+type prompt struct{ tool, call string }
+
+// decision is what an answer hook printed for a dialog.
+type decision struct {
+	prompt *prompt
+	out    []byte
 }
 
 // keyInput is a line typed into the agent, or the Escape key.
