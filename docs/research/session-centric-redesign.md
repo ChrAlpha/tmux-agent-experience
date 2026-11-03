@@ -92,6 +92,7 @@ Each root cause is visible in `feat/v0.1`.
 | Claude hooks of an interactive session descend from the `claude` process in the pane; background sessions run under a supervisor | claude-session-model §1 |
 | Claude session ids change in-process (`/clear`, `/branch`, `/resume`); one id may be live in two processes | claude-session-model §4 |
 | `claude agents --json` is a documented registry of live sessions with `pid`; `~/.claude/sessions/<pid>.json` (undocumented) adds `procStart` and `tmux` | claude-session-model §5 |
+| Claude background sessions run under `claude daemon run`; hooks come from the worker without `TMUX_PANE`; `claude attach` and the registries record no attach client; `/bg` ends the pane's session and forks a new id | claude-session-model §8 (live) |
 | Prior art proves identity only by owning the launch or reading the agent's own registry | claude-session-model §7 |
 
 ## Model
@@ -135,7 +136,18 @@ Event log   append-only, seq-numbered  truth: what tmag observed, in order
 | --- | --- | --- | --- |
 | `process` | Claude interactive; Codex `--no-daemon` (and `-c`-forced embedded) | Kernel: hook descends from the client's agent process | yes |
 | `title-id` | Codex in daemon mode with `thread-id` in `[tui] terminal_title` | Claim by the TUI: id prefix ≥ 29 chars in an item of its own title, re-read on every check | yes, after re-verification under the client lock |
-| `registry` | Claude, from `claude agents --json` pid → client | Claim by the agent's documented registry | only after the spike below confirms it |
+
+Claude background sessions have no attachment evidence, and none is
+missing from this table.
+
+- `claude agents --json` and `~/.claude/sessions/*.json` record no attach
+  client.
+- `claude attach` connects only to the supervisor's control socket.
+- `/bg` ends the pane's session and forks a new one under the supervisor
+  ([claude-session-model.md §8](claude-session-model.md)).
+
+Such a session is tracked, unattached, through hooks from its worker.
+A pane running `claude attach` is a client with no attachment.
 
 Removed outright:
 
@@ -283,17 +295,28 @@ Decided by the owner:
   onboarding). Silent configuration is out, and so is a launcher. A
   cwd-based display hint is out as well: it is not proof, and tmux surfaces
   cannot mark it as unverified.
+- **`title-id` unlocks `send`**, re-verified under the client lock right
+  before delivery. It is a claim the Codex TUI makes, and any program writing
+  OSC 0 to the pane could imitate it. `send` also requires the Codex TUI to
+  hold the foreground, and the TUI rewrites its title on every refresh.
 
-Open:
+Settled by observation:
 
-1. **Should `title-id` unlock `send`?** It is a TUI claim that any program
-   writing OSC 0 to the pane could fake, but `send` also requires the Codex
-   TUI to hold the foreground, and the TUI rewrites its title on every
-   refresh. Recommended: yes, with re-verification.
-2. **Claude's registry**: use `claude agents --json` as attachment evidence
-   (documented), keep `~/.claude/sessions/*.json` out (undocumented), or
-   use neither until background sessions matter. Recommended: decide after
-   spike 2.
+- **No Claude registry is attachment evidence.** `claude agents --json` is
+  side-effect free, but it records no attach client, and neither do the
+  session files. For interactive sessions, process ancestry already proves
+  what the registry would say.
+
+## Implementation notes from observation
+
+- Host-process classification must recognise Claude's service tree:
+  `claude daemon run`, `claude bg-pty-host` and `claude bg-spare`. A
+  background worker's executable name is its version (`2.1.317`), not
+  `claude`, so the comm-based match in `proc.AgentKind` misses it.
+- `/bg` arrives as `SessionEnd` (`prompt_input_exit`) from the pane,
+  followed by `SessionStart` (`fork`) for a new id from the supervisor. The
+  model handles this with no special case: one session ends with its
+  attachment, and an unattached one begins.
 
 ## Spikes before implementation
 
@@ -308,13 +331,6 @@ Open:
    - A real Codex turn exercising the `PreToolUse` / `PreModelRequest` /
      `SubagentStop` mapping, which the review noted is verified only from
      source.
-2. **Claude background sessions, live.**
-   - Process tree of the supervisor, a worker and `claude attach`.
-   - Where a backgrounded session's hooks come from.
-   - Whether `claude agents --json` starts the supervisor.
-   - Whether it, or the attach client's argv, reveals which client shows
-     which session.
-   - Whether `session_id` changes on backgrounding.
-3. **Claude hook reordering.** How often parallel and async hooks
+2. **Claude hook reordering.** How often parallel and async hooks
    (`PostToolUse` for parallel calls, background `SessionStart`) arrive out
    of order in practice, to size the turn-guard and tombstone rules.

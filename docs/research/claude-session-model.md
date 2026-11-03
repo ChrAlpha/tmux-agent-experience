@@ -121,13 +121,59 @@ Every tool that proves identity either owns the launch (wrapper / env
 injection) or reads a registry the agent itself writes. None proves Codex
 daemon-mode pane identity without owning the launch.
 
+## 8. Live observations (2.1.317, 2026-11-03)
+
+Setup:
+
+- a private tmux server (`-L spike`, scratch `TMUX_TMPDIR`) and a scratch,
+  trusted project;
+- `--settings` with a probe hook recording event, `session_id`, process
+  ancestry and identity variables;
+- Haiku, one-word replies.
+
+Everything was stopped, removed (`claude stop`, `claude rm`) and purged
+(`claude purge`) afterwards.
+
+- **`claude agents --json` has no side effects.** It starts no supervisor:
+  the process table was the same before and after. Interactive entries
+  carry `pid` and `status`. Background entries carry the short `id`,
+  `sessionId` and `state`, plus the worker's `pid` once it runs. **No
+  entry says which terminal, if any, is attached.**
+- **`claude --bg` process tree:**
+
+  ```
+  claude daemon run --origin transient --spawned-by {…}   ppid 1, own session
+   └─ claude bg-pty-host --bg-pty-host /tmp/cc-daemon-<uid>/<h>/pty/<short>.sock
+       └─ …/versions/2.1.317 --session-id <id> …          own pty
+           └─ hook
+  ```
+
+  - Hooks descend from the worker. `TMUX_PANE` is absent, even though the
+    supervisor was started from a pane. `CLAUDE_JOB_DIR` is set.
+  - The worker's executable name is its version (`2.1.317`), not `claude`.
+  - The supervisor pre-spawns a spare (`bg-pty-host … spare/…` →
+    `claude bg-spare`). It exits, with the spare, once no session is left.
+- **`claude attach <short>`** runs in the pane and connects only to the
+  supervisor's `control.sock`, not to the session's pty socket.
+  - It writes no `~/.claude/sessions/<pid>.json`.
+  - The worker's file has `kind: bg`, `jobId`, and no `tmux` field.
+  - The attach argv names the initial session, which makes it a hint, not
+    proof.
+- **`/bg` ends the session and forks a new one.**
+  - The pane's `claude` fires `SessionEnd` with reason `prompt_input_exit`,
+    from the pane's process tree, and exits.
+  - A pre-spawned spare fires `SessionStart` with source `fork` under a
+    **new `session_id`**, from the supervisor tree, without `TMUX_PANE`.
+- **Interactive sessions behave as v0.1 assumes.** Hooks descend from the
+  pane's `claude`, with the pane's `TMUX_PANE`, and `CLAUDE_CODE_SESSION_ID`
+  equals `session_id`.
+
 ## Not verified
 
-- Whether backgrounding or plan-accept "clear context" changes `session_id`;
-  whether `/compact` keeps it (implied, not stated).
-- Whether `TMUX_PANE` reaches background sessions (docs: `PATH` and provider
-  variables only; agent-deck reports the leak empirically).
-- Whether `claude agents --json` starts the supervisor as a side effect.
+- Whether plan-accept "clear context" changes `session_id`; whether
+  `/compact` keeps it (implied, not stated).
+- Whether `claude attach` can switch to another session in place (agent
+  view), which decides whether its argv stays accurate.
 - Semantics of `~/.claude/sessions/<pid>.json` `sessionId` / `tmux` after
   `/clear` or `/resume`.
 - Whether split-pane teammates' hooks carry their own `session_id`.
