@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -248,5 +249,43 @@ func TestSetupInstallsAgentPlugins(t *testing.T) {
 	}
 	if _, err := os.Stat(log); err == nil {
 		t.Fatal("setup ran commands although both plugins are current")
+	}
+}
+
+func TestPickerClearsStaleRecords(t *testing.T) {
+	h := start(t)
+	h.waitBinary(h.loadPlugin(false, nil))
+	// Killed while blocked, without SessionEnd; a silent claude follows, so
+	// the pane still runs a command of the recorded name.
+	claude := filepath.Join(bin, "claude")
+	pane := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_HOOKS": "1"},
+		"sh", "-c", claude+"; FAKE_HOOKS=0 FAKE_SESSION= "+claude)
+	h.waitState(pane, "idle", "process")
+	h.tmux("send-keys", "-t", pane, "block", "Enter")
+	h.waitState(pane, "blocked", "process")
+	if err := exec.Command("pkill", "-KILL", "-o", "-f", "^"+claude+"$").Run(); err != nil {
+		t.Fatalf("pkill: %v", err)
+	}
+	h.waitState(pane, "unknown", "unbound")
+	listed := func() string {
+		return h.tmux("display-message", "-p", "-t", pane, "#{?#{&&:#{@tmag_state},#{==:#{pane_current_command},#{@tmag_cmd}}},#{@tmag_state},}")
+	}
+	if got := listed(); got != "blocked" {
+		t.Fatalf("precondition: the picker filter sees %q", got)
+	}
+	// Run the commands bound to the picker key; list-keys escapes their
+	// separator for bind-key. Without a client choose-tree fails, after
+	// run-shell has finished.
+	m := regexp.MustCompile(`(?m)^bind-key\s+-T prefix\s+a\s+(.*)$`).FindStringSubmatch(h.key("a"))
+	if m == nil {
+		t.Fatalf("picker binding: %q", h.key("a"))
+	}
+	conf := filepath.Join(h.dir, "picker.conf")
+	if err := os.WriteFile(conf, []byte(strings.ReplaceAll(m[1], ` \; `, " ; ")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_ = exec.Command("tmux", "-L", h.name, "source-file", conf).Run()
+	if got := listed(); got != "" {
+		t.Fatalf("the picker would list a vanished agent as %q", got)
 	}
 }

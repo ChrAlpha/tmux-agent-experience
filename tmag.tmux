@@ -36,8 +36,8 @@ tmux set-option -g @tmag-alert "$(option @tmag-alert blocked,finished)"
 
 # A pane's live state, for pane-border-format and friends. It is empty once the
 # agent that wrote it has exited: at once when another program takes the pane,
-# and at the next tmag hook or status refresh when an agent of the same name
-# replaced it without the first reporting its exit.
+# and at the next tmag hook, status refresh or picker when an agent of the same
+# name replaced it without the first reporting its exit.
 if [ -z "$(tmux show-option -gqv @tmag-pane-status)" ]; then
 	tmux set-option -g @tmag-pane-status '#{?#{&&:#{@tmag_state},#{==:#{pane_current_command},#{@tmag_cmd}}},#{@tmag_agent} #{@tmag_state}#{?#{@tmag_kind}, #{@tmag_kind},},}'
 fi
@@ -54,9 +54,12 @@ done
 
 live='#{&&:#{@tmag_state},#{==:#{pane_current_command},#{@tmag_cmd}}}'
 
+# The picker filters on records alone, so it first clears those of agents that
+# left their pane without a word; run-shell finishes before choose-tree runs.
 key="$(option @tmag-key-picker a)"
 if [ "$key" != off ]; then
-	tmux bind-key -N "Choose an agent" "$key" choose-tree -Z -f "$live" \
+	tmux bind-key -N "Choose an agent" "$key" run-shell "'$tmag' prune --server '#{socket_path}'" '\;' \
+		choose-tree -Z -f "$live" \
 		-F "#{?pane_format,#{@tmag_agent} #{@tmag_state}#{?#{@tmag_kind}, #{@tmag_kind},}  #{pane_current_path},#{?window_format,#{window_name},#{session_windows} windows}}"
 fi
 

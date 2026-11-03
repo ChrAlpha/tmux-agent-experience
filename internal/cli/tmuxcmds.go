@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -37,9 +38,32 @@ func onServer(all []query.Agent, server string) []query.Agent {
 	return out
 }
 
+// cmdPrune clears records of agents that left their pane without a word, on
+// one server or all. Pane borders and the picker read those records straight
+// from tmux options, where nothing checks the agent process; the picker key
+// runs this first. It prints nothing, so tmux shows nothing.
+func (a *app) cmdPrune(args []string) int {
+	fs := flag.NewFlagSet("prune", flag.ContinueOnError)
+	server := fs.String("server", "", "")
+	if _, err := parse(fs, args); err != nil {
+		return a.usageError("prune", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	w, err := bind.Load(ctx)
+	if err != nil {
+		return a.fail("prune", err)
+	}
+	if *server != "" {
+		socket := tmux.ServerByName(*server).Socket
+		w.Panes = slices.DeleteFunc(w.Panes, func(p tmux.Pane) bool { return p.Server != socket })
+	}
+	query.Prune(ctx, a.log.Dir, w, nil)
+	return ExitOK
+}
+
 // cmdStatus prints a one-line summary for the status line. tmux runs it every
-// status-interval, so it also clears records of agents that left their pane
-// without a word: pane borders and the picker read those records directly.
+// status-interval, so it also prunes, like cmdPrune.
 func (a *app) cmdStatus(args []string) int {
 	fs := flag.NewFlagSet("status", flag.ContinueOnError)
 	styled := fs.Bool("tmux", false, "")

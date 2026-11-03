@@ -36,6 +36,7 @@ Usage:
   tmag wait     <target> [--for STATES] [--after SEQ] [--timeout D] [--json]
                                                wait for a state (default idle,blocked)
   tmag status   [--tmux] [--server S]          one-line summary for the status line
+  tmag prune    [--server S]                   clear records of agents gone from their pane
   tmag jump     [--client C] [--server S] [--from %N] [--json]
                                                go to the agent waiting longest
   tmag setup    [--yes] [--dry-run] [--agent claude|codex]
@@ -89,6 +90,8 @@ func (a *app) run(args []string) int {
 		return a.cmdWait(rest)
 	case "status":
 		return a.cmdStatus(rest)
+	case "prune":
+		return a.cmdPrune(args)
 	case "jump":
 		return a.cmdJump(rest)
 	case "setup":
