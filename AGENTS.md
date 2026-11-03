@@ -151,8 +151,11 @@ claude plugin validate .      # marketplace and plugin manifests
   `codex`, so process names and `pane_current_command` match real agents. Run
   as `codex app-server …` it is a Codex daemon outside every pane that runs
   hooks for any thread and serves a control socket under `CODEX_HOME`
-  (`internal/codexsvc/svctest` is its server end); `FAKE_KEYS=1` makes the
-  interactive fake read keys like a TUI, so Escape interrupts its turn. The same binary answers `--version` and `plugin …` as
+  (`internal/codexsvc/svctest` is its server end), replaying the approvals a
+  `PermissionRequest` leaves to its clients. `FAKE_KEYS=1` makes the
+  interactive fake read keys like a TUI, so Escape interrupts its turn;
+  `FAKE_ANSWER=1` makes it open permission dialogs as Claude Code does, with
+  `tmag answer-hook` waiting beside them. The same binary answers `--version` and `plugin …` as
   a fake host CLI. Plugin tests lay out a TPM directory and serve a local
   release over `file://`.
 - `#()` status jobs run only for attached clients; to see the status line,

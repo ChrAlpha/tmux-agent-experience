@@ -21,7 +21,9 @@
 // Run as "codex app-server ..." it imitates Codex's shared daemon instead: it
 // runs `tmag hook codex` for every JSON payload line on stdin, as its own
 // child, outside any pane's agent, and serves the control socket under
-// $CODEX_HOME (thread/read, turn/start, turn/interrupt). With FAKE_HOOKS=1 and
+// $CODEX_HOME (thread/read, turn/start, turn/interrupt, and approvals: a
+// PermissionRequest it runs becomes an approval request that thread/resume
+// replays and a client answers). With FAKE_HOOKS=1 and
 // FAKE_SESSION set it first reports that session's start. A turn started
 // through the socket lasts FAKE_TURN_MS, default 0.
 //
@@ -280,7 +282,8 @@ func readInput(keys bool) <-chan keyInput {
 // daemon imitates Codex's app-server daemon, which runs every thread's hooks
 // and serves its control socket.
 func daemon() {
-	d := &fakeDaemon{status: map[string]string{}, turns: map[string]string{}, stops: map[string]*time.Timer{}}
+	d := &fakeDaemon{status: map[string]string{}, turns: map[string]string{}, stops: map[string]*time.Timer{},
+		approvals: map[int]approval{}, watchers: map[string]map[*svctest.Conn]bool{}}
 	d.turnMS, _ = strconv.Atoi(os.Getenv("FAKE_TURN_MS"))
 	d.cwd, _ = os.Getwd()
 	go d.serve()
@@ -308,6 +311,16 @@ type fakeDaemon struct {
 	status map[string]string      // thread id → idle or active
 	turns  map[string]string      // thread id → its active turn
 	stops  map[string]*time.Timer // thread id → the end of its running turn
+	// approvals wait for a client's answer, by request id; watchers are the
+	// connections joined to each thread.
+	approvals map[int]approval
+	watchers  map[string]map[*svctest.Conn]bool
+	requests  int
+}
+
+// approval is an approval request of the daemon's.
+type approval struct {
+	thread, turn, tool, method string
 }
 
 // hook runs `tmag hook codex` for payload as the daemon's child, and keeps
@@ -334,7 +347,26 @@ func (d *fakeDaemon) run(payload map[string]any) {
 		delete(d.turns, thread)
 	case "UserPromptSubmit":
 		d.status[thread], d.turns[thread] = "active", turn
+	case "PermissionRequest":
+		// No hook decided it: the daemon asks its clients.
+		tool, _ := payload["tool_name"].(string)
+		method := "item/fileChange/requestApproval"
+		if tool == "Bash" {
+			method = "item/commandExecution/requestApproval"
+		}
+		d.requests++
+		a := approval{thread: thread, turn: turn, tool: tool, method: method}
+		d.approvals[d.requests] = a
+		for c := range d.watchers[thread] {
+			d.ask(c, d.requests, a)
+		}
 	}
+}
+
+func (d *fakeDaemon) ask(c *svctest.Conn, id int, a approval) {
+	_ = c.Send(map[string]any{"id": id, "method": a.method, "params": map[string]any{
+		"threadId": a.thread, "turnId": a.turn, "itemId": fmt.Sprintf("item-%d", id), "command": "date",
+	}})
 }
 
 // serve answers the control socket at $CODEX_HOME/app-server-control.
@@ -366,7 +398,14 @@ func (d *fakeDaemon) serve() {
 				conn.Close()
 				return
 			}
-			defer c.Close()
+			defer func() {
+				c.Close()
+				d.mu.Lock()
+				defer d.mu.Unlock()
+				for _, w := range d.watchers {
+					delete(w, c)
+				}
+			}()
 			for {
 				m, err := c.Read()
 				if err != nil {
@@ -387,6 +426,26 @@ func (d *fakeDaemon) answer(c *svctest.Conn, m svctest.Message) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	switch m.Method {
+	case "":
+		d.decided(m)
+	case "thread/resume":
+		if d.status[p.ThreadID] == "" {
+			_ = c.Fail(m.ID, "no rollout found for thread id "+p.ThreadID)
+			return
+		}
+		if d.watchers[p.ThreadID] == nil {
+			d.watchers[p.ThreadID] = map[*svctest.Conn]bool{}
+		}
+		d.watchers[p.ThreadID][c] = true
+		_ = c.Reply(m.ID, map[string]any{"thread": map[string]any{"id": p.ThreadID}})
+		for id, a := range d.approvals {
+			if a.thread == p.ThreadID {
+				d.ask(c, id, a)
+			}
+		}
+	case "thread/unsubscribe":
+		delete(d.watchers[p.ThreadID], c)
+		_ = c.Reply(m.ID, map[string]string{"status": "unsubscribed"})
 	case "initialize":
 		_ = c.Reply(m.ID, map[string]string{"userAgent": "fake"})
 	case "thread/read":
@@ -430,6 +489,31 @@ func (d *fakeDaemon) answer(c *svctest.Conn, m svctest.Message) {
 		_ = c.Reply(m.ID, map[string]any{})
 	default:
 		_ = c.Fail(m.ID, "unknown method "+m.Method)
+	}
+}
+
+// decided takes a client's answer to an approval: the first one wins, the
+// call runs or the agent moves on, and every watcher learns it is resolved.
+func (d *fakeDaemon) decided(m svctest.Message) {
+	var id int
+	var result struct {
+		Decision string `json:"decision"`
+	}
+	if json.Unmarshal(m.ID, &id) != nil || json.Unmarshal(m.Result, &result) != nil {
+		return
+	}
+	a, ok := d.approvals[id]
+	if !ok {
+		return // answered already
+	}
+	delete(d.approvals, id)
+	if result.Decision == "accept" {
+		d.run(map[string]any{"hook_event_name": "PostToolUse", "session_id": a.thread, "turn_id": a.turn, "tool_name": a.tool})
+	} else {
+		d.run(map[string]any{"hook_event_name": "PreModelRequest", "session_id": a.thread, "turn_id": a.turn})
+	}
+	for c := range d.watchers[a.thread] {
+		_ = c.Send(map[string]any{"method": "serverRequest/resolved", "params": map[string]any{"threadId": a.thread, "requestId": id}})
 	}
 }
 

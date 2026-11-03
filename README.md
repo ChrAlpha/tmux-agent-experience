@@ -190,7 +190,7 @@ runtime:
 | --- | --- | --- | --- |
 | Claude Code, terminal | pane | pane | hook |
 | Claude Code, background | — | — | hook |
-| Codex, daemon (`runtime: service`) | service | service | — |
+| Codex, daemon (`runtime: service`) | service | service | service |
 | Codex, `--no-daemon` | pane | pane | — |
 
 A session's `capabilities` list the verbs some channel carries to it; a verb
@@ -259,8 +259,17 @@ answered with no terminal at all. On any failure, or after 590 seconds, it
 leaves without a word and the dialog alone decides. With `@tmag-answer`
 `off` it does not wait, and `answer` is refused with `unsupported`.
 
+For a thread in Codex's daemon, `answer` joins the thread through the
+daemon's control socket, under the same proof as `send`. The daemon replays
+the approvals still waiting, and tmag answers the one of the request's turn,
+then leaves once the daemon reports it resolved. Codex shows its dialog only
+after its hooks have run, so no hook waits there. A Codex decision carries no
+message, and a Codex session run with `--no-daemon` can be answered only in
+the agent.
+
 `answer` checks under the session's lock that the request is still open, and
-logs `Answer` once the hook has taken the decision. A request answered in the
+logs `Answer` once the hook has taken the decision, or before the daemon is
+told. A request answered in the
 terminal a moment before may still take one that the agent then ignores;
 what the agent did shows in the events that follow. A sandboxed command's
 network request reaches no hook, and can be answered only in the agent.
@@ -354,7 +363,7 @@ of them is such an event. `event` is the hook's name, or one of:
 | `Detach` | A pane (`pane`) stopped showing the session. |
 | `Send` | `tmag send` delivered a prompt `via` `pane` (then through `pane`) or `service`, from the sending pane `from`, `bytes` long. |
 | `Halt` | `tmag interrupt` delivered an interrupt `via` `pane` (then through `pane`) or `service`, from `from`. |
-| `Answer` | `tmag answer` delivered a `decision` (`allow` or `deny`) on `request`, `via` `hook`. |
+| `Answer` | `tmag answer` delivered a `decision` (`allow` or `deny`) on `request`, `via` `hook` or `service`. |
 | `Exit` | The session's process exited without `SessionEnd`; the session is gone. |
 
 A session changes only through events, so a client that applies

@@ -662,7 +662,7 @@ func TestCodexDaemonCarriesSendAndInterrupt(t *testing.T) {
 	d := h.daemon()
 	d.hook(map[string]any{"hook_event_name": "SessionStart", "session_id": sidC, "source": "startup"})
 	s := h.waitSession(sidC, "idle")
-	if !slices.Equal(s.Capabilities, []string{"send", "interrupt"}) {
+	if !slices.Equal(s.Capabilities, []string{"send", "interrupt", "answer"}) {
 		t.Fatalf("daemon session capabilities = %v", s.Capabilities)
 	}
 	if r := h.tmag("", "interrupt", sidC[:8]); r.code != 3 || !strings.Contains(r.out, "idle") {
@@ -689,6 +689,49 @@ func TestCodexDaemonCarriesSendAndInterrupt(t *testing.T) {
 		r := h.tmag("", "send", sidC[:8], "hello")
 		return r.code == 3 && strings.Contains(r.out, "unbound") && strings.Contains(r.out, "does not run")
 	})
+}
+
+// The Codex daemon carries answers too: tmag joins the thread, answers the
+// approval the daemon replays to it, and leaves once the daemon resolved it.
+func TestCodexDaemonCarriesAnswers(t *testing.T) {
+	h := start(t)
+	d := h.daemon()
+	d.hook(map[string]any{"hook_event_name": "SessionStart", "session_id": sidC, "source": "startup"})
+	d.hook(map[string]any{"hook_event_name": "UserPromptSubmit", "session_id": sidC, "turn_id": "t1"})
+	blocked := func() eventlog.Request {
+		t.Helper()
+		d.hook(map[string]any{"hook_event_name": "PermissionRequest", "session_id": sidC, "turn_id": "t1", "tool_name": "Bash"})
+		s := h.waitSession(sidC, "blocked")
+		if len(s.Requests) != 1 || s.Requests[0].Tool != "Bash" || !slices.Contains(s.Capabilities, "answer") {
+			t.Fatalf("blocked session = %+v", s)
+		}
+		return s.Requests[0]
+	}
+
+	req := blocked()
+	r := h.tmag("", "request", sidC[:8], req.ID, "--json")
+	if r.code != 0 || !strings.Contains(r.out, `"tool":"Bash"`) || !strings.Contains(r.out, `"command":"date"`) {
+		t.Fatalf("request: %d %s", r.code, r.out)
+	}
+	if r := h.tmag("", "answer", sidC[:8], req.ID, "deny", "--message", "no"); r.code != 2 || !strings.Contains(r.out, "message") {
+		t.Fatalf("a message for Codex: %d %s", r.code, r.out)
+	}
+	if r := h.tmag("", "answer", sidC[:8], req.ID, "allow", "--json"); r.code != 0 || !strings.Contains(r.out, `"via":"service"`) {
+		t.Fatalf("answer: %d %s", r.code, r.out)
+	}
+	h.waitSession(sidC, "working")
+	if got := h.eventNames(sidC); !strings.HasSuffix(got, "PermissionRequest:blocked Answer: PostToolUse:working") {
+		t.Fatalf("events = %s", got)
+	}
+
+	req = blocked()
+	if r := h.tmag("", "answer", sidC[:8], req.ID, "deny"); r.code != 0 {
+		t.Fatalf("deny: %d %s", r.code, r.out)
+	}
+	h.waitSession(sidC, "working")
+	if got := h.eventNames(sidC); !strings.HasSuffix(got, "Answer: PreModelRequest:working") {
+		t.Fatalf("events after deny = %s", got)
+	}
 }
 
 func TestDaemonInsidePaneDoesNotAttach(t *testing.T) {

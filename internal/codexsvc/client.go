@@ -246,3 +246,68 @@ func (c *Client) StartTurn(ctx context.Context, thread, text string) (string, er
 func (c *Client) InterruptTurn(ctx context.Context, thread, turn string) error {
 	return c.Call(ctx, "turn/interrupt", map[string]string{"threadId": thread, "turnId": turn}, nil)
 }
+
+// Join subscribes to a loaded thread, without overrides (which would restart
+// an idle thread nobody else watches), and returns the requests of the
+// daemon's still waiting for an answer, which it replays to a newcomer.
+func (c *Client) Join(ctx context.Context, thread string) ([]Message, error) {
+	if err := c.Call(ctx, "thread/resume", map[string]any{"threadId": thread, "excludeTurns": true}, nil); err != nil {
+		return nil, err
+	}
+	// The replay follows the response at once; a short quiet ends it.
+	var out []Message
+	for {
+		quiet, cancel := context.WithTimeout(ctx, replayQuiet)
+		m, err := c.Next(quiet)
+		cancel()
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			return out, nil
+		}
+		if m.Request() {
+			out = append(out, m)
+		}
+	}
+}
+
+// replayQuiet is how long Join waits for more replayed requests.
+const replayQuiet = 300 * time.Millisecond
+
+// Leave unsubscribes from a thread.
+func (c *Client) Leave(ctx context.Context, thread string) error {
+	return c.Call(ctx, "thread/unsubscribe", map[string]string{"threadId": thread}, nil)
+}
+
+// AwaitResolved waits until the daemon reports request id resolved, by
+// this client's answer or another's: responses get no acknowledgement.
+func (c *Client) AwaitResolved(ctx context.Context, id json.RawMessage) error {
+	for {
+		m, err := c.Next(ctx)
+		if err != nil {
+			return err
+		}
+		if m.Method != "serverRequest/resolved" {
+			continue
+		}
+		var p struct {
+			RequestID json.RawMessage `json:"requestId"`
+		}
+		if json.Unmarshal(m.Params, &p) == nil && string(p.RequestID) == string(id) {
+			return nil
+		}
+	}
+}
+
+// Approval requests tmag can answer, with the decisions they take.
+const (
+	CommandApproval = "item/commandExecution/requestApproval"
+	FileApproval    = "item/fileChange/requestApproval"
+)
+
+// Decisions on an approval.
+const (
+	Accept  = "accept"
+	Decline = "decline"
+)
