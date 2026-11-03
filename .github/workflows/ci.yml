@@ -1,0 +1,60 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Install tmux
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then sudo apt-get update && sudo apt-get install -y tmux; else brew install tmux; fi
+          tmux -V
+      - name: Test
+        run: go test -race ./...
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.15
+      - name: Shellcheck
+        run: shellcheck tmag.tmux scripts/install.sh scripts/tmag
+
+  vulncheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: golang/govulncheck-action@v1
+        with:
+          go-version-file: go.mod
+
+  manifests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Validate plugin and marketplace manifests
+        run: |
+          for f in .claude-plugin/marketplace.json .agents/plugins/marketplace.json \
+                   plugins/claude/.claude-plugin/plugin.json plugins/claude/hooks/hooks.json \
+                   plugins/codex/.codex-plugin/plugin.json plugins/codex/hooks/hooks.json; do
+            jq empty "$f" || { echo "invalid JSON: $f"; exit 1; }
+          done
