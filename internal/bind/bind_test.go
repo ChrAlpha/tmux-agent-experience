@@ -324,3 +324,23 @@ func TestOwnRecordSurvivesMisleadingTitles(t *testing.T) {
 		}
 	}
 }
+
+func TestForegroundFollowsTheTerminal(t *testing.T) {
+	// zsh 100 runs claude 101 in its own process group.
+	w := world(paneSpec{agent: "claude"})
+	set := func(tpgid int) {
+		w.Proc = proc.NewTable([]proc.Process{
+			{PID: 100, PPID: 1, PGID: 100, TPGID: tpgid, Comm: "zsh"},
+			{PID: 101, PPID: 100, PGID: 101, TPGID: tpgid, Comm: "claude", Args: "claude"},
+		})
+	}
+	set(101)
+	if !w.Foreground(w.Panes[0]) {
+		t.Fatal("agent holding the terminal is not foreground")
+	}
+	// Suspended: the shell took the terminal back; the agent still exists.
+	set(100)
+	if w.Foreground(w.Panes[0]) {
+		t.Fatal("suspended agent counted as foreground")
+	}
+}

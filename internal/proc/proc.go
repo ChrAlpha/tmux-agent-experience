@@ -18,12 +18,20 @@ import (
 type Process struct {
 	PID  int
 	PPID int
-	Comm string // executable base name
-	Args string // full command line, space separated
+	// PGID is the process group; TPGID the foreground process group of the
+	// process's controlling terminal, or <= 0 when it has none.
+	PGID  int
+	TPGID int
+	Comm  string // executable base name
+	Args  string // full command line, space separated
 	// Argv is the command line split into its arguments, when the platform
 	// keeps their boundaries (Linux); otherwise Args split on spaces.
 	Argv []string
 }
+
+// Foreground reports whether p's process group holds its terminal, so that
+// input typed there reaches p.
+func (p Process) Foreground() bool { return p.PGID > 0 && p.PGID == p.TPGID }
 
 // Table is an immutable process snapshot indexed by pid and parent.
 type Table struct {
@@ -218,15 +226,18 @@ func readProcEntry(pid int) (Process, bool) {
 	if open < 0 || end < open {
 		return Process{}, false
 	}
+	// After comm: state ppid pgrp session tty_nr tpgid ...
 	fields := strings.Fields(string(stat[end+1:]))
-	if len(fields) < 2 {
+	if len(fields) < 6 {
 		return Process{}, false
 	}
-	ppid, err := strconv.Atoi(fields[1])
-	if err != nil {
+	ppid, err1 := strconv.Atoi(fields[1])
+	pgid, err2 := strconv.Atoi(fields[2])
+	tpgid, err3 := strconv.Atoi(fields[5])
+	if err1 != nil || err2 != nil || err3 != nil {
 		return Process{}, false
 	}
-	p := Process{PID: pid, PPID: ppid, Comm: string(stat[open+1 : end])}
+	p := Process{PID: pid, PPID: ppid, PGID: pgid, TPGID: tpgid, Comm: string(stat[open+1 : end])}
 	if cmdline, err := os.ReadFile(dir + "/cmdline"); err == nil {
 		p.Argv = strings.Split(strings.TrimRight(string(cmdline), "\x00"), "\x00")
 		p.Args = strings.TrimSpace(strings.Join(p.Argv, " "))
@@ -237,7 +248,7 @@ func readProcEntry(pid int) (Process, bool) {
 func readPS() ([]Process, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "ps", "-A", "-ww", "-o", "pid=", "-o", "ppid=", "-o", "args=").Output()
+	out, err := exec.CommandContext(ctx, "ps", "-A", "-ww", "-o", "pid=", "-o", "ppid=", "-o", "pgid=", "-o", "tpgid=", "-o", "args=").Output()
 	if err != nil {
 		return nil, err
 	}
@@ -246,16 +257,22 @@ func readPS() ([]Process, error) {
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for sc.Scan() {
 		f := strings.Fields(sc.Text())
-		if len(f) < 3 {
+		if len(f) < 5 {
 			continue
 		}
-		pid, err1 := strconv.Atoi(f[0])
-		ppid, err2 := strconv.Atoi(f[1])
-		if err1 != nil || err2 != nil {
+		var n [4]int
+		var bad bool
+		for i := range n {
+			v, err := strconv.Atoi(f[i])
+			n[i], bad = v, bad || err != nil
+		}
+		if bad {
 			continue
 		}
-		args := strings.Join(f[2:], " ")
-		ps = append(ps, Process{PID: pid, PPID: ppid, Comm: filepath.Base(f[2]), Args: args})
+		ps = append(ps, Process{
+			PID: n[0], PPID: n[1], PGID: n[2], TPGID: n[3],
+			Comm: filepath.Base(f[4]), Args: strings.Join(f[4:], " "),
+		})
 	}
 	return ps, sc.Err()
 }

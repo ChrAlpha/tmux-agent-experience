@@ -55,6 +55,14 @@ func (w *World) AgentIn(p tmux.Pane) string {
 	return kind
 }
 
+// Foreground reports whether the pane's agent holds the pane's terminal, so
+// that keys sent to the pane reach the agent rather than, say, the shell it
+// was suspended to.
+func (w *World) Foreground(p tmux.Pane) bool {
+	agent, _, ok := w.Proc.FindAgent(p.PID)
+	return ok && agent.Foreground()
+}
+
 // Find returns the pane with the given server socket and id.
 func (w *World) Find(server, id string) (tmux.Pane, bool) {
 	for _, p := range w.Panes {

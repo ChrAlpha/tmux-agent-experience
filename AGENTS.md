@@ -42,8 +42,9 @@ a design problem, not a test problem.
 - **Binding needs proof.** A session is tied to a pane only by the evidence in
   `internal/bind`. Never trust `$TMUX_PANE`: Codex runs hooks in a shared
   daemon with a stale environment. Ambiguous evidence means `unbound`.
-- **Control is gated.** `send` delivers only to a bound, idle agent after
-  re-verifying it under the pane lock; `wait` refuses unbound targets.
+- **Control is gated.** `send` delivers only to a bound, idle agent that holds
+  its terminal's foreground, after re-verifying it under the pane lock; `wait`
+  refuses unbound targets.
 - **Nothing edits user configuration.** Install and uninstall go through each
   host's own mechanism (`claude plugin`, `codex plugin`, TPM).
 - **The contract is versioned.** Changing a JSON field's meaning or removing

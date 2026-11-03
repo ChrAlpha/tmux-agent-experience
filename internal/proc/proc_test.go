@@ -80,6 +80,22 @@ func TestSnapshotFindsSelf(t *testing.T) {
 	}
 }
 
+func TestPSFallbackReadsProcessGroups(t *testing.T) {
+	ps, err := readPS()
+	if err != nil {
+		t.Skipf("ps unavailable: %v", err)
+	}
+	for _, p := range ps {
+		if p.PID == os.Getpid() {
+			if p.PGID <= 0 || p.Comm == "" {
+				t.Fatalf("own row parsed as %+v", p)
+			}
+			return
+		}
+	}
+	t.Fatal("ps did not list this process")
+}
+
 func TestLookPathAll(t *testing.T) {
 	a, b := t.TempDir(), t.TempDir()
 	for _, dir := range []string{a, b} {

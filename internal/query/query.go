@@ -147,9 +147,10 @@ func Resolve(agents []Agent, target string) (Agent, error) {
 
 // Refusal reasons for Send.
 const (
-	RefuseUnbound = "unbound" // no verified identity for the target
-	RefuseBusy    = "busy"    // the target is not idle
-	RefuseChanged = "changed" // the target changed between check and delivery
+	RefuseUnbound    = "unbound"    // no verified identity for the target
+	RefuseBusy       = "busy"       // the target is not idle
+	RefuseBackground = "background" // the agent does not hold its terminal
+	RefuseChanged    = "changed"    // the target changed between check and delivery
 )
 
 // RefusedError is returned when Send's safety gate rejects delivery.
@@ -181,6 +182,9 @@ func Send(ctx context.Context, log *eventlog.Log, target, text string, from *eve
 	if a.State != adapter.Idle {
 		return a, 0, &RefusedError{RefuseBusy, fmt.Sprintf("%s is %s", a.ID, describe(a))}
 	}
+	if p, ok := w.Find(a.Pane.Server, a.Pane.ID); ok && !w.Foreground(p) {
+		return a, 0, notForeground(a, p)
+	}
 
 	var seq int64
 	err = withPaneLock(ctx, log.Dir, a.Pane, func() error {
@@ -201,6 +205,9 @@ func Send(ctx context.Context, log *eventlog.Log, target, text string, from *eve
 		}
 		if rec.State != adapter.Idle || pending(rec, time.Now()) {
 			return &RefusedError{RefuseBusy, fmt.Sprintf("%s became busy", a.ID)}
+		}
+		if !fresh.Foreground(p) {
+			return notForeground(a, p)
 		}
 		if err := srv.Submit(ctx, p.ID, text); err != nil {
 			return err
@@ -224,6 +231,10 @@ func Send(ctx context.Context, log *eventlog.Log, target, text string, from *eve
 		return nil
 	})
 	return a, seq, err
+}
+
+func notForeground(a Agent, p tmux.Pane) error {
+	return &RefusedError{RefuseBackground, fmt.Sprintf("%s in %s is not in the foreground; %s is", a.Agent, p.ID, p.Command)}
 }
 
 func describe(a Agent) string {

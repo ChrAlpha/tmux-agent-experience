@@ -157,10 +157,13 @@ terminal_title = ["thread-id", "activity", "thread-name", "project-name"]
 
 ### Sending safely
 
-`tmag send` delivers a prompt only to a bound, idle agent. Right before typing
-it re-checks, under a per-pane lock, that the same agent process still runs
-the same session and is idle. A busy agent is refused rather than queued, so a
-turn's id always belongs to the prompt that started it.
+`tmag send` delivers a prompt only to a bound, idle agent that holds its
+terminal. Right before typing it re-checks, under a per-pane lock, that the
+same agent process still runs the same session, is idle, and is the pane's
+foreground process group. A busy agent is refused rather than queued, so a
+turn's id always belongs to the prompt that started it; a suspended or
+backgrounded agent is refused, so a prompt never reaches the shell that took
+the terminal over.
 
 Delivery is a bracketed paste followed by Enter. Control characters are
 removed first, so relayed text cannot end the paste early or press keys.
@@ -224,7 +227,8 @@ integers.
 Exit codes: `0` ok, `1` error, `2` usage, `3` refused by the safety gate, `4`
 timeout. With `--json`, errors are also printed as
 `{"schema":"tmag/v1","error":{"code":…,"message":…}}`; codes are `usage`,
-`not_found`, `ambiguous`, `refused:unbound`, `refused:busy`, `refused:changed`,
+`not_found`, `ambiguous`, `refused:unbound`, `refused:busy`,
+`refused:background`, `refused:changed`,
 `ended`, `timeout` and `error`.
 
 ## Footprint

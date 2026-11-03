@@ -469,6 +469,37 @@ func TestRestartedAgentDoesNotInheritRecord(t *testing.T) {
 	}
 }
 
+func TestSendRefusesSuspendedAgent(t *testing.T) {
+	h := start(t)
+	pane := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_HOOKS": "1"}, "bash", "--norc", "--noprofile", "-i")
+	h.tmux("send-keys", "-t", pane, filepath.Join(bin, "claude"), "Enter")
+	h.waitState(pane, "idle", "process")
+	// Ctrl-Z: the agent keeps its pid and record, but bash owns the terminal.
+	h.tmux("send-keys", "-t", pane, "C-z")
+	h.eventually("bash in the foreground", func() bool {
+		a, ok := h.agentIn(pane)
+		return ok && a.Pane.Command == "bash" && a.State == "idle"
+	})
+	marker := filepath.Join(h.dir, "ran-in-shell")
+	r := h.tmag("", "send", sidA[:8], "touch "+marker)
+	if r.code != 3 || !strings.Contains(r.out, "refused (background)") {
+		t.Fatalf("send to a suspended agent: %d %s", r.code, r.out)
+	}
+	time.Sleep(300 * time.Millisecond)
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("the prompt ran as a shell command")
+	}
+	// Back in the foreground, the same agent accepts the prompt.
+	h.tmux("send-keys", "-t", pane, "fg", "Enter")
+	h.eventually("claude in the foreground", func() bool {
+		a, ok := h.agentIn(pane)
+		return ok && a.Pane.Command == "claude"
+	})
+	if r := h.tmag("", "send", sidA[:8], "--wait", "hello"); r.code != 0 {
+		t.Fatalf("send after fg: %d %s", r.code, r.out)
+	}
+}
+
 func TestSendCannotEscapeBracketedPaste(t *testing.T) {
 	h := start(t)
 	out := filepath.Join(h.dir, "received")
