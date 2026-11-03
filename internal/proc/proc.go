@@ -153,11 +153,22 @@ const codexPackage = "@openai/codex"
 // rather than an interactive client.
 var codexServices = map[string]bool{"app-server": true, "exec-server": true, "code-mode-host": true}
 
+// Options of the Codex 0.166 root command that take a separate value; any of
+// them may come before the subcommand (codex -c k=v app-server).
+var (
+	codexValueLong = map[string]bool{
+		"config": true, "enable": true, "disable": true, "remote": true, "remote-auth-token-env": true,
+		"image": true, "model": true, "local-provider": true, "profile": true, "sandbox": true,
+		"ask-for-approval": true, "cd": true, "add-dir": true,
+	}
+	codexValueShort = map[byte]bool{'c': true, 'i': true, 'm': true, 'p': true, 's': true, 'a': true, 'C': true}
+)
+
 // IsCodexService reports whether p is a Codex background service (app-server
 // daemon, exec server, code-mode host) rather than an interactive client. The
-// service is named by the subcommand, the first argument after the codex
-// executable or launcher script; a prompt that merely mentions one is not a
-// service.
+// service is named by the subcommand: the first argument after the codex
+// executable or launcher script that is neither an option nor an option's
+// value. A prompt that merely mentions one is not a service.
 func IsCodexService(p Process) bool {
 	if strings.HasPrefix(p.Comm, "codex-code-mode") {
 		return true
@@ -171,15 +182,42 @@ func IsCodexService(p Process) bool {
 		if !strings.HasPrefix(filepath.Base(arg), "codex") && !strings.Contains(arg, codexPackage) {
 			continue
 		}
-		if i+1 >= len(argv) || !codexServices[argv[i+1]] {
+		cmd, rest := codexCommand(argv[i+1:])
+		if !codexServices[cmd] {
 			return false
 		}
 		// Without argument boundaries, accept only what a service is started
 		// with: nothing more, flags, or the daemon's own subcommand.
-		rest := argv[i+2:]
 		return !split || len(rest) == 0 || strings.HasPrefix(rest[0], "-") || rest[0] == "daemon"
 	}
 	return false
+}
+
+// codexCommand returns the first positional argument of a Codex command line
+// (a subcommand or the prompt) and the arguments after it.
+func codexCommand(args []string) (string, []string) {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--":
+			if i+1 < len(args) {
+				return args[i+1], args[i+2:]
+			}
+			return "", nil
+		case strings.HasPrefix(a, "--"):
+			if codexValueLong[a[2:]] { // not --name=value
+				i++
+			}
+		case len(a) == 2 && a[0] == '-':
+			if codexValueShort[a[1]] { // not -Xvalue
+				i++
+			}
+		case strings.HasPrefix(a, "-") && a != "-":
+		default:
+			return a, args[i+1:]
+		}
+	}
+	return "", nil
 }
 
 // FindAgent returns the nearest agent process at or below root.

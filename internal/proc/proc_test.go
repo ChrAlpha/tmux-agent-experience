@@ -25,6 +25,12 @@ func TestAgentKind(t *testing.T) {
 		{"codex", "codex app-server daemon pid-update-loop", ""},
 		{"codex-code-mode", "/x/codex-code-mode-host", ""},
 		{"node", "node /usr/lib/node_modules/@openai/codex/bin/codex.js app-server", ""},
+		// Root options and their values may precede the subcommand.
+		{"codex", "codex -c model=example app-server --managed-daemon", ""},
+		{"codex", "codex --config=model=example --enable foo -m o3 app-server", ""},
+		{"codex", "codex -C /work --yolo exec-server", ""},
+		{"codex", "codex -c model=example resume --last", Codex},
+		{"codex", "codex -m app-server", Codex}, // a model value, not a subcommand
 		{"zsh", "-zsh", ""},
 	} {
 		if got := AgentKind(Process{Comm: c.comm, Args: c.args}); got != c.want {
@@ -43,6 +49,14 @@ func TestPromptNamingAServiceIsNotAService(t *testing.T) {
 	p = Process{Comm: "codex", Args: "/usr/bin/codex app-server is down"}
 	if got := AgentKind(p); got != Codex {
 		t.Fatalf("space-joined prompt: AgentKind = %q", got)
+	}
+	p = Process{Comm: "codex", Argv: []string{"/usr/bin/codex", "-c", "k=v", "fix app-server issue"}}
+	if got := AgentKind(p); got != Codex {
+		t.Fatalf("prompt after an option: AgentKind = %q", got)
+	}
+	p = Process{Comm: "codex", Args: "/usr/bin/codex -m o3 app-server is down"}
+	if got := AgentKind(p); got != Codex {
+		t.Fatalf("space-joined prompt after an option: AgentKind = %q", got)
 	}
 	p = Process{Comm: "codex", Argv: []string{"/usr/bin/codex", "resume", "app-server"}}
 	if got := AgentKind(p); got != Codex {

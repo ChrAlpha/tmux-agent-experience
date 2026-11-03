@@ -120,6 +120,19 @@ func TestDaemonHookNeverBindsByProcess(t *testing.T) {
 	if r.Evidence != Unbound {
 		t.Fatalf("daemon hook bound to %+v", r)
 	}
+	// The pane's shell started the daemon itself, with root options first.
+	w = world(paneSpec{})
+	procs = w.Proc.All()
+	for i := range procs {
+		if procs[i].PID == 900 {
+			procs[i].PPID = 100
+			procs[i].Args = "codex -c model=example app-server --managed-daemon"
+		}
+	}
+	w.Proc = proc.NewTable(procs)
+	if r := resolveWith(w, threads{}, Request{Agent: proc.Codex, SessionID: sid, PID: 902}); r.Evidence != Unbound {
+		t.Fatalf("hook of a daemon started with options bound to %+v", r)
+	}
 }
 
 func TestTitleIDEvidence(t *testing.T) {
