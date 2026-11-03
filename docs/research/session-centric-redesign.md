@@ -349,3 +349,48 @@ observations":
 Claude: hook reordering is defended against by design (turn guards, call
 tombstones). Its frequency is measured from the event log during
 implementation rather than in a separate spike.
+
+## As implemented
+
+`feat/session-model` (`d8b10b9`) implements this design. It differs from the
+text above where implementation and the live findings argued otherwise, and
+it was checked against real Claude Code 2.1.317 and Codex 0.166:
+
+- process attachment and blocking;
+- `/clear` (the same pane moves to the new id);
+- `/bg` (the pane's session ends, an unattached service session begins);
+- `claude attach`;
+- a Codex daemon thread attached by `title-id`;
+- `send` into the Codex TUI;
+- Codex's subagent view and `working/background` after `Stop`;
+- `SessionEnd` 60 s after `/quit`.
+
+- **No turn guard.** Claude's queued prompts give a turn's later events an
+  id never announced before (v0.1 feasibility, "Queued prompts break turn
+  correlation"). Dropping events whose turn differs could lose a real
+  permission request. Order tolerance rests on call tombstones and on `Set`
+  replacing the turn's bookkeeping. Only main-agent events move the turn,
+  because Codex subagents carry their own `turn_id`; v0.1 let them overwrite
+  the main turn.
+- **No `submitted` state.** A state that expires by time changes without an
+  event, which would bring back list diffing in `watch`. The send gate still
+  refuses a session whose prompt has not been confirmed within 15 s, and the
+  `Send` event reports the submission.
+- **Contract names follow tmux.** The contract lists `sessions` and `panes`:
+  a pane entry is an agent client, and `session`, `evidence` and `view` say
+  what it shows. Sessions carry `panes`. Agents are named by `agent`, as in
+  events.
+- **`watch` sends the pane list, not `client` events.** A `panes` document
+  follows whenever the pane list differs from the last one sent. The list
+  holds no titles or other volatile fields, so it changes only when an agent
+  starts or exits in a pane, a pane moves, or a pane switches view.
+  Attachment changes are also events (`Attach`, `Detach`), as is `Exit`.
+- **One rule set, read and written.** `attach.Links` derives, from the world
+  and the live sessions, which pane shows which session. `list` and `watch`
+  report it without writing. `Reconcile` stores it under the pane locks and
+  records the events. A pane is therefore listed correctly even before
+  anything has reconciled it.
+- **Session liveness reads the process table.** A session's host process is
+  recorded with its start time, and `wait` checks it directly. A session
+  whose agent was killed thus ends without waiting for another tmag process
+  to reconcile.
