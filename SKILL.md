@@ -147,7 +147,7 @@ status line.
 | `doctor`: tmux plugin version differs from the binary | `tmux source-file CONF` to let the plugin fetch the matching binary. |
 | `doctor`: `tmux` needs 3.2 or newer | Stop; the user upgrades tmux. |
 | `setup` fails on a plugin command | Read the error verbatim. An unknown flag means an outdated host: ask the user to update Claude Code or Codex. |
-| `doctor`: Codex hooks not trusted | After a restart, approve them in Codex with `/hooks`. |
+| `doctor`: Codex hooks not approved, or Codex agents stay `unknown` after a plugin update although an approval is found | Codex honours an approval only for the hooks it was given for. After a restart, approve them in Codex with `/hooks`. |
 | `doctor`: hook errors recorded | Report the latest line; it names the failure. |
 | `tmag list` shows the agent `unbound` long after a turn | For Codex, the pane title may not show the thread name (a custom `[tui] terminal_title`). Adding `thread-id` to it binds immediately; that edit is the user's to make. |
 

@@ -35,15 +35,18 @@ func run(name string, args ...string) (string, error) {
 
 // host describes one agent CLI and the tmag plugin in it.
 type host struct {
-	Name        string // display name
-	CLI         string // claude | codex
-	Present     bool   // the CLI is on PATH
-	Version     string // the CLI's version line
-	Listed      bool   // the plugin list could be read
-	Installed   bool
-	Enabled     bool
-	PluginVer   string
-	HooksTrusty bool // Codex: the plugin's hooks are trusted
+	Name      string // display name
+	CLI       string // claude | codex
+	Present   bool   // the CLI is on PATH
+	Version   string // the CLI's version line
+	Listed    bool   // the plugin list could be read
+	Installed bool
+	Enabled   bool
+	PluginVer string
+	// Codex: config.toml records an approval of the plugin's hooks. Codex
+	// honours it only while it matches the hashes of the current hooks, which
+	// it does not expose, so this is no proof that the hooks run.
+	HookApproval bool
 }
 
 func claudeHost() host {
@@ -90,7 +93,7 @@ func codexHost() host {
 			h.PluginVer = v
 		}
 	})
-	h.HooksTrusty = codexHooksTrusted()
+	h.HookApproval = codexHookApproval()
 	return h
 }
 
@@ -116,9 +119,9 @@ func walkJSON(v any, fn func(map[string]any)) {
 	}
 }
 
-// codexHooksTrusted looks for trusted hook-state entries of the plugin in
+// codexHookApproval looks for approved hook-state entries of the plugin in
 // config.toml. Only the table headers and their trust lines are inspected.
-func codexHooksTrusted() bool {
+func codexHookApproval() bool {
 	data, err := os.ReadFile(filepath.Join(codexidx.Home(), "config.toml"))
 	if err != nil {
 		return false

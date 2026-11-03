@@ -231,9 +231,15 @@ func codexCheck(h host) check {
 	}
 	status, note := pluginNote(h)
 	notes := []string{h.Version, note}
-	if status == "ok" && !h.HooksTrusty {
+	switch {
+	case status != "ok":
+	case !h.HookApproval:
 		status = "warn"
-		notes = append(notes, "plugin hooks not trusted yet; approve them in Codex with /hooks")
+		notes = append(notes, "plugin hooks not approved yet; approve them in Codex with /hooks")
+	default:
+		// Codex keeps an approval only for the hooks it was given for, and
+		// does not say whether the current ones match.
+		notes = append(notes, "hook approval found, not verifiable for the current hooks; if states stop updating, approve again with /hooks")
 	}
 	if pid, ok := codexDaemon(); ok {
 		notes = append(notes, "shared daemon: panes bind by terminal title and thread name")
