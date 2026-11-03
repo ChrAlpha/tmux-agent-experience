@@ -33,6 +33,7 @@ Usage:
   tmag read     <target> [--lines N] [--json]  recent pane output
   tmag send     <target> [--wait] [--timeout D] [--json] [text | -]
                                                submit a prompt to an idle agent
+  tmag interrupt <target> [--json]             stop the agent's running turn
   tmag wait     <target> [--for STATES] [--after SEQ] [--timeout D] [--json]
                                                wait for a state (default idle,blocked)
   tmag status   [--tmux] [--server S]          one-line summary for the status line
@@ -86,6 +87,8 @@ func (a *app) run(args []string) int {
 		return a.cmdRead(rest)
 	case "send":
 		return a.cmdSend(rest)
+	case "interrupt":
+		return a.cmdInterrupt(rest)
 	case "wait":
 		return a.cmdWait(rest)
 	case "status":

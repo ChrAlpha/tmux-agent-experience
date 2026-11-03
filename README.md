@@ -115,6 +115,7 @@ work:3.0   %9    codex   unknown              -    -         ~/src/web
 $ tmag send 01a19fda --wait "Review the diff in HEAD and list risky changes"
 01a19fda idle
 
+$ tmag interrupt 01a1          # stop the running turn
 $ tmag read %3 --lines 40      # recent pane output
 $ tmag wait 1787 --for idle    # block until the session is idle
 $ tmag watch                   # JSON lines: a snapshot, then every change
@@ -178,14 +179,14 @@ prove, and so shows `unknown`; the session is listed on its own row.
 ### Control
 
 tmag carries a few verbs to a session, the same for every agent: `send` a
-prompt. Each has one gate, and which channel carries it is tmag's business,
-chosen for the session's agent and runtime:
+prompt, `interrupt` a turn. Each has one gate, and which channel carries it
+is tmag's business, chosen for the session's agent and runtime:
 
-| Session | `send` |
-| --- | --- |
-| Claude Code, terminal | pane |
-| Claude Code, background | — |
-| Codex | pane |
+| Session | `send` | `interrupt` |
+| --- | --- | --- |
+| Claude Code, terminal | pane | pane |
+| Claude Code, background | — | — |
+| Codex | pane | pane |
 
 A session's `capabilities` list the verbs some channel carries to it; a verb
 nothing carries is refused with `unsupported`. Every delivery reports its
@@ -217,6 +218,18 @@ command, releases the session after 15 seconds, and `send --wait` then
 reports `"started": false`.
 
 `wait` and `send --wait` end with error code `ended` when the session ends.
+
+#### Interrupting
+
+`tmag interrupt` stops a session's running turn, or declines the prompt it is
+blocked on, which ends the turn too. Through a pane it presses Escape once,
+under the same gate as `send` except for the state: the main agent must be
+working or blocked, and an idle session is refused with `idle`. Escape twice
+on an empty composer opens a menu in both agents, so after an interrupt
+another is refused until the agent reports again, or for 90 seconds. Codex
+then reports `Interrupt` and the session is idle; Claude Code reports nothing,
+and the session shows `working` until its idle notification, about a minute
+later.
 
 ## Machine contract
 
@@ -288,7 +301,8 @@ of them is such an event. `event` is the hook's name, or one of:
 | --- | --- |
 | `Attach` | A pane (`pane`) started showing the session, by `evidence`. |
 | `Detach` | A pane (`pane`) stopped showing the session. |
-| `Send` | `tmag send` delivered a prompt through `pane`, from the sending pane `from`, `bytes` long. |
+| `Send` | `tmag send` delivered a prompt, through `pane` if `via` is `pane`, from the sending pane `from`, `bytes` long. |
+| `Halt` | `tmag interrupt` delivered an interrupt, through `pane` if `via` is `pane`, from `from`. |
 | `Exit` | The session's process exited without `SessionEnd`; the session is gone. |
 
 A session changes only through events, so a client that applies
@@ -321,7 +335,7 @@ timeout. With `--json`, errors are also printed as
 `{"schema":"tmag/v1","error":{"code":…,"message":…}}`; codes are `usage`,
 `not_found`, `ambiguous`, `refused:unbound`, `refused:busy`,
 `refused:background`, `refused:subagent`, `refused:changed`,
-`refused:unsupported`,
+`refused:idle`, `refused:unsupported`,
 `ended`, `timeout` and `error`.
 
 ## Footprint

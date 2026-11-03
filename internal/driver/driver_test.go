@@ -13,6 +13,9 @@ func TestChannel(t *testing.T) {
 		{"codex", "terminal", Send, Pane},
 		{"codex", "service", Send, Pane},
 		{"aider", "terminal", Send, ""},
+		{"claude", "terminal", Interrupt, Pane},
+		{"claude", "service", Interrupt, ""},
+		{"codex", "terminal", Interrupt, Pane},
 	} {
 		if got := Channel(c.agent, c.runtime, c.verb); got != c.want {
 			t.Errorf("Channel(%s, %s, %s) = %q, want %q", c.agent, c.runtime, c.verb, got, c.want)

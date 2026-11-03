@@ -254,7 +254,7 @@ func TestClaudeInProcess(t *testing.T) {
 	if s.ID != sidA || s.Agent != "claude" || s.Runtime != "terminal" || p.Command != "claude" || p.View != "main" {
 		t.Fatalf("pane %+v shows %+v", p, s)
 	}
-	if !slices.Equal(s.Capabilities, []string{"send"}) {
+	if !slices.Equal(s.Capabilities, []string{"send", "interrupt"}) {
 		t.Fatalf("capabilities = %v", s.Capabilities)
 	}
 	transcript := eventlog.Transcript{Path: filepath.Join(h.dir, sidA+".jsonl"), Format: "claude-jsonl"}
@@ -313,6 +313,54 @@ func TestClaudeInProcess(t *testing.T) {
 	}
 	if _, ok := h.sessionOf(sidA); ok {
 		t.Fatal("ended session still listed")
+	}
+}
+
+// An interrupt presses Escape once in the session's pane, only while a turn
+// runs, and not again until the agent reports.
+func TestInterruptThroughThePane(t *testing.T) {
+	h := start(t)
+	out := filepath.Join(h.dir, "received")
+	claude := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_OUT": out, "FAKE_HOOKS": "1", "FAKE_KEYS": "1", "FAKE_TURN_MS": "20000"}, filepath.Join(bin, "claude"))
+	h.waitPane(claude, "idle", "process")
+	if r := h.tmag("", "interrupt", h.target(claude)); r.code != 3 || !strings.Contains(r.out, "idle") {
+		t.Fatalf("interrupt an idle agent: %d %s", r.code, r.out)
+	}
+
+	if r := h.tmag("", "send", h.target(claude), "long work"); r.code != 0 {
+		t.Fatalf("send: %d %s", r.code, r.out)
+	}
+	h.waitPane(claude, "working", "process")
+	r := h.tmag("", "interrupt", sidA[:8], "--json")
+	if r.code != 0 || !strings.Contains(r.out, `"via":"pane"`) {
+		t.Fatalf("interrupt: %d %s", r.code, r.out)
+	}
+	h.eventually("the agent sees Escape", func() bool {
+		got, _ := os.ReadFile(out)
+		return string(got) == "long work\ninterrupted\n"
+	})
+	// Claude Code reports nothing: the session stays working, and a second
+	// interrupt, which could open a menu, waits for the agent to report.
+	if got := h.eventNames(sidA); !strings.HasSuffix(got, "Send: UserPromptSubmit:working Halt:") {
+		t.Fatalf("events = %s", got)
+	}
+	if r := h.tmag("", "interrupt", sidA[:8]); r.code != 3 || !strings.Contains(r.out, "busy") {
+		t.Fatalf("second interrupt: %d %s", r.code, r.out)
+	}
+
+	// Codex reports the interrupt, and the session is idle.
+	codex := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidB, "FAKE_HOOKS": "1", "FAKE_KEYS": "1", "FAKE_TURN_MS": "20000"}, filepath.Join(bin, "codex"))
+	h.waitPane(codex, "idle", "process")
+	if r := h.tmag("", "send", h.target(codex), "long work"); r.code != 0 {
+		t.Fatalf("send: %d %s", r.code, r.out)
+	}
+	h.waitPane(codex, "working", "process")
+	if r := h.tmag("", "interrupt", h.target(codex)); r.code != 0 {
+		t.Fatalf("interrupt codex: %d %s", r.code, r.out)
+	}
+	h.waitPane(codex, "idle", "process")
+	if got := h.eventNames(sidB); !strings.HasSuffix(got, "Halt: Interrupt:idle") {
+		t.Fatalf("codex events = %s", got)
 	}
 }
 

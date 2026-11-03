@@ -60,6 +60,9 @@ type Record struct {
 	Since time.Time `json:"since"`
 	// Sent is when tmag last submitted a prompt that no turn has confirmed.
 	Sent time.Time `json:"sent,omitzero"`
+	// Halted is when tmag last interrupted the main agent, until the agent
+	// reports again: Claude Code reports nothing on an interrupt.
+	Halted time.Time `json:"halted,omitzero"`
 
 	// Logged is what the event log last reported of the session. A record
 	// that reports otherwise has a change its writer did not get to log;
@@ -261,6 +264,9 @@ func Apply(cur Record, tr adapter.Transition, now time.Time) (Record, bool) {
 	if main && tr.Turn != "" {
 		rec.Turn = tr.Turn
 	}
+	if main {
+		rec.Halted = time.Time{} // the main agent reports again
+	}
 	normalize(&rec)
 	if rec.State() != cur.State() || rec.Kind() != cur.Kind() || cur.Since.IsZero() {
 		rec.Since = now.UTC().Truncate(time.Second)
@@ -324,6 +330,6 @@ func (r Record) equal(o Record) bool {
 		r.Main == o.Main && r.MainKind == o.MainKind && r.Turn == o.Turn &&
 		slices.Equal(r.Pending, o.Pending) && slices.Equal(r.Calls, o.Calls) &&
 		slices.Equal(r.Done, o.Done) && slices.Equal(r.Background, o.Background) &&
-		slices.Equal(r.Subagents, o.Subagents) && r.Since.Equal(o.Since) && r.Sent.Equal(o.Sent) &&
+		slices.Equal(r.Subagents, o.Subagents) && r.Since.Equal(o.Since) && r.Sent.Equal(o.Sent) && r.Halted.Equal(o.Halted) &&
 		r.Logged == o.Logged && r.Change == o.Change && r.Ended == o.Ended
 }

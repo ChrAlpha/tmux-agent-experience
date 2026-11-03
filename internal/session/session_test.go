@@ -407,3 +407,14 @@ func TestEventsReportTheWholeSession(t *testing.T) {
 		t.Fatalf("subagent stop: %v %+v", err, last())
 	}
 }
+
+func TestMainAgentReportClearsAnInterrupt(t *testing.T) {
+	rec := play(t)
+	rec.Halted = t0
+	if sub, _ := Apply(rec, startOf("a1", "Read", "r1"), t0); sub.Halted.IsZero() {
+		t.Fatal("a subagent's call cleared the interrupt")
+	}
+	if idle, _ := Apply(rec, stopWith(), t0); !idle.Halted.IsZero() {
+		t.Fatal("the main agent's Stop left the interrupt standing")
+	}
+}

@@ -14,7 +14,8 @@ import (
 // Refusal reasons of the control verbs.
 const (
 	RefuseUnbound     = "unbound"     // no pane proves it shows the session
-	RefuseBusy        = "busy"        // the session is not idle, or a prompt was just sent
+	RefuseBusy        = "busy"        // the session is not idle, or tmag just acted on it
+	RefuseIdle        = "idle"        // the session runs no turn to interrupt
 	RefuseBackground  = "background"  // the agent does not hold its terminal
 	RefuseSubagent    = "subagent"    // the pane shows a subagent, which takes no input
 	RefuseChanged     = "changed"     // the target changed between check and delivery

@@ -58,11 +58,11 @@ type Event struct {
 	Subagents []string `json:"subagents,omitempty"`
 	// Capabilities are the verbs some channel carries to the session.
 	Capabilities []string `json:"capabilities,omitempty"`
-	// Pane is the pane an Attach, Detach or Send is about.
+	// Pane is the pane an Attach, Detach, Send or Halt is about.
 	Pane *PaneRef `json:"pane,omitempty"`
 	// Evidence is what an Attach rests on.
 	Evidence string `json:"evidence,omitempty"`
-	// From is the pane a Send came from, and Bytes the prompt's size.
+	// From is the pane a Send or Halt came from, and Bytes a prompt's size.
 	From  *PaneRef `json:"from,omitempty"`
 	Bytes int      `json:"bytes,omitempty"`
 	// Via is the channel tmag delivered by: pane, service or hook.
@@ -72,6 +72,7 @@ type Event struct {
 // Events tmag itself records, beside those named after agent hooks.
 const (
 	Send   = "Send"   // tmag submitted a prompt to the session
+	Halt   = "Halt"   // tmag interrupted the session's turn
 	Attach = "Attach" // a pane started showing the session
 	Detach = "Detach" // a pane stopped showing the session
 	Exit   = "Exit"   // the session's process ended without SessionEnd

@@ -14,7 +14,7 @@ const (
 )
 
 // Verbs lists every verb, in the order capabilities are reported.
-var Verbs = []string{Send}
+var Verbs = []string{Send, Interrupt}
 
 // Channels a verb travels by.
 const (

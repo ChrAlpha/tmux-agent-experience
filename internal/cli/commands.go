@@ -446,6 +446,30 @@ func (a *app) cmdSend(args []string) int {
 	}, *timeout)
 }
 
+func (a *app) cmdInterrupt(args []string) int {
+	fs := flag.NewFlagSet("interrupt", flag.ContinueOnError)
+	fs.BoolVar(&a.json, "json", false, "")
+	pos, err := parse(fs, args)
+	if err == nil && len(pos) != 1 {
+		err = errors.New("expected one target")
+	}
+	if err != nil {
+		return a.usageError("interrupt", err)
+	}
+	ctx, cancel := signalContext()
+	defer cancel()
+	w, err := attach.Load(ctx)
+	if err != nil {
+		return a.fail("interrupt", err)
+	}
+	d, err := query.Interrupt(ctx, a.log, pos[0], query.Sender(w))
+	if err != nil {
+		return a.fail("interrupt", err)
+	}
+	a.reportDelivery("interrupted", d)
+	return ExitOK
+}
+
 func (a *app) cmdWait(args []string) int {
 	fs := flag.NewFlagSet("wait", flag.ContinueOnError)
 	fs.BoolVar(&a.json, "json", false, "")
