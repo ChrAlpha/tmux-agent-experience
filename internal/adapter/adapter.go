@@ -7,7 +7,6 @@ package adapter
 import (
 	"encoding/json"
 	"fmt"
-	"slices"
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
 )
@@ -64,53 +63,39 @@ func Decode(data []byte) (Payload, error) {
 	return p, nil
 }
 
-// Action says what a transition does to the agent record.
+// Action says what a transition does to the session.
 type Action int
 
 const (
 	Ignore Action = iota // event carries no state information
-	Set                  // the main agent's turn began or ended: set state, kind and turn
+	Set                  // the main agent's turn began or ended: set its state, kind and turn
 	Ask                  // a prompt for the user opened; with Call set, its tool call started
 	Start                // a tool call started
 	Finish               // a tool call finished; see Transition.Call
-	Settle               // every tool call of Call.Agent is over: a batch resolved or the agent stopped
+	Settle               // every tool call of Call.Agent is over: a batch resolved or the agent asks the model again
 	Answer               // a prompt that is not about a tool call was answered
-	End                  // the session ended; drop the record
+	Spawn                // subagent Call.Agent started; it may outlive the main agent's turn
+	Reap                 // subagent Call.Agent stopped, and with it its calls and prompts
+	End                  // the session ended
 )
 
 // Prompt is something an agent waits on the user for: a tool permission, a
 // question or an MCP elicitation, raised by the main agent or a subagent.
 type Prompt struct {
 	// Agent is the subagent that asked, "" for the main agent.
-	Agent string
+	Agent string `json:"agent,omitempty"`
 	// Tool is the tool asked about, or "" when the event does not say; any
 	// finished tool answers an unnamed prompt.
-	Tool string
+	Tool string `json:"tool,omitempty"`
 }
 
 // Call is a tool call between its start and its end. Permission requests do
 // not say which call they are about, so a prompt for a tool stays open while
 // any call of that tool by the same agent runs.
 type Call struct {
-	Agent string // "" for the main agent
-	Tool  string
-	ID    string
-}
-
-// Keep names the agents whose open prompts and running tool calls outlive a
-// Set; everyone else's are over.
-type Keep struct {
-	// Subagents keeps every subagent's: the main agent's turn changed, and
-	// subagents run in the background across its turns.
-	Subagents bool
-	// Running keeps these subagents': the main agent's turn ended while they
-	// still run.
-	Running []string
-}
-
-// Has reports whether agent's prompts and calls outlive the Set.
-func (k Keep) Has(agent string) bool {
-	return agent != "" && (k.Subagents || slices.Contains(k.Running, agent))
+	Agent string `json:"agent,omitempty"` // "" for the main agent
+	Tool  string `json:"tool,omitempty"`
+	ID    string `json:"id,omitempty"`
 }
 
 // Pseudo tool names for prompts that are not tool calls.
@@ -132,27 +117,28 @@ type Transition struct {
 	Action Action
 	State  string
 	Kind   string
-	Turn   string
+	// Turn is the turn the event belongs to: the main agent's for main-agent
+	// events, the subagent's own for a Codex subagent's.
+	Turn string
 	// Prompt is the prompt an Ask opens or an Answer closes.
 	Prompt Prompt
 	// Call is the tool call a Start or Ask begins or a Finish ends; for a
-	// Settle only its Agent is set.
+	// Settle, Spawn or Reap only its Agent is set.
 	Call Call
 	// Reminder marks an Ask that may repeat a prompt already open: it opens
 	// one only during a turn with no prompt pending.
 	Reminder bool
-	// Keep is whose prompts and calls a Set leaves open.
-	Keep Keep
-}
-
-// NeedsRecord reports whether the transition only changes an existing
-// record: without one it has nothing to act on.
-func (t Transition) NeedsRecord() bool {
-	switch t.Action {
-	case Start, Finish, Settle, Answer:
-		return true
-	}
-	return t.Reminder
+	// KeepSubagents keeps every subagent's prompts and calls across a Set;
+	// otherwise only those of subagents still running in the background
+	// survive it.
+	KeepSubagents bool
+	// Background, when not nil, is the complete list of background work
+	// still running after a Set (subagents and other tasks, by id), replacing
+	// what the session knew.
+	Background *[]string
+	// Fresh marks a Set that starts a session process anew: nothing it ran
+	// before is still running.
+	Fresh bool
 }
 
 // Map returns the transition for a payload from the given agent.
@@ -201,13 +187,34 @@ func settle(p Payload) Transition {
 	return Transition{Action: Settle, Turn: turn(p), Call: Call{Agent: p.AgentID}}
 }
 
+func spawn(p Payload) Transition {
+	if p.AgentID == "" {
+		return Transition{}
+	}
+	return Transition{Action: Spawn, Turn: turn(p), Call: Call{Agent: p.AgentID}}
+}
+
+func reap(p Payload) Transition {
+	if p.AgentID == "" {
+		return Transition{}
+	}
+	return Transition{Action: Reap, Turn: turn(p), Call: Call{Agent: p.AgentID}}
+}
+
+func started(p Payload) Transition {
+	if p.Source == "compact" {
+		return Transition{} // the same process goes on
+	}
+	return Transition{Action: Set, State: Idle, Fresh: true}
+}
+
 func answer(p Payload, tool string) Transition {
 	return Transition{Action: Answer, Turn: turn(p), Prompt: Prompt{Agent: p.AgentID, Tool: tool}}
 }
 
 // promptSubmitted starts a main-agent turn; subagents run on across it.
 func promptSubmitted(p Payload) Transition {
-	return Transition{Action: Set, State: Working, Turn: turn(p), Keep: Keep{Subagents: true}}
+	return Transition{Action: Set, State: Working, Turn: turn(p), KeepSubagents: true}
 }
 
 func mapClaude(p Payload) Transition {
@@ -216,10 +223,7 @@ func mapClaude(p Payload) Transition {
 	}
 	switch p.HookEventName {
 	case "SessionStart":
-		if p.Source == "compact" {
-			return Transition{}
-		}
-		return Transition{Action: Set, State: Idle}
+		return started(p)
 	case "UserPromptSubmit":
 		return promptSubmitted(p)
 	case "PreToolUse":
@@ -237,9 +241,13 @@ func mapClaude(p Payload) Transition {
 		return ask(p, elicitation)
 	case "PostToolUse", "PostToolUseFailure":
 		return finish(p)
-	case "PostToolBatch", "SubagentStop":
+	case "PostToolBatch":
 		// A denied call has no PostToolUse; its batch still resolves.
 		return settle(p)
+	case "SubagentStart":
+		return spawn(p)
+	case "SubagentStop":
+		return reap(p)
 	case "ElicitationResult":
 		return answer(p, elicitation)
 	case "Notification":
@@ -257,12 +265,9 @@ func mapClaude(p Payload) Transition {
 			return tr
 		}
 	case "Stop":
-		if ids, ok := running(p.BackgroundTasks); ok {
-			return Transition{Action: Set, State: Working, Kind: KindBackground, Turn: turn(p), Keep: Keep{Running: ids}}
-		}
-		return Transition{Action: Set, State: Idle, Turn: turn(p)}
+		return Transition{Action: Set, State: Idle, Turn: turn(p), Background: tasks(p.BackgroundTasks)}
 	case "StopFailure":
-		return Transition{Action: Set, State: Idle, Kind: KindError, Turn: turn(p), Keep: Keep{Subagents: true}}
+		return Transition{Action: Set, State: Idle, Kind: KindError, Turn: turn(p), KeepSubagents: true}
 	case "SessionEnd":
 		return Transition{Action: End}
 	}
@@ -275,10 +280,7 @@ func mapCodex(p Payload) Transition {
 	}
 	switch p.HookEventName {
 	case "SessionStart":
-		if p.Source == "compact" {
-			return Transition{}
-		}
-		return Transition{Action: Set, State: Idle}
+		return started(p)
 	case "UserPromptSubmit":
 		return promptSubmitted(p)
 	case "PreToolUse":
@@ -288,10 +290,16 @@ func mapCodex(p Payload) Transition {
 	case "PostToolUse":
 		// Codex reports successful calls only.
 		return finish(p)
-	case "PreModelRequest", "SubagentStop":
-		// The agent asks the model again once all its calls are over.
+	case "PreModelRequest":
+		// The agent asks the model again: whatever it asked the user is
+		// settled. Calls moved to a background terminal may still run.
 		return settle(p)
+	case "SubagentStart":
+		return spawn(p)
+	case "SubagentStop":
+		return reap(p)
 	case "Stop", "Interrupt":
+		// Stop lists no background work; running subagents stay tracked.
 		return Transition{Action: Set, State: Idle, Turn: turn(p)}
 	case "SessionEnd":
 		return Transition{Action: End}
@@ -299,17 +307,17 @@ func mapCodex(p Payload) Transition {
 	return Transition{}
 }
 
-// running returns the ids of the tasks a Stop reports still running, and
-// whether there is any.
-func running(tasks *[]Task) ([]string, bool) {
-	if tasks == nil || len(*tasks) == 0 {
-		return nil, false
+// tasks returns the ids of the background tasks a Stop reports still
+// running, an empty list when it reports none, or nil when it does not say.
+func tasks(list *[]Task) *[]string {
+	if list == nil {
+		return nil
 	}
-	ids := make([]string, 0, len(*tasks))
-	for _, t := range *tasks {
+	ids := []string{}
+	for _, t := range *list {
 		if t.ID != "" {
 			ids = append(ids, t.ID)
 		}
 	}
-	return ids, true
+	return &ids
 }

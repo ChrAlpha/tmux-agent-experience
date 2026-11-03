@@ -10,20 +10,30 @@ import (
 	"github.com/ChrAlpha/tmux-agent-experience/internal/version"
 )
 
-func agent(pane, state, binding string, waited time.Duration) query.Agent {
+// shownIn is a session in state, shown by pane, that has been in that state
+// for waited; pane "" shows nothing.
+func shownIn(v *query.View, pane, state string, waited time.Duration) {
 	since := time.Now().Add(-waited)
-	return query.Agent{ID: "id" + pane, State: state, Binding: binding, Since: &since, Pane: query.PaneInfo{ID: pane}}
+	id := "id" + pane + state
+	s := query.Session{ID: id, Agent: "claude", State: state, Since: &since, Panes: []query.Shown{}}
+	p := query.Pane{ID: pane, Agent: "claude", Session: id}
+	if pane != "" {
+		s.Panes = append(s.Panes, query.Shown{ID: pane})
+		v.Panes = append(v.Panes, p)
+	}
+	v.Sessions = append(v.Sessions, s)
 }
 
 func TestSummary(t *testing.T) {
-	agents := []query.Agent{
-		agent("%1", "blocked", "process", 0), agent("%2", "blocked", "process", 0),
-		agent("%3", "working", "process", 0), agent("%4", "unknown", "unbound", 0),
-	}
-	if got := Summary(agents, false); got != "2 blocked · 1 working" {
+	var v query.View
+	shownIn(&v, "%1", "blocked", 0)
+	shownIn(&v, "%2", "blocked", 0)
+	shownIn(&v, "%3", "working", 0)
+	shownIn(&v, "%4", "unknown", 0)
+	if got := Summary(v.Sessions, false); got != "2 blocked · 1 working" {
 		t.Fatalf("plain = %q", got)
 	}
-	if got := Summary(agents, true); !strings.HasPrefix(got, "#[fg=red,bold]2 blocked#[default]") {
+	if got := Summary(v.Sessions, true); !strings.HasPrefix(got, "#[fg=red,bold]2 blocked#[default]") {
 		t.Fatalf("styled = %q", got)
 	}
 	if got := Summary(nil, true); got != "" {
@@ -32,34 +42,33 @@ func TestSummary(t *testing.T) {
 }
 
 func TestWaiting(t *testing.T) {
-	agents := []query.Agent{
-		agent("%1", "idle", "process", time.Hour),
-		agent("%2", "blocked", "process", time.Minute),
-		agent("%3", "blocked", "process", 10*time.Minute),
-		agent("%4", "working", "process", 2*time.Hour),
-		agent("%5", "unknown", "unbound", 3*time.Hour),
-	}
-	pick := func(from string) string {
-		a, ok := Waiting(agents, from)
+	var v query.View
+	shownIn(&v, "%1", "idle", time.Hour)
+	shownIn(&v, "%2", "blocked", time.Minute)
+	shownIn(&v, "%3", "blocked", 10*time.Minute)
+	shownIn(&v, "%4", "working", 2*time.Hour)
+	shownIn(&v, "", "blocked", 3*time.Hour) // no pane to jump to
+	v.Panes = append(v.Panes, query.Pane{ID: "%5", Agent: "codex"})
+	pick := func(v query.View, from string) string {
+		p, ok := Waiting(v, from)
 		if !ok {
 			return ""
 		}
-		return a.Pane.ID
+		return p.ID
 	}
-	if got := pick(""); got != "%3" {
+	if got := pick(v, ""); got != "%3" {
 		t.Fatalf("picked %s, want the longest-blocked %%3", got)
 	}
-	if got := pick("%3"); got != "%2" {
+	if got := pick(v, "%3"); got != "%2" {
 		t.Fatalf("from %%3 picked %s", got)
 	}
-	if got := pick("%x"); got != "%3" {
-		t.Fatalf("picked %s", got)
+	var idle query.View
+	shownIn(&idle, "%1", "idle", time.Hour)
+	shownIn(&idle, "%4", "working", 2*time.Hour)
+	if got := pick(idle, ""); got != "%1" {
+		t.Fatalf("idle fallback picked %s", got)
 	}
-	idleOnly := []query.Agent{agents[0], agents[3]}
-	if a, ok := Waiting(idleOnly, ""); !ok || a.Pane.ID != "%1" {
-		t.Fatalf("idle fallback picked %+v", a)
-	}
-	if _, ok := Waiting(idleOnly, "%1"); ok {
+	if got := pick(idle, "%1"); got != "" {
 		t.Fatal("picked the pane the user is in")
 	}
 }

@@ -22,6 +22,9 @@ type Process struct {
 	// process's controlling terminal, or <= 0 when it has none.
 	PGID  int
 	TPGID int
+	// Start identifies the process among every one that held its pid: its
+	// start time as the platform reports it, compared only for equality.
+	Start string
 	Comm  string // executable base name
 	Args  string // full command line, space separated
 	// Argv is the command line split into its arguments, when the platform
@@ -118,10 +121,15 @@ const (
 	Codex  = "codex"
 )
 
-// AgentKind classifies an interactive coding-agent process, or returns "".
+// AgentKind classifies an interactive coding-agent process, a client the user
+// works in, or returns "". Background services of either agent are not
+// clients; see ServiceKind.
 func AgentKind(p Process) string {
 	switch {
 	case p.Comm == "claude":
+		if IsClaudeService(p) {
+			return ""
+		}
 		return Claude
 	case strings.HasPrefix(p.Comm, "codex"):
 		if IsCodexService(p) {
@@ -131,6 +139,9 @@ func AgentKind(p Process) string {
 	case p.Comm == "node" || p.Comm == "bun":
 		switch {
 		case strings.Contains(p.Args, "claude-code") || claudeScriptRE.MatchString(p.Args):
+			if IsClaudeService(p) {
+				return ""
+			}
 			return Claude
 		case strings.Contains(p.Args, codexPackage):
 			if IsCodexService(p) {
@@ -140,6 +151,96 @@ func AgentKind(p Process) string {
 		}
 	}
 	return ""
+}
+
+// ServiceKind names the agent whose background service p is, or returns "":
+// a shared Codex app-server, or Claude's supervisor and the per-session
+// hosts it runs background sessions in.
+func ServiceKind(p Process) string {
+	switch {
+	case IsClaudeService(p):
+		return Claude
+	case IsCodexService(p):
+		return Codex
+	}
+	return ""
+}
+
+// claudeServices are the Claude Code subcommands of its background
+// supervisor: the supervisor itself, the pty host of each background session
+// and the spare it keeps ready.
+var claudeServices = map[string]bool{"daemon": true, "bg-pty-host": true, "bg-spare": true}
+
+// IsClaudeService reports whether p is part of Claude Code's background
+// supervisor rather than an interactive client. Background sessions run as a
+// worker under a pty host; the worker is named after its version, not
+// claude, and the pty host above it is what this recognises.
+func IsClaudeService(p Process) bool {
+	argv := p.Argv
+	if argv == nil {
+		argv = strings.Fields(p.Args)
+	}
+	for i, arg := range argv {
+		base := filepath.Base(arg)
+		if base != "claude" && !strings.Contains(arg, "claude-code") {
+			continue
+		}
+		return i+1 < len(argv) && claudeServices[argv[i+1]]
+	}
+	return false
+}
+
+// Role is how a hook's host process runs a session.
+type Role string
+
+const (
+	// Terminal: the session runs in an interactive client in a terminal.
+	Terminal Role = "terminal"
+	// Service: the session runs in a background service that no terminal owns.
+	Service Role = "service"
+)
+
+// Host is the process a hook's session runs in: the nearest interactive
+// agent or agent service above the hook.
+type Host struct {
+	Process Process
+	Kind    string
+	Role    Role
+}
+
+// HostOf walks up from pid to the nearest agent client or agent service.
+func (t *Table) HostOf(pid int) (Host, bool) {
+	for _, a := range t.Ancestors(pid) {
+		p, ok := t.Get(a)
+		if !ok {
+			continue
+		}
+		if kind := ServiceKind(p); kind != "" {
+			return Host{Process: p, Kind: kind, Role: Service}, true
+		}
+		if kind := AgentKind(p); kind != "" {
+			return Host{Process: p, Kind: kind, Role: Terminal}, true
+		}
+	}
+	return Host{}, false
+}
+
+// Running reports whether the process with this pid still runs and, when
+// start is set, is the one that started then. It reads one process where
+// the platform allows (Linux) and the whole table otherwise.
+func Running(pid int, start string) bool {
+	if _, err := os.Stat("/proc/self/stat"); err == nil {
+		p, ok := readProcEntry(pid)
+		return ok && (start == "" || p.Start == start)
+	}
+	t, err := Snapshot()
+	return err != nil || t.Alive(pid, start)
+}
+
+// Alive reports whether the process with p's pid is still p.
+func (t *Table) Alive(pid int, start string) bool {
+	q, ok := t.Get(pid)
+	return ok && (start == "" || q.Start == start)
 }
 
 // claudeScriptRE matches the claude launcher script run by node, as in
@@ -276,6 +377,9 @@ func readProcEntry(pid int) (Process, bool) {
 		return Process{}, false
 	}
 	p := Process{PID: pid, PPID: ppid, PGID: pgid, TPGID: tpgid, Comm: string(stat[open+1 : end])}
+	if len(fields) > 19 {
+		p.Start = fields[19] // starttime, in clock ticks after boot
+	}
 	if cmdline, err := os.ReadFile(dir + "/cmdline"); err == nil {
 		p.Argv = strings.Split(strings.TrimRight(string(cmdline), "\x00"), "\x00")
 		p.Args = strings.TrimSpace(strings.Join(p.Argv, " "))
@@ -286,16 +390,19 @@ func readProcEntry(pid int) (Process, bool) {
 func readPS() ([]Process, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "ps", "-A", "-ww", "-o", "pid=", "-o", "ppid=", "-o", "pgid=", "-o", "tpgid=", "-o", "args=").Output()
+	// lstart prints five words ("Tue Nov  3 09:12:22 2026"), before args so
+	// that the command line keeps its spaces.
+	out, err := exec.CommandContext(ctx, "ps", "-A", "-ww", "-o", "pid=", "-o", "ppid=", "-o", "pgid=", "-o", "tpgid=", "-o", "lstart=", "-o", "args=").Output()
 	if err != nil {
 		return nil, err
 	}
+	const lstartWords = 5
 	var ps []Process
 	sc := bufio.NewScanner(bytes.NewReader(out))
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for sc.Scan() {
 		f := strings.Fields(sc.Text())
-		if len(f) < 5 {
+		if len(f) < 4+lstartWords+1 {
 			continue
 		}
 		var n [4]int
@@ -307,9 +414,11 @@ func readPS() ([]Process, error) {
 		if bad {
 			continue
 		}
+		args := f[4+lstartWords:]
 		ps = append(ps, Process{
 			PID: n[0], PPID: n[1], PGID: n[2], TPGID: n[3],
-			Comm: filepath.Base(f[4]), Args: strings.Join(f[4:], " "),
+			Start: strings.Join(f[4:4+lstartWords], " "),
+			Comm:  filepath.Base(args[0]), Args: strings.Join(args, " "),
 		})
 	}
 	return ps, sc.Err()

@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,7 +20,7 @@ import (
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/query"
-	"github.com/ChrAlpha/tmux-agent-experience/internal/registry"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
 )
 
 var bin string // directory holding tmag, claude and codex
@@ -127,26 +128,39 @@ func (h *harness) tmag(stdin string, args ...string) result {
 	return result{out: stdout.String() + stderr.String(), code: code}
 }
 
-func (h *harness) agents() []query.Agent {
+// view is `tmag list --json`.
+func (h *harness) view() query.View {
 	h.t.Helper()
 	r := h.tmag("", "list", "--json")
 	var doc struct {
-		Schema string        `json:"schema"`
-		Agents []query.Agent `json:"agents"`
+		Schema string `json:"schema"`
+		query.View
 	}
-	if err := json.Unmarshal([]byte(r.out), &doc); err != nil || doc.Schema != "tmag/v1" {
+	if err := json.Unmarshal([]byte(strings.SplitN(r.out, "\n", 2)[0]), &doc); err != nil || doc.Schema != "tmag/v1" {
 		h.t.Fatalf("list --json: %v %q", err, r.out)
 	}
-	return doc.Agents
+	return doc.View
 }
 
-func (h *harness) agentIn(pane string) (query.Agent, bool) {
-	for _, a := range h.agents() {
-		if a.Pane.ID == pane {
-			return a, true
+// paneIn returns the agent pane and the session it shows, if any.
+func (h *harness) paneIn(pane string) (query.Pane, query.Session, bool) {
+	v := h.view()
+	for _, p := range v.Panes {
+		if p.ID == pane {
+			s, _ := v.Session(p.Agent, p.Session)
+			return p, s, true
 		}
 	}
-	return query.Agent{}, false
+	return query.Pane{}, query.Session{}, false
+}
+
+func (h *harness) sessionOf(id string) (query.Session, bool) {
+	for _, s := range h.view().Sessions {
+		if s.ID == id {
+			return s, true
+		}
+	}
+	return query.Session{}, false
 }
 
 func (h *harness) eventually(what string, cond func() bool) {
@@ -158,16 +172,33 @@ func (h *harness) eventually(what string, cond func() bool) {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	h.t.Fatalf("timed out waiting for %s; agents: %+v", what, h.agents())
+	h.t.Fatalf("timed out waiting for %s; view: %+v", what, h.view())
 }
 
-func (h *harness) waitState(pane, state, binding string) query.Agent {
+// waitPane waits until the pane shows a session in state, by evidence; an
+// empty evidence waits until it shows none.
+func (h *harness) waitPane(pane, state, evidence string) (query.Pane, query.Session) {
 	h.t.Helper()
-	var got query.Agent
-	h.eventually(fmt.Sprintf("%s to be %s/%s", pane, state, binding), func() bool {
-		a, ok := h.agentIn(pane)
-		got = a
-		return ok && a.State == state && a.Binding == binding
+	var gp query.Pane
+	var gs query.Session
+	h.eventually(fmt.Sprintf("%s to show a %s session by %q", pane, state, evidence), func() bool {
+		p, s, ok := h.paneIn(pane)
+		gp, gs = p, s
+		if !ok || p.Evidence != evidence {
+			return false
+		}
+		return evidence == "" || s.State == state
+	})
+	return gp, gs
+}
+
+func (h *harness) waitSession(id, state string) query.Session {
+	h.t.Helper()
+	var got query.Session
+	h.eventually(fmt.Sprintf("session %s to be %s", id, state), func() bool {
+		s, ok := h.sessionOf(id)
+		got = s
+		return ok && s.State == state
 	})
 	return got
 }
@@ -185,6 +216,15 @@ func (h *harness) events(session string) []eventlog.Event {
 		}
 	}
 	return out
+}
+
+// eventNames lists a session's events as event:state.
+func (h *harness) eventNames(session string) string {
+	var names []string
+	for _, e := range h.events(session) {
+		names = append(names, e.Event+":"+e.State)
+	}
+	return strings.Join(names, " ")
 }
 
 // externalHook runs a hook from outside any pane, as Codex's shared daemon does.
@@ -208,9 +248,9 @@ func TestClaudeInProcess(t *testing.T) {
 	h := start(t)
 	out := filepath.Join(h.dir, "received")
 	pane := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_OUT": out, "FAKE_HOOKS": "1", "FAKE_TURN_MS": "300"}, filepath.Join(bin, "claude"))
-	a := h.waitState(pane, "idle", "process")
-	if a.ID != sidA || a.Agent != "claude" || a.Pane.Command != "claude" {
-		t.Fatalf("agent = %+v", a)
+	p, s := h.waitPane(pane, "idle", "process")
+	if s.ID != sidA || s.Agent != "claude" || s.Runtime != "terminal" || p.Command != "claude" || p.View != "main" {
+		t.Fatalf("pane %+v shows %+v", p, s)
 	}
 
 	r := h.tmag("", "send", sidA[:8], "--wait", "--json", "review", "the", "diff")
@@ -220,16 +260,7 @@ func TestClaudeInProcess(t *testing.T) {
 	if got, _ := os.ReadFile(out); string(got) != "review the diff\n" {
 		t.Fatalf("agent received %q", got)
 	}
-
-	var kinds []string
-	for _, e := range h.events(sidA) {
-		kinds = append(kinds, e.Event+":"+e.State)
-		if e.Binding != "process" {
-			t.Errorf("event %s bound by %s", e.Event, e.Binding)
-		}
-	}
-	want := "SessionStart:idle Send: UserPromptSubmit:working Stop:idle"
-	if got := strings.Join(kinds, " "); got != want {
+	if got, want := h.eventNames(sidA), "SessionStart:idle Attach:idle Send: UserPromptSubmit:working Stop:idle"; got != want {
 		t.Fatalf("events = %s, want %s", got, want)
 	}
 
@@ -240,7 +271,7 @@ func TestClaudeInProcess(t *testing.T) {
 	if r := h.tmag("", "send", h.target(pane), "second"); r.code != 3 || !strings.Contains(r.out, "busy") {
 		t.Fatalf("busy send: %d %s", r.code, r.out)
 	}
-	h.waitState(pane, "idle", "process")
+	h.waitPane(pane, "idle", "process")
 	if r := h.tmag("", "wait", h.target(pane), "--json"); r.code != 0 || !strings.Contains(r.out, `"idle"`) {
 		t.Fatalf("wait on idle agent: %d %s", r.code, r.out)
 	}
@@ -250,7 +281,6 @@ func TestClaudeInProcess(t *testing.T) {
 	if r.code != 0 || !strings.Contains(r.out, `"started":false`) {
 		t.Fatalf("send slash command --wait: %d %s", r.code, r.out)
 	}
-	h.waitState(pane, "idle", "process")
 
 	// A waiter learns that the session ended instead of timing out.
 	waiter := exec.Command(filepath.Join(bin, "tmag"), "wait", sidA[:8], "--for", "blocked", "--timeout", "20s", "--json")
@@ -261,104 +291,170 @@ func TestClaudeInProcess(t *testing.T) {
 	}
 	time.Sleep(300 * time.Millisecond)
 
-	// Ending the session clears the pane record.
+	// Ending the session detaches its pane.
 	h.tmux("send-keys", "-t", pane, "C-d")
-	h.eventually("session end", func() bool {
-		evs := h.events(sidA)
-		return len(evs) > 0 && evs[len(evs)-1].Event == "SessionEnd"
-	})
+	h.eventually("session end", func() bool { return strings.HasSuffix(h.eventNames(sidA), "SessionEnd: Detach:") })
 	err := waiter.Wait()
 	var exit *exec.ExitError
 	if !errors.As(err, &exit) || exit.ExitCode() != 1 || !strings.Contains(wout.String(), `"ended"`) {
 		t.Fatalf("waiter: %v %s", err, wout.String())
 	}
+	if _, ok := h.sessionOf(sidA); ok {
+		t.Fatal("ended session still listed")
+	}
 }
 
-func TestUnboundAgentIsVisibleButNotControllable(t *testing.T) {
+func TestPaneWithoutProofIsVisibleButNotControllable(t *testing.T) {
 	h := start(t)
 	pane := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA}, filepath.Join(bin, "claude"))
-	a := h.waitState(pane, "unknown", "unbound")
-	if a.ID != "" {
-		t.Fatalf("unbound agent has id %q", a.ID)
+	p, _ := h.waitPane(pane, "", "")
+	if p.Session != "" || p.Agent != "claude" {
+		t.Fatalf("pane without hooks = %+v", p)
 	}
 	if r := h.tmag("", "send", h.target(pane), "hello"); r.code != 3 || !strings.Contains(r.out, "unbound") {
-		t.Fatalf("send to unbound: %d %s", r.code, r.out)
+		t.Fatalf("send to a pane that shows no session: %d %s", r.code, r.out)
+	}
+	if r := h.tmag("", "wait", h.target(pane)); r.code != 3 || !strings.Contains(r.out, "unbound") {
+		t.Fatalf("wait on a pane that shows no session: %d %s", r.code, r.out)
 	}
 	if r := h.tmag("", "read", h.target(pane), "--lines", "5"); r.code != 0 || !strings.Contains(r.out, "ready") {
 		t.Fatalf("read: %d %q", r.code, r.out)
 	}
 }
 
-func writeIndex(t *testing.T, names map[string]string) {
-	t.Helper()
-	home := os.Getenv("CODEX_HOME")
-	if err := os.MkdirAll(home, 0o700); err != nil {
-		t.Fatal(err)
+// fakeDaemon is a Codex app-server daemon outside every pane, running hooks
+// for any thread.
+type fakeDaemon struct {
+	h     *harness
+	cmd   *exec.Cmd
+	in    io.WriteCloser
+	lines *bufio.Scanner
+}
+
+func (h *harness) daemon() *fakeDaemon {
+	h.t.Helper()
+	cmd := exec.Command(filepath.Join(bin, "codex"), "app-server", "--listen", "unix://", "--managed-daemon")
+	cmd.Env = append(os.Environ(), "TMAG_BIN="+filepath.Join(bin, "tmag"))
+	in, err := cmd.StdinPipe()
+	if err != nil {
+		h.t.Fatal(err)
 	}
-	var b strings.Builder
-	for id, name := range names {
-		fmt.Fprintf(&b, `{"id":%q,"thread_name":%q,"updated_at":"2026-11-03T00:00:00Z"}`+"\n", id, name)
+	out, err := cmd.StdoutPipe()
+	if err != nil {
+		h.t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(home, "session_index.jsonl"), []byte(b.String()), 0o600); err != nil {
-		t.Fatal(err)
+	if err := cmd.Start(); err != nil {
+		h.t.Fatal(err)
+	}
+	h.t.Cleanup(func() {
+		_ = cmd.Process.Kill() // may be killed by the test already
+		_ = cmd.Wait()
+	})
+	return &fakeDaemon{h: h, cmd: cmd, in: in, lines: bufio.NewScanner(out)}
+}
+
+// hook runs one hook in the daemon and waits for it to finish.
+func (d *fakeDaemon) hook(payload map[string]any) {
+	d.h.t.Helper()
+	b, _ := json.Marshal(payload)
+	if _, err := d.in.Write(append(b, '\n')); err != nil {
+		d.h.t.Fatal(err)
+	}
+	if !d.lines.Scan() {
+		d.h.t.Fatal("daemon stopped")
 	}
 }
 
-func TestCodexDaemonBinding(t *testing.T) {
+// codexTitle renders a Codex 0.166 title with the thread-id item last.
+func codexTitle(name, id string) string { return name + " | repo | " + id[:29] + "..." }
+
+func TestCodexDaemonSessions(t *testing.T) {
 	h := start(t)
 	repo := filepath.Join(h.dir, "repo")
-	other := filepath.Join(h.dir, "other")
-	for _, dir := range []string{repo, other} {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			t.Fatal(err)
+	if err := os.MkdirAll(repo, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	d := h.daemon()
+	byID := h.spawn(repo, map[string]string{"FAKE_TITLE": codexTitle("⠋ Refactor parser", sidB)}, filepath.Join(bin, "codex"))
+	// A name alone proves nothing, even one that only this thread carries.
+	named := h.spawn(repo, map[string]string{"FAKE_TITLE": "Refactor parser | repo"}, filepath.Join(bin, "codex"))
+	h.waitPane(named, "", "")
+
+	// A session is tracked from its first hook, whether or not a pane shows it.
+	d.hook(map[string]any{"hook_event_name": "PermissionRequest", "session_id": sidC, "cwd": repo, "turn_id": "t1", "tool_name": "Bash"})
+	if s := h.waitSession(sidC, "blocked"); s.Kind != "permission" || s.Runtime != "service" || len(s.Panes) != 0 {
+		t.Fatalf("daemon session = %+v", s)
+	}
+	if r := h.tmag("", "list"); !strings.Contains(r.out, "/title") {
+		t.Fatalf("list does not explain how to show Codex threads:\n%s", r.out)
+	}
+
+	// The thread-id title item attaches the pane, before or after the hook.
+	d.hook(map[string]any{"hook_event_name": "Stop", "session_id": sidB, "cwd": repo, "turn_id": "t1"})
+	if _, s := h.waitPane(byID, "idle", "title-id"); s.ID != sidB || s.Turn != "t1" {
+		t.Fatalf("title-id pane shows %+v", s)
+	}
+	if p, _, _ := h.paneIn(named); p.Session != "" {
+		t.Fatalf("named pane attached to %s", p.Session)
+	}
+	if r := h.tmag("", "send", h.target(byID), "--json", "hello"); r.code != 0 {
+		t.Fatalf("send through title-id: %d %s", r.code, r.out)
+	}
+
+	// Watching a subagent: still the session's pane, but it takes no input.
+	sub := "0f000000-0000-7000-8000-00000000000f"
+	d.hook(map[string]any{"hook_event_name": "UserPromptSubmit", "session_id": sidB, "cwd": repo, "turn_id": "t2"})
+	d.hook(map[string]any{"hook_event_name": "Stop", "session_id": sidB, "cwd": repo, "turn_id": "t2"})
+	d.hook(map[string]any{"hook_event_name": "SubagentStart", "session_id": sidB, "cwd": repo, "turn_id": "t9", "agent_id": sub, "agent_type": "default"})
+	if s := h.waitSession(sidB, "working"); s.Kind != "background" || s.Turn != "t2" {
+		t.Fatalf("a running subagent after Stop: %+v", s)
+	}
+	d.hook(map[string]any{"hook_event_name": "SubagentStop", "session_id": sidB, "cwd": repo, "turn_id": "t9", "agent_id": sub})
+	h.waitSession(sidB, "idle")
+	h.tmux("select-pane", "-t", byID, "-T", codexTitle("sub", sub))
+	if p, _ := h.waitPane(byID, "idle", "title-id"); p.View != "subagent" || p.Session != sidB {
+		t.Fatalf("subagent view = %+v", p)
+	}
+	if r := h.tmag("", "send", h.target(byID), "hello"); r.code != 3 || !strings.Contains(r.out, "subagent") {
+		t.Fatalf("send to a subagent view: %d %s", r.code, r.out)
+	}
+
+	// Showing another thread moves the pane to it.
+	h.tmux("select-pane", "-t", byID, "-T", codexTitle("other", sidC))
+	h.tmag("", "status") // any reconciliation records the move
+	if _, s := h.waitPane(byID, "blocked", "title-id"); s.ID != sidC {
+		t.Fatalf("pane shows %s after switching threads", s.ID)
+	}
+	if !strings.HasSuffix(h.eventNames(sidB), "Detach:") || !strings.Contains(h.eventNames(sidC), "Attach:blocked") {
+		t.Fatalf("switch events: %s / %s", h.eventNames(sidB), h.eventNames(sidC))
+	}
+
+	// The daemon's threads end with it, SessionEnd or not.
+	if err := d.cmd.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	_ = d.cmd.Wait()
+	h.tmag("", "status")
+	for _, id := range []string{sidB, sidC} {
+		if got := h.eventNames(id); !strings.Contains(got, "Exit:") {
+			t.Fatalf("%s events after the daemon exited: %s", id, got)
 		}
 	}
-	writeIndex(t, map[string]string{sidB: "Refactor parser module", sidC: "Shared name", sidD: "Shared name"})
-
-	named := h.spawn(repo, map[string]string{"FAKE_TITLE": "⠋ Refactor parser module | repo"}, filepath.Join(bin, "codex"))
-	byID := h.spawn(other, map[string]string{"FAKE_TITLE": sidE[:29] + "... Working"}, filepath.Join(bin, "codex"))
-	shared := h.spawn(repo, map[string]string{"FAKE_TITLE": "Shared name"}, filepath.Join(bin, "codex"))
-	h.waitState(named, "unknown", "unbound")
-	h.waitState(shared, "unknown", "unbound")
-
-	h.externalHook("codex", map[string]any{"hook_event_name": "Stop", "session_id": sidB, "cwd": repo, "turn_id": "t1"})
-	if a := h.waitState(named, "idle", "title-name"); a.ID != sidB || a.Turn != "t1" {
-		t.Fatalf("named pane = %+v", a)
-	}
-
-	h.externalHook("codex", map[string]any{"hook_event_name": "PermissionRequest", "session_id": sidE, "cwd": repo, "turn_id": "t9"})
-	if a := h.waitState(byID, "blocked", "title-id"); a.Kind != "permission" {
-		t.Fatalf("title-id pane = %+v", a)
-	}
-
-	// A name shared by two threads proves nothing.
-	h.externalHook("codex", map[string]any{"hook_event_name": "Stop", "session_id": sidC, "cwd": repo, "turn_id": "t1"})
-	evs := h.events(sidC)
-	if len(evs) != 1 || evs[0].Binding != "unbound" || evs[0].Pane != nil {
-		t.Fatalf("shared-name events = %+v", evs)
-	}
-	if a, _ := h.agentIn(shared); a.Binding != "unbound" {
-		t.Fatalf("shared pane bound: %+v", a)
-	}
-
-	// Later events follow the established binding even if the title changes.
-	h.tmux("select-pane", "-t", named, "-T", "something else")
-	h.externalHook("codex", map[string]any{"hook_event_name": "UserPromptSubmit", "session_id": sidB, "cwd": repo, "turn_id": "t2"})
-	if a := h.waitState(named, "working", "session"); a.Turn != "t2" {
-		t.Fatalf("session-bound pane = %+v", a)
+	if v := h.view(); len(v.Sessions) != 0 {
+		t.Fatalf("sessions outlived their daemon: %+v", v.Sessions)
 	}
 }
 
-func TestDaemonInsidePaneDoesNotBind(t *testing.T) {
+func TestDaemonInsidePaneDoesNotAttach(t *testing.T) {
 	h := start(t)
 	// A Codex daemon started from a pane runs hooks for every thread; its
 	// pane ancestry must not attribute them to that pane.
 	pane := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidD, "FAKE_HOOKS": "1"}, filepath.Join(bin, "codex"), "app-server", "--managed-daemon")
-	h.eventually("daemon hook", func() bool { return len(h.events(sidD)) > 0 })
-	if evs := h.events(sidD); evs[0].Binding != "unbound" {
-		t.Fatalf("daemon hook bound: %+v", evs[0])
+	s := h.waitSession(sidD, "idle")
+	if len(s.Panes) != 0 || s.Runtime != "service" {
+		t.Fatalf("daemon session = %+v", s)
 	}
-	if _, ok := h.agentIn(pane); ok {
+	if _, _, ok := h.paneIn(pane); ok {
 		t.Fatal("daemon pane listed as an agent")
 	}
 }
@@ -408,6 +504,18 @@ func (w *watcher) next() map[string]any {
 	return nil
 }
 
+// until reads lines until one satisfies ok, and returns it.
+func (w *watcher) until(what string, ok func(doc map[string]any) bool) map[string]any {
+	w.t.Helper()
+	for range 20 {
+		if doc := w.next(); ok(doc) {
+			return doc
+		}
+	}
+	w.t.Fatalf("watch never reported %s", what)
+	return nil
+}
+
 // stop ends the watcher the way a disconnecting client would.
 func (w *watcher) stop() {
 	w.t.Helper()
@@ -419,6 +527,11 @@ func (w *watcher) stop() {
 	}
 }
 
+func eventOf(doc map[string]any) map[string]any {
+	ev, _ := doc["event"].(map[string]any)
+	return ev
+}
+
 func TestWatchResumes(t *testing.T) {
 	h := start(t)
 	w := h.watch()
@@ -427,7 +540,7 @@ func TestWatchResumes(t *testing.T) {
 	}
 	h.externalHook("claude", map[string]any{"hook_event_name": "Stop", "session_id": sidA, "cwd": h.dir})
 	doc := w.next()
-	ev, _ := doc["event"].(map[string]any)
+	ev := eventOf(doc)
 	if doc["type"] != "event" || ev["session"] != sidA || ev["state"] != "idle" {
 		t.Fatalf("event line = %v", doc)
 	}
@@ -435,10 +548,14 @@ func TestWatchResumes(t *testing.T) {
 
 	seq := int64(ev["seq"].(float64))
 	h.externalHook("claude", map[string]any{"hook_event_name": "UserPromptSubmit", "session_id": sidA, "cwd": h.dir, "prompt_id": "p2"})
-	doc = h.watch("--since", fmt.Sprint(seq)).next()
-	ev, _ = doc["event"].(map[string]any)
+	resumed := h.watch("--since", fmt.Sprint(seq))
+	doc = resumed.next()
+	ev = eventOf(doc)
 	if doc["type"] != "event" || ev["seq"].(float64) != float64(seq+1) || ev["state"] != "working" {
 		t.Fatalf("resumed line = %v", doc)
+	}
+	if doc := resumed.next(); doc["type"] != "panes" {
+		t.Fatalf("resumed watch did not send the pane list: %v", doc)
 	}
 
 	// A cursor the log cannot vouch for restarts from a snapshot.
@@ -447,75 +564,59 @@ func TestWatchResumes(t *testing.T) {
 	}
 }
 
-func TestWatchReportsAgentsThatChangeWithoutEvents(t *testing.T) {
+func TestWatchReportsWhatChangesWithoutHooks(t *testing.T) {
 	h := start(t)
 	w := h.watch()
-	agentsIn := func(doc map[string]any) []any {
-		if doc["type"] != "snapshot" {
-			t.Fatalf("expected a snapshot, got %v", doc)
-		}
-		list, _ := doc["agents"].([]any)
-		return list
+	if doc := w.next(); doc["type"] != "snapshot" || len(doc["panes"].([]any)) != 0 {
+		t.Fatalf("initial snapshot = %v", doc)
 	}
-	if n := len(agentsIn(w.next())); n != 0 {
-		t.Fatalf("initial snapshot lists %d agents", n)
+	// An agent whose hooks never run: only the pane list mentions it.
+	quiet := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA}, filepath.Join(bin, "claude"))
+	doc := w.until("the new pane", func(doc map[string]any) bool { return doc["type"] == "panes" })
+	if list := doc["panes"].([]any); len(list) != 1 || list[0].(map[string]any)["id"] != quiet {
+		t.Fatalf("pane list = %v", list)
 	}
-	// An agent whose hooks never run: no event will ever mention it.
-	pane := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA}, filepath.Join(bin, "claude"))
-	list := agentsIn(w.next())
-	if len(list) != 1 || list[0].(map[string]any)["pane"].(map[string]any)["id"] != pane {
-		t.Fatalf("new agent missing: %v", list)
-	}
-	h.tmux("kill-pane", "-t", pane)
-	if list := agentsIn(w.next()); len(list) != 0 {
+	h.tmux("kill-pane", "-t", quiet)
+	doc = w.until("the closed pane", func(doc map[string]any) bool { return doc["type"] == "panes" })
+	if list := doc["panes"].([]any); len(list) != 0 {
 		t.Fatalf("closed pane still listed: %v", list)
 	}
-	w.stop()
-}
 
-func TestWatchReportsSubmittedPromptsThatStartNoTurn(t *testing.T) {
-	h := start(t)
-	pane := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_HOOKS": "1"}, filepath.Join(bin, "claude"))
-	h.waitState(pane, "idle", "process")
-	// A prompt submitted 14s ago that started no turn, say a slash command:
-	// it shows as working until its window passes, with no event either way.
-	sent := time.Now().Add(-query.PendingWindow + time.Second).Unix()
-	h.tmux("set-option", "-p", "-t", pane, "@tmag_sent", fmt.Sprint(sent))
-	w := h.watch()
-	stateIn := func(doc map[string]any) string {
-		list, _ := doc["agents"].([]any)
-		if doc["type"] != "snapshot" || len(list) != 1 {
-			t.Fatalf("expected a snapshot of one agent, got %v", doc)
+	// An agent killed without SessionEnd: its pane detaches and its session
+	// exits, as events.
+	claude := filepath.Join(bin, "claude")
+	pane := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidB, "FAKE_HOOKS": "1"}, "sh", "-c", claude+"; sleep 60")
+	h.waitPane(pane, "idle", "process")
+	if err := exec.Command("pkill", "-KILL", "-f", "^"+claude+"$").Run(); err != nil {
+		t.Fatalf("pkill: %v", err)
+	}
+	seen := map[string]bool{}
+	w.until("detach and exit", func(doc map[string]any) bool {
+		if ev := eventOf(doc); ev != nil && ev["session"] == sidB {
+			seen[ev["event"].(string)] = true
 		}
-		a := list[0].(map[string]any)
-		return fmt.Sprint(a["state"], "/", a["kind"])
-	}
-	if got := stateIn(w.next()); got != "working/submitted" {
-		t.Fatalf("initial snapshot: %s", got)
-	}
-	if got := stateIn(w.next()); got != "idle/<nil>" {
-		t.Fatalf("after the window: %s", got)
-	}
+		return seen["Detach"] && seen["Exit"]
+	})
 	w.stop()
 }
 
-func TestRestartedAgentDoesNotInheritRecord(t *testing.T) {
+func TestRestartedAgentDoesNotInheritTheSession(t *testing.T) {
 	h := start(t)
 	out := filepath.Join(h.dir, "received")
 	claude := filepath.Join(bin, "claude")
 	pane := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_HOOKS": "1", "FAKE_OUT": out},
 		"sh", "-c", claude+"; FAKE_HOOKS=0 FAKE_SESSION= "+claude)
-	h.waitState(pane, "idle", "process")
+	h.waitPane(pane, "idle", "process")
 	// Kill the first agent without SessionEnd; the shell starts a silent one.
 	if err := exec.Command("pkill", "-KILL", "-o", "-f", "^"+claude+"$").Run(); err != nil {
 		t.Fatalf("pkill: %v", err)
 	}
-	a := h.waitState(pane, "unknown", "unbound")
-	if a.ID != "" {
-		t.Fatalf("restarted agent shows the old session: %+v", a)
-	}
+	h.waitPane(pane, "", "")
 	if r := h.tmag("", "send", sidA[:8], "hello"); r.code == 0 {
 		t.Fatalf("send reached a replaced agent: %s", r.out)
+	}
+	if r := h.tmag("", "send", h.target(pane), "hello"); r.code != 3 {
+		t.Fatalf("send to the replacement: %d %s", r.code, r.out)
 	}
 	if b, _ := os.ReadFile(out); len(b) != 0 {
 		t.Fatalf("replaced agent received %q", b)
@@ -527,7 +628,7 @@ func TestSendAndHooksStayOrdered(t *testing.T) {
 	// hooks race the sender's own bookkeeping.
 	h := start(t)
 	pane := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_HOOKS": "1", "FAKE_TURN_MS": "0"}, filepath.Join(bin, "claude"))
-	h.waitState(pane, "idle", "process")
+	h.waitPane(pane, "idle", "process")
 	for i := range 8 {
 		r := h.tmag("", "send", sidA[:8], "--wait", "--json", "--timeout", "10s", fmt.Sprintf("prompt %d", i))
 		var res struct {
@@ -540,13 +641,14 @@ func TestSendAndHooksStayOrdered(t *testing.T) {
 		}
 		// The finished turn leaves no pending prompt behind: the agent takes
 		// the next one at once.
-		if a, _ := h.agentIn(pane); a.State != "idle" || a.Kind != "" {
-			t.Fatalf("after send %d the agent is %s (%s)", i, a.State, a.Kind)
+		if s, _ := h.sessionOf(sidA); s.State != "idle" || s.Kind != "" {
+			t.Fatalf("after send %d the session is %s (%s)", i, s.State, s.Kind)
 		}
 	}
 	var order []string
 	for _, e := range h.events(sidA) {
-		if e.Event != "SessionStart" {
+		switch e.Event {
+		case "Send", "UserPromptSubmit", "Stop":
 			order = append(order, e.Event)
 		}
 	}
@@ -560,22 +662,22 @@ func TestSendAndHooksStayOrdered(t *testing.T) {
 	}
 }
 
-func TestHooksWaitForThePaneLock(t *testing.T) {
-	// A sender holds the pane lock from delivery until its Send event is
-	// logged; a hook arriving meanwhile must not update the record under it.
+func TestHooksWaitForTheSessionLock(t *testing.T) {
+	// A sender holds the session lock from delivery until its Send event is
+	// logged; a hook arriving meanwhile must not update the session under it.
 	h := start(t)
 	pane := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_HOOKS": "1"}, filepath.Join(bin, "claude"))
-	a := h.waitState(pane, "idle", "process")
+	h.waitPane(pane, "idle", "process")
 	payload, _ := json.Marshal(map[string]any{"hook_event_name": "UserPromptSubmit", "session_id": sidA, "prompt_id": "p1"})
 	hook := exec.Command(filepath.Join(bin, "tmag"), "hook", "claude")
 	hook.Stdin = bytes.NewReader(payload)
-	err := registry.Lock(context.Background(), h.state, a.Pane.Server, pane, func() error {
+	err := session.Store{Dir: h.state}.Lock(context.Background(), "claude", sidA, func() error {
 		if err := hook.Start(); err != nil {
 			return err
 		}
 		time.Sleep(500 * time.Millisecond)
-		if a, _ := h.agentIn(pane); a.State != "idle" {
-			return fmt.Errorf("hook updated a locked pane: %s", a.State)
+		if s, _ := h.sessionOf(sidA); s.State != "idle" {
+			return fmt.Errorf("hook updated a locked session: %s", s.State)
 		}
 		return nil
 	})
@@ -585,8 +687,8 @@ func TestHooksWaitForThePaneLock(t *testing.T) {
 	if err := hook.Wait(); err != nil {
 		t.Fatal(err)
 	}
-	if a := h.waitState(pane, "working", "session"); a.Turn != "p1" {
-		t.Fatalf("turn = %q", a.Turn)
+	if s := h.waitSession(sidA, "working"); s.Turn != "p1" {
+		t.Fatalf("turn = %q", s.Turn)
 	}
 }
 
@@ -594,12 +696,12 @@ func TestSendRefusesSuspendedAgent(t *testing.T) {
 	h := start(t)
 	pane := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_HOOKS": "1"}, "bash", "--norc", "--noprofile", "-i")
 	h.tmux("send-keys", "-t", pane, filepath.Join(bin, "claude"), "Enter")
-	h.waitState(pane, "idle", "process")
-	// Ctrl-Z: the agent keeps its pid and record, but bash owns the terminal.
+	h.waitPane(pane, "idle", "process")
+	// Ctrl-Z: the agent keeps its pid and attachment, but bash owns the terminal.
 	h.tmux("send-keys", "-t", pane, "C-z")
 	h.eventually("bash in the foreground", func() bool {
-		a, ok := h.agentIn(pane)
-		return ok && a.Pane.Command == "bash" && a.State == "idle"
+		p, s, ok := h.paneIn(pane)
+		return ok && p.Command == "bash" && s.State == "idle"
 	})
 	marker := filepath.Join(h.dir, "ran-in-shell")
 	r := h.tmag("", "send", sidA[:8], "touch "+marker)
@@ -613,15 +715,15 @@ func TestSendRefusesSuspendedAgent(t *testing.T) {
 	// Back in the foreground, the same agent accepts the prompt.
 	h.tmux("send-keys", "-t", pane, "fg", "Enter")
 	h.eventually("claude in the foreground", func() bool {
-		a, ok := h.agentIn(pane)
-		return ok && a.Pane.Command == "claude"
+		p, _, ok := h.paneIn(pane)
+		return ok && p.Command == "claude"
 	})
 	if r := h.tmag("", "send", sidA[:8], "--wait", "hello"); r.code != 0 {
 		t.Fatalf("send after fg: %d %s", r.code, r.out)
 	}
 }
 
-func TestStaleRecordIsClearedForTmuxDisplays(t *testing.T) {
+func TestStaleAttachmentIsClearedForTmuxDisplays(t *testing.T) {
 	// Pane borders and the picker read @tmag_* options straight from tmux,
 	// checking only that the pane still runs a command of the recorded name.
 	for trigger, clear := range map[string]func(h *harness){
@@ -639,20 +741,20 @@ func TestStaleRecordIsClearedForTmuxDisplays(t *testing.T) {
 			claude := filepath.Join(bin, "claude")
 			pane := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_HOOKS": "1"},
 				"sh", "-c", claude+"; FAKE_HOOKS=0 FAKE_SESSION= "+claude)
-			h.waitState(pane, "idle", "process")
+			h.waitPane(pane, "idle", "process")
 			h.tmux("send-keys", "-t", pane, "block", "Enter")
-			h.waitState(pane, "blocked", "process")
+			h.waitPane(pane, "blocked", "process")
 			// Killed while blocked, without SessionEnd; a silent claude follows.
 			if err := exec.Command("pkill", "-KILL", "-o", "-f", "^"+claude+"$").Run(); err != nil {
 				t.Fatalf("pkill: %v", err)
 			}
-			h.waitState(pane, "unknown", "unbound")
+			h.waitPane(pane, "", "")
 			display := "#{?#{==:#{pane_current_command},#{@tmag_cmd}},#{@tmag_state},}"
 			if got := h.tmux("display-message", "-p", "-t", pane, display); got != "blocked" {
 				t.Fatalf("precondition: tmux shows %q", got)
 			}
 			clear(h)
-			h.eventually("the stale record to be cleared", func() bool {
+			h.eventually("the stale attachment to be cleared", func() bool {
 				return h.tmux("display-message", "-p", "-t", pane, display) == ""
 			})
 		})
@@ -663,12 +765,11 @@ func TestSendCannotEscapeBracketedPaste(t *testing.T) {
 	h := start(t)
 	out := filepath.Join(h.dir, "received")
 	pane := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_HOOKS": "1", "FAKE_OUT": out}, filepath.Join(bin, "claude"))
-	h.waitState(pane, "idle", "process")
+	h.waitPane(pane, "idle", "process")
 	payload := "abc\x1b[201~INJECT\rmore\x07"
 	if r := h.tmag(payload, "send", h.target(pane), "--wait"); r.code != 0 {
 		t.Fatalf("send: %d %s", r.code, r.out)
 	}
-	h.waitState(pane, "idle", "process")
 	got, _ := os.ReadFile(out)
 	if strings.ContainsRune(string(got), 0x1b) || strings.ContainsRune(string(got), 0x07) {
 		t.Fatalf("control characters reached the agent: %q", got)
@@ -686,16 +787,16 @@ func TestPaneFieldsCannotBeForged(t *testing.T) {
 		t.Fatal(err)
 	}
 	pane := h.spawn(evil, map[string]string{}, filepath.Join(bin, "codex"))
-	a := h.waitState(pane, "unknown", "unbound")
-	if a.ID != "" || strings.ContainsRune(a.Pane.Cwd, 0x1f) {
-		t.Fatalf("forged fields: %+v", a)
+	p, _ := h.waitPane(pane, "", "")
+	if p.Session != "" || strings.ContainsRune(p.Cwd, 0x1f) {
+		t.Fatalf("forged fields: %+v", p)
 	}
 }
 
 func TestSymlinkedSocketDirListsEachServerOnce(t *testing.T) {
 	h := start(t)
 	pane := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_HOOKS": "1"}, filepath.Join(bin, "claude"))
-	h.waitState(pane, "idle", "process")
+	h.waitPane(pane, "idle", "process")
 	link := filepath.Join(h.dir, "tmpdir-link")
 	if err := os.Symlink(os.Getenv("TMUX_TMPDIR"), link); err != nil {
 		t.Fatal(err)
@@ -705,9 +806,8 @@ func TestSymlinkedSocketDirListsEachServerOnce(t *testing.T) {
 	sock := strings.Split(h.tmux("display-message", "-p", "#{socket_path}"), "\n")[0]
 	t.Setenv("TMUX", filepath.Join(link, filepath.Base(filepath.Dir(sock)), filepath.Base(sock))+",1,0")
 	defer os.Unsetenv("TMUX")
-	agents := h.agents()
-	if len(agents) != 1 {
-		t.Fatalf("listed %d agents: %+v", len(agents), agents)
+	if v := h.view(); len(v.Panes) != 1 || len(v.Sessions) != 1 || len(v.Sessions[0].Panes) != 1 {
+		t.Fatalf("listed %+v", v)
 	}
 	if r := h.tmag("", "send", sidA[:8], "hi"); r.code != 0 {
 		t.Fatalf("send by id: %d %s", r.code, r.out)
@@ -720,9 +820,12 @@ func TestWorksWithoutUTF8Locale(t *testing.T) {
 	// output unless tmag asks for UTF-8 itself.
 	t.Setenv("LANG", "C")
 	t.Setenv("LC_ALL", "C")
-	pane := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_HOOKS": "1", "FAKE_TITLE": "✳ Claude Code"}, filepath.Join(bin, "claude"))
-	a := h.waitState(pane, "idle", "process")
-	if a.Pane.Title != "✳ Claude Code" {
-		t.Fatalf("title = %q", a.Pane.Title)
+	dir := filepath.Join(h.dir, "✳ 项目")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	pane := h.spawn(dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_HOOKS": "1"}, filepath.Join(bin, "claude"))
+	if p, _ := h.waitPane(pane, "idle", "process"); p.Cwd != dir {
+		t.Fatalf("cwd = %q", p.Cwd)
 	}
 }

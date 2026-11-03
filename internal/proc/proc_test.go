@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -31,11 +32,70 @@ func TestAgentKind(t *testing.T) {
 		{"codex", "codex -C /work --yolo exec-server", ""},
 		{"codex", "codex -c model=example resume --last", Codex},
 		{"codex", "codex -m app-server", Codex}, // a model value, not a subcommand
+		// Claude Code 2.1.317's background supervisor and its session hosts.
+		{"claude", "/home/me/.local/bin/claude daemon run --origin transient", ""},
+		{"claude", "claude bg-pty-host --bg-pty-host /tmp/cc-daemon-1000/x/pty/1.sock 200 50 --", ""},
+		{"claude", "claude bg-spare --bg-spare /tmp/cc-daemon-1000/x/spare/1.claim.sock", ""},
+		{"claude", "claude attach 21352afc", Claude},
+		{"claude", "claude agents", Claude},
+		{"2.1.317", "/home/me/.local/share/claude/versions/2.1.317 --session-id s1", ""},
 		{"zsh", "-zsh", ""},
 	} {
 		if got := AgentKind(Process{Comm: c.comm, Args: c.args}); got != c.want {
 			t.Errorf("AgentKind(%q, %q) = %q, want %q", c.comm, c.args, got, c.want)
 		}
+	}
+}
+
+func TestHostOf(t *testing.T) {
+	pt := NewTable([]Process{
+		{PID: 1, Comm: "init"},
+		// An interactive Claude Code in a pane.
+		{PID: 10, PPID: 1, Comm: "zsh", Args: "-zsh"},
+		{PID: 11, PPID: 10, Comm: "claude", Args: "claude"},
+		{PID: 12, PPID: 11, Comm: "sh", Args: "sh -c tmag hook claude"},
+		{PID: 13, PPID: 12, Comm: "tmag", Args: "tmag hook claude"},
+		// A background session under the supervisor.
+		{PID: 20, PPID: 1, Comm: "claude", Args: "claude daemon run --origin transient"},
+		{PID: 21, PPID: 20, Comm: "claude", Args: "claude bg-pty-host --bg-pty-host /tmp/x.sock 200 50 --"},
+		{PID: 22, PPID: 21, Comm: "2.1.317", Args: "/v/2.1.317 --session-id s2"},
+		{PID: 23, PPID: 22, Comm: "tmag", Args: "tmag hook claude"},
+		// A Codex thread in the shared daemon.
+		{PID: 30, PPID: 1, Comm: "codex", Args: "codex app-server --listen unix:// --managed-daemon"},
+		{PID: 31, PPID: 30, Comm: "sh", Args: "/bin/zsh -lc tmag hook codex"},
+	})
+	for _, c := range []struct {
+		pid  int
+		host int
+		kind string
+		role Role
+	}{
+		{13, 11, Claude, Terminal},
+		{23, 21, Claude, Service},
+		{31, 30, Codex, Service},
+	} {
+		h, ok := pt.HostOf(c.pid)
+		if !ok || h.Process.PID != c.host || h.Kind != c.kind || h.Role != c.role {
+			t.Errorf("HostOf(%d) = %+v, %v", c.pid, h, ok)
+		}
+	}
+	if _, ok := pt.HostOf(10); ok {
+		t.Error("a shell has a host")
+	}
+}
+
+func TestAliveComparesStart(t *testing.T) {
+	pt := NewTable([]Process{{PID: 5, Start: "100"}})
+	if !pt.Alive(5, "100") || !pt.Alive(5, "") || pt.Alive(5, "99") || pt.Alive(6, "") {
+		t.Fatal("Alive does not tell a reused pid apart")
+	}
+	self, err := Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	me, ok := self.Get(os.Getpid())
+	if !ok || me.Start == "" || !Running(me.PID, me.Start) || Running(me.PID, me.Start+"0") {
+		t.Fatalf("own start %q not read back", me.Start)
 	}
 }
 
@@ -94,14 +154,14 @@ func TestSnapshotFindsSelf(t *testing.T) {
 	}
 }
 
-func TestPSFallbackReadsProcessGroups(t *testing.T) {
+func TestPSFallbackReadsProcessGroupsAndStart(t *testing.T) {
 	ps, err := readPS()
 	if err != nil {
 		t.Skipf("ps unavailable: %v", err)
 	}
 	for _, p := range ps {
 		if p.PID == os.Getpid() {
-			if p.PGID <= 0 || p.Comm == "" {
+			if p.PGID <= 0 || p.Comm == "" || len(strings.Fields(p.Start)) != 5 || !strings.Contains(p.Args, "proc.test") {
 				t.Fatalf("own row parsed as %+v", p)
 			}
 			return

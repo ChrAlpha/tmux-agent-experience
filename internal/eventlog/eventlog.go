@@ -27,7 +27,9 @@ type PaneRef struct {
 	ID     string `json:"id"`
 }
 
-// Event is one line of the log.
+// Event is one line of the log: a session's state changed (Event names the
+// hook), tmag sent it a prompt, a pane started or stopped showing it, or it
+// ended.
 type Event struct {
 	Seq     int64     `json:"seq"`
 	Time    time.Time `json:"time"`
@@ -38,11 +40,26 @@ type Event struct {
 	Kind    string    `json:"kind,omitempty"`
 	Turn    string    `json:"turn,omitempty"`
 	Cwd     string    `json:"cwd,omitempty"`
-	Pane    *PaneRef  `json:"pane,omitempty"`
-	Binding string    `json:"binding"`
-	From    *PaneRef  `json:"from,omitempty"`
-	Bytes   int       `json:"bytes,omitempty"`
+	// Pane is the pane an Attach, Detach or Send is about.
+	Pane *PaneRef `json:"pane,omitempty"`
+	// Evidence is what an Attach rests on.
+	Evidence string `json:"evidence,omitempty"`
+	// From is the pane a Send came from, and Bytes the prompt's size.
+	From  *PaneRef `json:"from,omitempty"`
+	Bytes int      `json:"bytes,omitempty"`
 }
+
+// Events tmag itself records, beside those named after agent hooks.
+const (
+	Send   = "Send"   // tmag submitted a prompt to the session
+	Attach = "Attach" // a pane started showing the session
+	Detach = "Detach" // a pane stopped showing the session
+	Exit   = "Exit"   // the session's process ended without SessionEnd
+	End    = "SessionEnd"
+)
+
+// Ended reports whether e ends its session.
+func (e Event) Ended() bool { return e.Event == End || e.Event == Exit }
 
 const (
 	currentName = "events.jsonl"

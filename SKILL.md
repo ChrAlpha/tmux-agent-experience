@@ -127,11 +127,19 @@ their state.
 3. Tell the user to end this session and start a fresh one in a tmux pane;
    hooks load at session start. In Codex, they approve tmag's hooks with
    `/hooks`.
-4. In the fresh session, `"$TMAG" doctor` should show the plugin loaded and the
-   agent plugin enabled, and `"$TMAG" list` should show that pane:
-   - Claude Code: state `idle`, binding `process`, right away.
-   - Codex with its shared daemon: after the first turn, binding `title-name`.
-     Until then the pane shows `unknown` / `unbound`, which is expected.
+4. **Codex only:** Codex runs threads in a shared daemon, where only the
+   terminal title can show which pane displays which thread. Ask the user to
+   run `/title` in Codex once and turn on `thread-id`; Codex saves the choice
+   itself. Do not edit Codex's configuration for them. Codex started with
+   `--no-daemon` needs no setting.
+5. In the fresh session, `"$TMAG" doctor` should show the plugin loaded and the
+   agent plugin enabled, and `"$TMAG" list` should show that pane with the
+   session's id:
+   - Claude Code: state `idle` right away; `list --json` gives the pane
+     evidence `process`.
+   - Codex: after the first prompt, evidence `title-id` (or `process` with
+     `--no-daemon`). Before it the pane shows `unknown` without an id, which
+     is expected.
 
 Report the final `tmag doctor` lines, and tell the user about the keys:
 `prefix + A` jumps to the agent waiting longest, `prefix + a` lists agents,
@@ -149,7 +157,7 @@ status line.
 | `setup` fails on a plugin command | Read the error verbatim. An unknown flag means an outdated host: ask the user to update Claude Code or Codex. |
 | `doctor`: Codex hooks not approved, or Codex agents stay `unknown` after a plugin update although an approval is found | Codex honours an approval only for the hooks it was given for. After a restart, approve them in Codex with `/hooks`. |
 | `doctor`: hook errors recorded | Report the latest line; it names the failure. |
-| `tmag list` shows the agent `unbound` long after a turn | For Codex, the pane title may not show the thread name (a custom `[tui] terminal_title`). Adding `thread-id` to it binds immediately; that edit is the user's to make. |
+| `tmag list` shows a Codex pane without an id long after a turn, and the session on its own row | The terminal title lacks the thread id. The user runs `/title` in Codex and turns on `thread-id`; the pane attaches at once. |
 
 ## Uninstall
 

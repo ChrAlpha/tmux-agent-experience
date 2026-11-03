@@ -50,8 +50,10 @@ func (p Pane) Target() string {
 // OptionPrefix scopes every pane option owned by tmag.
 const OptionPrefix = "@tmag_"
 
-// OptionKeys lists every pane option tmag reads or writes, without the prefix.
-var OptionKeys = []string{"agent", "session", "pid", "state", "kind", "pending", "base", "calls", "turn", "since", "sent", "bind", "cmd"}
+// OptionKeys lists every pane option tmag reads or writes, without the
+// prefix: the attachment (agent, session, pid, start, evidence) and the
+// display projection (state, kind, since, cmd).
+var OptionKeys = []string{"agent", "session", "pid", "start", "evidence", "state", "kind", "since", "cmd"}
 
 const sep = "\x1f"
 

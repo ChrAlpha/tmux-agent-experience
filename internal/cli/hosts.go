@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/binpath"
-	"github.com/ChrAlpha/tmux-agent-experience/internal/codexidx"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
 )
 
@@ -122,7 +121,7 @@ func walkJSON(v any, fn func(map[string]any)) {
 // codexHookApproval looks for approved hook-state entries of the plugin in
 // config.toml. Only the table headers and their trust lines are inspected.
 func codexHookApproval() bool {
-	data, err := os.ReadFile(filepath.Join(codexidx.Home(), "config.toml"))
+	data, err := os.ReadFile(filepath.Join(codexHome(), "config.toml"))
 	if err != nil {
 		return false
 	}
@@ -146,6 +145,18 @@ func codexHookApproval() bool {
 }
 
 // codexDaemon finds Codex's managed app-server daemon.
+// codexHome is $CODEX_HOME or ~/.codex.
+func codexHome() string {
+	if h := os.Getenv("CODEX_HOME"); h != "" {
+		return h
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".codex")
+}
+
 func codexDaemon() (int, bool) {
 	pt, err := proc.Snapshot()
 	if err != nil {

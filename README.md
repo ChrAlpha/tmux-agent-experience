@@ -63,7 +63,8 @@ the same procedure, readable by people. Use the same prompt to update.
    checks the result.
 
 3. Start new agent sessions in tmux panes. In Codex, approve tmag's hooks with
-   `/hooks`.
+   `/hooks`, and run `/title` once to turn on `thread-id` (see
+   [Sessions and panes](#sessions-and-panes)).
 
 Without TPM, clone the repository and run its entry point from tmux.conf:
 
@@ -109,87 +110,106 @@ TARGET     PANE  AGENT   STATE                FOR  ID        CWD
 work:1.0   %3    claude  blocked (permission) 12s  1787a44e  ~/src/api
 work:2.0   %7    codex   idle                 4m   01a19fda  ~/src/web
 work:3.0   %9    codex   unknown              -    -         ~/src/web
+-          -     claude  working (background) 2m   5c2e90b1  ~/src/api
 
 $ tmag send 01a19fda --wait "Review the diff in HEAD and list risky changes"
 01a19fda idle
 
 $ tmag read %3 --lines 40      # recent pane output
-$ tmag wait 1787 --for idle    # block until the agent is idle
-$ tmag watch                   # JSON lines: a snapshot, then every event
+$ tmag wait 1787 --for idle    # block until the session is idle
+$ tmag watch                   # JSON lines: a snapshot, then every change
 ```
 
-A target is an agent id or a unique prefix of at least 4 characters, a pane id
-`%N` on the current tmux server, or `SERVER:%N` with a socket name (as for
-`tmux -L`) or path.
+Each row is a pane running an agent, followed by sessions no pane shows,
+such as a Claude Code background session. A target is a pane id `%N` on the
+current tmux server, `SERVER:%N` with a socket name (as for `tmux -L`) or
+path, or a session id or a unique prefix of at least 4 characters.
 
 ### States
 
+A session's state comes from its agent's hooks alone, wherever the session
+runs:
+
 | State | Meaning |
 | --- | --- |
-| `working` | A turn is running. Kind `background` means the turn ended but background tasks still run. |
-| `blocked` | The agent waits for you. Kind `permission` (tool or network approval) or `question`. It stays blocked until every open prompt, from the agent or any of its subagents, is answered. A prompt closes once no call of the tool it asked about is still running in the agent that asked, once that agent's batch of tool calls resolves or the agent stops, or when the turn ends; a background subagent's prompt outlives the main agent's turn while the subagent runs. A prompt known only from Claude's delayed permission notification, such as a sandboxed command's network request, names neither, and the next finished tool closes it. Once no prompt is open the agent is `working` again, with kind `background` if its turn had ended. |
+| `working` | A turn is running. Kind `background` means the main agent's turn ended while subagents or background tasks still run. |
+| `blocked` | The session waits for you. Kind `permission` (tool or network approval) or `question`. It stays blocked until every open prompt, from the agent or any of its subagents, is answered. A prompt closes once no call of the tool it asked about is still running in the agent that asked, once that agent's calls settle or the agent stops, or when the main agent's turn ends; a prompt of a subagent still running outlives that turn. A prompt known only from Claude's delayed permission notification, such as a sandboxed command's network request, names neither, and the next finished tool closes it. |
 | `idle` | Waiting for the next prompt. Kind `error` after a failed turn. |
-| `unknown` | An agent process is running but has reported nothing yet (startup, trust dialogs, plugin not installed), including an agent restarted in a pane whose previous agent never reported its exit. |
+| `unknown` | Reported by nothing yet. A pane shows `unknown` while its agent has not reported (startup, trust dialogs, plugin not installed) or tmag has no proof of the session it shows. |
 
-### Identity
+A session ends with its agent's `SessionEnd`, or when the process it runs in
+exits without one.
 
-Every agent row carries a `binding`, the evidence that ties its session to its
-pane:
+### Sessions and panes
 
-| Binding | Evidence |
+A session and the panes that show it are separate. A Claude Code session
+runs in its terminal's own process, and so does Codex started with
+`--no-daemon`; by default Codex runs every thread in a shared daemon, and
+Claude Code runs background sessions under its supervisor. Their hooks then
+come from a process no terminal owns, with an environment that names no pane,
+so `tmag` never trusts `$TMUX_PANE`. A pane shows a session only on evidence:
+
+| Evidence | Proof |
 | --- | --- |
-| `process` | The hook descends from the pane's own agent process. Claude Code, and Codex run with `--no-daemon`. |
-| `title-id` | Codex: the pane's title shows the thread id (`[tui] terminal_title` with `thread-id`). |
-| `session` | The pane's current agent process already carries this session, and for Codex its title does not show another thread. |
-| `title-name` | Codex: the pane runs Codex in the session's directory and its title shows the thread's name the way Codex displays it (truncated past 48 characters), which no other thread's name displays as. |
-| `unbound` | No proof. The agent is listed, but `send` and `wait` refuse it. |
+| `process` | The session's hooks descend from the pane's own agent process. Claude Code, and Codex run with `--no-daemon`. |
+| `title-id` | Codex: the pane's terminal title shows the thread id. |
 
-By default Codex runs threads in a shared app-server daemon, which also runs
-their hooks, so a hook cannot tell which terminal a thread is shown in. `tmag`
-never trusts `$TMUX_PANE` for that reason; it matches the Codex title instead.
-A new Codex thread is named after its first turn, so it binds when that turn
-ends. Adding `thread-id` to Codex's terminal title binds it immediately:
+The attachment holds while the same agent process (pid and start time) runs
+in the pane and, for Codex, while its title shows the session. A Codex pane
+that shows one of the session's subagents stays attached with view
+`subagent`. Bells, `prefix + A`, the pane border and `send` act only on
+attached panes; tmux's displays cannot show doubt, so a guess is never shown
+as a fact. Thread names prove nothing: they come from prompts and repeat.
+
+For Codex in its shared daemon, turn on the `thread-id` title item once: run
+`/title` in Codex and select `thread-id`. Codex saves the choice in its own
+configuration. Until then, Codex sessions are listed with their state, and
+Codex panes show `unknown`. The equivalent setting, for people who edit by
+hand:
 
 ```toml
 [tui]
-terminal_title = ["thread-id", "activity", "thread-name", "project-name"]
+terminal_title = ["activity", "thread-name", "project-name", "thread-id"]
 ```
+
+A pane that runs `claude attach` shows a background session tmag cannot
+prove, and so shows `unknown`; the session is listed on its own row.
 
 ### Sending safely
 
-`tmag send` delivers a prompt only to a bound, idle agent that holds its
-terminal. Right before typing it re-checks, under a per-pane lock, that the
-same agent process still runs the same session, is idle, and is the pane's
-foreground process group. A busy agent is refused rather than queued, so a
-turn's id always belongs to the prompt that started it; a suspended or
-backgrounded agent is refused, so a prompt never reaches the shell that took
-the terminal over.
+`tmag send` delivers a prompt to an idle session through the one pane that
+shows it, by `process` or `title-id`, when that pane's agent holds its
+terminal and shows the main agent. Right before typing it re-checks all of
+that under the pane's lock and then the session's. A busy session is refused
+rather than queued, so a turn's id always belongs to the prompt that started
+it; a suspended or backgrounded agent is refused, so a prompt never reaches
+the shell that took the terminal over; a Codex pane showing a subagent, which
+takes no input, is refused. A session shown by several panes needs a pane
+target.
 
 Delivery is a bracketed paste followed by Enter. Control characters are
 removed first, so relayed text cannot end the paste early or press keys.
 
-Agent hooks update a pane's record under the same lock, so the turn a prompt
-starts is always logged after its `Send` event and never overwritten by the
-sender. After delivery the agent shows as `working (submitted)` and further
-sends are refused until the agent's own hook confirms the turn by starting it.
-`send --wait` waits for that turn to end; input that starts no turn, such as a
-slash command, releases the agent after 15 seconds, and `send --wait` then
+Hooks update a session under the same session lock, so the turn a prompt
+starts is always logged after its `Send` event. Further sends are refused
+until the agent's own hook confirms the turn by starting it. `send --wait`
+waits for that turn to end; input that starts no turn, such as a slash
+command, releases the session after 15 seconds, and `send --wait` then
 reports `"started": false`.
 
-`wait` and `send --wait` end with error code `ended` when the session ends or
-the agent leaves its pane.
+`wait` and `send --wait` end with error code `ended` when the session ends.
 
 ## Machine contract
 
 Every JSON document carries `"schema": "tmag/v1"`.
 
-`tmag list --json`:
+`tmag list --json` gives every session and every pane running an agent:
 
 ```json
 {
   "schema": "tmag/v1",
   "seq": 42,
-  "agents": [
+  "sessions": [
     {
       "id": "1787a44e-244c-4c3c-aeea-40a74ff7ef8c",
       "agent": "claude",
@@ -197,37 +217,57 @@ Every JSON document carries `"schema": "tmag/v1"`.
       "kind": "permission",
       "turn": "00161c25-78f9-4c24-8799-5ed63c406153",
       "since": "2026-11-03T05:20:28Z",
-      "binding": "process",
-      "pane": {
-        "server": "/tmp/tmux-1000/default",
-        "id": "%3",
-        "target": "work:1.0",
-        "cwd": "/home/me/src/api",
-        "title": "…",
-        "command": "claude"
-      }
+      "cwd": "/home/me/src/api",
+      "runtime": "terminal",
+      "panes": [
+        { "server": "/tmp/tmux-1000/default", "id": "%3", "evidence": "process", "view": "main" }
+      ]
+    }
+  ],
+  "panes": [
+    {
+      "server": "/tmp/tmux-1000/default",
+      "id": "%3",
+      "target": "work:1.0",
+      "cwd": "/home/me/src/api",
+      "command": "claude",
+      "agent": "claude",
+      "session": "1787a44e-244c-4c3c-aeea-40a74ff7ef8c",
+      "evidence": "process",
+      "view": "main"
     }
   ]
 }
 ```
 
-`tmag watch` prints one JSON document per line: first
-`{"type":"snapshot","seq":N,"agents":[…]}`, then
-`{"type":"event","event":{…}}` for every event after `seq`. Events carry `seq`,
-`time`, `agent`, `session`, `event` (the hook name, or `Send`), `state`,
-`kind`, `turn`, `cwd`, `pane`, `binding`, and for `Send` the sending pane
-(`from`) and the prompt size (`bytes`). After a disconnect,
-`tmag watch --since <last seq>` replays what was missed, or starts over with a
-new snapshot if those events were already rotated away.
+`runtime` is `terminal` for a session in its terminal's own agent process and
+`service` for one in a background service (the Codex daemon, Claude Code's
+supervisor). A pane without `session` runs an agent tmag has no proof for.
 
-The list also changes without events: a pane is closed, an agent is killed or
-has not reported yet, a submitted prompt that started no turn stops counting as
-`working/submitted`, a pane is moved or retitled. Every two seconds `watch`
-compares the list with the last snapshot it sent and, if anything differs,
-events included, sends a new snapshot, which replaces the client's list; a
-resumed watch sends one at its first check. Its `seq` is that of the last event
-already sent, and events keep following it. A client that keeps its list from
-`watch` alone therefore stays current.
+`tmag watch` prints one JSON document per line: first
+`{"type":"snapshot","seq":N,"sessions":[…],"panes":[…]}`, then
+`{"type":"event","event":{…}}` for every event after `seq`, and
+`{"type":"panes","panes":[…]}` whenever the pane list changes (an agent starts
+or exits in a pane, a pane moves or closes, a pane switches between a
+session's main agent and a subagent). Events carry `seq`, `time`, `agent`,
+`session`, `event`, `state`, `kind`, `turn` and `cwd`. `event` is the hook's
+name, or one of:
+
+| Event | Meaning |
+| --- | --- |
+| `Attach` | A pane (`pane`) started showing the session, by `evidence`. |
+| `Detach` | A pane (`pane`) stopped showing the session. |
+| `Send` | `tmag send` delivered a prompt through `pane`, from the sending pane `from`, `bytes` long. |
+| `Exit` | The session's process exited without `SessionEnd`; the session is gone. |
+
+A session's state changes only through events, so a client that applies
+events to the snapshot and replaces its pane list with each `panes` document
+stays current. Changes that come without a hook (a pane closes, an agent is
+killed, a title shows another thread) are found by whichever tmag process
+looks next, `watch` itself every two seconds, and recorded once as events.
+After a disconnect, `tmag watch --since <last seq>` replays what was missed
+and sends the pane list, or starts over with a new snapshot if those events
+were already rotated away.
 
 Over SSH, a remote client needs nothing else: `ssh host tmag watch`.
 
@@ -236,11 +276,17 @@ the current time when it is created, so a cursor kept from before
 `tmag uninstall --purge` is recognised as stale. Treat them as opaque, ordered
 integers.
 
+Inside tmux, the same state is in pane options, read-only, for formats and
+scripts that do not run tmag: `@tmag_agent`, `@tmag_session`, `@tmag_state`,
+`@tmag_kind` and `@tmag_since` (Unix seconds) on every attached pane, and
+`@tmag_cmd`, the pane's command when they were written. For example
+`tmux list-panes -a -F '#{pane_id} #{@tmag_agent} #{@tmag_state}'`.
+
 Exit codes: `0` ok, `1` error, `2` usage, `3` refused by the safety gate, `4`
 timeout. With `--json`, errors are also printed as
 `{"schema":"tmag/v1","error":{"code":…,"message":…}}`; codes are `usage`,
 `not_found`, `ambiguous`, `refused:unbound`, `refused:busy`,
-`refused:background`, `refused:changed`,
+`refused:background`, `refused:subagent`, `refused:changed`,
 `ended`, `timeout` and `error`.
 
 ## Footprint
@@ -249,8 +295,8 @@ timeout. With `--json`, errors are also printed as
 | --- | --- | --- |
 | tmux plugin and `tmag` | `$TMUX_PLUGIN_MANAGER_PATH/tmux-agent-experience/` | removing the `@plugin` line, then `prefix + alt + u` |
 | Agent plugins | each agent's plugin directory | the agent's plugin manager |
-| Live state | `@tmag_*` pane options, gone with the pane | `tmag uninstall --purge` |
-| Event log | `$XDG_STATE_HOME/tmag` (default `~/.local/state/tmag`), at most two 8 MB files | `tmag uninstall --purge` |
+| Pane state | `@tmag_*` pane options, gone with the pane | `tmag uninstall --purge` |
+| Sessions and event log | `$XDG_STATE_HOME/tmag` (default `~/.local/state/tmag`): one small file per live session, at most two 8 MB event files | `tmag uninstall --purge` |
 
 `tmag uninstall` prints the exact removal steps.
 
@@ -260,11 +306,17 @@ timeout. With `--json`, errors are also printed as
   `unknown`.
 - Claude Code does not report a turn interrupted with Esc; the agent returns to
   `idle` when Claude sends its idle notification about a minute later.
-- Codex thread names and title formats are not a stable interface. tmag reads
-  the title layouts of Codex 0.166 shown above: the default one, optionally
-  with `thread-id` first, items joined by ` | ` and the project last. A custom
-  `terminal_title` that ends with another item, or leaves out the thread name,
-  gives no name evidence. `tmag doctor` reports what it sees.
+- The Codex title items are not a stable interface. tmag reads the
+  `thread-id` item of Codex 0.166: the thread id's first 29 characters and
+  `...`, in any position. If a Codex release changes it, Codex panes stop
+  showing their sessions; `tmag doctor` then warns while Codex sessions run in
+  the daemon and no Codex pane shows one.
+- A Codex thread exists before its first prompt, but its hooks start with that
+  prompt: until then the pane shows `unknown`.
+- Codex reports a daemon thread's end about a minute after its last terminal
+  closes, when the daemon unloads it.
+- A pane running `claude attach` cannot be proven to show its background
+  session (see [Sessions and panes](#sessions-and-panes)).
 
 ## Contributing
 

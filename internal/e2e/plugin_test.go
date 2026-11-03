@@ -132,7 +132,7 @@ func TestPluginInstallsBinaryAndSetsUp(t *testing.T) {
 
 	// The pane status shows a live agent and hides it once it is gone.
 	pane := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_HOOKS": "1"}, "sh", "-c", filepath.Join(bin, "claude")+"; exec sleep 600")
-	h.waitState(pane, "idle", "process")
+	h.waitPane(pane, "idle", "process")
 	status := func() string { return h.tmux("display-message", "-p", "-t", pane, "#{E:@tmag-pane-status}") }
 	if got := status(); got != "claude idle" {
 		t.Fatalf("pane status = %q", got)
@@ -141,7 +141,7 @@ func TestPluginInstallsBinaryAndSetsUp(t *testing.T) {
 		t.Fatalf("pkill: %v", err)
 	}
 	h.eventually("stale status to disappear", func() bool { return status() == "" })
-	if _, ok := h.agentIn(pane); ok {
+	if _, _, ok := h.paneIn(pane); ok {
 		t.Fatal("exited agent still listed")
 	}
 }
@@ -180,13 +180,13 @@ func TestBellMarksWaitingWindow(t *testing.T) {
 	h := start(t)
 	h.waitBinary(h.loadPlugin(false, nil))
 	pane := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_HOOKS": "1"}, filepath.Join(bin, "claude"))
-	h.waitState(pane, "idle", "process")
+	h.waitPane(pane, "idle", "process")
 	flag := func() string { return h.tmux("display-message", "-p", "-t", pane, "#{window_bell_flag}") }
 	if got := flag(); got != "0" {
 		t.Fatalf("bell flag before = %s", got)
 	}
 	h.tmux("send-keys", "-t", pane, "block", "Enter")
-	h.waitState(pane, "blocked", "process")
+	h.waitPane(pane, "blocked", "process")
 	h.eventually("bell flag", func() bool { return flag() == "1" })
 }
 
@@ -195,10 +195,10 @@ func TestJumpAndStatus(t *testing.T) {
 	sock := h.tmux("display-message", "-p", "#{socket_path}")
 	blocked := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_HOOKS": "1"}, filepath.Join(bin, "claude"))
 	idle := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidB, "FAKE_HOOKS": "1"}, filepath.Join(bin, "claude"))
-	h.waitState(idle, "idle", "process")
-	h.waitState(blocked, "idle", "process")
+	h.waitPane(idle, "idle", "process")
+	h.waitPane(blocked, "idle", "process")
 	h.tmux("send-keys", "-t", blocked, "block", "Enter")
-	h.waitState(blocked, "blocked", "process")
+	h.waitPane(blocked, "blocked", "process")
 
 	if r := h.tmag("", "jump", "--server", sock); r.code != 0 || strings.TrimSpace(r.out) != sock+":"+blocked {
 		t.Fatalf("jump = %d %q, want %s", r.code, r.out, blocked)
@@ -260,13 +260,13 @@ func TestPickerClearsStaleRecords(t *testing.T) {
 	claude := filepath.Join(bin, "claude")
 	pane := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_HOOKS": "1"},
 		"sh", "-c", claude+"; FAKE_HOOKS=0 FAKE_SESSION= "+claude)
-	h.waitState(pane, "idle", "process")
+	h.waitPane(pane, "idle", "process")
 	h.tmux("send-keys", "-t", pane, "block", "Enter")
-	h.waitState(pane, "blocked", "process")
+	h.waitPane(pane, "blocked", "process")
 	if err := exec.Command("pkill", "-KILL", "-o", "-f", "^"+claude+"$").Run(); err != nil {
 		t.Fatalf("pkill: %v", err)
 	}
-	h.waitState(pane, "unknown", "unbound")
+	h.waitPane(pane, "", "")
 	listed := func() string {
 		return h.tmux("display-message", "-p", "-t", pane, "#{?#{&&:#{@tmag_state},#{==:#{pane_current_command},#{@tmag_cmd}}},#{@tmag_state},}")
 	}

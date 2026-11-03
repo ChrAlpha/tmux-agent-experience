@@ -13,8 +13,9 @@ layers, in order of importance:
    alerts, key bindings and status placeholders by default.
 2. **Agent plugins** (`plugins/`) are sensors: Claude Code and Codex hooks that
    report state by calling `tmag hook`.
-3. **The `tmag` binary** is the substrate: binding, state, the event log and a
-   versioned JSON contract (`tmag/v1`) for agents, scripts and remote clients.
+3. **The `tmag` binary** is the substrate: sessions and their state, which
+   panes show them, the event log and a versioned JSON contract (`tmag/v1`)
+   for agents, scripts and remote clients.
 
 ## Invariants
 
@@ -39,16 +40,27 @@ a design problem, not a test problem.
 - **No content is stored.** Hook payloads decode into `adapter.Payload`, which
   declares no prompt, message or tool-input fields. Never add one. Event log
   records hold ids, states and timestamps only.
-- **Binding needs proof.** A session is tied to a pane only by the evidence in
-  `internal/bind`. Never trust `$TMUX_PANE`: Codex runs hooks in a shared
-  daemon with a stale environment. Ambiguous evidence means `unbound`.
-- **Control is gated.** `send` delivers only to a bound, idle agent that holds
-  its terminal's foreground, after re-verifying it under the pane lock; `wait`
-  refuses unbound targets.
-- **A pane's record changes only under its lock.** Hooks and `send` take
-  `registry.Lock`, re-read the pane, update the record and append the event
-  before releasing it, so no writer overwrites an update it has not seen and
-  the log orders events as they happened.
+- **A session's state never depends on a pane.** Hooks apply to the session
+  (`internal/session`) wherever it runs: the Codex daemon and Claude's
+  background supervisor run sessions no terminal owns.
+- **A pane shows a session only on proof.** Attachments come from the evidence
+  in `internal/attach`: process ancestry, or the Codex `thread-id` title item.
+  Never trust `$TMUX_PANE`: daemons and supervisors keep a stale environment.
+  Names, directories and other title text are no evidence. Ambiguity means no
+  attachment.
+- **tmux surfaces show only proven attachments.** Bells, the pane border, the
+  picker, the status line and `jump` act on attached panes; a pane tmag cannot
+  prove anything about shows `unknown`.
+- **Control is gated.** `send` delivers only to an idle session through its
+  one attached pane, by `process` or `title-id`, showing the main agent and
+  holding its terminal's foreground, after re-verifying all of it under the
+  pane's lock and the session's; `wait` refuses a pane that shows no session.
+- **Locks.** A session changes only under its session lock (hooks, `send`); a
+  pane's attachment and projection only under its pane lock (hooks,
+  reconciliation, `send`). Whoever takes both takes the pane's first. Every
+  change is decided again under the lock against fresh state, and its event
+  is appended before the lock is released, so the log orders events as they
+  happened.
 - **Nothing edits user configuration.** Install and uninstall go through each
   host's own mechanism (`claude plugin`, `codex plugin`, TPM).
 - **The contract is versioned.** Changing a JSON field's meaning or removing
@@ -63,15 +75,14 @@ a design problem, not a test problem.
 | `scripts/tmag` | Runs the plugin's binary, for key bindings and status jobs |
 | `cmd/tmag` | Entry point |
 | `internal/cli` | Commands, flags, output, exit codes |
-| `internal/hook` | One hook invocation: map, bind, record, log |
+| `internal/hook` | One hook invocation: apply to the session, attach on proof, update panes, log |
 | `internal/adapter` | Hook payload → state transition, per agent |
-| `internal/bind` | Evidence rules that place a session in a pane |
-| `internal/query` | list / send / wait / snapshot over a `bind.World` |
-| `internal/registry` | The pane record in `@tmag_*` options |
+| `internal/session` | Session records, the state machine, the per-session file store and lock |
+| `internal/attach` | Clients, attachments and their evidence, the `@tmag_*` pane projection, reconciliation |
+| `internal/query` | list / send / wait / snapshot over sessions and panes |
 | `internal/eventlog` | Append-only, sequence-numbered event log |
 | `internal/tmux` | tmux CLI wrapper; sanitises every free-text field |
-| `internal/proc` | Process table and agent-process classification |
-| `internal/codexidx` | Codex thread id ↔ name index |
+| `internal/proc` | Process table, agent clients and services, hook hosts |
 | `internal/lockfile` | flock bounded by a context |
 | `internal/binpath` | Where hooks look for the binary; the hook command itself |
 | `internal/e2e` | End-to-end tests with real tmux and a fake agent |
@@ -115,9 +126,11 @@ claude plugin validate .      # marketplace and plugin manifests
   tmux needed.
 - E2E tests start private servers (`tmux -L e2e` under a temporary
   `TMUX_TMPDIR`) and run `internal/e2e/fakeagent` installed as `claude` and
-  `codex`, so process names and `pane_current_command` match real agents. The
-  same binary answers `--version` and `plugin …` as a fake host CLI. Plugin
-  tests lay out a TPM directory and serve a local release over `file://`.
+  `codex`, so process names and `pane_current_command` match real agents. Run
+  as `codex app-server …` it is a Codex daemon outside every pane that runs
+  hooks for any thread. The same binary answers `--version` and `plugin …` as
+  a fake host CLI. Plugin tests lay out a TPM directory and serve a local
+  release over `file://`.
 - `#()` status jobs run only for attached clients; to see the status line,
   attach one in a pseudo-terminal (`script -qfc 'tmux attach' file`) and read
   what it drew.
@@ -134,9 +147,14 @@ an adapter or the Codex title rules, observe the real thing:
   --permission-mode default` inside a private tmux server, with a freshly built
   `tmag` first on `PATH` and `TMAG_STATE_DIR` pointing at a scratch directory.
   This loads the plugin without installing it.
-- Codex: `tmag` reads Codex 0.166's title format (`[spinner] name | project`,
-  named after the first turn). To imitate a daemon-run hook, start it outside
-  every pane's process tree (`setsid -f sh -c 'tmag hook codex < payload'`).
-  Running it from your own shell binds to the pane your shell lives in.
+- Codex: `tmag` reads the `thread-id` title item of Codex 0.166 (the id's
+  first 29 characters and `...`). Hooks load from a project's
+  `.codex/hooks.json` once the project and its hooks are trusted; Codex writes
+  both trusts into the user's `config.toml`, so remove those entries, and only
+  those, afterwards. A daemon keeps the environment it started with: put
+  `TMAG_STATE_DIR=… tmag hook codex` in the hook command, and expect its hooks
+  not to see a tmux server under a private `TMUX_TMPDIR`. To imitate a
+  daemon-run hook without Codex, start it outside every pane's process tree
+  (`setsid -f sh -c 'tmag hook codex < payload'`).
 - Clean up afterwards: test threads (`codex delete --force <id>`), session
   transcripts, scratch servers and directories.

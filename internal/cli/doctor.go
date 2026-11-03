@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ChrAlpha/tmux-agent-experience/internal/bind"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/query"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/tmux"
@@ -34,7 +33,7 @@ func (a *app) cmdDoctor(args []string) int {
 		return a.usageError("doctor", err)
 	}
 	checks := []check{checkTmux(), checkPlugin(), checkBinary(), a.checkState(), a.checkHookErrors()}
-	checks = append(checks, claudeCheck(claudeHost()), codexCheck(codexHost()), checkAgents())
+	checks = append(checks, claudeCheck(claudeHost()), codexCheck(codexHost()), a.checkAgents())
 
 	failed := false
 	for _, c := range checks {
@@ -242,7 +241,7 @@ func codexCheck(h host) check {
 		notes = append(notes, "hook approval found, not verifiable for the current hooks; if states stop updating, approve again with /hooks")
 	}
 	if pid, ok := codexDaemon(); ok {
-		notes = append(notes, "shared daemon: panes bind by terminal title and thread name")
+		notes = append(notes, "threads run in the shared daemon: panes show them through thread-id in the terminal title")
 		if problem := daemonBinaryProblem(pid); problem != "" {
 			status = "warn"
 			notes = append(notes, problem)
@@ -271,23 +270,26 @@ func daemonBinaryProblem(pid int) string {
 	return ""
 }
 
-func checkAgents() check {
-	w, err := bind.Load(context.Background())
+func (a *app) checkAgents() check {
+	v, _, err := query.Load(context.Background(), a.store())
 	if err != nil {
 		return check{"agents", "warn", err.Error()}
 	}
-	agents := query.Agents(w)
-	if len(agents) == 0 {
-		return check{"agents", "ok", "no agents running in tmux"}
+	if len(v.Panes) == 0 && len(v.Sessions) == 0 {
+		return check{"agents", "ok", "no agents running"}
 	}
-	unbound := 0
-	for _, ag := range agents {
-		if ag.Binding == bind.Unbound {
-			unbound++
+	shown := 0
+	for _, p := range v.Panes {
+		if p.Session != "" {
+			shown++
 		}
 	}
-	if unbound > 0 {
-		return check{"agents", "warn", fmt.Sprintf("%d agent(s), %d unbound (no hook event yet, or identity not provable)", len(agents), unbound)}
+	note := fmt.Sprintf("%d session(s); %d of %d agent pane(s) show one", len(v.Sessions), shown, len(v.Panes))
+	if hint := codexHint(v); hint != "" {
+		return check{"agents", "warn", note + ". " + hint}
 	}
-	return check{"agents", "ok", fmt.Sprintf("%d agent(s), all bound", len(agents))}
+	if shown < len(v.Panes) {
+		return check{"agents", "ok", note + " (the others have not reported yet)"}
+	}
+	return check{"agents", "ok", note}
 }

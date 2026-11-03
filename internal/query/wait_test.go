@@ -26,7 +26,7 @@ func TestWaitForTurnIgnoresStatesBeforeItStarts(t *testing.T) {
 	stop := appendEvent("Stop", "idle")
 
 	o := WaitOptions{States: []string{"idle", "blocked"}, After: send, StartGrace: time.Second}
-	ev, err := Wait(ctx, log, Agent{ID: "s1"}, o)
+	ev, err := Wait(ctx, log, Session{ID: "s1", Agent: "claude"}, o)
 	if err != nil || ev.Seq != stop {
 		t.Fatalf("Wait = %+v, %v; want the Stop event %d", ev, err, stop)
 	}
@@ -44,7 +44,25 @@ func TestWaitForTurnReportsNoTurn(t *testing.T) {
 		t.Fatal(err)
 	}
 	o := WaitOptions{States: []string{"idle"}, After: e.Seq, StartGrace: 300 * time.Millisecond}
-	if _, err := Wait(ctx, log, Agent{ID: "s1"}, o); !errors.Is(err, ErrNoTurn) {
+	if _, err := Wait(ctx, log, Session{ID: "s1", Agent: "claude"}, o); !errors.Is(err, ErrNoTurn) {
 		t.Fatalf("Wait err = %v, want ErrNoTurn", err)
+	}
+}
+
+func TestWaitEndsWithTheSession(t *testing.T) {
+	log := eventlog.Open(t.TempDir())
+	ctx := context.Background()
+	for _, e := range []eventlog.Event{
+		{Agent: "codex", Session: "s1", Event: eventlog.Detach},
+		{Agent: "claude", Session: "s1", Event: "Stop", State: "idle"}, // another agent's session
+		{Agent: "codex", Session: "s1", Event: eventlog.Exit},
+	} {
+		if err := log.Append(ctx, &e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	o := WaitOptions{States: []string{"idle"}, After: 0}
+	if _, err := Wait(ctx, log, Session{ID: "s1", Agent: "codex"}, o); !errors.Is(err, ErrEnded) {
+		t.Fatalf("Wait err = %v, want ErrEnded", err)
 	}
 }

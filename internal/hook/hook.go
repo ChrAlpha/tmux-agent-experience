@@ -1,5 +1,6 @@
-// Package hook handles one agent hook invocation: map the event, bind it to a
-// pane, update the pane record and append to the event log.
+// Package hook handles one agent hook invocation: map the event, apply it to
+// the session, attach the session to the pane it runs in when the hook
+// proves one, update the panes that show it, and log what changed.
 package hook
 
 import (
@@ -8,16 +9,14 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"time"
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/adapter"
-	"github.com/ChrAlpha/tmux-agent-experience/internal/bind"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/attach"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
-	"github.com/ChrAlpha/tmux-agent-experience/internal/query"
-	"github.com/ChrAlpha/tmux-agent-experience/internal/registry"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/tmux"
 )
 
@@ -57,6 +56,9 @@ func Run(in Input) error {
 	if tr.Action == adapter.Ignore {
 		return nil
 	}
+	if !session.ValidID(p.SessionID) {
+		return fmt.Errorf("unusable session id %q", p.SessionID)
+	}
 	now := time.Now
 	if in.Now != nil {
 		now = in.Now
@@ -64,209 +66,85 @@ func Run(in Input) error {
 	ctx, cancel := context.WithTimeout(context.Background(), Deadline)
 	defer cancel()
 
-	w, err := bind.Load(ctx)
+	w, err := attach.Load(ctx)
 	if err != nil {
 		return err
 	}
-	res := bind.Resolve(w, bind.Request{Agent: in.Agent, SessionID: p.SessionID, Cwd: p.Cwd, PID: in.PID})
+	env := attach.Env{Log: in.Log, Store: session.Store{Dir: in.Log.Dir}}
+	// Housekeeping on the world as loaded, once the hook's own work is done.
+	defer attach.Reconcile(ctx, env, w)
 
-	ev := eventlog.Event{
-		Agent: in.Agent, Session: p.SessionID, Event: p.HookEventName,
-		Cwd: p.Cwd, Binding: res.Evidence, Turn: tr.Turn, State: tr.State, Kind: tr.Kind,
-	}
+	host, hostKnown := w.Proc.HostOf(in.PID)
+	ev := eventlog.Event{Agent: in.Agent, Session: p.SessionID, Event: p.HookEventName, Cwd: p.Cwd}
 
-	// Housekeeping on the world as loaded, once the hook's own work is done:
-	// records of agents gone from their pane, which a new agent's hooks clear
-	// even before they can bind, and once the session is placed, its records
-	// on panes it has left.
-	var moved func(tmux.Pane, registry.Record) bool
-	defer func() { query.Prune(ctx, in.Log.Dir, w, moved) }()
-
-	if res.Evidence == bind.Unbound {
-		if tr.NeedsRecord() {
-			return nil // what it changes depends on a record there is none of
-		}
-		return in.Log.Append(ctx, &ev)
-	}
-
-	pane := res.Pane
-	moved = func(o tmux.Pane, rec registry.Record) bool {
-		return (o.Server != pane.Server || o.ID != pane.ID) && rec.Agent == in.Agent && rec.Session == p.SessionID
-	}
-	ev.Pane = &eventlog.PaneRef{Server: pane.Server, ID: pane.ID}
-	ring := ""
-	err = registry.Lock(ctx, in.Log.Dir, pane.Server, pane.ID, func() error {
-		// Decide on the record as it is now, not as it was when the world was
-		// loaded: a sender or another hook may have changed it since.
-		srv := tmux.Server{Socket: pane.Server}
-		fresh, err := srv.Pane(ctx, pane.ID)
+	if tr.Action == adapter.End {
+		err := env.Store.Lock(ctx, in.Agent, p.SessionID, func() error {
+			if err := env.Store.Delete(in.Agent, p.SessionID); err != nil {
+				return err
+			}
+			return in.Log.Append(ctx, &ev)
+		})
 		if err != nil {
 			return err
 		}
-		cur, live := w.Record(fresh)
-		if !live || cur.Session != p.SessionID || cur.Agent != in.Agent {
-			if res.Evidence == bind.Session {
-				// The record that placed the session here has been replaced
-				// since: nothing ties the session to this pane any more.
-				ev.Binding, ev.Pane = bind.Unbound, nil
-				if tr.NeedsRecord() {
-					return nil
-				}
-				return in.Log.Append(ctx, &ev)
-			}
-			cur = registry.Record{}
-		}
-		if tr.Action == adapter.End {
-			if cur.Bound() {
-				if err := srv.ClearPaneOptions(ctx, pane.ID); err != nil {
-					return err
-				}
-			}
-			return in.Log.Append(ctx, &ev)
-		}
-		rec, changed := next(cur, tr, registry.Record{
-			Agent: in.Agent, Session: p.SessionID, PID: res.AgentPID,
-			Since:   now().UTC().Truncate(time.Second),
-			Binding: res.Evidence, Command: fresh.Command,
-		})
-		if !changed {
-			return nil
-		}
-		if err := registry.Write(ctx, srv, pane.ID, rec); err != nil {
+		return env.DetachAll(ctx, w, in.Agent, p.SessionID)
+	}
+
+	var prev, rec session.Record
+	err = env.Store.Lock(ctx, in.Agent, p.SessionID, func() error {
+		cur, found, err := env.Store.Get(in.Agent, p.SessionID)
+		if err != nil {
 			return err
 		}
-		if reported(rec).Equal(reported(cur)) {
+		if !found {
+			cur = session.Record{Agent: in.Agent, ID: p.SessionID}
+		}
+		base := cur
+		if p.Cwd != "" {
+			base.Cwd = p.Cwd
+		}
+		if hostKnown {
+			base.Host = session.Host{PID: host.Process.PID, Start: host.Process.Start, Role: host.Role}
+		}
+		next, changed := session.Apply(base, tr, now())
+		if found && !changed && base.Cwd == cur.Cwd && base.Host == cur.Host {
 			return nil
 		}
-		ev.State, ev.Kind, ev.Turn = rec.State, rec.Kind, rec.Turn
-		ring = Alert(cur.State, rec.State)
+		if err := env.Store.Put(next); err != nil {
+			return err
+		}
+		prev, rec = cur, next
+		if found && next.State() == cur.State() && next.Kind() == cur.Kind() && next.Turn == cur.Turn {
+			return nil // bookkeeping only: calls, background work, host
+		}
+		ev.State, ev.Kind, ev.Turn = next.State(), next.Kind(), next.Turn
 		return in.Log.Append(ctx, &ev)
 	})
-	if err != nil {
+	if err != nil || rec.ID == "" {
 		return err
 	}
-	alert(ctx, tmux.Server{Socket: pane.Server}, pane, ring)
+
+	ring := Alert(prev.State(), rec.State())
+	var shown []tmux.Pane
+	if c, ok := w.ClientOf(host); hostKnown && ok {
+		if err := env.Attach(ctx, w, c, rec, attach.Process); err != nil {
+			return err
+		}
+		shown = append(shown, c.Pane)
+	}
+	for _, s := range w.Attached(rec) {
+		if len(shown) > 0 && s.Client.Pane.Server == shown[0].Server && s.Client.Pane.ID == shown[0].ID {
+			continue // just attached, projection included
+		}
+		if err := env.Show(ctx, s.Client.Pane, s.Attachment); err != nil {
+			return err
+		}
+		shown = append(shown, s.Client.Pane)
+	}
+	for _, pane := range shown {
+		alert(ctx, tmux.Server{Socket: pane.Server}, pane, ring)
+	}
 	return nil
-}
-
-// next applies tr to cur, the session's current record in the pane (zero when
-// the pane holds none), and reports whether anything changed. id carries the
-// record's identity and the time of the event.
-//
-// Open prompts block the agent. A prompt closes only on evidence that the
-// user dealt with it: the tool call it may be about is over, the agent's
-// batch of calls resolved or the agent stopped, or the turn it belongs to
-// ended. Once the last one closes, the agent works on as it did before.
-func next(cur registry.Record, tr adapter.Transition, id registry.Record) (registry.Record, bool) {
-	if tr.NeedsRecord() && !cur.Bound() {
-		return cur, false
-	}
-	rec := id
-	rec.State, rec.Kind, rec.Base, rec.Turn = cur.State, cur.Kind, cur.Base, cur.Turn
-	rec.Pending, rec.Calls = slices.Clone(cur.Pending), slices.Clone(cur.Calls)
-	if tr.Turn != "" {
-		rec.Turn = tr.Turn
-	}
-	switch tr.Action {
-	case adapter.Set:
-		rec.Pending = slices.DeleteFunc(rec.Pending, func(p adapter.Prompt) bool { return !tr.Keep.Has(p.Agent) })
-		rec.Calls = slices.DeleteFunc(rec.Calls, func(c adapter.Call) bool { return !tr.Keep.Has(c.Agent) })
-		rec.State, rec.Kind, rec.Base, rec.Turn = tr.State, tr.Kind, "", tr.Turn
-	case adapter.Ask:
-		// A reminder cannot be told apart from a prompt already pending, and
-		// outside a turn it cannot be about one.
-		if tr.Reminder && (len(cur.Pending) > 0 || cur.State != adapter.Working) {
-			return cur, false
-		}
-		rec.Calls = startCall(rec.Calls, tr.Call)
-		if !slices.Contains(rec.Pending, tr.Prompt) {
-			rec.Pending = append(rec.Pending, tr.Prompt)
-		}
-	case adapter.Start:
-		rec.Calls = startCall(rec.Calls, tr.Call)
-	case adapter.Finish:
-		c := tr.Call
-		rec.Calls = slices.DeleteFunc(rec.Calls, func(o adapter.Call) bool { return o.ID == c.ID })
-		running := slices.ContainsFunc(rec.Calls, func(o adapter.Call) bool { return o.Agent == c.Agent && o.Tool == c.Tool })
-		if i := slices.Index(rec.Pending, adapter.Prompt{Agent: c.Agent, Tool: c.Tool}); i >= 0 && !running {
-			rec.Pending = slices.Delete(rec.Pending, i, i+1)
-		} else {
-			rec.Pending = answerUnnamed(rec.Pending)
-		}
-	case adapter.Settle:
-		agent := tr.Call.Agent
-		rec.Calls = slices.DeleteFunc(rec.Calls, func(o adapter.Call) bool { return o.Agent == agent })
-		rec.Pending = slices.DeleteFunc(rec.Pending, func(p adapter.Prompt) bool { return p.Agent == agent || p.Tool == "" })
-	case adapter.Answer:
-		if i := slices.Index(rec.Pending, tr.Prompt); i >= 0 {
-			rec.Pending = slices.Delete(rec.Pending, i, i+1)
-		} else {
-			rec.Pending = answerUnnamed(rec.Pending)
-		}
-	default:
-		return cur, false
-	}
-	switch {
-	case len(rec.Pending) > 0:
-		if rec.State != adapter.Blocked {
-			rec.Base = underlying(rec.State, rec.Kind)
-		}
-		rec.State, rec.Kind = adapter.Blocked, rec.Pending[0].Kind()
-	case rec.State == adapter.Blocked:
-		rec.State, rec.Kind, rec.Base = adapter.Working, rec.Base, ""
-	}
-	if len(rec.Pending) == 0 {
-		rec.Pending = nil
-	}
-	if len(rec.Calls) == 0 {
-		rec.Calls = nil
-	}
-	if !cur.Bound() {
-		return rec, true
-	}
-	if rec.Turn == "" {
-		rec.Turn = cur.Turn
-	}
-	if rec.State == cur.State {
-		rec.Since = cur.Since
-	}
-	// Only the start of a turn confirms a submitted prompt.
-	if rec.State == adapter.Idle {
-		rec.Sent = cur.Sent
-	}
-	return rec, !rec.Equal(cur)
-}
-
-func startCall(calls []adapter.Call, c adapter.Call) []adapter.Call {
-	if c.ID == "" || slices.ContainsFunc(calls, func(o adapter.Call) bool { return o.ID == c.ID }) {
-		return calls
-	}
-	return append(calls, c)
-}
-
-// answerUnnamed closes a prompt that named no tool. It says nothing about the
-// tool, and a reminder does not reliably name the agent that asked: any
-// finished tool answers it.
-func answerUnnamed(pending []adapter.Prompt) []adapter.Prompt {
-	if i := slices.IndexFunc(pending, func(p adapter.Prompt) bool { return p.Tool == "" }); i >= 0 {
-		return slices.Delete(pending, i, i+1)
-	}
-	return pending
-}
-
-// underlying is the kind of work an agent blocked in the given state returns
-// to: its turn, or once the main agent's turn is over, background work.
-func underlying(state, kind string) string {
-	if state == adapter.Idle || kind == adapter.KindBackground {
-		return adapter.KindBackground
-	}
-	return ""
-}
-
-// reported strips what events do not report, the bookkeeping of tool calls.
-func reported(r registry.Record) registry.Record {
-	r.Calls = nil
-	return r
 }
 
 // Alert names the change worth a bell, or "": "blocked" when an agent starts

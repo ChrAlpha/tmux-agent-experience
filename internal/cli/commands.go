@@ -18,10 +18,12 @@ import (
 	"time"
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/adapter"
-	"github.com/ChrAlpha/tmux-agent-experience/internal/bind"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/attach"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/hook"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/query"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/tmux"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/version"
 )
@@ -63,45 +65,82 @@ func (a *app) cmdList(args []string) int {
 		return a.fail("list", err)
 	}
 	if a.json {
-		a.emit(map[string]any{"seq": snap.Seq, "agents": snap.Agents})
+		a.emit(map[string]any{"seq": snap.Seq, "sessions": snap.Sessions, "panes": snap.Panes})
 		return ExitOK
 	}
-	a.printAgents(snap.Agents)
+	a.printView(snap.View)
+	if hint := codexHint(snap.View); hint != "" {
+		fmt.Fprintln(a.stderr, "\n"+hint)
+	}
 	return ExitOK
 }
 
-func (a *app) printAgents(agents []query.Agent) {
-	if len(agents) == 0 {
+// printView lists every agent pane, then every session no pane shows.
+func (a *app) printView(v query.View) {
+	if len(v.Panes) == 0 && len(v.Sessions) == 0 {
 		fmt.Fprintln(a.stdout, "no agents")
 		return
 	}
 	servers := map[string]bool{}
-	for _, ag := range agents {
-		servers[ag.Pane.Server] = true
+	for _, p := range v.Panes {
+		servers[p.Server] = true
 	}
 	home, _ := os.UserHomeDir()
+	short := func(path string) string {
+		if home != "" && strings.HasPrefix(path, home) {
+			return "~" + strings.TrimPrefix(path, home)
+		}
+		return path
+	}
 	tw := tabwriter.NewWriter(a.stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(tw, "TARGET\tPANE\tAGENT\tSTATE\tFOR\tID\tCWD")
-	for _, ag := range agents {
-		target := ag.Pane.Target
+	for _, p := range v.Panes {
+		target := p.Target
 		if len(servers) > 1 {
-			target = filepath.Base(ag.Pane.Server) + "/" + target
+			target = filepath.Base(p.Server) + "/" + target
 		}
-		state := ag.State
-		if ag.Kind != "" {
-			state += " (" + ag.Kind + ")"
+		state, since, id := adapter.Unknown, (*time.Time)(nil), "-"
+		if s, ok := v.Session(p.Agent, p.Session); ok {
+			state, since, id = describe(s.State, s.Kind), s.Since, shortID(s.ID)
+			if p.View == attach.ViewSubagent {
+				state += " [subagent]"
+			}
 		}
-		id := shortID(ag.ID)
-		if ag.Binding == bind.Unbound {
-			id = "-"
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", target, p.ID, p.Agent, state, age(since), id, short(p.Cwd))
+	}
+	for _, s := range v.Sessions {
+		if len(s.Panes) == 0 {
+			fmt.Fprintf(tw, "-\t-\t%s\t%s\t%s\t%s\t%s\n", s.Agent, describe(s.State, s.Kind), age(s.Since), shortID(s.ID), short(s.Cwd))
 		}
-		cwd := ag.Pane.Cwd
-		if home != "" && strings.HasPrefix(cwd, home) {
-			cwd = "~" + strings.TrimPrefix(cwd, home)
-		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", target, ag.Pane.ID, ag.Agent, state, age(ag.Since), id, cwd)
 	}
 	tw.Flush()
+}
+
+// codexHint explains how to let Codex panes show their sessions, when some
+// Codex pane shows none while a Codex session runs in the shared daemon.
+func codexHint(v query.View) string {
+	unshown := false
+	for _, p := range v.Panes {
+		unshown = unshown || (p.Agent == proc.Codex && p.Session == "")
+	}
+	for _, s := range v.Sessions {
+		if unshown && s.Agent == proc.Codex && s.Runtime == string(proc.Service) && len(s.Panes) == 0 {
+			return codexTitleHint
+		}
+	}
+	return ""
+}
+
+// codexTitleHint is the one setting Codex needs for tmag to see which pane
+// shows which thread when threads run in its shared daemon.
+const codexTitleHint = "Codex runs these threads in its shared daemon, where only the terminal title can show which pane displays which. " +
+	"In Codex, run /title and turn on thread-id once; or launch codex --no-daemon."
+
+func describe(state, kind string) string {
+	if kind != "" {
+		return state + " (" + kind + ")"
+	}
+	return state
 }
 
 func age(t *time.Time) string {
@@ -120,12 +159,23 @@ func age(t *time.Time) string {
 	return fmt.Sprintf("%dd", int(d.Hours()/24))
 }
 
-func (a *app) resolve(ctx context.Context, target string) (query.Agent, error) {
-	w, err := bind.Load(ctx)
+func (a *app) resolve(ctx context.Context, target string) (query.Target, error) {
+	v, _, err := query.Load(ctx, a.store())
 	if err != nil {
-		return query.Agent{}, err
+		return query.Target{}, err
 	}
-	return query.Resolve(query.Agents(w), target)
+	return query.Resolve(v, target)
+}
+
+func (a *app) store() session.Store { return session.Store{Dir: a.log.Dir} }
+
+// needSession returns the session a target names, or a refusal for a pane
+// that shows none.
+func needSession(t query.Target) (query.Session, error) {
+	if t.Session != nil {
+		return *t.Session, nil
+	}
+	return query.Session{}, &query.RefusedError{Reason: query.RefuseUnbound, Detail: fmt.Sprintf("%s in %s shows no session tmag can prove", t.Pane.Agent, t.Pane.ID)}
 }
 
 func (a *app) cmdInspect(args []string) int {
@@ -141,33 +191,42 @@ func (a *app) cmdInspect(args []string) int {
 	}
 	ctx, cancel := signalContext()
 	defer cancel()
-	ag, err := a.resolve(ctx, pos[0])
+	t, err := a.resolve(ctx, pos[0])
 	if err != nil {
 		return a.fail("inspect", err)
 	}
-	var events []eventlog.Event
-	if ag.ID != "" {
-		if events, err = query.SessionEvents(ctx, a.log, ag.ID, *n); err != nil {
+	events := []eventlog.Event{}
+	if t.Session != nil {
+		if events, err = query.SessionEvents(ctx, a.log, t.Session.ID, *n); err != nil {
 			return a.fail("inspect", err)
 		}
-	}
-	if events == nil {
-		events = []eventlog.Event{}
+		if events == nil {
+			events = []eventlog.Event{}
+		}
 	}
 	if a.json {
-		a.emit(map[string]any{"agent": ag, "events": events})
+		a.emit(map[string]any{"session": t.Session, "pane": t.Pane, "events": events})
 		return ExitOK
 	}
-	a.printAgents([]query.Agent{ag})
-	if ag.ID != "" {
-		fmt.Fprintf(a.stdout, "\nid: %s\nbinding: %s\n", ag.ID, ag.Binding)
+	v := query.View{}
+	if t.Pane != nil {
+		v.Panes = []query.Pane{*t.Pane}
+	}
+	if t.Session != nil {
+		v.Sessions = []query.Session{*t.Session}
+		if t.Pane == nil {
+			v.Sessions[0].Panes = nil // list it on its own row
+		}
+	}
+	a.printView(v)
+	if s := t.Session; s != nil {
+		fmt.Fprintf(a.stdout, "\nid: %s\nruntime: %s\n", s.ID, s.Runtime)
+		for _, p := range s.Panes {
+			fmt.Fprintf(a.stdout, "shown in: %s (%s, %s)\n", p.ID, p.Evidence, p.View)
+		}
 	}
 	for _, e := range events {
-		state := e.State
-		if e.Kind != "" {
-			state += " (" + e.Kind + ")"
-		}
-		fmt.Fprintf(a.stdout, "%6d  %s  %-18s %s\n", e.Seq, e.Time.Local().Format("15:04:05"), e.Event, state)
+		fmt.Fprintf(a.stdout, "%6d  %s  %-18s %s\n", e.Seq, e.Time.Local().Format("15:04:05"), e.Event, describe(e.State, e.Kind))
 	}
 	return ExitOK
 }
@@ -195,6 +254,8 @@ func (a *app) cmdWatch(args []string) int {
 	out := bufio.NewWriter(a.stdout)
 	enc := json.NewEncoder(out)
 	enc.SetEscapeHTML(false)
+	// mu orders output: events, and pane lists written between them.
+	var mu sync.Mutex
 	write := func(doc map[string]any) error {
 		doc["schema"] = version.Schema
 		if err := enc.Encode(doc); err != nil {
@@ -202,53 +263,62 @@ func (a *app) cmdWatch(args []string) int {
 		}
 		return out.Flush()
 	}
-	writeSnapshot := func(seq int64, agents []query.Agent) error {
-		if agents == nil {
-			agents = []query.Agent{}
+	var shown string // the pane list last sent
+	panes := func(list []query.Pane) error {
+		if b, _ := json.Marshal(list); string(b) != shown {
+			shown = string(b)
+			return write(map[string]any{"type": "panes", "panes": list})
 		}
-		return write(map[string]any{"type": "snapshot", "seq": seq, "agents": agents})
+		return nil
 	}
 
-	// mu orders output: events, and snapshots taken between them.
-	var (
-		mu    sync.Mutex
-		last  int64  // seq of the last event written, or of the snapshot
-		shown string // the agent list of the last snapshot sent; "" when none
-	)
-	snapshot := func() error {
+	snapshot := func() (int64, error) {
 		snap, err := query.TakeSnapshot(ctx, a.log)
 		if err != nil {
-			return err
+			return 0, err
 		}
-		last, shown = snap.Seq, listing(snap.Agents)
-		return writeSnapshot(snap.Seq, snap.Agents)
+		b, _ := json.Marshal(snap.Panes)
+		shown = string(b)
+		return snap.Seq, write(map[string]any{"type": "snapshot", "seq": snap.Seq, "sessions": snap.Sessions, "panes": snap.Panes})
 	}
+	// A resumed watch replays what it missed and then sends the pane list;
+	// when the log no longer holds all of it, it starts over with a snapshot.
+	var last int64
+	resumed := false
 	if *since >= 0 {
 		events, complete, err := a.log.Since(ctx, *since)
 		if err != nil {
 			return a.fail("watch", err)
 		}
-		if complete {
+		if resumed = complete; resumed {
 			last = *since
 			for _, e := range events {
 				if err := write(map[string]any{"type": "event", "event": e}); err != nil {
-					return ExitOK
+					return a.watchEnd(err)
 				}
 				last = e.Seq
 			}
-		} else if err = snapshot(); err != nil {
+			v, _, err := query.Load(ctx, a.store())
+			if err == nil {
+				err = panes(v.Panes)
+			}
+			if err != nil {
+				return a.watchEnd(err)
+			}
+		}
+	}
+	if !resumed {
+		if last, err = snapshot(); err != nil {
 			return a.fail("watch", err)
 		}
-	} else if err = snapshot(); err != nil {
-		return a.fail("watch", err)
 	}
 
-	// The list also changes without an event: a pane closes, an agent is
-	// killed or not yet reporting, a submitted prompt starts no turn before
-	// its window passes, a pane is moved or retitled. A fresh snapshot
-	// reports any difference from the last one sent, events included. It is
-	// listed under mu, after every event written so far, whose records were
-	// all written before their events.
+	// Sessions change only through events. What changes without one is
+	// found by reconciling, which records it as an event (a pane stopped or
+	// started showing a session, a session's process exited), and by the
+	// pane list itself (an agent started in a pane, a pane moved), sent
+	// whenever it differs from the last one sent.
+	env := attach.Env{Log: a.log, Store: a.store()}
 	go func() {
 		tick := time.NewTicker(watchRescan)
 		defer tick.Stop()
@@ -258,45 +328,45 @@ func (a *app) cmdWatch(args []string) int {
 				return
 			case <-tick.C:
 			}
-			mu.Lock()
-			if w, err := bind.Load(ctx); err == nil {
-				if agents := query.Agents(w); listing(agents) != shown {
-					shown = listing(agents)
-					if err := writeSnapshot(last, agents); err != nil {
-						stop(err)
-					}
-				}
+			w, err := attach.Load(ctx)
+			if err != nil {
+				continue
 			}
+			attach.Reconcile(ctx, env, w)
+			v, _, err := query.Load(ctx, a.store())
+			if err != nil {
+				continue
+			}
+			mu.Lock()
+			err = panes(v.Panes)
 			mu.Unlock()
+			if err != nil {
+				stop(err)
+				return
+			}
 		}
 	}()
 
 	err = a.log.Follow(ctx, last, 200*time.Millisecond, func(e eventlog.Event) error {
 		mu.Lock()
 		defer mu.Unlock()
-		if err := write(map[string]any{"type": "event", "event": e}); err != nil {
-			return err
-		}
-		last = e.Seq
-		return nil
+		return write(map[string]any{"type": "event", "event": e})
 	})
 	if cause := context.Cause(ctx); cause != nil && !errors.Is(cause, context.Canceled) {
 		err = cause
 	}
+	return a.watchEnd(err)
+}
+
+func (a *app) watchEnd(err error) int {
 	if err != nil && !errors.Is(err, context.Canceled) && !isClosedPipe(err) {
 		return a.fail("watch", err)
 	}
 	return ExitOK
 }
 
-// watchRescan is how often watch looks for agents that changed without an event.
+// watchRescan is how often watch looks for changes that come without an event.
 const watchRescan = 2 * time.Second
-
-// listing is the agent list as a client sees it, for comparison.
-func listing(agents []query.Agent) string {
-	b, _ := json.Marshal(agents)
-	return string(b)
-}
 
 func isClosedPipe(err error) bool {
 	return errors.Is(err, syscall.EPIPE) || errors.Is(err, os.ErrClosed)
@@ -318,16 +388,19 @@ func (a *app) cmdRead(args []string) int {
 	}
 	ctx, cancel := signalContext()
 	defer cancel()
-	ag, err := a.resolve(ctx, pos[0])
+	t, err := a.resolve(ctx, pos[0])
 	if err != nil {
 		return a.fail("read", err)
 	}
-	text, err := tmux.Server{Socket: ag.Pane.Server}.Capture(ctx, ag.Pane.ID, *lines)
+	if t.Pane == nil {
+		return a.fail("read", fmt.Errorf("%w: %s is shown by %d panes; name one", query.ErrAmbiguous, t.Session.ID, len(t.Session.Panes)))
+	}
+	text, err := tmux.Server{Socket: t.Pane.Server}.Capture(ctx, t.Pane.ID, *lines)
 	if err != nil {
 		return a.fail("read", err)
 	}
 	if a.json {
-		a.emit(map[string]any{"agent": ag, "lines": *lines, "text": text})
+		a.emit(map[string]any{"pane": t.Pane, "lines": *lines, "text": text})
 		return ExitOK
 	}
 	fmt.Fprint(a.stdout, text)
@@ -356,24 +429,24 @@ func (a *app) cmdSend(args []string) int {
 	}
 	ctx, cancel := signalContext()
 	defer cancel()
-	w, err := bind.Load(ctx)
+	w, err := attach.Load(ctx)
 	if err != nil {
 		return a.fail("send", err)
 	}
-	ag, seq, err := query.Send(ctx, a.log, pos[0], text, query.Sender(w))
+	d, err := query.Send(ctx, a.log, pos[0], text, query.Sender(w))
 	if err != nil {
 		return a.fail("send", err)
 	}
 	if !*wait {
 		if a.json {
-			a.emit(map[string]any{"agent": ag, "seq": seq})
+			a.emit(map[string]any{"session": d.Session, "pane": d.Pane, "seq": d.Seq})
 		} else {
-			fmt.Fprintf(a.stdout, "sent to %s (%s) seq %d\n", shortID(ag.ID), ag.Pane.ID, seq)
+			fmt.Fprintf(a.stdout, "sent to %s (%s) seq %d\n", shortID(d.Session.ID), d.Pane.ID, d.Seq)
 		}
 		return ExitOK
 	}
-	return a.awaitAndReport("send", ag, query.WaitOptions{
-		States: []string{adapter.Idle, adapter.Blocked}, After: seq, StartGrace: query.PendingWindow,
+	return a.awaitAndReport("send", d.Session, query.WaitOptions{
+		States: []string{adapter.Idle, adapter.Blocked}, After: d.Seq, StartGrace: query.PendingWindow,
 	}, *timeout)
 }
 
@@ -404,35 +477,36 @@ func (a *app) cmdWait(args []string) int {
 	if err != nil {
 		return a.fail("wait", err)
 	}
-	ag, err := a.resolve(ctx, pos[0])
+	t, err := a.resolve(ctx, pos[0])
 	if err != nil {
 		return a.fail("wait", err)
 	}
-	if ag.ID == "" {
-		return a.fail("wait", &query.RefusedError{Reason: query.RefuseUnbound, Detail: fmt.Sprintf("%s in %s has no verified session", ag.Agent, ag.Pane.ID)})
+	s, err := needSession(t)
+	if err != nil {
+		return a.fail("wait", err)
 	}
 	if *after < 0 {
-		for _, s := range want {
-			if ag.State == s {
-				a.reportWait(ag, eventlog.Event{Seq: cursor, State: ag.State, Kind: ag.Kind, Turn: ag.Turn}, true)
+		for _, st := range want {
+			if s.State == st {
+				a.reportWait(s, eventlog.Event{Seq: cursor, State: s.State, Kind: s.Kind, Turn: s.Turn}, true)
 				return ExitOK
 			}
 		}
 		*after = cursor
 	}
-	return a.awaitAndReport("wait", ag, query.WaitOptions{States: want, After: *after}, *timeout)
+	return a.awaitAndReport("wait", s, query.WaitOptions{States: want, After: *after}, *timeout)
 }
 
-func (a *app) awaitAndReport(cmd string, ag query.Agent, o query.WaitOptions, timeout time.Duration) int {
+func (a *app) awaitAndReport(cmd string, s query.Session, o query.WaitOptions, timeout time.Duration) int {
 	ctx, cancel := signalContext()
 	defer cancel()
 	ctx, cancelTimeout := context.WithTimeout(ctx, timeout)
 	defer cancelTimeout()
-	ev, err := query.Wait(ctx, a.log, ag, o)
+	ev, err := query.Wait(ctx, a.log, s, o)
 	switch {
 	case errors.Is(err, query.ErrNoTurn):
 		// Delivered, but the agent started no turn (a slash command, say).
-		a.reportWait(ag, eventlog.Event{State: adapter.Idle}, false)
+		a.reportWait(s, eventlog.Event{State: adapter.Idle}, false)
 		return ExitOK
 	case errors.Is(err, context.DeadlineExceeded):
 		err = fmt.Errorf("%w after %s waiting for %s", errTimeout, timeout, strings.Join(o.States, "|"))
@@ -440,21 +514,18 @@ func (a *app) awaitAndReport(cmd string, ag query.Agent, o query.WaitOptions, ti
 	if err != nil {
 		return a.fail(cmd, err)
 	}
-	a.reportWait(ag, ev, true)
+	a.reportWait(s, ev, true)
 	return ExitOK
 }
 
-func (a *app) reportWait(ag query.Agent, ev eventlog.Event, started bool) {
+func (a *app) reportWait(s query.Session, ev eventlog.Event, started bool) {
 	if a.json {
-		a.emit(map[string]any{"id": ag.ID, "state": ev.State, "kind": ev.Kind, "turn": ev.Turn, "seq": ev.Seq, "started": started})
+		a.emit(map[string]any{"id": s.ID, "state": ev.State, "kind": ev.Kind, "turn": ev.Turn, "seq": ev.Seq, "started": started})
 		return
 	}
-	state := ev.State
-	if ev.Kind != "" {
-		state += " (" + ev.Kind + ")"
-	}
+	state := describe(ev.State, ev.Kind)
 	if !started {
 		state += " (no turn started)"
 	}
-	fmt.Fprintf(a.stdout, "%s %s\n", shortID(ag.ID), state)
+	fmt.Fprintf(a.stdout, "%s %s\n", shortID(s.ID), state)
 }

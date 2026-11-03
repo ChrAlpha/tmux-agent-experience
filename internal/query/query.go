@@ -1,4 +1,5 @@
-// Package query implements the read and control operations of the tmag contract.
+// Package query implements the read and control operations of the tmag
+// contract over sessions, the panes that show them, and the event log.
 package query
 
 import (
@@ -11,95 +12,156 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ChrAlpha/tmux-agent-experience/internal/adapter"
-	"github.com/ChrAlpha/tmux-agent-experience/internal/bind"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/attach"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
-	"github.com/ChrAlpha/tmux-agent-experience/internal/registry"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/tmux"
 )
 
-// PaneInfo locates an agent in tmux.
-type PaneInfo struct {
+// Shown is a pane that shows a session, from the session's side.
+type Shown struct {
+	Server   string `json:"server"`
+	ID       string `json:"id"`
+	Evidence string `json:"evidence"`
+	View     string `json:"view"`
+}
+
+// Session is one agent session, wherever it runs.
+type Session struct {
+	ID    string     `json:"id"`
+	Agent string     `json:"agent"`
+	State string     `json:"state"`
+	Kind  string     `json:"kind,omitempty"`
+	Turn  string     `json:"turn,omitempty"`
+	Since *time.Time `json:"since,omitempty"`
+	Cwd   string     `json:"cwd,omitempty"`
+	// Runtime is how the session runs: in a terminal's own agent process, or
+	// in a background service; "" when its hooks did not say.
+	Runtime string `json:"runtime,omitempty"`
+	// Panes are the panes that show the session.
+	Panes []Shown `json:"panes"`
+}
+
+// Pane is an agent client in a tmux pane and the session it shows, if any.
+type Pane struct {
 	Server  string `json:"server"`
 	ID      string `json:"id"`
 	Target  string `json:"target"`
 	Cwd     string `json:"cwd"`
-	Title   string `json:"title"`
 	Command string `json:"command"`
+	Agent   string `json:"agent"`
+	// Session is the id of the session the pane shows; empty when tmag has
+	// no proof of one.
+	Session  string `json:"session,omitempty"`
+	Evidence string `json:"evidence,omitempty"`
+	View     string `json:"view,omitempty"`
 }
 
-// Agent is one coding agent found in a tmux pane.
-type Agent struct {
-	// ID is the agent's session (thread) id; empty while unbound.
-	ID      string     `json:"id,omitempty"`
-	Agent   string     `json:"agent"`
-	State   string     `json:"state"`
-	Kind    string     `json:"kind,omitempty"`
-	Turn    string     `json:"turn,omitempty"`
-	Since   *time.Time `json:"since,omitempty"`
-	Binding string     `json:"binding"`
-	Pane    PaneInfo   `json:"pane"`
+// View is every session and every agent pane at one moment.
+type View struct {
+	Sessions []Session `json:"sessions"`
+	Panes    []Pane    `json:"panes"`
+
+	links   []attach.Link
+	records []session.Record
 }
 
-// KindSubmitted marks an agent that tmag just sent a prompt to, until the
-// agent's own hook confirms the turn or PendingWindow passes.
-const KindSubmitted = "submitted"
-
-// PendingWindow is how long a submitted prompt counts as starting a turn
-// without confirmation. Input that starts no turn (a slash command, say)
-// releases the agent when it passes.
-const PendingWindow = 15 * time.Second
-
-func pending(rec registry.Record, now time.Time) bool {
-	return !rec.Sent.IsZero() && now.Sub(rec.Sent) < PendingWindow
-}
-
-// Agents lists agents across all panes. Records left by exited or replaced
-// agents are ignored; agents without a live record are unbound and unknown.
-func Agents(w *bind.World) []Agent {
-	now := time.Now()
-	var out []Agent
-	for _, p := range w.Panes {
-		kind := w.AgentIn(p)
-		if kind == "" {
-			continue
+// Build computes the view from the world and the stored sessions. It writes
+// nothing: it shows what reconciliation would make of the world.
+func Build(w *attach.World, recs []session.Record) View {
+	live, _ := attach.Live(w, recs)
+	v := View{Sessions: []Session{}, Panes: []Pane{}, records: live}
+	v.links = attach.Links(w, live)
+	shown := map[[2]string][]Shown{}
+	for _, l := range v.links {
+		p := l.Client.Pane
+		pane := Pane{Server: p.Server, ID: p.ID, Target: p.Target(), Cwd: p.Path, Command: p.Command, Agent: l.Client.Agent}
+		if l.Session != nil {
+			pane.Session, pane.Evidence, pane.View = l.Session.ID, l.Evidence, l.View
+			key := [2]string{l.Session.Agent, l.Session.ID}
+			shown[key] = append(shown[key], Shown{Server: p.Server, ID: p.ID, Evidence: l.Evidence, View: l.View})
 		}
-		a := Agent{
-			Agent: kind, State: adapter.Unknown, Binding: bind.Unbound,
-			Pane: PaneInfo{
-				Server: p.Server, ID: p.ID, Target: p.Target(),
-				Cwd: p.Path, Title: p.Title, Command: p.Command,
-			},
-		}
-		if rec, ok := w.Record(p); ok {
-			a.ID, a.State, a.Kind, a.Turn, a.Binding = rec.Session, rec.State, rec.Kind, rec.Turn, rec.Binding
-			if !rec.Since.IsZero() {
-				since := rec.Since
-				a.Since = &since
-			}
-			if pending(rec, now) && rec.State == adapter.Idle {
-				a.State, a.Kind = adapter.Working, KindSubmitted
-				sent := rec.Sent
-				a.Since = &sent
-			}
-		}
-		out = append(out, a)
+		v.Panes = append(v.Panes, pane)
 	}
-	sort.SliceStable(out, func(i, j int) bool {
-		a, b := out[i].Pane, out[j].Pane
+	for _, r := range live {
+		s := Session{
+			ID: r.ID, Agent: r.Agent, State: r.State(), Kind: r.Kind(), Turn: r.Turn,
+			Cwd: r.Cwd, Runtime: string(r.Host.Role), Panes: shown[[2]string{r.Agent, r.ID}],
+		}
+		if s.Panes == nil {
+			s.Panes = []Shown{}
+		}
+		if !r.Since.IsZero() {
+			since := r.Since
+			s.Since = &since
+		}
+		v.Sessions = append(v.Sessions, s)
+	}
+	sort.SliceStable(v.Panes, func(i, j int) bool {
+		a, b := v.Panes[i], v.Panes[j]
 		if a.Server != b.Server {
 			return a.Server < b.Server
 		}
 		return a.Target < b.Target
 	})
-	return out
+	sort.SliceStable(v.Sessions, func(i, j int) bool {
+		a, b := v.Sessions[i], v.Sessions[j]
+		if a.Agent != b.Agent {
+			return a.Agent < b.Agent
+		}
+		return a.ID < b.ID
+	})
+	return v
+}
+
+// Session returns the session with the given agent and id.
+func (v View) Session(agent, id string) (Session, bool) {
+	for _, s := range v.Sessions {
+		if s.Agent == agent && s.ID == id {
+			return s, true
+		}
+	}
+	return Session{}, false
+}
+
+// Load reads the world and the sessions and builds the view.
+func Load(ctx context.Context, store session.Store) (View, *attach.World, error) {
+	w, err := attach.Load(ctx)
+	if err != nil {
+		return View{}, nil, err
+	}
+	recs, err := store.All()
+	if err != nil {
+		return View{}, nil, err
+	}
+	return Build(w, recs), w, nil
+}
+
+// Snapshot is the full current state, consistent with events after Seq.
+type Snapshot struct {
+	Seq int64 `json:"seq"`
+	View
+}
+
+// TakeSnapshot reads the sequence number before the state, so replaying
+// events after Seq over the snapshot never loses an update.
+func TakeSnapshot(ctx context.Context, log *eventlog.Log) (Snapshot, error) {
+	seq, err := log.Seq()
+	if err != nil {
+		return Snapshot{}, err
+	}
+	v, _, err := Load(ctx, session.Store{Dir: log.Dir})
+	if err != nil {
+		return Snapshot{}, err
+	}
+	return Snapshot{Seq: seq, View: v}, nil
 }
 
 // Errors returned by target resolution and waiting.
 var (
 	ErrNotFound  = errors.New("no such agent")
-	ErrAmbiguous = errors.New("ambiguous agent id")
+	ErrAmbiguous = errors.New("ambiguous target")
 	ErrEnded     = errors.New("agent session ended")
 )
 
@@ -108,287 +170,70 @@ var paneSpec = regexp.MustCompile(`^(?:(.+):)?(%\d+)$`)
 // minIDPrefix is the shortest id prefix accepted as a target.
 const minIDPrefix = 4
 
-// Resolve finds the agent addressed by target: an id or id prefix, a pane id
-// (%N, on the caller's server), or server:%N where server is a socket name or path.
-func Resolve(agents []Agent, target string) (Agent, error) {
+// Target is what a command addresses: a session, a pane, or both when the
+// pane shows the session.
+type Target struct {
+	Session *Session
+	Pane    *Pane
+}
+
+// Resolve finds what target names: a pane id (%N, on the caller's server),
+// server:%N where server is a socket name or path, or a session id or a
+// unique prefix of one. A session shown by exactly one pane resolves to both.
+func Resolve(v View, target string) (Target, error) {
 	if m := paneSpec.FindStringSubmatch(target); m != nil {
 		server := tmux.DefaultServer().Socket
 		if m[1] != "" {
 			server = tmux.ServerByName(m[1]).Socket
 		}
-		for _, a := range agents {
-			if a.Pane.Server == server && a.Pane.ID == m[2] {
-				return a, nil
+		for i := range v.Panes {
+			p := &v.Panes[i]
+			if p.Server != server || p.ID != m[2] {
+				continue
 			}
+			t := Target{Pane: p}
+			if p.Session != "" {
+				if s, ok := v.Session(p.Agent, p.Session); ok {
+					t.Session = &s
+				}
+			}
+			return t, nil
 		}
-		return Agent{}, fmt.Errorf("%w in pane %s", ErrNotFound, target)
+		return Target{}, fmt.Errorf("%w in pane %s", ErrNotFound, target)
 	}
 	if len(target) < minIDPrefix {
-		return Agent{}, fmt.Errorf("%w: id prefix %q is shorter than %d characters", ErrNotFound, target, minIDPrefix)
+		return Target{}, fmt.Errorf("%w: id prefix %q is shorter than %d characters", ErrNotFound, target, minIDPrefix)
 	}
-	var matches []Agent
-	for _, a := range agents {
-		if a.ID != "" && strings.HasPrefix(a.ID, target) {
-			matches = append(matches, a)
+	var matches []int
+	for i, s := range v.Sessions {
+		if strings.HasPrefix(s.ID, target) {
+			matches = append(matches, i)
 		}
 	}
 	switch len(matches) {
 	case 0:
-		return Agent{}, fmt.Errorf("%w: %s", ErrNotFound, target)
+		return Target{}, fmt.Errorf("%w: %s", ErrNotFound, target)
 	case 1:
-		return matches[0], nil
-	}
-	return Agent{}, fmt.Errorf("%w: %s matches %d agents", ErrAmbiguous, target, len(matches))
-}
-
-// Refusal reasons for Send.
-const (
-	RefuseUnbound    = "unbound"    // no verified identity for the target
-	RefuseBusy       = "busy"       // the target is not idle
-	RefuseBackground = "background" // the agent does not hold its terminal
-	RefuseChanged    = "changed"    // the target changed between check and delivery
-)
-
-// RefusedError is returned when Send's safety gate rejects delivery.
-type RefusedError struct {
-	Reason string
-	Detail string
-}
-
-func (e *RefusedError) Error() string { return fmt.Sprintf("refused (%s): %s", e.Reason, e.Detail) }
-
-// Send delivers text to an idle, bound agent as one submitted prompt and
-// returns the agent and the sequence number of the Send event.
-func Send(ctx context.Context, log *eventlog.Log, target, text string, from *eventlog.PaneRef) (Agent, int64, error) {
-	text = strings.TrimRight(tmux.SanitizePrompt(text), "\n")
-	if strings.TrimSpace(text) == "" {
-		return Agent{}, 0, errors.New("nothing to send")
-	}
-	w, err := bind.Load(ctx)
-	if err != nil {
-		return Agent{}, 0, err
-	}
-	a, err := Resolve(Agents(w), target)
-	if err != nil {
-		return Agent{}, 0, err
-	}
-	if a.Binding == bind.Unbound {
-		return a, 0, &RefusedError{RefuseUnbound, fmt.Sprintf("%s in %s has no verified session", a.Agent, a.Pane.ID)}
-	}
-	if a.State != adapter.Idle {
-		return a, 0, &RefusedError{RefuseBusy, fmt.Sprintf("%s is %s", a.ID, describe(a))}
-	}
-	if p, ok := w.Find(a.Pane.Server, a.Pane.ID); ok && !w.Foreground(p) {
-		return a, 0, notForeground(a, p)
-	}
-
-	var seq int64
-	err = registry.Lock(ctx, log.Dir, a.Pane.Server, a.Pane.ID, func() error {
-		srv := tmux.Server{Socket: a.Pane.Server}
-		// Re-verify against fresh state: the agent may have started a turn,
-		// exited, been replaced, or received another prompt since the listing.
-		fresh, err := bind.Load(ctx)
-		if err != nil {
-			return err
-		}
-		p, ok := fresh.Find(a.Pane.Server, a.Pane.ID)
-		if !ok {
-			return &RefusedError{RefuseChanged, fmt.Sprintf("pane %s is gone", a.Pane.ID)}
-		}
-		rec, live := fresh.Record(p)
-		if !live || rec.Session != a.ID || rec.Agent != a.Agent {
-			return &RefusedError{RefuseChanged, fmt.Sprintf("%s no longer runs session %s", a.Pane.ID, a.ID)}
-		}
-		if rec.State != adapter.Idle || pending(rec, time.Now()) {
-			return &RefusedError{RefuseBusy, fmt.Sprintf("%s became busy", a.ID)}
-		}
-		if !fresh.Foreground(p) {
-			return notForeground(a, p)
-		}
-		// The agent's hooks wait for this lock, so the turn this prompt starts
-		// is recorded and logged after the Send event, never overwritten by it.
-		if err := srv.Submit(ctx, p.ID, text); err != nil {
-			return err
-		}
-		// Hold off other senders until the agent's hook confirms the turn or
-		// the pending window passes. From here on the prompt is delivered:
-		// a failure must not read as one a caller could retry.
-		sent := time.Now().UTC().Truncate(time.Second)
-		ev := eventlog.Event{
-			Agent: a.Agent, Session: a.ID, Event: "Send", Cwd: p.Path,
-			Pane: &eventlog.PaneRef{Server: p.Server, ID: p.ID}, Binding: rec.Binding,
-			From: from, Bytes: len(text),
-		}
-		if err := errors.Join(registry.MarkSent(ctx, srv, p.ID, sent), log.Append(ctx, &ev)); err != nil {
-			return fmt.Errorf("prompt delivered to %s but not recorded; do not send it again: %w", p.ID, err)
-		}
-		seq = ev.Seq
-		a.State, a.Kind, a.Turn, a.Since = adapter.Working, KindSubmitted, "", &sent
-		return nil
-	})
-	return a, seq, err
-}
-
-func notForeground(a Agent, p tmux.Pane) error {
-	return &RefusedError{RefuseBackground, fmt.Sprintf("%s in %s is not in the foreground; %s is", a.Agent, p.ID, p.Command)}
-}
-
-func describe(a Agent) string {
-	if a.Kind != "" {
-		return a.State + " (" + a.Kind + ")"
-	}
-	return a.State
-}
-
-// Prune clears pane records that no longer describe their pane: the agent
-// exited or was replaced, or the Codex TUI shows another thread. moved, when
-// set, marks live records to clear as well, such as a session's record left
-// on a pane it has moved away from. A record is cleared only if, under the
-// pane's lock, it is still the one judged stale: whatever a hook wrote since
-// is newer than w and stays.
-func Prune(ctx context.Context, stateDir string, w *bind.World, moved func(tmux.Pane, registry.Record) bool) {
-	for _, p := range w.Panes {
-		rec, live := w.Record(p)
-		if !rec.Bound() || (live && (moved == nil || !moved(p, rec))) {
-			continue
-		}
-		srv := tmux.Server{Socket: p.Server}
-		_ = registry.Lock(ctx, stateDir, p.Server, p.ID, func() error {
-			fresh, err := srv.Pane(ctx, p.ID)
-			if err != nil || !registry.FromPane(fresh).Equal(rec) {
-				return err
+		s := v.Sessions[matches[0]]
+		t := Target{Session: &s}
+		if len(s.Panes) == 1 {
+			for i := range v.Panes {
+				if v.Panes[i].Server == s.Panes[0].Server && v.Panes[i].ID == s.Panes[0].ID {
+					t.Pane = &v.Panes[i]
+				}
 			}
-			return srv.ClearPaneOptions(ctx, p.ID)
-		})
+		}
+		return t, nil
 	}
+	return Target{}, fmt.Errorf("%w: %s matches %d sessions", ErrAmbiguous, target, len(matches))
 }
 
 // Sender returns the pane the calling process runs in, if any, for provenance.
-func Sender(w *bind.World) *eventlog.PaneRef {
-	if p, ok := bind.Enclosing(w, os.Getpid()); ok {
+func Sender(w *attach.World) *eventlog.PaneRef {
+	if p, ok := w.Enclosing(os.Getpid()); ok {
 		return &eventlog.PaneRef{Server: p.Server, ID: p.ID}
 	}
 	return nil
-}
-
-// ErrNoTurn reports that a submitted prompt started no turn within the grace
-// period, e.g. because it was a slash command.
-var ErrNoTurn = errors.New("no turn started")
-
-// livenessInterval is how often Wait checks that the agent still runs.
-const livenessInterval = 2 * time.Second
-
-// WaitOptions tune Wait.
-type WaitOptions struct {
-	States []string
-	After  int64
-	// StartGrace, when positive, waits for a turn that starts after o.After:
-	// states logged before the session starts working or blocks do not count,
-	// and Wait fails with ErrNoTurn if no turn starts within StartGrace.
-	StartGrace time.Duration
-}
-
-// Wait blocks until an event of agent a with seq > o.After reaches one of
-// o.States, and returns it. It fails with ErrEnded when the session ends or
-// the agent leaves its pane.
-func Wait(ctx context.Context, log *eventlog.Log, a Agent, o WaitOptions) (eventlog.Event, error) {
-	ctx, cancel := context.WithCancelCause(ctx)
-	defer cancel(nil)
-	want := map[string]bool{}
-	for _, s := range o.States {
-		want[s] = true
-	}
-	seen := make(chan struct{})
-	go watchLiveness(ctx, cancel, a, seen, o.StartGrace)
-
-	var found eventlog.Event
-	errFound := errors.New("found")
-	started := o.StartGrace <= 0
-	err := log.Follow(ctx, o.After, 200*time.Millisecond, func(e eventlog.Event) error {
-		if e.Session != a.ID {
-			return nil
-		}
-		if e.Event == "SessionEnd" {
-			return ErrEnded
-		}
-		if !started {
-			if e.State != adapter.Working && e.State != adapter.Blocked {
-				return nil
-			}
-			started = true
-			close(seen)
-		}
-		if want[e.State] {
-			found = e
-			return errFound
-		}
-		return nil
-	})
-	switch {
-	case errors.Is(err, errFound):
-		return found, nil
-	case context.Cause(ctx) != nil && !errors.Is(context.Cause(ctx), context.Canceled):
-		return eventlog.Event{}, context.Cause(ctx)
-	}
-	return eventlog.Event{}, err
-}
-
-func watchLiveness(ctx context.Context, cancel context.CancelCauseFunc, a Agent, seen <-chan struct{}, grace time.Duration) {
-	var graceC <-chan time.Time
-	if grace > 0 {
-		graceC = time.After(grace)
-	}
-	tick := time.NewTicker(livenessInterval)
-	defer tick.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-seen:
-			seen, graceC = nil, nil
-		case <-graceC:
-			cancel(ErrNoTurn)
-			return
-		case <-tick.C:
-			w, err := bind.Load(ctx)
-			if err != nil {
-				continue
-			}
-			p, ok := w.Find(a.Pane.Server, a.Pane.ID)
-			if !ok {
-				cancel(fmt.Errorf("%w: pane %s is gone", ErrEnded, a.Pane.ID))
-				return
-			}
-			if rec, live := w.Record(p); !live || rec.Session != a.ID {
-				cancel(fmt.Errorf("%w: %s no longer runs session %s", ErrEnded, a.Pane.ID, a.ID))
-				return
-			}
-		}
-	}
-}
-
-// Snapshot is the full current state, consistent with events after Seq.
-type Snapshot struct {
-	Seq    int64   `json:"seq"`
-	Agents []Agent `json:"agents"`
-}
-
-// TakeSnapshot reads the sequence number before listing, so replaying events
-// after Seq over the listing never loses an update.
-func TakeSnapshot(ctx context.Context, log *eventlog.Log) (Snapshot, error) {
-	seq, err := log.Seq()
-	if err != nil {
-		return Snapshot{}, err
-	}
-	w, err := bind.Load(ctx)
-	if err != nil {
-		return Snapshot{}, err
-	}
-	agents := Agents(w)
-	if agents == nil {
-		agents = []Agent{}
-	}
-	return Snapshot{Seq: seq, Agents: agents}, nil
 }
 
 // SessionEvents returns the most recent events of one session, oldest first.

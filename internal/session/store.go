@@ -1,0 +1,133 @@
+package session
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+
+	"github.com/ChrAlpha/tmux-agent-experience/internal/lockfile"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
+)
+
+// Store keeps one file per live session under <state dir>/sessions/<agent>/.
+// Writers hold the session's lock; files are replaced atomically, so readers
+// need none.
+type Store struct {
+	Dir string // the state directory
+}
+
+// idRE bounds what an agent may use as a session id, which becomes a file
+// name: Claude Code and Codex use UUIDs.
+var idRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
+
+// ValidID reports whether id can name a session.
+func ValidID(id string) bool { return idRE.MatchString(id) }
+
+func validAgent(agent string) bool { return agent == proc.Claude || agent == proc.Codex }
+
+func (s Store) root() string { return filepath.Join(s.Dir, "sessions") }
+
+func (s Store) path(agent, id string) (string, error) {
+	if !validAgent(agent) || !ValidID(id) {
+		return "", fmt.Errorf("invalid session %s/%q", agent, id)
+	}
+	return filepath.Join(s.root(), agent, id+".json"), nil
+}
+
+// Lock runs fn holding the session's lock. Every change to a session's file
+// happens under it, read and written in one go.
+func (s Store) Lock(ctx context.Context, agent, id string, fn func() error) error {
+	sum := sha256.Sum256([]byte("session\x00" + agent + "\x00" + id))
+	return lockfile.With(ctx, filepath.Join(s.Dir, "locks", "s-"+hex.EncodeToString(sum[:8])), fn)
+}
+
+// Get reads a session; ok is false when there is none.
+func (s Store) Get(agent, id string) (rec Record, ok bool, err error) {
+	path, err := s.path(agent, id)
+	if err != nil {
+		return Record{}, false, err
+	}
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return Record{}, false, nil
+	}
+	if err != nil {
+		return Record{}, false, err
+	}
+	if err := json.Unmarshal(data, &rec); err != nil {
+		return Record{}, false, fmt.Errorf("session %s/%s: %w", agent, id, err)
+	}
+	return rec, true, nil
+}
+
+// Put writes a session. The caller holds its lock.
+func (s Store) Put(rec Record) error {
+	path, err := s.path(rec.Agent, rec.ID)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	data, err := json.Marshal(rec)
+	if err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".tmp-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
+}
+
+// Delete removes a session. The caller holds its lock.
+func (s Store) Delete(agent, id string) error {
+	path, err := s.path(agent, id)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+// All reads every session. Unreadable files are skipped: one corrupt session
+// must not hide the others.
+func (s Store) All() ([]Record, error) {
+	var out []Record
+	for _, agent := range []string{proc.Claude, proc.Codex} {
+		entries, err := os.ReadDir(filepath.Join(s.root(), agent))
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		for _, e := range entries {
+			id, ok := strings.CutSuffix(e.Name(), ".json")
+			if !ok || !ValidID(id) {
+				continue
+			}
+			if rec, found, err := s.Get(agent, id); err == nil && found {
+				out = append(out, rec)
+			}
+		}
+	}
+	return out, nil
+}

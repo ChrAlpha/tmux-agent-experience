@@ -13,6 +13,11 @@
 // Lines starting with "/" behave like slash commands: no turn, no hooks. The
 // line "block" raises a permission prompt that the next line resolves.
 //
+// Run as "codex app-server ..." it imitates Codex's shared daemon instead: it
+// runs `tmag hook codex` for every JSON payload line on stdin, as its own
+// child, outside any pane's agent. With FAKE_HOOKS=1 and FAKE_SESSION set it
+// first reports that session's start.
+//
 // As a host CLI it answers --version, prints FAKE_PLUGIN_LIST (default "[]")
 // for "plugin list --json", and appends any other plugin command to
 // FAKE_PLUGIN_LOG.
@@ -34,6 +39,10 @@ func main() {
 	agent := filepath.Base(os.Args[0])
 	if len(os.Args) > 1 && (os.Args[1] == "--version" || os.Args[1] == "plugin") {
 		hostCLI(os.Args[1:])
+		return
+	}
+	if agent == "codex" && len(os.Args) > 1 && os.Args[1] == "app-server" {
+		daemon()
 		return
 	}
 	session := os.Getenv("FAKE_SESSION")
@@ -88,6 +97,28 @@ func main() {
 		hook("Stop", map[string]any{turnKey: turn, "last_assistant_message": "done"})
 	}
 	hook("SessionEnd", map[string]any{"reason": "other"})
+}
+
+// daemon imitates Codex's app-server daemon, which runs every thread's hooks.
+func daemon() {
+	run := func(payload []byte) {
+		cmd := exec.Command(os.Getenv("TMAG_BIN"), "hook", "codex")
+		cmd.Stdin = strings.NewReader(string(payload))
+		_ = cmd.Run()
+	}
+	if session := os.Getenv("FAKE_SESSION"); session != "" && os.Getenv("FAKE_HOOKS") == "1" {
+		cwd, _ := os.Getwd()
+		b, _ := json.Marshal(map[string]any{"hook_event_name": "SessionStart", "session_id": session, "cwd": cwd, "source": "startup"})
+		run(b)
+	}
+	sc := bufio.NewScanner(os.Stdin)
+	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for sc.Scan() {
+		run(sc.Bytes())
+		fmt.Println("ran")
+	}
+	// A daemon outlives its clients; stay until killed.
+	select {}
 }
 
 // hostCLI imitates the agent's own command line for tmag setup and doctor.
