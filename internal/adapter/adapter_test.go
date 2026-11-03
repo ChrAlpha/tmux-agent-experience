@@ -2,6 +2,7 @@ package adapter
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -28,35 +29,38 @@ func TestMap(t *testing.T) {
 	}{
 		{"claude start", "claude", map[string]any{"hook_event_name": "SessionStart", "source": "startup"}, Transition{Action: Set, State: Idle}},
 		{"claude compact keeps state", "claude", map[string]any{"hook_event_name": "SessionStart", "source": "compact"}, Transition{}},
-		{"claude prompt", "claude", map[string]any{"hook_event_name": "UserPromptSubmit", "prompt_id": "p1", "prompt": "secret"}, Transition{Action: Set, State: Working, Turn: "p1"}},
-		{"claude question", "claude", map[string]any{"hook_event_name": "PreToolUse", "tool_name": "AskUserQuestion", "prompt_id": "p1"}, Transition{Action: Ask, State: Blocked, Kind: KindQuestion, Turn: "p1", Prompt: Prompt{Tool: "AskUserQuestion"}}},
-		{"claude other tool", "claude", map[string]any{"hook_event_name": "PreToolUse", "tool_name": "Bash"}, Transition{}},
+		{"claude prompt", "claude", map[string]any{"hook_event_name": "UserPromptSubmit", "prompt_id": "p1", "prompt": "secret"}, Transition{Action: Set, State: Working, Turn: "p1", Keep: Keep{Subagents: true}}},
+		{"claude question", "claude", map[string]any{"hook_event_name": "PreToolUse", "tool_name": "AskUserQuestion", "tool_use_id": "q1", "prompt_id": "p1"}, Transition{Action: Ask, State: Blocked, Kind: KindQuestion, Turn: "p1", Prompt: Prompt{Tool: "AskUserQuestion"}, Call: Call{Tool: "AskUserQuestion", ID: "q1"}}},
+		{"claude tool start", "claude", map[string]any{"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "u1", "agent_id": "a1"}, Transition{Action: Start, Call: Call{Agent: "a1", Tool: "Bash", ID: "u1"}}},
 		{"claude permission", "claude", map[string]any{"hook_event_name": "PermissionRequest", "tool_name": "Bash"}, Transition{Action: Ask, State: Blocked, Kind: KindPermission, Prompt: Prompt{Tool: "Bash"}}},
 		{"claude question via permission flow", "claude", map[string]any{"hook_event_name": "PermissionRequest", "tool_name": "AskUserQuestion"}, Transition{Action: Ask, State: Blocked, Kind: KindQuestion, Prompt: Prompt{Tool: "AskUserQuestion"}}},
 		{"claude subagent permission", "claude", map[string]any{"hook_event_name": "PermissionRequest", "agent_id": "a1", "tool_name": "Bash"}, Transition{Action: Ask, State: Blocked, Kind: KindPermission, Prompt: Prompt{Agent: "a1", Tool: "Bash"}}},
 		{"claude elicitation", "claude", map[string]any{"hook_event_name": "Elicitation"}, Transition{Action: Ask, State: Blocked, Kind: KindQuestion, Prompt: Prompt{Tool: elicitation}}},
 		{"claude elicitation result", "claude", map[string]any{"hook_event_name": "ElicitationResult"}, Transition{Action: Answer, Prompt: Prompt{Tool: elicitation}}},
-		{"claude post tool answers", "claude", map[string]any{"hook_event_name": "PostToolUse", "tool_name": "Bash", "agent_id": "a1"}, Transition{Action: Answer, Prompt: Prompt{Agent: "a1", Tool: "Bash"}}},
-		{"claude failed tool answers", "claude", map[string]any{"hook_event_name": "PostToolUseFailure", "tool_name": "Bash"}, Transition{Action: Answer, Prompt: Prompt{Tool: "Bash"}}},
+		{"claude tool finish", "claude", map[string]any{"hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_use_id": "u1", "agent_id": "a1"}, Transition{Action: Finish, Call: Call{Agent: "a1", Tool: "Bash", ID: "u1"}}},
+		{"claude failed tool finish", "claude", map[string]any{"hook_event_name": "PostToolUseFailure", "tool_name": "Bash", "tool_use_id": "u2"}, Transition{Action: Finish, Call: Call{Tool: "Bash", ID: "u2"}}},
+		{"claude batch", "claude", map[string]any{"hook_event_name": "PostToolBatch", "agent_id": "a1", "tool_calls": []any{map[string]any{"tool_response": "secret"}}}, Transition{Action: Settle, Call: Call{Agent: "a1"}}},
+		{"claude subagent stop", "claude", map[string]any{"hook_event_name": "SubagentStop", "agent_id": "a1"}, Transition{Action: Settle, Call: Call{Agent: "a1"}}},
 		{"claude idle notification", "claude", map[string]any{"hook_event_name": "Notification", "notification_type": "idle_prompt"}, Transition{Action: Set, State: Idle}},
 		{"claude permission notification", "claude", map[string]any{"hook_event_name": "Notification", "notification_type": "permission_prompt"}, Transition{Action: Ask, State: Blocked, Kind: KindPermission, Reminder: true}},
 		{"claude other notification", "claude", map[string]any{"hook_event_name": "Notification", "notification_type": "auth_success"}, Transition{}},
 		{"claude stop", "claude", map[string]any{"hook_event_name": "Stop", "prompt_id": "p1", "background_tasks": []any{}}, Transition{Action: Set, State: Idle, Turn: "p1"}},
-		{"claude stop with background", "claude", map[string]any{"hook_event_name": "Stop", "background_tasks": []any{map[string]any{"id": "b"}}}, Transition{Action: Set, State: Working, Kind: KindBackground}},
-		{"claude stop failure", "claude", map[string]any{"hook_event_name": "StopFailure"}, Transition{Action: Set, State: Idle, Kind: KindError}},
+		{"claude stop with background", "claude", map[string]any{"hook_event_name": "Stop", "background_tasks": []any{map[string]any{"id": "a7", "type": "subagent", "description": "secret"}}}, Transition{Action: Set, State: Working, Kind: KindBackground, Keep: Keep{Running: []string{"a7"}}}},
+		{"claude stop failure", "claude", map[string]any{"hook_event_name": "StopFailure"}, Transition{Action: Set, State: Idle, Kind: KindError, Keep: Keep{Subagents: true}}},
 		{"claude subagent stop ignored", "claude", map[string]any{"hook_event_name": "Stop", "agent_id": "a1"}, Transition{}},
 		{"claude end", "claude", map[string]any{"hook_event_name": "SessionEnd", "reason": "other"}, Transition{Action: End}},
-		{"codex prompt", "codex", map[string]any{"hook_event_name": "UserPromptSubmit", "turn_id": "t1"}, Transition{Action: Set, State: Working, Turn: "t1"}},
+		{"codex prompt", "codex", map[string]any{"hook_event_name": "UserPromptSubmit", "turn_id": "t1"}, Transition{Action: Set, State: Working, Turn: "t1", Keep: Keep{Subagents: true}}},
 		{"codex subagent prompt ignored", "codex", map[string]any{"hook_event_name": "UserPromptSubmit", "turn_id": "t1", "agent_id": "a"}, Transition{}},
 		{"codex permission", "codex", map[string]any{"hook_event_name": "PermissionRequest", "turn_id": "t1", "tool_name": "shell"}, Transition{Action: Ask, State: Blocked, Kind: KindPermission, Turn: "t1", Prompt: Prompt{Tool: "shell"}}},
-		{"codex post tool answers", "codex", map[string]any{"hook_event_name": "PostToolUse", "turn_id": "t1", "tool_name": "shell"}, Transition{Action: Answer, Turn: "t1", Prompt: Prompt{Tool: "shell"}}},
+		{"codex tool start", "codex", map[string]any{"hook_event_name": "PreToolUse", "turn_id": "t1", "tool_name": "Bash", "tool_use_id": "c1"}, Transition{Action: Start, Turn: "t1", Call: Call{Tool: "Bash", ID: "c1"}}},
+		{"codex tool finish", "codex", map[string]any{"hook_event_name": "PostToolUse", "turn_id": "t1", "tool_name": "Bash", "tool_use_id": "c1"}, Transition{Action: Finish, Turn: "t1", Call: Call{Tool: "Bash", ID: "c1"}}},
+		{"codex model request", "codex", map[string]any{"hook_event_name": "PreModelRequest", "turn_id": "t2", "agent_id": "a"}, Transition{Action: Settle, Turn: "t2", Call: Call{Agent: "a"}}},
 		{"codex interrupt", "codex", map[string]any{"hook_event_name": "Interrupt", "turn_id": "t1"}, Transition{Action: Set, State: Idle, Turn: "t1"}},
-		{"codex pre tool ignored", "codex", map[string]any{"hook_event_name": "PreToolUse"}, Transition{}},
 		{"unknown agent", "aider", map[string]any{"hook_event_name": "Stop"}, Transition{}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := Map(c.agent, payload(t, c.in)); got != c.want {
+			if got := Map(c.agent, payload(t, c.in)); !reflect.DeepEqual(got, c.want) {
 				t.Fatalf("got %+v, want %+v", got, c.want)
 			}
 		})
@@ -67,9 +71,10 @@ func TestDecodeDropsContent(t *testing.T) {
 	p := payload(t, map[string]any{
 		"hook_event_name": "UserPromptSubmit", "prompt": "do not keep me",
 		"last_assistant_message": "nor me", "tool_input": map[string]any{"command": "rm -rf /"},
+		"background_tasks": []any{map[string]any{"id": "a7", "description": "or this"}},
 	})
 	b, _ := json.Marshal(p)
-	for _, secret := range []string{"do not keep me", "nor me", "rm -rf"} {
+	for _, secret := range []string{"do not keep me", "nor me", "rm -rf", "or this"} {
 		if strings.Contains(string(b), secret) {
 			t.Fatalf("decoded payload retains %q: %s", secret, b)
 		}

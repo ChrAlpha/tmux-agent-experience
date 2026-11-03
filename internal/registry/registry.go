@@ -24,6 +24,8 @@ type Record struct {
 	State   string
 	Kind    string
 	Pending []adapter.Prompt // prompts awaiting the user while blocked, oldest first
+	Base    string           // while blocked, the kind of work the agent returns to
+	Calls   []adapter.Call   // tool calls started and not yet over
 	Turn    string
 	Since   time.Time // when State last changed
 	Sent    time.Time // when tmag last submitted a prompt not yet confirmed by a hook
@@ -38,6 +40,7 @@ func (r Record) Bound() bool { return r.Session != "" && r.Agent != "" && r.PID 
 func (r Record) Equal(o Record) bool {
 	return r.Agent == o.Agent && r.Session == o.Session && r.PID == o.PID &&
 		r.State == o.State && r.Kind == o.Kind && slices.Equal(r.Pending, o.Pending) &&
+		r.Base == o.Base && slices.Equal(r.Calls, o.Calls) &&
 		r.Turn == o.Turn && r.Since.Equal(o.Since) && r.Sent.Equal(o.Sent) &&
 		r.Binding == o.Binding && r.Command == o.Command
 }
@@ -47,7 +50,8 @@ func FromPane(p tmux.Pane) Record {
 	o := p.Options
 	r := Record{
 		Agent: o["agent"], Session: o["session"], State: o["state"], Kind: o["kind"],
-		Pending: decodePrompts(o["pending"]), Turn: o["turn"], Binding: o["bind"], Command: o["cmd"],
+		Pending: decodePrompts(o["pending"]), Base: o["base"], Calls: decodeCalls(o["calls"]),
+		Turn: o["turn"], Binding: o["bind"], Command: o["cmd"],
 	}
 	r.PID, _ = strconv.Atoi(o["pid"])
 	r.Since = unix(o["since"])
@@ -75,6 +79,25 @@ func decodePrompts(s string) []adapter.Prompt {
 	return out
 }
 
+// Calls are stored as space-separated agent/tool/id triples.
+func encodeCalls(cs []adapter.Call) string {
+	parts := make([]string, len(cs))
+	for i, c := range cs {
+		parts[i] = c.Agent + "/" + c.Tool + "/" + c.ID
+	}
+	return strings.Join(parts, " ")
+}
+
+func decodeCalls(s string) []adapter.Call {
+	var out []adapter.Call
+	for _, f := range strings.Fields(s) {
+		if p := strings.SplitN(f, "/", 3); len(p) == 3 {
+			out = append(out, adapter.Call{Agent: p[0], Tool: p[1], ID: p[2]})
+		}
+	}
+	return out
+}
+
 func unix(s string) time.Time {
 	if n, err := strconv.ParseInt(s, 10, 64); err == nil {
 		return time.Unix(n, 0).UTC()
@@ -86,7 +109,8 @@ func unix(s string) time.Time {
 func Write(ctx context.Context, s tmux.Server, pane string, r Record) error {
 	values := map[string]string{
 		"agent": r.Agent, "session": r.Session, "state": r.State, "kind": r.Kind,
-		"pending": encodePrompts(r.Pending), "turn": r.Turn, "bind": r.Binding, "cmd": r.Command,
+		"pending": encodePrompts(r.Pending), "base": r.Base, "calls": encodeCalls(r.Calls),
+		"turn": r.Turn, "bind": r.Binding, "cmd": r.Command,
 	}
 	if r.PID > 0 {
 		values["pid"] = strconv.Itoa(r.PID)

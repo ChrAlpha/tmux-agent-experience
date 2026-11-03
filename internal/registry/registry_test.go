@@ -16,3 +16,10 @@ func TestPromptsRoundTrip(t *testing.T) {
 		t.Fatalf("empty = %+v", got)
 	}
 }
+
+func TestCallsRoundTrip(t *testing.T) {
+	in := []adapter.Call{{Tool: "Read", ID: "toolu_01"}, {Agent: "a1", Tool: "mcp__srv__do-it", ID: "call_x"}, {Tool: "Bash"}}
+	if got := decodeCalls(encodeCalls(in)); !slices.Equal(got, in) {
+		t.Fatalf("round trip = %+v", got)
+	}
+}

@@ -127,7 +127,7 @@ A target is an agent id or a unique prefix of at least 4 characters, a pane id
 | State | Meaning |
 | --- | --- |
 | `working` | A turn is running. Kind `background` means the turn ended but background tasks still run. |
-| `blocked` | The agent waits for you. Kind `permission` (tool or network approval) or `question`. It stays blocked until every open prompt, from the agent or any of its subagents, is answered: a prompt is closed by the completion of the tool it asked about, in the agent that asked, or by the end of the turn. A prompt known only from Claude's delayed permission notification, such as a sandboxed command's network request, names neither, and the next completed tool closes it. |
+| `blocked` | The agent waits for you. Kind `permission` (tool or network approval) or `question`. It stays blocked until every open prompt, from the agent or any of its subagents, is answered. A prompt closes once no call of the tool it asked about is still running in the agent that asked, once that agent's batch of tool calls resolves or the agent stops, or when the turn ends; a background subagent's prompt outlives the main agent's turn while the subagent runs. A prompt known only from Claude's delayed permission notification, such as a sandboxed command's network request, names neither, and the next finished tool closes it. Once no prompt is open the agent is `working` again, with kind `background` if its turn had ended. |
 | `idle` | Waiting for the next prompt. Kind `error` after a failed turn. |
 | `unknown` | An agent process is running but has reported nothing yet (startup, trust dialogs, plugin not installed), including an agent restarted in a pane whose previous agent never reported its exit. |
 

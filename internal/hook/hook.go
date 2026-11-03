@@ -83,7 +83,7 @@ func Run(in Input) error {
 	defer func() { query.Prune(ctx, in.Log.Dir, w, moved) }()
 
 	if res.Evidence == bind.Unbound {
-		if tr.Action == adapter.Answer || tr.Reminder {
+		if tr.NeedsRecord() {
 			return nil // what it changes depends on a record there is none of
 		}
 		return in.Log.Append(ctx, &ev)
@@ -109,7 +109,7 @@ func Run(in Input) error {
 				// The record that placed the session here has been replaced
 				// since: nothing ties the session to this pane any more.
 				ev.Binding, ev.Pane = bind.Unbound, nil
-				if tr.Action == adapter.Answer || tr.Reminder {
+				if tr.NeedsRecord() {
 					return nil
 				}
 				return in.Log.Append(ctx, &ev)
@@ -135,6 +135,9 @@ func Run(in Input) error {
 		if err := registry.Write(ctx, srv, pane.ID, rec); err != nil {
 			return err
 		}
+		if reported(rec).Equal(reported(cur)) {
+			return nil
+		}
 		ev.State, ev.Kind, ev.Turn = rec.State, rec.Kind, rec.Turn
 		ring = Alert(cur.State, rec.State)
 		return in.Log.Append(ctx, &ev)
@@ -149,40 +152,74 @@ func Run(in Input) error {
 // next applies tr to cur, the session's current record in the pane (zero when
 // the pane holds none), and reports whether anything changed. id carries the
 // record's identity and the time of the event.
+//
+// Open prompts block the agent. A prompt closes only on evidence that the
+// user dealt with it: the tool call it may be about is over, the agent's
+// batch of calls resolved or the agent stopped, or the turn it belongs to
+// ended. Once the last one closes, the agent works on as it did before.
 func next(cur registry.Record, tr adapter.Transition, id registry.Record) (registry.Record, bool) {
+	if tr.NeedsRecord() && !cur.Bound() {
+		return cur, false
+	}
 	rec := id
+	rec.State, rec.Kind, rec.Base, rec.Turn = cur.State, cur.Kind, cur.Base, cur.Turn
+	rec.Pending, rec.Calls = slices.Clone(cur.Pending), slices.Clone(cur.Calls)
+	if tr.Turn != "" {
+		rec.Turn = tr.Turn
+	}
 	switch tr.Action {
 	case adapter.Set:
-		rec.State, rec.Kind, rec.Turn = tr.State, tr.Kind, tr.Turn
+		rec.Pending = slices.DeleteFunc(rec.Pending, func(p adapter.Prompt) bool { return !tr.Keep.Has(p.Agent) })
+		rec.Calls = slices.DeleteFunc(rec.Calls, func(c adapter.Call) bool { return !tr.Keep.Has(c.Agent) })
+		rec.State, rec.Kind, rec.Base, rec.Turn = tr.State, tr.Kind, "", tr.Turn
 	case adapter.Ask:
 		// A reminder cannot be told apart from a prompt already pending, and
 		// outside a turn it cannot be about one.
 		if tr.Reminder && (len(cur.Pending) > 0 || cur.State != adapter.Working) {
 			return cur, false
 		}
-		rec.Pending = cur.Pending
+		rec.Calls = startCall(rec.Calls, tr.Call)
 		if !slices.Contains(rec.Pending, tr.Prompt) {
-			rec.Pending = append(slices.Clone(rec.Pending), tr.Prompt)
+			rec.Pending = append(rec.Pending, tr.Prompt)
 		}
-		rec.State, rec.Kind, rec.Turn = adapter.Blocked, rec.Pending[0].Kind(), tr.Turn
+	case adapter.Start:
+		rec.Calls = startCall(rec.Calls, tr.Call)
+	case adapter.Finish:
+		c := tr.Call
+		rec.Calls = slices.DeleteFunc(rec.Calls, func(o adapter.Call) bool { return o.ID == c.ID })
+		running := slices.ContainsFunc(rec.Calls, func(o adapter.Call) bool { return o.Agent == c.Agent && o.Tool == c.Tool })
+		if i := slices.Index(rec.Pending, adapter.Prompt{Agent: c.Agent, Tool: c.Tool}); i >= 0 && !running {
+			rec.Pending = slices.Delete(rec.Pending, i, i+1)
+		} else {
+			rec.Pending = answerUnnamed(rec.Pending)
+		}
+	case adapter.Settle:
+		agent := tr.Call.Agent
+		rec.Calls = slices.DeleteFunc(rec.Calls, func(o adapter.Call) bool { return o.Agent == agent })
+		rec.Pending = slices.DeleteFunc(rec.Pending, func(p adapter.Prompt) bool { return p.Agent == agent || p.Tool == "" })
 	case adapter.Answer:
-		i := slices.Index(cur.Pending, tr.Prompt)
-		if i < 0 {
-			// An unnamed prompt says nothing about the tool, and a reminder
-			// does not reliably name the agent that asked: any completed tool
-			// answers it.
-			i = slices.IndexFunc(cur.Pending, func(p adapter.Prompt) bool { return p.Tool == "" })
-		}
-		if i < 0 {
-			return cur, false // not what the user is being asked
-		}
-		rec.Pending = slices.Delete(slices.Clone(cur.Pending), i, i+1)
-		rec.State, rec.Turn = adapter.Working, tr.Turn
-		if len(rec.Pending) > 0 {
-			rec.State, rec.Kind = adapter.Blocked, rec.Pending[0].Kind()
+		if i := slices.Index(rec.Pending, tr.Prompt); i >= 0 {
+			rec.Pending = slices.Delete(rec.Pending, i, i+1)
+		} else {
+			rec.Pending = answerUnnamed(rec.Pending)
 		}
 	default:
 		return cur, false
+	}
+	switch {
+	case len(rec.Pending) > 0:
+		if rec.State != adapter.Blocked {
+			rec.Base = underlying(rec.State, rec.Kind)
+		}
+		rec.State, rec.Kind = adapter.Blocked, rec.Pending[0].Kind()
+	case rec.State == adapter.Blocked:
+		rec.State, rec.Kind, rec.Base = adapter.Working, rec.Base, ""
+	}
+	if len(rec.Pending) == 0 {
+		rec.Pending = nil
+	}
+	if len(rec.Calls) == 0 {
+		rec.Calls = nil
 	}
 	if !cur.Bound() {
 		return rec, true
@@ -198,6 +235,38 @@ func next(cur registry.Record, tr adapter.Transition, id registry.Record) (regis
 		rec.Sent = cur.Sent
 	}
 	return rec, !rec.Equal(cur)
+}
+
+func startCall(calls []adapter.Call, c adapter.Call) []adapter.Call {
+	if c.ID == "" || slices.ContainsFunc(calls, func(o adapter.Call) bool { return o.ID == c.ID }) {
+		return calls
+	}
+	return append(calls, c)
+}
+
+// answerUnnamed closes a prompt that named no tool. It says nothing about the
+// tool, and a reminder does not reliably name the agent that asked: any
+// finished tool answers it.
+func answerUnnamed(pending []adapter.Prompt) []adapter.Prompt {
+	if i := slices.IndexFunc(pending, func(p adapter.Prompt) bool { return p.Tool == "" }); i >= 0 {
+		return slices.Delete(pending, i, i+1)
+	}
+	return pending
+}
+
+// underlying is the kind of work an agent blocked in the given state returns
+// to: its turn, or once the main agent's turn is over, background work.
+func underlying(state, kind string) string {
+	if state == adapter.Idle || kind == adapter.KindBackground {
+		return adapter.KindBackground
+	}
+	return ""
+}
+
+// reported strips what events do not report, the bookkeeping of tool calls.
+func reported(r registry.Record) registry.Record {
+	r.Calls = nil
+	return r
 }
 
 // Alert names the change worth a bell, or "": "blocked" when an agent starts
