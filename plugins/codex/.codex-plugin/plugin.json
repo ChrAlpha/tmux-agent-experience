@@ -1,0 +1,14 @@
+{
+  "name": "tmag",
+  "version": "0.1.0",
+  "description": "Reports Codex thread state to tmag so tmux, other agents and remote clients can see it. Requires the tmag binary on PATH.",
+  "hooks": "./hooks/hooks.json",
+  "interface": {
+    "displayName": "tmag",
+    "shortDescription": "Agent awareness for tmux",
+    "developerName": "ChrAlpha",
+    "category": "Productivity",
+    "capabilities": ["Read"],
+    "websiteURL": "https://github.com/ChrAlpha/tmux-agent-experience"
+  }
+}

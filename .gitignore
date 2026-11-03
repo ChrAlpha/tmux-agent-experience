@@ -1,0 +1,3 @@
+# Codex reads its plugin marketplace from .agents/plugins; keep it tracked
+# even where a global gitignore excludes .agents/.
+!.agents/

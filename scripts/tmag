@@ -1,0 +1,5 @@
+#!/bin/sh
+# Runs the plugin's tmag binary, or tmag from PATH before it is installed.
+dir="$(cd "$(dirname "$0")/.." && pwd)"
+[ -x "$dir/bin/tmag" ] && exec "$dir/bin/tmag" "$@"
+exec tmag "$@"

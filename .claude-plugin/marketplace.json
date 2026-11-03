@@ -1,0 +1,14 @@
+{
+  "name": "tmux-agent-experience",
+  "owner": { "name": "ChrAlpha" },
+  "metadata": {
+    "description": "Agent awareness for tmux: state, identity and coordination for coding agents in tmux panes."
+  },
+  "plugins": [
+    {
+      "name": "tmag",
+      "source": "./plugins/claude",
+      "description": "Reports Claude Code session state to tmag so tmux, other agents and remote clients can see it."
+    }
+  ]
+}
