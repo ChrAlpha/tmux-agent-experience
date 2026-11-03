@@ -82,7 +82,8 @@ a design problem, not a test problem.
 | `internal/adapter` | Hook payload → state transition, per agent |
 | `internal/session` | Session records, the state machine, the per-session file store and lock |
 | `internal/attach` | Clients, attachments and their evidence, the `@tmag_*` pane projection, reconciliation |
-| `internal/query` | list / send / wait / snapshot over sessions and panes |
+| `internal/query` | list / send / wait / snapshot over sessions and panes; the control verbs' gates |
+| `internal/driver` | Which channel (pane, service, hook) carries each verb for each agent and runtime |
 | `internal/eventlog` | Append-only, sequence-numbered event log |
 | `internal/tmux` | tmux CLI wrapper; sanitises every free-text field |
 | `internal/proc` | Process table, agent clients and services, hook hosts |

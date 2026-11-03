@@ -43,6 +43,9 @@ type Session struct {
 	Transcript *eventlog.Transcript `json:"transcript,omitempty"`
 	// Subagents are the session's running subagents.
 	Subagents []string `json:"subagents,omitempty"`
+	// Capabilities are the verbs some channel carries to the session; each
+	// still checks its own gate when used.
+	Capabilities []string `json:"capabilities"`
 	// Panes are the panes that show the session.
 	Panes []Shown `json:"panes"`
 }
@@ -92,7 +95,7 @@ func Build(w *attach.World, recs []session.Record) View {
 		s := Session{
 			ID: r.ID, Agent: r.Agent, State: r.State(), Kind: r.Kind(), Turn: r.Turn,
 			Cwd: r.Cwd, Runtime: string(r.Host.Role), Transcript: r.TranscriptRef(), Subagents: r.RunningSubagents(),
-			Panes: shown[[2]string{r.Agent, r.ID}],
+			Capabilities: r.Capabilities(), Panes: shown[[2]string{r.Agent, r.ID}],
 		}
 		if s.Panes == nil {
 			s.Panes = []Shown{}

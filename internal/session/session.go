@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/adapter"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/driver"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
 )
@@ -98,7 +99,12 @@ func (r Record) Report(ev *eventlog.Event) {
 	ev.Runtime = string(r.Host.Role)
 	ev.Transcript = r.TranscriptRef()
 	ev.Subagents = r.RunningSubagents()
+	ev.Capabilities = r.Capabilities()
 }
+
+// Capabilities are the verbs some channel carries to the session. They follow
+// from its agent and runtime, which every report includes.
+func (r Record) Capabilities() []string { return driver.Capabilities(r.Agent, string(r.Host.Role)) }
 
 // TranscriptRef locates the session's transcript and names its format, or
 // returns nil when the hooks did not say where it is.

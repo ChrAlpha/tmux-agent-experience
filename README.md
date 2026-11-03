@@ -175,7 +175,23 @@ terminal_title = ["activity", "thread-name", "project-name", "thread-id"]
 A pane that runs `claude attach` shows a background session tmag cannot
 prove, and so shows `unknown`; the session is listed on its own row.
 
-### Sending safely
+### Control
+
+tmag carries a few verbs to a session, the same for every agent: `send` a
+prompt. Each has one gate, and which channel carries it is tmag's business,
+chosen for the session's agent and runtime:
+
+| Session | `send` |
+| --- | --- |
+| Claude Code, terminal | pane |
+| Claude Code, background | — |
+| Codex | pane |
+
+A session's `capabilities` list the verbs some channel carries to it; a verb
+nothing carries is refused with `unsupported`. Every delivery reports its
+channel as `via`, in its output and its event.
+
+#### Sending
 
 `tmag send` delivers a prompt to an idle session through the one pane that
 shows it, by `process` or `title-id`, when that pane's agent holds its
@@ -188,7 +204,9 @@ takes no input, is refused. A session shown by several panes needs a pane
 target.
 
 Delivery is a bracketed paste followed by Enter. Control characters are
-removed first, so relayed text cannot end the paste early or press keys.
+removed first, so relayed text cannot end the paste early or press keys. A
+draft left in the agent's composer is joined to the prompt: neither agent has
+a key that clears a draft without side effects, so tmag does not try.
 
 Hooks update a session under the same session lock, so the turn a prompt
 starts is always logged after its `Send` event. Further sends are refused
@@ -250,8 +268,9 @@ Every JSON document carries `"schema": "tmag/v1"`.
 supervisor). `transcript` is where the agent writes the session's transcript,
 in the agent's own format (`claude-jsonl` or `codex-rollout`); tmag only says
 where it is, and the file may not exist before the first turn. `subagents`
-lists the session's running subagents. A pane without `session` runs an agent
-tmag has no proof for.
+lists the session's running subagents. `capabilities` lists the verbs tmag
+can carry to the session (see [Control](#control)); each still checks its
+gate when used. A pane without `session` runs an agent tmag has no proof for.
 
 `tmag watch` prints one JSON document per line: first
 `{"type":"snapshot","seq":N,"sessions":[…],"panes":[…]}`, then
@@ -260,7 +279,8 @@ tmag has no proof for.
 or exits in a pane, a pane moves or closes, a pane switches between a
 session's main agent and a subagent). Events carry `seq`, `time`, `agent`,
 `session` and `event`. An event with `state` reports the session in full:
-`state`, `kind`, `turn`, `cwd`, `runtime`, `transcript` and `subagents` are
+`state`, `kind`, `turn`, `cwd`, `runtime`, `transcript`, `subagents` and
+`capabilities` are
 then what the session is, and a field left out is empty. Every change to any
 of them is such an event. `event` is the hook's name, or one of:
 
@@ -301,6 +321,7 @@ timeout. With `--json`, errors are also printed as
 `{"schema":"tmag/v1","error":{"code":…,"message":…}}`; codes are `usage`,
 `not_found`, `ambiguous`, `refused:unbound`, `refused:busy`,
 `refused:background`, `refused:subagent`, `refused:changed`,
+`refused:unsupported`,
 `ended`, `timeout` and `error`.
 
 ## Footprint

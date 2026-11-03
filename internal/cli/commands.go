@@ -438,11 +438,7 @@ func (a *app) cmdSend(args []string) int {
 		return a.fail("send", err)
 	}
 	if !*wait {
-		if a.json {
-			a.emit(map[string]any{"session": d.Session, "pane": d.Pane, "seq": d.Seq})
-		} else {
-			fmt.Fprintf(a.stdout, "sent to %s (%s) seq %d\n", shortID(d.Session.ID), d.Pane.ID, d.Seq)
-		}
+		a.reportDelivery("sent to", d)
 		return ExitOK
 	}
 	return a.awaitAndReport("send", d.Session, query.WaitOptions{
@@ -528,4 +524,17 @@ func (a *app) reportWait(s query.Session, ev eventlog.Event, started bool) {
 		state += " (no turn started)"
 	}
 	fmt.Fprintf(a.stdout, "%s %s\n", shortID(s.ID), state)
+}
+
+// reportDelivery prints where a verb went.
+func (a *app) reportDelivery(what string, d query.Delivery) {
+	if a.json {
+		a.emit(map[string]any{"session": d.Session, "pane": d.Pane, "via": d.Via, "seq": d.Seq})
+		return
+	}
+	where := d.Via
+	if d.Pane != nil {
+		where = d.Pane.ID
+	}
+	fmt.Fprintf(a.stdout, "%s %s (%s) seq %d\n", what, shortID(d.Session.ID), where, d.Seq)
 }

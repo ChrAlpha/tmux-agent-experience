@@ -39,8 +39,8 @@ type Transcript struct {
 // ended.
 //
 // An event that carries State reports the session in full: State, Kind, Turn,
-// Cwd, Runtime, Transcript and Subagents are then what the session is, and a
-// field left out is empty.
+// Cwd, Runtime, Transcript, Subagents and Capabilities are then what the
+// session is, and a field left out is empty.
 type Event struct {
 	Seq     int64     `json:"seq"`
 	Time    time.Time `json:"time"`
@@ -56,6 +56,8 @@ type Event struct {
 	Transcript *Transcript `json:"transcript,omitempty"`
 	// Subagents are the session's running subagents.
 	Subagents []string `json:"subagents,omitempty"`
+	// Capabilities are the verbs some channel carries to the session.
+	Capabilities []string `json:"capabilities,omitempty"`
 	// Pane is the pane an Attach, Detach or Send is about.
 	Pane *PaneRef `json:"pane,omitempty"`
 	// Evidence is what an Attach rests on.
@@ -63,6 +65,8 @@ type Event struct {
 	// From is the pane a Send came from, and Bytes the prompt's size.
 	From  *PaneRef `json:"from,omitempty"`
 	Bytes int      `json:"bytes,omitempty"`
+	// Via is the channel tmag delivered by: pane, service or hook.
+	Via string `json:"via,omitempty"`
 }
 
 // Events tmag itself records, beside those named after agent hooks.
