@@ -1,0 +1,63 @@
+package cli
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"os"
+
+	"github.com/ChrAlpha/tmux-agent-experience/internal/tmux"
+)
+
+func (a *app) cmdUninstall(args []string) int {
+	fs := flag.NewFlagSet("uninstall", flag.ContinueOnError)
+	purge := fs.Bool("purge", false, "")
+	if _, err := parse(fs, args); err != nil {
+		return a.usageError("uninstall", err)
+	}
+	if *purge {
+		cleared := 0
+		ctx := context.Background()
+		for _, s := range tmux.Servers() {
+			panes, err := s.Panes(ctx)
+			if err != nil {
+				continue
+			}
+			for _, p := range panes {
+				if len(p.Options) > 0 && s.ClearPaneOptions(ctx, p.ID) == nil {
+					cleared++
+				}
+			}
+		}
+		if err := os.RemoveAll(a.log.Dir); err != nil {
+			return a.fail("uninstall", err)
+		}
+		fmt.Fprintf(a.stdout, "cleared tmag options from %d pane(s) and removed %s\n", cleared, a.log.Dir)
+		return ExitOK
+	}
+	self, _ := os.Executable()
+	fmt.Fprintf(a.stdout, `Remove tmag in this order. Running agents and tmux sessions are not affected.
+
+1. tmag's state (pane options and %[1]s), while the binary still exists:
+     tmag uninstall --purge
+2. The agent plugins:
+     claude plugin uninstall %[2]s && claude plugin marketplace remove %[3]s
+     codex plugin remove %[2]s && codex plugin marketplace remove %[3]s
+3. The tmux plugin and its binary: delete this line from tmux.conf, then press
+   prefix + alt + u (TPM's clean) to remove the plugin directory
+     set -g @plugin '%[4]s'
+`, a.log.Dir, pluginID, marketplace, repo)
+	if !inPluginDir(canonical(self)) {
+		fmt.Fprintf(a.stdout, "4. This binary, installed outside the tmux plugin:\n     %s\n", removeBinary(self))
+	}
+	return ExitOK
+}
+
+// removeBinary names the command that removes a tmag installed outside the
+// tmux plugin, the way it was installed.
+func removeBinary(self string) string {
+	if inMiseInstalls(canonical(self)) {
+		return "mise unuse -g " + miseTool
+	}
+	return "rm " + self
+}

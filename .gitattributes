@@ -1,0 +1,4 @@
+* text=auto eol=lf
+
+*.go      diff=golang
+*.tmux    text eol=lf linguist-language=Shell

@@ -1,0 +1,41 @@
+name: Bug report
+description: Something tmag reports or does wrongly
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Security issues (wrong delivery, mis-binding, leaked content): please report privately, see SECURITY.md.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Start codex in a pane…
+        2. Run `tmag list`…
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Output of `tmag doctor --json`
+      render: json
+    validations:
+      required: true
+  - type: textarea
+    id: inspect
+    attributes:
+      label: Output of `tmag list --json` or `tmag inspect <target> --json`, if relevant
+      description: Pane titles and paths appear in this output; redact what you need to.
+      render: json
+  - type: input
+    id: os
+    attributes:
+      label: OS and terminal
+      placeholder: macOS 26, Ghostty

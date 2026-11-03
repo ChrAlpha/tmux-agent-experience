@@ -1,0 +1,26 @@
+# Build output
+/tmag
+/dist/
+/build/
+
+# Test and profiling output
+*.test
+*.out
+*.prof
+/coverage*
+
+# Local worktrees for parallel work
+/.worktrees/
+
+# Editors and OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Codex reads its plugin marketplace from .agents/plugins; keep it tracked
+# even where a global gitignore excludes .agents/.
+!.agents/
+
+# Binary the tmux plugin installs into its own checkout
+/bin/
