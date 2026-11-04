@@ -141,7 +141,7 @@ func throughPane(ctx context.Context, log *eventlog.Log, v View, s Session, name
 			if err := gate(fs, fresh, time.Now()); err != nil {
 				return err
 			}
-			rec, ok, err := store.Get(s.Agent, s.ID)
+			rec, ok, err := store.Current(ctx, log, s.Agent, s.ID)
 			if err != nil || !ok {
 				return &RefusedError{RefuseChanged, fmt.Sprintf("%s has ended", s.ID)}
 			}

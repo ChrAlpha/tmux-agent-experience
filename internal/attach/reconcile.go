@@ -355,13 +355,9 @@ func (env Env) detach(ctx context.Context, p tmux.Pane, a Attachment) error {
 // ends a session whose host process exited, if it still has.
 func (env Env) exit(ctx context.Context, r session.Record) {
 	_ = env.Store.Lock(ctx, r.Agent, r.ID, func() error {
-		cur, ok, err := env.Store.Get(r.Agent, r.ID)
+		cur, ok, err := env.Store.Current(ctx, env.Log, r.Agent, r.ID)
 		if err != nil || !ok {
-			return err
-		}
-		if cur.Ended != "" {
-			_, _, err := env.Store.Settle(ctx, env.Log, cur)
-			return err
+			return err // or an end already decided is now finished
 		}
 		if cur.Host != r.Host {
 			return nil // reported from another process since
@@ -373,11 +369,7 @@ func (env Env) exit(ctx context.Context, r session.Record) {
 // settle logs a change its writer did not get to log, if it still is not.
 func (env Env) settle(ctx context.Context, r session.Record) {
 	_ = env.Store.Lock(ctx, r.Agent, r.ID, func() error {
-		cur, ok, err := env.Store.Get(r.Agent, r.ID)
-		if err != nil || !ok {
-			return err
-		}
-		_, _, err = env.Store.Settle(ctx, env.Log, cur)
+		_, _, err := env.Store.Current(ctx, env.Log, r.Agent, r.ID)
 		return err
 	})
 }

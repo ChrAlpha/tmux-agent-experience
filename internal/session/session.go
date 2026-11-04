@@ -201,9 +201,10 @@ func (r Record) RunningSubagents() []string {
 // it is.
 func (r Record) Unlogged() bool { return r.Reports() != r.Logged }
 
-// Unsettled reports whether Store.Settle has something to do: a change to
-// log, or a prompt an older tmag left without a request.
-func (r Record) Unsettled() bool { return r.Unlogged() || r.unnamed() }
+// Unsettled reports whether Store.Settle has something to do: a change or a
+// delivery of tmag's to log, or a prompt an older tmag left without a
+// request.
+func (r Record) Unsettled() bool { return r.Unlogged() || r.Delivery != nil || r.unnamed() }
 
 // unnamed reports whether a pending prompt has no request.
 func (r Record) unnamed() bool {

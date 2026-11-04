@@ -573,6 +573,32 @@ func TestReportedDeliveryIsLoggedWhole(t *testing.T) {
 	}
 }
 
+func TestDeliveryThatChangedNothingIsLoggedToo(t *testing.T) {
+	dir := t.TempDir()
+	s, log := Store{Dir: dir}, eventlog.Open(dir)
+	ctx := context.Background()
+	// A service answer takes the request and leaves the session as it was
+	// reported; its writer dies before logging it.
+	rec := play(t)
+	rec.Logged = rec.Reports()
+	rec.Change = eventlog.Answer
+	rec.Delivery = &eventlog.Event{Event: eventlog.Answer, Via: "service", Request: "r1", Decision: "allow"}
+	if err := s.Put(rec); err != nil {
+		t.Fatal(err)
+	}
+	if rec.Unlogged() || !rec.Unsettled() {
+		t.Fatalf("a delivery left unlogged is not unsettled: %+v", rec)
+	}
+	// The next writer reads it settled, so it cannot overwrite the delivery.
+	cur, ok, err := s.Current(ctx, log, proc.Claude, "s1")
+	if err != nil || !ok || cur.Delivery != nil || cur.Unsettled() {
+		t.Fatalf("Current = %+v %v %v", cur, ok, err)
+	}
+	if all, _, _ := log.Since(ctx, 0); len(all) != 1 || all[0].Event != eventlog.Answer || all[0].Request != "r1" {
+		t.Fatalf("events %+v", all)
+	}
+}
+
 func TestSettleNamesPromptsAnOlderTmagLeft(t *testing.T) {
 	dir := t.TempDir()
 	s, log := Store{Dir: dir}, eventlog.Open(dir)

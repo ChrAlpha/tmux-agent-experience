@@ -206,6 +206,18 @@ func (s Store) Settle(ctx context.Context, log *eventlog.Log, rec Record) (Recor
 	return rec, true, nil
 }
 
+// Current reads a session and settles it (Settle), so that a writer starts
+// from a record the log reports and nothing a writer that died left
+// unlogged is overwritten; ok is false when there is none. The caller holds
+// the session's lock.
+func (s Store) Current(ctx context.Context, log *eventlog.Log, agent, id string) (Record, bool, error) {
+	rec, ok, err := s.Get(agent, id)
+	if err != nil || !ok {
+		return rec, false, err
+	}
+	return s.Settle(ctx, log, rec)
+}
+
 // All reads every session. Unreadable files are skipped: one corrupt session
 // must not hide the others.
 func (s Store) All() ([]Record, error) {

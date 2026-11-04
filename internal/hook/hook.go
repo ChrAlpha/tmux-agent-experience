@@ -87,16 +87,7 @@ func Run(in Input) error {
 	host, hostKnown := w.Proc.HostOf(in.PID)
 	ev := eventlog.Event{Agent: in.Agent, Session: p.SessionID, Event: p.HookEventName, Cwd: p.Cwd}
 
-	// get reads the session and finishes whatever a writer that died left
-	// undone (see session.Store.Save), so that this hook starts from a
-	// record the log reports. The caller holds the session's lock.
-	get := func() (session.Record, bool, error) {
-		cur, found, err := env.Store.Get(in.Agent, p.SessionID)
-		if err != nil || !found {
-			return cur, false, err
-		}
-		return env.Store.Settle(ctx, in.Log, cur)
-	}
+	get := func() (session.Record, bool, error) { return env.Store.Current(ctx, in.Log, in.Agent, p.SessionID) }
 
 	if tr.Action == adapter.End {
 		err := env.Store.Lock(ctx, in.Agent, p.SessionID, func() error {

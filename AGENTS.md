@@ -75,7 +75,9 @@ a design problem, not a test problem.
   verbs); a pane's attachment and projection only under its pane lock (hooks,
   reconciliation, control verbs through a pane). Whoever takes both takes the
   pane's first. Every change is decided again under the lock against fresh
-  state, and its event is appended before the lock is released, so the log
+  state, a session's read through `session.Store.Current`, which first logs
+  whatever a writer that died left unlogged, and its event is appended
+  before the lock is released, so the log
   orders events as they happened. Sessions change only through
   `session.Store.Save`, `Report` (what a delivery of tmag's did, which the
   agent does not report) and `End`, and attachments only through

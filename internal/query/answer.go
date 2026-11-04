@@ -118,7 +118,7 @@ func answerHook(ctx context.Context, log *eventlog.Log, s Session, id string, d 
 	store := session.Store{Dir: log.Dir}
 	var dl Delivery
 	err := store.Lock(ctx, s.Agent, s.ID, func() error {
-		rec, ok, err := store.Get(s.Agent, s.ID)
+		rec, ok, err := store.Current(ctx, log, s.Agent, s.ID)
 		if err != nil || !ok {
 			return &RefusedError{RefuseChanged, fmt.Sprintf("%s has ended", s.ID)}
 		}
@@ -287,7 +287,7 @@ func answerService(ctx context.Context, log *eventlog.Log, v View, s Session, id
 	store := session.Store{Dir: log.Dir}
 	var dl Delivery
 	err = store.Lock(ctx, s.Agent, s.ID, func() error {
-		rec, ok, err := store.Get(s.Agent, s.ID)
+		rec, ok, err := store.Current(ctx, log, s.Agent, s.ID)
 		if err != nil || !ok {
 			return &RefusedError{RefuseChanged, fmt.Sprintf("%s has ended", s.ID)}
 		}
