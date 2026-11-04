@@ -1,6 +1,6 @@
 # ADR 0001: One control surface, a driver per agent and runtime
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-11-03
 - Evidence: [Claude Code control channels](../research/claude-control-channels.md)
   (2.1.317), [Codex control channels](../research/codex-control-channels.md)
@@ -51,10 +51,10 @@ terminal can already do, made safe to do from elsewhere.
 | `request <target> <request>` | the named request still open | shows what the request asks (tool and input), relayed live, never stored |
 
 All verbs share the existing refusal codes and exit codes, add
-`refused:unsupported` for a verb the session's driver cannot carry, and
-report `via` (`pane` or `service`) in their JSON output. `Interrupt` is
-already a Codex hook name, so tmag's own event for a delivered interrupt is
-`Halt`.
+`refused:unsupported` for a verb no channel carries to the session and
+`refused:idle` for an interrupt with nothing to stop, and report `via`
+(`pane`, `service` or `hook`) in their JSON output. `Interrupt` is already a
+Codex hook name, so tmag's own event for a delivered interrupt is `Halt`.
 
 ### Drivers
 
@@ -96,25 +96,41 @@ Why each cell:
   dialog. No key clears a draft harmlessly in both agents, so tmag does not try;
   the README says so.
 - **Interrupt by one Esc**, only while the session is working or blocked:
-  pressed twice on an empty composer, Esc opens a rewind menu in both agents.
-  Claude reports no hook on an interrupt, so its state stays `working` until
-  its idle notification; tmag logs `Halt` and does not guess the state.
+  pressed twice on an empty composer, Esc opens a rewind menu in both agents,
+  so after an interrupt another is refused until the agent reports again, or
+  for 90 seconds. Claude reports no hook on an interrupt, and was seen not to
+  send its idle notification either, so tmag records what it delivered: the
+  `Halt` event reports the session idle, its prompts declined (see
+  [What tmag's deliveries do](#what-tmags-deliveries-do)). Codex reports
+  `Interrupt` itself.
 
-A driver is chosen from the session's agent and `runtime` and, for pane
-drivers, its attachment. Each session lists the verbs its driver can carry
-in `capabilities`, so clients never branch on the agent.
+`internal/driver` alone maps a verb, the session's agent and its `runtime`
+to a channel (`pane`, `service` or `hook`). A session lists in
+`capabilities` the verbs some channel carries to it; they follow from agent
+and runtime only, so every event that reports the session carries them, and
+clients never branch on the agent. A pane channel still needs the
+attachment when the verb is used, and is refused `unbound` without one.
 
 ### Requests
 
 A request is one prompt for the person that tmag can answer. It is a
 `Pending` prompt of the session with an id tmag assigns:
 
+Every pending prompt has a request. A hook that opens a prompt names it
+with a fresh id; a prompt that has none (one a tmag 0.1.0 record left) is
+named when the session is next settled. Requests are not events of their
+own: every event that reports the session lists its open `requests`, so a
+request opens and closes in the state events that report it, whoever
+answered it. A request closes with its prompt.
+
 - **Claude.** `tmag answer-hook claude` takes the place of `tmag hook claude`
   on `PermissionRequest`. Hooks on one event run in parallel, so one handler
-  must both open the prompt and wait for it. It applies the event exactly as
-  `tmag hook` does and, in the same change under the session's lock, gives the
-  prompt a request id (logging `Request`). Then it listens on a Unix socket
-  under the state directory and waits. Connections speak one JSON object per
+  must both open the prompt and wait for it. It listens on a Unix socket
+  under the state directory (`req/<id>.sock`) first, then applies the event
+  exactly as `tmag hook` does, naming the prompt with its own id: it takes
+  over the plain request of an equal prompt no hook waits on, or adds one, so
+  two dialogs for equal prompts are two requests. It waits only if the
+  session then names the prompt so. Connections speak one JSON object per
   line:
   - `show` returns the tool and its input, held in the hook's memory.
   - `decide` prints the decision as the hook's output, acknowledges once it
@@ -123,21 +139,49 @@ A request is one prompt for the person that tmag can answer. It is a
     prompt: the person answered in the terminal, the call ran or the turn
     ended.
 
-  On SIGTERM, its own timeout or any error it exits 0 and prints nothing. The
-  hook's timeout is long (the default 600 s): the dialog is up throughout, so
-  waiting costs nothing.
+  On a signal, from its start, its own timeout (590 s, inside the plugin's
+  600 s) or any error it exits 0 and prints nothing, even for a connection it
+  was serving when told to leave. The dialog is up throughout, so waiting
+  costs nothing.
 - **Codex daemon.** tmag's hook marks the prompt from `PermissionRequest`,
   which Codex fires before prompting. `tmag answer` joins the thread
-  (`thread/resume` with `excludeTurns`), matches the replayed server request by
-  turn and tool, answers it, waits for `serverRequest/resolved`, and leaves.
+  (`thread/resume` with `excludeTurns`) and takes the replayed server request
+  of the request's thread and turn that asks about its tool, as Codex 0.166
+  maps hook tools to approvals: `Bash` and `write_stdin` to a command
+  approval, `apply_patch` to a file change; other tools are `unsupported`.
+  The tool is always checked, not only to tell several apart: a request stays
+  open after its approval while the call runs, and must not take another
+  approval of the turn. Approvals resolved during the replay are left out.
+  It answers (`accept`, or `decline`, which Codex 0.166 takes although its
+  approvals do not list it), waits for `serverRequest/resolved`, and leaves.
   `request` relays the replayed request's parameters.
 
 `tmag answer` checks the request is still open under the session's lock,
-logs `Answer`, and delivers. A request the person answered in the terminal a
-moment earlier may still accept a decision the agent then ignores. `answer`
-therefore guarantees delivery to an open request; whether the decision applied
-shows in the events that follow, as a turn does for `send`. `Resolve` is
-logged when a request closes, whoever answered it.
+logs `Answer`, and delivers:
+
+- through the hook, it hands the decision over under the lock, and the
+  request closes in the same change, which `Answer` reports;
+- through the daemon, it takes the request under the lock and logs `Answer`,
+  then delivers after releasing it (the daemon runs the session's hooks,
+  which wait for the lock). Of two answers at once, one is delivered and the
+  other refused `changed`; the request is free again once the first has given
+  up, after the service timeout.
+
+A request the person answered in the terminal a moment earlier may still
+accept a decision the agent then ignores. `answer` therefore guarantees
+delivery to an open request; whether the decision applied shows in the
+events that follow, as a turn does for `send`.
+
+### What tmag's deliveries do
+
+Hooks report what the agent does, but not everything tmag's own deliveries
+do: Claude reports nothing after an interrupt, and nothing when a hook's
+decision closes its dialog. tmag records those effects itself, through
+`session.Store.Report`, which stores the record and logs the delivery's
+event reporting it, under the session's lock like every change. Like `Save`
+it marks the change first, and it keeps the delivery's event with the mark,
+so that a writer that dies before logging leaves the event to be logged
+whole by the next holder of the lock.
 
 ### Reaching the Codex daemon
 
@@ -147,19 +191,21 @@ logged when a request closes, whoever answered it.
   `codex app-server proxy` is not used: it adds about 30 ms and exits 0 when
   the handshake fails.
 - **Proof of the channel.** The socket's peer process (`SO_PEERCRED`,
-  `LOCAL_PEERPID` on macOS) must be the session's recorded host, and
+  `LOCAL_PEERPID` on macOS) must be the session's recorded host or an
+  ancestor of it, since hooks may run in a helper the daemon started, and
   `thread/read` must find the thread loaded there. Otherwise the verb is
-  refused.
+  refused `unbound`.
 - **Side effects, kept small.** `send` and `interrupt` do not join the
   thread. `answer` joins only for as long as it takes, sends no overrides
   (they would cold-resume an idle thread), and connects only to a daemon that
   already runs the session. Every call has a client timeout: an interrupt of a
   steered turn was seen never to answer.
 - **Originator.** The first client to `initialize` with a non-internal name
-  becomes the daemon's originator, recorded on every later thread. Whether
-  the TUI's own name counts as internal was not checked, so tmag can become
-  the originator of a daemon. That affects attribution only; it is checked
-  before the service client ships.
+  becomes the daemon's originator, recorded on every later thread. Checked:
+  when the TUI connects first, the originator stays `codex-tui`. tmag
+  connects only to a daemon that already runs the session, so it becomes the
+  originator only of a daemon no TUI has connected to; that affects
+  attribution only.
 - **Ordering.** The daemon may run the turn's hooks, which wait for the
   session's lock, before it answers `turn/start`. So `send` marks the session
   sent and logs `Send` under the lock, as today, and makes the call after
@@ -173,10 +219,16 @@ logged when a request closes, whoever answered it.
   before the first turn), `capabilities`, `requests` (`id`, `kind`
   (`permission`, `question` or `plan`), `tool`, `agent` for a subagent's,
   `since`), and `subagents` (ids of running subagents).
-- Events: `runtime`; `cwd` changes are reported like state changes; new
-  tmag events `Request`, `Resolve`, `Answer`, `Halt`, each with the request or
-  pane it concerns and `via` where it delivers.
-- Errors: `refused:unsupported`.
+- Events: an event with `state` reports the session in full: `state`,
+  `kind`, `turn`, `cwd`, `runtime`, `transcript`, `subagents`,
+  `capabilities` and `requests`, and every change to any of them is such an
+  event, so a client applying events to a snapshot stays current. New tmag
+  events `Halt` and `Answer` (with `request` and `decision`), each with `via`
+  where it delivered.
+- Errors: `refused:unsupported`, `refused:idle`.
+
+A record written by tmag 0.1.0 reports less than the session is, so the next
+tmag to settle it logs it once in full, naming its open prompts.
 
 Content stays where the agent writes it. A client on the same host reads the
 transcript at `transcript.path`; tmag has no command that relays it.
@@ -202,16 +254,21 @@ These replace the corresponding entries in AGENTS.md:
   nowhere.
 - **Control is gated.** `send`, `interrupt` and `answer` act only through a
   channel proven to reach the session: its one attached pane (by `process` or
-  `title-id`, showing the main agent, holding its terminal's foreground) or
-  the agent service it runs in (a socket whose peer is the session's host).
-  Each checks the state it needs (`send` idle, `interrupt` working or blocked,
-  `answer` its request open), checks all of it again under the pane's lock
-  and the session's, and logs its event before releasing them. `wait` refuses
-  a pane that shows no session.
+  `title-id`, showing the main agent, holding its terminal's foreground), the
+  agent service it runs in (a socket whose peer is the session's host or an
+  ancestor of it), or the answer hook waiting on the request. Each checks the
+  state it needs (`send` idle, `interrupt` working or blocked, `answer` its
+  request open), checks all of it again under the pane's lock and the
+  session's, and logs its event before releasing them. `internal/driver`
+  alone decides which channel carries a verb. `wait` refuses a pane that
+  shows no session.
+- **Locks**, extended: sessions change only through `session.Store.Save`,
+  `Report` (what a delivery of tmag's did, which the agent does not report)
+  and `End`.
 
 Answering is a default like the others: the `@tmag-answer` option (default
-`on`) turns it off, and `tmag.tmux` mirrors it into the state directory, where
-`answer-hook` checks it before waiting.
+`on`) turns it off. `answer-hook` reads it from the tmux servers it finds,
+as `@tmag-alert` is read, and does not wait if any of them sets it `off`.
 
 ### Remote access
 
@@ -220,8 +277,10 @@ loopback and is reached through Tailscale or Cloudflare Zero Trust, for one
 person; there are no accounts and no sharing. Because a browser can be made to
 send requests by any page it visits, such a client still checks the `Host`
 header, refuses cross-origin requests to its actions (custom header, JSON
-body), and checks the identity the tunnel asserts (`Tailscale-User-Login`, or
-the Cloudflare Access JWT) against its owner.
+body, same `Origin`), and checks the identity the tunnel asserts
+(`Tailscale-User-Login`, or `Cf-Access-Authenticated-User-Email`) against its
+owner. Those headers are trusted only because the client listens on loopback
+alone, so the tunnel is the one way in.
 
 ## Consequences
 
@@ -239,7 +298,8 @@ the Cloudflare Access JWT) against its owner.
   - Claude's sandbox network prompts, which raise no `PermissionRequest`;
   - Codex `request_user_input` and `request_permissions`, which fire no hook,
     so tmag sees the session working;
-  - Claude's state after an interrupt, until its idle notification.
+  - Codex approvals of MCP tools, which tmag does not match to a daemon
+    request.
 - Pane `send` may join a draft left in the composer. For one person working
   alone this is rare, and the README says it.
 
@@ -266,8 +326,9 @@ the Cloudflare Access JWT) against its owner.
 
 Two tmag state directories on one tmux server undo each other's attachments:
 each clears attachments it has no session for. A scratch `TMAG_STATE_DIR`
-alone does not isolate an experiment; `TMUX_TMPDIR` must be private too, as
-AGENTS.md already says. Whether pane options should record which state
+alone does not isolate an experiment; `TMUX_TMPDIR` must be private too, and
+`TMUX` and `TMUX_PANE` unset, as AGENTS.md already says: a process that
+inherits `TMUX` reaches the developer's server whatever `TMUX_TMPDIR` says. Whether pane options should record which state
 directory wrote them is a separate change.
 
 ## Order of work
@@ -278,8 +339,8 @@ directory wrote them is a separate change.
 3. `interrupt` with pane drivers; `Halt`.
 4. The Codex service client (WebSocket, peer proof); `send` and `interrupt`
    through it.
-5. Requests: `answer-hook` for Claude, `request`, `answer`, `Request`,
-   `Resolve`, `Answer`, `@tmag-answer`.
+5. Requests: `answer-hook` for Claude, `request`, `answer`, `Answer`,
+   `@tmag-answer`; `Store.Report` for what deliveries do.
 6. `answer` and `request` through the Codex service.
 7. The example web page: requests, answers and interrupts.
 
