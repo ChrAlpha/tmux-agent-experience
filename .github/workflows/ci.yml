@@ -38,7 +38,7 @@ jobs:
         with:
           version: v2.15
       - name: Shellcheck
-        run: shellcheck tmag.tmux scripts/install.sh scripts/tmag
+        run: shellcheck tmag.tmux scripts/install.sh scripts/tmag plugins/claude/tmag-peers/bin/tmag plugins/codex/tmag-peers/skills/peers/scripts/tmag
 
   vulncheck:
     runs-on: ubuntu-latest
@@ -54,7 +54,7 @@ jobs:
       - name: Validate plugin and marketplace manifests
         run: |
           for f in .claude-plugin/marketplace.json .agents/plugins/marketplace.json \
-                   plugins/claude/.claude-plugin/plugin.json plugins/claude/hooks/hooks.json \
-                   plugins/codex/.codex-plugin/plugin.json plugins/codex/hooks/hooks.json; do
+                   plugins/claude/*/.claude-plugin/plugin.json plugins/claude/tmag/hooks/hooks.json \
+                   plugins/codex/*/.codex-plugin/plugin.json plugins/codex/tmag/hooks/hooks.json; do
             jq empty "$f" || { echo "invalid JSON: $f"; exit 1; }
           done

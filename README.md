@@ -16,6 +16,9 @@ and whether it is working, waiting for you, or done — and shows it the tmux wa
   `2 blocked · 1 working`.
 - **`#{E:@tmag-pane-status}`** in `pane-border-format` labels each pane
   (`claude working`, `codex blocked permission`).
+- **Agents working together.** Ask an agent to involve another one, and it
+  prompts the other through tmag, waits for its turn and reads its answer:
+  delivered once, only while that agent is idle, and recorded.
 
 Underneath, the `tmag` command gives agents, scripts and remote clients the
 same state as a versioned JSON contract, and can hand an idle agent its next
@@ -60,7 +63,9 @@ the same procedure, readable by people. Use the same prompt to update.
 
 2. Press `prefix + M-a`. A popup shows the commands that connect Claude Code
    and Codex through their own plugin managers, runs them once you confirm, and
-   checks the result.
+   checks the result. Each agent gets two plugins: `tmag`, whose hooks report
+   its state, and `tmag-peers`, a skill that teaches it to work with the other
+   agents through tmag (see [Agents acting on agents](#agents-acting-on-agents)).
 
 3. Start new agent sessions in tmux panes. In Codex, approve tmag's hooks with
    `/hooks`, and run `/title` once to turn on `thread-id` (see
@@ -90,16 +95,19 @@ load. Then `prefix + M-a` brings the agent plugins to the same version.
 | `@tmag-key-setup` | `M-a` | prefix key to connect the agents and check the installation |
 | `@tmag-alert` | `blocked,finished` | which changes ring a pane's bell |
 | `@tmag-answer` | `on` | who may decide an agent's permission prompts and questions with `tmag answer`, beside the agent's own dialog: `on` for people, `agents` for agents too, `off` for nobody |
+| `@tmag-peers` | `on` | whether `prefix + M-a` gives the agents the `tmag-peers` skill, for working with each other; `off` removes it |
 | `@tmag-release-url` | GitHub releases | where to download the binary, for mirrors |
 
 Set a key option to `off` to leave it unbound, `@tmag-alert` to `off` for
-no bells, and `@tmag-answer` to `off` to answer prompts only in the agent. Set options before TPM's `run` line.
+no bells, `@tmag-answer` to `off` to answer prompts only in the agent, and
+`@tmag-peers` to `off`, then press `prefix + M-a`, to keep tmag out of the
+agents' context. Set options before TPM's `run` line.
 
 ## The `tmag` command
 
-Agent hooks find the plugin's binary on their own. To use `tmag` from a shell
-or let agents call it (agent-to-agent work, scripts), put the plugin's `bin`
-directory on your `PATH`, or install the released binary separately with
+Agent hooks find the plugin's binary on their own, and so do agents with the
+`tmag-peers` skill. To use `tmag` from a shell or a script, put the plugin's
+`bin` directory on your `PATH`, or install the released binary separately with
 `mise use -g github:ChrAlpha/tmux-agent-experience` or an archive from
 [Releases](https://github.com/ChrAlpha/tmux-agent-experience/releases).
 
@@ -217,6 +225,30 @@ one only when `@tmag-answer` is `agents`; otherwise it is refused with
 prompts by accident, and the log shows every decision an agent made. It is
 no security boundary: an agent can type into any pane with tmux itself.
 
+Agents do not use these verbs unless told about them: asked to message
+another agent, they type into its pane with `tmux send-keys` and judge its
+state from its screen. The `tmag-peers` plugin is what tells them. Its skill,
+`peers`, covers when to act on another agent (when the person asks, or a
+peer's prompt asks within the person's work), the verbs and their refusals,
+and never to fall back to tmux. In Claude Code the plugin puts `tmag` on the
+agent's `PATH`; in Codex the skill runs it from its own directory. Either way
+it is a launcher that runs the binary the agent's hooks run.
+
+A prompt carries no sender, so the skill has agents name themselves in its
+first line, which also says how to answer, so that an agent without the skill
+can follow it:
+
+```
+[tmag] From claude 1787a44e. Reply in your final message.
+[tmag] From claude 1787a44e. When done, reply by running tmag send 1787a44e - with your answer, its first line "[tmag] Reply from 01a19fda."
+```
+
+The first is for a sender that waits for the turn and reads the answer; the
+second for one that ends its turn and takes the reply as its next prompt. An
+agent with the skill treats such a prompt as a colleague's request rather
+than the person's, and does not answer a reply. tmag itself delivers the text
+as given.
+
 #### Sending
 
 `tmag send` delivers a prompt to an idle session through the one pane that
@@ -237,10 +269,10 @@ a key that clears a draft without side effects, so tmag does not try.
 Hooks update a session under the same session lock, so the turn a prompt
 starts is always logged after its `Send` event. Further sends are refused
 until the agent's own hook confirms the turn by starting it, including after
-typing reported an error, since the prompt may have arrived all the same. `send --wait`
-waits for that turn to end; input that starts no turn, such as a slash
-command, releases the session after 15 seconds, and `send --wait` then
-reports `"started": false`.
+typing reported an error, since the prompt may have arrived all the same.
+`send --wait` waits until that turn ends or blocks on a request, and reports
+which; input that starts no turn, such as a slash command, releases the
+session after 15 seconds, and `send --wait` then reports `"started": false`.
 
 `wait` and `send --wait` end with error code `ended` when the session ends.
 
@@ -444,7 +476,7 @@ timeout. With `--json`, errors are also printed as
 | Piece | Where | Removed by |
 | --- | --- | --- |
 | tmux plugin and `tmag` | `$TMUX_PLUGIN_MANAGER_PATH/tmux-agent-experience/` | removing the `@plugin` line, then `prefix + alt + u` |
-| Agent plugins | each agent's plugin directory | the agent's plugin manager |
+| Agent plugins `tmag` and `tmag-peers` | each agent's plugin directory | the agent's plugin manager |
 | Pane state | `@tmag_*` pane options, gone with the pane | `tmag uninstall --purge` |
 | Sessions and event log | `$XDG_STATE_HOME/tmag` (default `~/.local/state/tmag`): one small file per live session, at most two 8 MB event files, and `req/<id>.sock` while an answer hook waits | `tmag uninstall --purge` |
 

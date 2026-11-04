@@ -14,48 +14,66 @@ import (
 	"github.com/ChrAlpha/tmux-agent-experience/internal/version"
 )
 
-// setupPlan lists the commands that install or update the tmag plugin in a
-// host. Every command is idempotent: re-adding a marketplace or a plugin
-// succeeds and installs the current version.
-func setupPlan(h host) [][]string {
+// setupPlan lists the commands that bring tmag's plugins in a host to the
+// binary's version: tmag always, tmag-peers when peers is set, removed
+// otherwise. Every command is idempotent: re-adding a marketplace or a
+// plugin succeeds and installs the current version.
+func setupPlan(h host, peers bool) [][]string {
 	if !h.Present || !h.Listed {
 		return nil
 	}
-	outdated := h.PluginVer != "" && h.PluginVer != version.Version
-	if h.Installed && h.Enabled && !outdated {
-		return nil
+	want := map[string]bool{pluginName: true, peersName: peers}
+	var plan [][]string
+	add := func(argv ...string) { plan = append(plan, argv) }
+
+	// The marketplace is added with tmag, and refreshed before anything else
+	// it provides is installed or updated.
+	refresh := false
+	for _, name := range []string{pluginName, peersName} {
+		p := *h.of(name)
+		refresh = refresh || want[name] && (!p.Installed || p.outdated())
 	}
-	switch h.CLI {
-	case "claude":
-		if !h.Installed {
-			return [][]string{
-				{"claude", "plugin", "marketplace", "add", repo, "--sparse", ".claude-plugin", "plugins/claude"},
-				{"claude", "plugin", "install", pluginID},
+	switch {
+	case !h.Tmag.Installed && h.CLI == "claude":
+		add("claude", "plugin", "marketplace", "add", repo, "--sparse", ".claude-plugin", "plugins/claude")
+	case !h.Tmag.Installed:
+		add("codex", "plugin", "marketplace", "add", repo, "--sparse", ".agents", "--sparse", "plugins/codex")
+	case refresh && h.CLI == "claude":
+		add("claude", "plugin", "marketplace", "update", marketplace)
+	case refresh:
+		add("codex", "plugin", "marketplace", "upgrade", marketplace)
+	}
+
+	for _, name := range []string{pluginName, peersName} {
+		p, id := *h.of(name), pluginID(name)
+		switch {
+		case !want[name] && p.Installed && h.CLI == "claude":
+			add("claude", "plugin", "uninstall", id)
+		case !want[name] && p.Installed:
+			add("codex", "plugin", "remove", id)
+		case !want[name]:
+		case h.CLI == "claude" && !p.Installed:
+			add("claude", "plugin", "install", id)
+		case h.CLI == "claude":
+			if p.outdated() {
+				add("claude", "plugin", "update", id)
 			}
-		}
-		var plan [][]string
-		if outdated {
-			plan = append(plan,
-				[]string{"claude", "plugin", "marketplace", "update", marketplace},
-				[]string{"claude", "plugin", "update", pluginID})
-		}
-		if !h.Enabled {
-			plan = append(plan, []string{"claude", "plugin", "enable", pluginID})
-		}
-		return plan
-	case "codex":
-		if !h.Installed {
-			return [][]string{
-				{"codex", "plugin", "marketplace", "add", repo, "--sparse", ".agents", "--sparse", "plugins/codex"},
-				{"codex", "plugin", "add", pluginID},
+			if !p.Enabled {
+				add("claude", "plugin", "enable", id)
 			}
-		}
-		return [][]string{
-			{"codex", "plugin", "marketplace", "upgrade", marketplace},
-			{"codex", "plugin", "add", pluginID},
+		case !p.Installed || !p.Enabled || p.outdated():
+			add("codex", "plugin", "add", id)
 		}
 	}
-	return nil
+	return plan
+}
+
+// setupState says what tmag's plugins in a host are when nothing is left to do.
+func setupState(h host, peers bool) string {
+	if !peers {
+		return fmt.Sprintf("tmag plugin %s is installed and enabled; tmag-peers is off (%s)", h.Tmag.Version, peersOption)
+	}
+	return fmt.Sprintf("tmag and tmag-peers plugins %s are installed and enabled", h.Tmag.Version)
 }
 
 func (a *app) cmdSetup(args []string) int {
@@ -74,6 +92,7 @@ func (a *app) cmdSetup(args []string) int {
 		return a.usageError("setup", err)
 	}
 
+	peers := peersWanted(context.Background())
 	var hosts []host
 	for _, probe := range []func() host{claudeHost, codexHost} {
 		if h := probe(); *only == "" || h.CLI == *only {
@@ -87,13 +106,13 @@ func (a *app) cmdSetup(args []string) int {
 	var steps []step
 	fmt.Fprintf(a.stdout, "tmag %s\n\n", version.Version)
 	for _, h := range hosts {
-		switch plan := setupPlan(h); {
+		switch plan := setupPlan(h, peers); {
 		case !h.Present:
 			fmt.Fprintf(a.stdout, "%s: not installed, skipped\n", h.Name)
 		case !h.Listed:
 			fmt.Fprintf(a.stdout, "%s: cannot list its plugins; is %s up to date?\n", h.Name, h.CLI)
 		case len(plan) == 0:
-			fmt.Fprintf(a.stdout, "%s: tmag plugin %s is installed and enabled\n", h.Name, h.PluginVer)
+			fmt.Fprintf(a.stdout, "%s: %s\n", h.Name, setupState(h, peers))
 		default:
 			fmt.Fprintf(a.stdout, "%s: will run\n", h.Name)
 			for _, c := range plan {

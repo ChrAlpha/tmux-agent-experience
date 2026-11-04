@@ -2,6 +2,7 @@ package binpath
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -86,5 +87,119 @@ func TestHookCommandMatchesCandidates(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(marker); len(b) != 0 {
 		t.Fatalf("relative TMUX_PLUGIN_MANAGER_PATH executed %s", b)
+	}
+}
+
+// The tmag-peers plugins ship Launcher as their tmag, for the agent's tools.
+func TestShippedLaunchers(t *testing.T) {
+	for _, path := range []string{
+		"plugins/claude/tmag-peers/bin/tmag",
+		"plugins/codex/tmag-peers/skills/peers/scripts/tmag",
+	} {
+		full := filepath.Join("..", "..", path)
+		b, err := os.ReadFile(full)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(b) != Launcher() {
+			t.Errorf("%s differs from binpath.Launcher(); regenerate it", path)
+		}
+		if st, err := os.Stat(full); err != nil || st.Mode().Perm()&0o111 == 0 {
+			t.Errorf("%s is not executable", path)
+		}
+	}
+}
+
+// The launcher runs what the hooks run: the plugin's binary under the first
+// root that has one, else tmag on PATH, never itself; and fails as a missing
+// command when there is none.
+func TestLauncherRunsTheHooksBinary(t *testing.T) {
+	dir := t.TempDir()
+	launcher := filepath.Join(dir, "launcher", "tmag")
+	if err := os.MkdirAll(filepath.Dir(launcher), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(launcher, []byte(Launcher()), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fake := func(path, name string) {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("#!/bin/sh\necho "+name+" \"$@\"\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run := func(vars ...string) (string, int) {
+		t.Helper()
+		cmd := exec.Command(launcher, "send", "a b")
+		cmd.Env = append([]string{"HOME=" + filepath.Join(dir, "home")}, vars...)
+		var out bytes.Buffer
+		cmd.Stdout, cmd.Stderr = &out, &out
+		code := 0
+		var exit *exec.ExitError
+		if err := cmd.Run(); errors.As(err, &exit) {
+			code = exit.ExitCode()
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		return strings.TrimSpace(out.String()), code
+	}
+	path := "PATH=" + filepath.Dir(launcher) + ":" + filepath.Join(dir, "other") + ":/usr/bin:/bin"
+
+	if out, code := run(path); code != 127 || !strings.Contains(out, "not installed") {
+		t.Fatalf("with no binary: %d %q", code, out)
+	}
+	fake(filepath.Join(dir, "other", "tmag"), "path")
+	if out, _ := run(path); out != "path send a b" {
+		t.Fatalf("PATH fallback ran %q", out)
+	}
+	fake(filepath.Join(dir, "home", ".config", "tmux", "plugins", PluginDir, "bin", "tmag"), "xdg")
+	tpm := filepath.Join(dir, "tpm")
+	fake(filepath.Join(tpm, PluginDir, "bin", "tmag"), "tpm")
+	if out, _ := run(path, "TMUX_PLUGIN_MANAGER_PATH="+tpm+"/"); out != "tpm send a b" {
+		t.Fatalf("with TPM ran %q", out)
+	}
+	if out, _ := run(path); out != "xdg send a b" {
+		t.Fatalf("without TMUX_PLUGIN_MANAGER_PATH ran %q", out)
+	}
+}
+
+// A hook command whose PATH holds the launcher, as an agent's may, reaches
+// it when no plugin binary exists; the hook still fails open, and runs a
+// tmag found further down PATH.
+func TestHookThroughLauncherFailsOpen(t *testing.T) {
+	dir := t.TempDir()
+	launcherDir := filepath.Join(dir, "launcher")
+	if err := os.MkdirAll(launcherDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(launcherDir, "tmag"), []byte(Launcher()), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	other := filepath.Join(dir, "other")
+	path := "PATH=" + launcherDir + ":" + other + ":/usr/bin:/bin"
+	run := func(command string) (string, error) {
+		cmd := exec.Command("/bin/sh", "-c", command)
+		cmd.Env = []string{"HOME=" + filepath.Join(dir, "home"), path}
+		cmd.Stdin = strings.NewReader(`{"x":1}`)
+		var out bytes.Buffer
+		cmd.Stdout, cmd.Stderr = &out, &out
+		err := cmd.Run()
+		return strings.TrimSpace(out.String()), err
+	}
+	for _, command := range []string{HookCommand("claude"), AnswerHookCommand("claude")} {
+		if out, err := run(command); err != nil || out != "" {
+			t.Fatalf("with nothing installed: err=%v output=%q", err, out)
+		}
+	}
+	if err := os.MkdirAll(other, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(other, "tmag"), []byte("#!/bin/sh\necho ran \"$@\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := run(HookCommand("codex")); err != nil || out != "ran hook codex" {
+		t.Fatalf("with tmag further down PATH: err=%v output=%q", err, out)
 	}
 }

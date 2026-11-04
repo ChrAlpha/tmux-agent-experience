@@ -29,9 +29,9 @@ which version.
 
 ## Releasing
 
-1. Set the new version in `internal/version/version.go`,
-   `plugins/claude/.claude-plugin/plugin.json` and
-   `plugins/codex/.codex-plugin/plugin.json`.
+1. Set the new version in `internal/version/version.go` and the four plugin
+   manifests, `plugins/{claude,codex}/{tmag,tmag-peers}/` (`.claude-plugin/`
+   or `.codex-plugin/plugin.json`).
 2. Merge to `main`, then tag it: `git tag v0.2.0 && git push origin v0.2.0`.
 3. The release workflow checks the tag against the version, builds Linux and
    macOS binaries and publishes the release with checksums and build

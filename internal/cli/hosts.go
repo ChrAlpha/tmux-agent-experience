@@ -13,16 +13,36 @@ import (
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/binpath"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/tmux"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/version"
 )
 
 // Identifiers shipped by this repository.
 const (
-	repo        = "ChrAlpha/tmux-agent-experience"
+	repo        = binpath.Repo
 	marketplace = "tmux-agent-experience"
-	pluginName  = "tmag"
-	pluginID    = pluginName + "@" + marketplace
+	pluginName  = "tmag"       // the hooks
+	peersName   = "tmag-peers" // the skill for working with other agents
 	miseTool    = "github:" + repo
 )
+
+// pluginID names a plugin of tmag's marketplace in a host's plugin commands.
+func pluginID(name string) string { return name + "@" + marketplace }
+
+// peersOption turns the tmag-peers plugin off: tmag setup installs it unless
+// a tmux server sets this to off.
+const peersOption = "@tmag-peers"
+
+// peersWanted reports whether tmag-peers belongs in the agents: on unless any
+// tmux server tmag finds says off, as for @tmag-answer.
+func peersWanted(ctx context.Context) bool {
+	for _, srv := range tmux.Servers() {
+		if srv.GlobalOption(ctx, peersOption) == "off" {
+			return false
+		}
+	}
+	return true
+}
 
 // run executes a command and returns its trimmed stdout.
 func run(name string, args ...string) (string, error) {
@@ -32,20 +52,39 @@ func run(name string, args ...string) (string, error) {
 	return strings.TrimSpace(string(out)), err
 }
 
-// host describes one agent CLI and the tmag plugin in it.
-type host struct {
-	Name      string // display name
-	CLI       string // claude | codex
-	Present   bool   // the CLI is on PATH
-	Version   string // the CLI's version line
-	Listed    bool   // the plugin list could be read
+// plugin is one of tmag's plugins in a host.
+type plugin struct {
 	Installed bool
 	Enabled   bool
-	PluginVer string
+	Version   string
+}
+
+// outdated reports an installed plugin of another version than the binary.
+func (p plugin) outdated() bool {
+	return p.Installed && p.Version != "" && p.Version != version.Version
+}
+
+// host describes one agent CLI and tmag's plugins in it.
+type host struct {
+	Name    string // display name
+	CLI     string // claude | codex
+	Present bool   // the CLI is on PATH
+	Version string // the CLI's version line
+	Listed  bool   // the plugin list could be read
+	Tmag    plugin // the hooks
+	Peers   plugin // the skill
 	// Codex: config.toml records an approval of the plugin's hooks. Codex
 	// honours it only while it matches the hashes of the current hooks, which
 	// it does not expose, so this is no proof that the hooks run.
 	HookApproval bool
+}
+
+// of returns the host's record of the named plugin.
+func (h *host) of(name string) *plugin {
+	if name == peersName {
+		return &h.Peers
+	}
+	return &h.Tmag
 }
 
 func claudeHost() host {
@@ -64,8 +103,10 @@ func claudeHost() host {
 	}
 	h.Listed = true
 	for _, p := range plugins {
-		if p.ID == pluginID {
-			h.Installed, h.Enabled, h.PluginVer = true, p.Enabled, p.Version
+		for _, name := range []string{pluginName, peersName} {
+			if p.ID == pluginID(name) {
+				*h.of(name) = plugin{Installed: true, Enabled: p.Enabled, Version: p.Version}
+			}
 		}
 	}
 	return h
@@ -83,13 +124,15 @@ func codexHost() host {
 	}
 	h.Listed = true
 	walkJSON(doc, func(m map[string]any) {
-		if m["name"] != pluginName || m["installed"] != true {
+		name, _ := m["name"].(string)
+		if (name != pluginName && name != peersName) || m["installed"] != true {
 			return
 		}
-		h.Installed = true
-		h.Enabled = h.Enabled || m["enabled"] == true
+		p := h.of(name)
+		p.Installed = true
+		p.Enabled = p.Enabled || m["enabled"] == true
 		if v, ok := m["version"].(string); ok {
-			h.PluginVer = v
+			p.Version = v
 		}
 	})
 	h.HookApproval = codexHookApproval()
@@ -125,7 +168,7 @@ func codexHookApproval() bool {
 	if err != nil {
 		return false
 	}
-	header := []byte(`[hooks.state."` + pluginID + `:`)
+	header := []byte(`[hooks.state."` + pluginID(pluginName) + `:`)
 	inTable, trusted := false, false
 	sc := bufio.NewScanner(bytes.NewReader(data))
 	for sc.Scan() {

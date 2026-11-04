@@ -1,0 +1,14 @@
+{
+  "name": "tmag-peers",
+  "version": "0.1.0",
+  "description": "Lets Codex work with the other coding agents in your tmux panes through tmag: see their state, prompt them, wait for them and reply, gated and recorded. Uses the tmag binary of the tmux-agent-experience tmux plugin.",
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "tmag peers",
+    "shortDescription": "Work with agents in tmux",
+    "developerName": "ChrAlpha",
+    "category": "Productivity",
+    "capabilities": ["Read", "Write"],
+    "websiteURL": "https://github.com/ChrAlpha/tmux-agent-experience"
+  }
+}

@@ -20,8 +20,8 @@ import (
 // pluginFiles are what TPM's clone provides and tmag.tmux needs.
 var pluginFiles = []string{
 	"tmag.tmux", "scripts/install.sh", "scripts/tmag",
-	"plugins/claude/.claude-plugin/plugin.json", "plugins/claude/hooks/hooks.json",
-	"plugins/codex/.codex-plugin/plugin.json", "plugins/codex/hooks/hooks.json",
+	"plugins/claude/tmag/.claude-plugin/plugin.json", "plugins/claude/tmag/hooks/hooks.json",
+	"plugins/codex/tmag/.codex-plugin/plugin.json", "plugins/codex/tmag/hooks/hooks.json",
 }
 
 // release builds a local release of the test binary, laid out like GitHub's
@@ -126,6 +126,9 @@ func TestPluginInstallsBinaryAndSetsUp(t *testing.T) {
 	if got := h.tmux("show-option", "-gqv", "@tmag-alert"); got != "blocked,finished" {
 		t.Errorf("@tmag-alert = %q", got)
 	}
+	if got := h.tmux("show-option", "-gqv", "@tmag-peers"); got != "on" {
+		t.Errorf("@tmag-peers = %q", got)
+	}
 	if got := h.tmux("show-option", "-gqv", "@tmag-plugin-version"); got != version.Version {
 		t.Errorf("@tmag-plugin-version = %q", got)
 	}
@@ -148,7 +151,7 @@ func TestPluginInstallsBinaryAndSetsUp(t *testing.T) {
 
 func TestPluginDefaultsCanBeTurnedOff(t *testing.T) {
 	h := start(t)
-	plugin := h.loadPlugin(false, map[string]string{"@tmag-key-picker": "off", "@tmag-key-setup": "off", "@tmag-alert": "off"})
+	plugin := h.loadPlugin(false, map[string]string{"@tmag-key-picker": "off", "@tmag-key-setup": "off", "@tmag-alert": "off", "@tmag-peers": "off"})
 	h.waitBinary(plugin)
 	if got := h.key("a"); strings.Contains(got, "choose-tree") {
 		t.Errorf("picker bound although off: %q", got)
@@ -161,6 +164,9 @@ func TestPluginDefaultsCanBeTurnedOff(t *testing.T) {
 	}
 	if got := h.tmux("show-option", "-gqv", "@tmag-alert"); got != "off" {
 		t.Errorf("@tmag-alert = %q", got)
+	}
+	if got := h.tmux("show-option", "-gqv", "@tmag-peers"); got != "off" {
+		t.Errorf("@tmag-peers = %q", got)
 	}
 }
 
@@ -232,23 +238,45 @@ func TestSetupInstallsAgentPlugins(t *testing.T) {
 	want := strings.Join([]string{
 		"claude plugin marketplace add ChrAlpha/tmux-agent-experience --sparse .claude-plugin plugins/claude",
 		"claude plugin install tmag@tmux-agent-experience",
+		"claude plugin install tmag-peers@tmux-agent-experience",
 		"codex plugin marketplace add ChrAlpha/tmux-agent-experience --sparse .agents --sparse plugins/codex",
 		"codex plugin add tmag@tmux-agent-experience",
+		"codex plugin add tmag-peers@tmux-agent-experience",
 	}, "\n") + "\n"
 	if string(got) != want {
 		t.Fatalf("ran:\n%s\nwant:\n%s", got, want)
 	}
 
-	// Once both report the current plugin, setup has nothing to do.
-	t.Setenv("FAKE_PLUGIN_LIST", fmt.Sprintf(`[{"id":"tmag@tmux-agent-experience","name":"tmag","installed":true,"enabled":true,"version":%q}]`, version.Version))
+	// Once both hosts report the current plugins, setup has nothing to do.
+	entry := `{"id":"%[1]s@tmux-agent-experience","name":"%[1]s","installed":true,"enabled":true,"version":%[2]q}`
+	t.Setenv("FAKE_PLUGIN_LIST", "["+fmt.Sprintf(entry, "tmag", version.Version)+","+fmt.Sprintf(entry, "tmag-peers", version.Version)+"]")
 	if err := os.Remove(log); err != nil {
 		t.Fatal(err)
 	}
-	if r := h.tmag("", "setup", "--yes"); r.code != 0 || strings.Count(r.out, "installed and enabled") != 2 {
+	if r := h.tmag("", "setup", "--yes"); r.code != 0 || strings.Count(r.out, "tmag and tmag-peers plugins "+version.Version+" are installed and enabled") != 2 {
 		t.Fatalf("setup when current: %d %s", r.code, r.out)
 	}
 	if _, err := os.Stat(log); err == nil {
 		t.Fatal("setup ran commands although both plugins are current")
+	}
+
+	// With @tmag-peers off, setup takes tmag-peers out of both hosts, and
+	// doctor says so until it has.
+	h.tmux("set-option", "-g", "@tmag-peers", "off")
+	if r := h.tmag("", "doctor"); !strings.Contains(r.out, "tmag-peers installed although @tmag-peers is off") {
+		t.Fatalf("doctor with tmag-peers off but installed: %s", r.out)
+	}
+	if r := h.tmag("", "setup", "--yes"); r.code != 0 {
+		t.Fatalf("setup with tmag-peers off: %d %s", r.code, r.out)
+	}
+	got, _ = os.ReadFile(log)
+	want = "claude plugin uninstall tmag-peers@tmux-agent-experience\ncodex plugin remove tmag-peers@tmux-agent-experience\n"
+	if string(got) != want {
+		t.Fatalf("ran:\n%s\nwant:\n%s", got, want)
+	}
+	t.Setenv("FAKE_PLUGIN_LIST", "["+fmt.Sprintf(entry, "tmag", version.Version)+"]")
+	if r := h.tmag("", "setup", "--yes"); r.code != 0 || strings.Count(r.out, "tmag-peers is off (@tmag-peers)") != 2 {
+		t.Fatalf("setup when tmag-peers is gone: %d %s", r.code, r.out)
 	}
 }
 
