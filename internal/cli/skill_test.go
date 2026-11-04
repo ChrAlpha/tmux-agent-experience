@@ -8,6 +8,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/ChrAlpha/tmux-agent-experience/internal/query"
 )
 
 // skills are the copies of the tmag-peers skill, one per host, which must
@@ -89,8 +91,11 @@ func TestPeersSkillMatchesCLI(t *testing.T) {
 
 	for _, phrase := range []string{
 		fmt.Sprintf("exits %d with `refused (CODE): reason`", ExitRefused),
-		fmt.Sprintf("Exit %d means the wait timed out", ExitTimeout),
+		fmt.Sprintf("Exit %d from `send --wait` or `wait` means the wait timed out", ExitTimeout),
+		fmt.Sprintf("exit %d then means nothing was delivered", ExitTimeout),
 		fmt.Sprintf("Exit %d is an error (`ended`", ExitError),
+		"`no_reply`: its last turn left no reply",
+		fmt.Sprintf("starting with `%s` is refused with exit %d", query.Marker, ExitUsage),
 		fmt.Sprintf("exit %d is a usage error", ExitUsage),
 		"Exit 127 with `tmag: not installed`",
 	} {

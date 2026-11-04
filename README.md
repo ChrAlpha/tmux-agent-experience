@@ -28,7 +28,8 @@ prompt safely.
 - Agents report through their own plugin hooks, which fail open: a broken or
   missing `tmag` never blocks a turn.
 - Everything lives in the plugin's TPM directory; nothing edits your
-  configuration. Prompts and agent output are never stored.
+  configuration. Prompts and agent output are never stored; `tmag read
+  --last` reads an agent's reply from its own transcript when asked.
 
 ## Requirements
 
@@ -123,6 +124,7 @@ work:3.0   %9    codex   unknown              -    -         ~/src/web
 
 $ tmag send 01a19fda --wait "Review the diff in HEAD and list risky changes"
 01a19fda idle
+$ tmag read 01a19fda --last    # the reply that ended its turn
 
 $ tmag interrupt 01a1          # stop the running turn
 $ tmag request 1787 3f9c2a01b6d4             # what an open request asks
@@ -234,20 +236,45 @@ and never to fall back to tmux. In Claude Code the plugin puts `tmag` on the
 agent's `PATH`; in Codex the skill runs it from its own directory. Either way
 it is a launcher that runs the binary the agent's hooks run.
 
-A prompt carries no sender, so the skill has agents name themselves in its
-first line, which also says how to answer, so that an agent without the skill
-can follow it:
+A prompt carries no sender of its own, so when an agent sends one, tmag
+writes its first line from the caller it proved: which agent and session sent
+it, and how to answer. An agent without the skill can follow it too:
 
 ```
-[tmag] From claude 1787a44e. Reply in your final message.
-[tmag] From claude 1787a44e. When done, reply by running tmag send 1787a44e - with your answer, its first line "[tmag] Reply from 01a19fda."
+[tmag] From claude 1787a44e-…, another agent. Answer in your final message.
+[tmag] From claude 1787a44e-…, another agent. When done, send your answer on stdin to: tmag reply 1787a44e-… -
+[tmag] Reply from codex 01a19fda-…, another agent, to your prompt. Do not reply to it.
 ```
 
-The first is for a sender that waits for the turn and reads the answer; the
-second for one that ends its turn and takes the reply as its next prompt. An
-agent with the skill treats such a prompt as a colleague's request rather
-than the person's, and does not answer a reply. tmag itself delivers the text
-as given.
+The first is what `send` writes, for a sender that waits for the turn
+(`send --wait`) and reads the answer with `read --last`; the second is what
+`send --reply` writes, for a sender that ends its turn and takes the reply as
+its next prompt; the third is what `tmag reply` writes. A prompt given to
+`send` or `reply` may not itself start with `[tmag]` (a usage error), so a
+first line that does was written by tmag about an agent it proved. A
+person's prompt gets no such line. An agent with the skill treats such a
+prompt as a colleague's request rather than the person's, and does not
+answer a reply. Like the rest of the gate, this holds for prompts tmag
+delivers; it is no security boundary against text typed into a pane by
+other means.
+
+`tmag reply` sends like `send`, but waits for an asker that is busy, until
+its `--timeout` (one minute by default), and prompts it once it is idle;
+exit 4 then means nothing was delivered. Only an agent whose session tmag
+proves can send a reply or ask for one.
+
+#### Reading a reply
+
+`tmag read ID --last` prints the reply that ended a session's last turn,
+read from the agent's transcript at the moment of the call: the text of
+Claude Code's last assistant message, or Codex's `last_agent_message` of the
+turn's end. tmag keeps nothing of it. It reads only an idle session (`busy`
+otherwise), and only the turn the session's hooks reported, waiting a few
+seconds for the agent to write that turn's end; a turn that ended without a
+reply, or a transcript that does not catch up, is the error `no_reply`. It
+needs no pane, so it reads sessions in the Codex daemon and Claude Code's
+background sessions too. `--json` adds the session and the `turn`. Without
+`--last`, `read` prints the pane's recent text.
 
 #### Sending
 
@@ -469,7 +496,7 @@ timeout. With `--json`, errors are also printed as
 `not_found`, `ambiguous`, `refused:unbound`, `refused:busy`,
 `refused:background`, `refused:subagent`, `refused:changed`,
 `refused:idle`, `refused:unsupported`, `refused:self`, `refused:agent`,
-`ended`, `timeout` and `error`.
+`ended`, `no_reply`, `timeout` and `error`.
 
 ## Footprint
 

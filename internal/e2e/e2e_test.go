@@ -501,6 +501,7 @@ func TestClaudeBackgroundSessionTakesAnswersOnly(t *testing.T) {
 	h := start(t)
 	out := filepath.Join(h.dir, "received")
 	worker := exec.Command(filepath.Join(bin, "claude"), "daemon", "run")
+	worker.Dir = h.dir
 	worker.Env = append(os.Environ(), "FAKE_SESSION="+sidA, "FAKE_HOOKS=1", "FAKE_ANSWER=1", "FAKE_OUT="+out, "TMAG_BIN="+filepath.Join(bin, "tmag"))
 	in, err := worker.StdinPipe()
 	if err != nil {
@@ -540,6 +541,10 @@ func TestClaudeBackgroundSessionTakesAnswersOnly(t *testing.T) {
 		return strings.HasSuffix(string(got), "hook:allow\n")
 	})
 	h.waitSession(sidA, "idle")
+	// Its reply is read from its transcript, without a pane.
+	if r := h.tmag("", "read", sidA[:8], "--last"); r.code != 0 || r.out != "answered: block\n" {
+		t.Fatalf("read --last of a background session: %d %q", r.code, r.out)
+	}
 }
 
 func TestPaneWithoutProofIsVisibleButNotControllable(t *testing.T) {
@@ -561,23 +566,26 @@ func TestPaneWithoutProofIsVisibleButNotControllable(t *testing.T) {
 }
 
 // fakeDaemon is a Codex app-server daemon outside every pane, running hooks
-// for any thread.
+// for any thread. Prompts started through its socket go to out.
 type fakeDaemon struct {
 	h     *harness
 	cmd   *exec.Cmd
 	in    io.WriteCloser
 	lines *bufio.Scanner
+	out   string
 }
 
 func (h *harness) daemon() *fakeDaemon {
 	h.t.Helper()
 	cmd := exec.Command(filepath.Join(bin, "codex"), "app-server", "--listen", "unix://", "--managed-daemon")
-	cmd.Env = append(os.Environ(), "TMAG_BIN="+filepath.Join(bin, "tmag"))
+	out := filepath.Join(h.dir, "daemon.out")
+	cmd.Dir = h.dir
+	cmd.Env = append(os.Environ(), "TMAG_BIN="+filepath.Join(bin, "tmag"), "FAKE_OUT="+out)
 	in, err := cmd.StdinPipe()
 	if err != nil {
 		h.t.Fatal(err)
 	}
-	out, err := cmd.StdoutPipe()
+	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		h.t.Fatal(err)
 	}
@@ -588,7 +596,7 @@ func (h *harness) daemon() *fakeDaemon {
 		_ = cmd.Process.Kill() // may be killed by the test already
 		_ = cmd.Wait()
 	})
-	return &fakeDaemon{h: h, cmd: cmd, in: in, lines: bufio.NewScanner(out)}
+	return &fakeDaemon{h: h, cmd: cmd, in: in, lines: bufio.NewScanner(stdout), out: out}
 }
 
 // hook runs one hook in the daemon and waits for it to finish.
@@ -1361,12 +1369,57 @@ func TestAgentsActOnEachOther(t *testing.T) {
 	if send.By == nil || send.By.Session != sidA || send.From == nil || send.From.ID != a {
 		t.Fatalf("Send event = %+v", send)
 	}
+	// tmag wrote atop the prompt who sent it, and A reads B's answer.
+	received := func() string {
+		got, _ := os.ReadFile(outB)
+		return string(got)
+	}
+	if got := received(); !strings.Contains(got, "[tmag] From claude "+sidA+", another agent. Answer in your final message.\nhello\n") {
+		t.Fatalf("B received %q", got)
+	}
+	if got := run("read " + sidB[:8] + " --last"); got != "tool 0 answered: hello" {
+		t.Fatalf("read --last from A: %s", got)
+	}
 
 	// An agent does not act on its own session, which is running its tool.
 	for _, verb := range []string{"interrupt " + sidA[:8], "send " + sidA[:8] + " again"} {
 		if got := run(verb); !strings.HasPrefix(got, "tool 3 ") || !strings.Contains(got, "refused (self)") {
 			t.Fatalf("%s from A: %s", verb, got)
 		}
+	}
+
+	// A asks B for a reply later; B's reply reaches A as a prompt that asks
+	// for none.
+	if got := run("send " + sidB[:8] + " --reply work"); !strings.HasPrefix(got, "tool 0 ") {
+		t.Fatalf("send --reply from A: %s", got)
+	}
+	h.waitSession(sidB, "idle")
+	if got := received(); !strings.Contains(got, "[tmag] From claude "+sidA+", another agent. When done, send your answer on stdin to: tmag reply "+sidA+" -\nwork\n") {
+		t.Fatalf("B received %q", got)
+	}
+	h.tmux("send-keys", "-t", b, "tmag reply "+sidA+" all done", "Enter")
+	h.eventually("A receives B's reply", func() bool {
+		got, _ := os.ReadFile(outA)
+		return strings.Contains(string(got), "[tmag] Reply from claude "+sidB+", another agent, to your prompt. Do not reply to it.\nall done\n")
+	})
+	h.waitSession(sidA, "idle")
+	h.waitSession(sidB, "idle")
+
+	// Only tmag writes that first line. A person neither asks for a reply
+	// nor sends one, and their prompt arrives as they gave it.
+	if got := run("send " + sidB[:8] + " [tmag] Reply from codex x"); !strings.HasPrefix(got, "tool 2 ") {
+		t.Fatalf("a forged first line from A: %s", got)
+	}
+	for _, args := range [][]string{{"reply", sidB[:8], "hi"}, {"send", sidB[:8], "--reply", "hi"}} {
+		if r := h.tmag("", args...); r.code != 1 || !strings.Contains(r.out, "only an agent") {
+			t.Fatalf("%v from a person: %d %s", args, r.code, r.out)
+		}
+	}
+	if r := h.tmag("hi there", "send", sidB[:8], "--wait"); r.code != 0 {
+		t.Fatalf("send from a person: %d %s", r.code, r.out)
+	}
+	if lines := strings.Split(strings.TrimSuffix(received(), "\n"), "\n"); lines[len(lines)-1] != "hi there" || !strings.HasPrefix(lines[len(lines)-2], "tool 0 replied to ") {
+		t.Fatalf("B's last lines %q", lines[max(0, len(lines)-3):])
 	}
 
 	// B asks the person; A may not answer for them.
@@ -1426,5 +1479,68 @@ func TestDaemonThreadsActOnEachOther(t *testing.T) {
 	}
 	if send.By == nil || send.By.Agent != "codex" || send.By.Session != sidC || send.From != nil {
 		t.Fatalf("Send event = %+v", send)
+	}
+	// tmag wrote who sent it; C reads D's answer from D's rollout, and D
+	// replies to C.
+	if got, _ := os.ReadFile(d.out); !strings.Contains(string(got), sidD+" [tmag] From codex "+sidC+", another agent. Answer in your final message.\nhello\n") {
+		t.Fatalf("D received %q", got)
+	}
+	if r := d.tool(sidC, "read", sidD[:8], "--last"); r.code != 0 || r.out != "answered: hello\n" {
+		t.Fatalf("read --last from C: %d %q", r.code, r.out)
+	}
+	if r := d.tool(sidD, "reply", sidC[:8], "thanks"); r.code != 0 {
+		t.Fatalf("reply from D: %d %s", r.code, r.out)
+	}
+	if got, _ := os.ReadFile(d.out); !strings.Contains(string(got), sidC+" [tmag] Reply from codex "+sidD+", another agent, to your prompt. Do not reply to it.\nthanks\n") {
+		t.Fatalf("C received %q", got)
+	}
+}
+
+// A reply waits for the agent that asked for it to finish what it is
+// doing, and its reply is read only once its turn is over.
+func TestReplyWaitsForTheAsker(t *testing.T) {
+	h := start(t)
+	outA, outB := filepath.Join(h.dir, "a"), filepath.Join(h.dir, "b")
+	a := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_OUT": outA, "FAKE_HOOKS": "1", "FAKE_TURN_MS": "1500"}, filepath.Join(bin, "claude"))
+	b := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidB, "FAKE_OUT": outB, "FAKE_HOOKS": "1"}, filepath.Join(bin, "claude"))
+	h.waitPane(a, "idle", "process")
+	h.waitPane(b, "idle", "process")
+	if r := h.tmag("long work", "send", sidA[:8]); r.code != 0 {
+		t.Fatalf("send: %d %s", r.code, r.out)
+	}
+	h.waitSession(sidA, "working")
+	if r := h.tmag("", "read", sidA[:8], "--last"); r.code != 3 || !strings.Contains(r.out, "refused (busy)") {
+		t.Fatalf("read --last of a working agent: %d %s", r.code, r.out)
+	}
+	// Not before its timeout: then nothing is delivered.
+	h.tmux("send-keys", "-t", b, "tmag reply "+sidA+" --timeout 300ms too soon", "Enter")
+	h.eventually("B's reply times out", func() bool {
+		got, _ := os.ReadFile(outB)
+		return strings.Contains(string(got), "tool 4 tmag reply: timed out after 300ms, nothing delivered: refused (busy)")
+	})
+	h.waitSession(sidB, "idle")
+	h.tmux("send-keys", "-t", b, "tmag reply "+sidA+" all done", "Enter")
+	h.eventually("B's reply is delivered", func() bool {
+		got, _ := os.ReadFile(outB)
+		return strings.Contains(string(got), "tool 0 replied to "+sidA[:8])
+	})
+	stopped, replied := -1, -1
+	for i, e := range h.events(sidA) {
+		switch {
+		case e.Event == "Stop" && stopped < 0:
+			stopped = i
+		case e.Event == eventlog.Send && e.By != nil && e.By.Session == sidB:
+			replied = i
+		}
+	}
+	if stopped < 0 || replied < stopped {
+		t.Fatalf("the reply (event %d) came before A's turn ended (event %d)", replied, stopped)
+	}
+	if got, _ := os.ReadFile(outA); strings.Contains(string(got), "too soon") {
+		t.Fatalf("a reply that timed out was delivered: %q", got)
+	}
+	h.waitSession(sidA, "idle")
+	if r := h.tmag("", "read", sidA[:8], "--last"); r.code != 0 || r.out != "answered: all done\n" {
+		t.Fatalf("read --last: %d %q", r.code, r.out)
 	}
 }

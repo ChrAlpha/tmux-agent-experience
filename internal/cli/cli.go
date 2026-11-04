@@ -30,9 +30,12 @@ Usage:
   tmag list     [--json]                       agents in all tmux panes
   tmag inspect  <target> [--json] [--events N] one agent and its recent events
   tmag watch    [--since SEQ]                  JSON lines: snapshot, then events
-  tmag read     <target> [--lines N] [--json]  recent pane output
-  tmag send     <target> [--wait] [--timeout D] [--json] [text | -]
+  tmag read     <target> [--lines N | --last] [--json]
+                                               recent pane output, or the agent's last reply
+  tmag send     <target> [--wait | --reply] [--timeout D] [--json] [text | -]
                                                submit a prompt to an idle agent
+  tmag reply    <target> [--timeout D] [--json] [text | -]
+                                               answer an agent that asked for a reply
   tmag interrupt <target> [--json]             stop the agent's running turn
   tmag request  <target> <request> [--json]    what an open request asks
   tmag answer   <target> <request> allow|deny [--message M] [--answers JSON] [--json]
@@ -91,6 +94,8 @@ func (a *app) run(args []string) int {
 		return a.cmdRead(rest)
 	case "send":
 		return a.cmdSend(rest)
+	case "reply":
+		return a.cmdReply(rest)
 	case "interrupt":
 		return a.cmdInterrupt(rest)
 	case "answer":
@@ -166,6 +171,10 @@ func (a *app) fail(cmd string, err error) int {
 		code, exit = "refused:"+refused.Reason, ExitRefused
 	case errors.Is(err, errTimeout):
 		code, exit = "timeout", ExitTimeout
+	case errors.Is(err, query.ErrMarker):
+		code, exit = "usage", ExitUsage
+	case errors.Is(err, query.ErrNoReply):
+		code = "no_reply"
 	case errors.Is(err, query.ErrNotFound):
 		code = "not_found"
 	case errors.Is(err, query.ErrAmbiguous):

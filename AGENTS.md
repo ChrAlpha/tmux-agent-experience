@@ -47,9 +47,12 @@ a design problem, not a test problem.
   own.
 - **The skill teaches the CLI as it is.** Both hosts ship the same `peers`
   text, naming only commands, flags, refusal codes and exit codes the binary
-  has (`TestPeersSkillMatchesCLI`). Who sent a prompt and how to answer it is
-  a convention of the skill, written into the prompt by the sending agent;
-  tmag delivers text as given.
+  has (`TestPeersSkillMatchesCLI`).
+- **tmag writes who sent a prompt.** When an agent sends one, `query.Send`
+  writes its first line from the proven caller: the agent, its session and
+  how to answer (`send`, `send --reply`, `reply`). A person's prompt gets
+  none, and no prompt given to tmag may start with the `[tmag]` marker, so
+  a first line that does is tmag's. Never let a caller name the sender.
 - **Hooks fail open.** `tmag hook` always exits 0, never writes stdout (agents
   inject hook stdout into the model context), finishes within `hook.Deadline`,
   and records failures only in `<state dir>/hook.log`. `tmag answer-hook`
@@ -63,7 +66,9 @@ a design problem, not a test problem.
   files and event log records hold ids, states, paths and timestamps only.
   `tmag answer-hook` is the one reader of a tool input: it keeps it in memory
   to show it to `tmag request` and to hand it back to the agent, and writes
-  it nowhere.
+  it nowhere. `tmag read --last` is the one reader of a transcript
+  (`internal/transcript`): it prints the reply it asked for and keeps
+  nothing.
 - **A session's state never depends on a pane.** Hooks apply to the session
   (`internal/session`) wherever it runs: the Codex daemon and Claude's
   background supervisor run sessions no terminal owns.
@@ -128,6 +133,7 @@ a design problem, not a test problem.
 | `internal/driver` | Which channel (pane, service, hook) carries each verb for each agent and runtime |
 | `internal/codexsvc` | One-command client of the Codex daemon's control socket (JSON-RPC over WebSocket) |
 | `internal/answer` | The answer hook's socket protocol and the decision it prints for Claude Code |
+| `internal/transcript` | A turn's reply, read backward from Claude Code's JSONL transcript or Codex's rollout |
 | `internal/eventlog` | Append-only, sequence-numbered event log |
 | `internal/tmux` | tmux CLI wrapper; sanitises every free-text field |
 | `internal/proc` | Process table, agent clients and services, hook hosts |
@@ -187,7 +193,10 @@ claude plugin validate .      # marketplace and plugin manifests
   `PermissionRequest` leaves to its clients. `FAKE_KEYS=1` makes the
   interactive fake read keys like a TUI, so Escape interrupts its turn;
   `FAKE_ANSWER=1` makes it open permission dialogs as Claude Code does, with
-  `tmag answer-hook` waiting beside them. A line `tmag ARGS` typed into it,
+  `tmag answer-hook` waiting beside them. Like the agents it turns on
+  bracketed paste, so a pasted prompt is one prompt, and ends each turn with
+  the reply `answered: LINE` written to the transcript its hooks name, in the
+  agent's format. A line `tmag ARGS` typed into it,
   or a `{"tool":[…]}` line given to the daemon, runs tmag as the agent's
   tool, so tmag sees an agent calling. The same binary answers `--version` and `plugin …` as
   a fake host CLI. Plugin tests lay out a TPM directory and serve a local
@@ -218,5 +227,10 @@ an adapter or the Codex title rules, observe the real thing:
   not to see a tmux server under a private `TMUX_TMPDIR`. To imitate a
   daemon-run hook without Codex, start it outside every pane's process tree
   (`setsid -f sh -c 'tmag hook codex < payload'`).
+- Transcripts: `internal/transcript` reads Claude Code 2.1.317's JSONL (a
+  line per content block, each user entry's `promptId` the hooks'
+  `prompt_id`) and Codex 0.166's rollout (`task_complete` with `turn_id` and
+  `last_agent_message`). Before changing it, run a turn and check that
+  `tmag read ID --last` names the turn `tmag list --json` reports.
 - Clean up afterwards: test threads (`codex delete --force <id>`), session
   transcripts, scratch servers and directories.

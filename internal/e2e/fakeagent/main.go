@@ -14,12 +14,17 @@
 //	              next line ("yes" or anything else) answers it in the terminal
 //	TMAG_BIN      tmag binary
 //
-// Lines starting with "/" behave like slash commands: no turn, no hooks. The
-// line "block" raises a permission prompt that the next line resolves. A line
-// "tmag ARGS" is a turn whose Bash tool runs tmag ARGS, with the variable the
-// agent sets for its tools naming the session; FAKE_OUT gets "tool CODE
-// OUTPUT".
-// Every line, and how each dialog was answered, goes to FAKE_OUT.
+// It turns on bracketed paste as the agents' TUIs do, so that a pasted
+// prompt of several lines is one prompt. Prompts starting with "/" behave
+// like slash commands: no turn, no hooks. The prompt "block" raises a
+// permission prompt that the next one resolves. A prompt "tmag ARGS" is a
+// turn whose Bash tool runs tmag ARGS, with the variable the agent sets for
+// its tools naming the session; FAKE_OUT gets "tool CODE OUTPUT".
+// Every prompt, and how each dialog was answered, goes to FAKE_OUT.
+//
+// Each turn ends with the reply "answered: LINE", LINE being the prompt's
+// last line, which goes to the transcript the hooks name, in the agent's
+// format, before the Stop hook runs.
 //
 // Run as "codex app-server ..." it imitates Codex's shared daemon instead: it
 // runs `tmag hook codex` for every JSON payload line on stdin, as its own
@@ -31,7 +36,9 @@
 // "session_id":THREAD} runs tmag ARGS as a tool of that thread, and its
 // answer line is {"code":CODE,"out":OUTPUT} instead. With FAKE_HOOKS=1 and
 // FAKE_SESSION set it first reports that session's start. A turn started
-// through the socket lasts FAKE_TURN_MS, default 0.
+// through the socket lasts FAKE_TURN_MS, default 0, and its prompt goes to
+// FAKE_OUT as "THREAD PROMPT"; the daemon keeps each thread's rollout in
+// its directory.
 //
 // As a host CLI it answers --version, prints FAKE_PLUGIN_LIST (default "[]")
 // for "plugin list --json", and appends any other plugin command to
@@ -74,8 +81,9 @@ func main() {
 	if title := os.Getenv("FAKE_TITLE"); title != "" {
 		fmt.Printf("\033]0;%s\007", title)
 	}
+	transcript := filepath.Join(cwd, session+".jsonl")
 	payloadOf := func(event string, extra map[string]any) []byte {
-		payload := map[string]any{"hook_event_name": event, "session_id": session, "cwd": cwd, "transcript_path": filepath.Join(cwd, session+".jsonl")}
+		payload := map[string]any{"hook_event_name": event, "session_id": session, "cwd": cwd, "transcript_path": transcript}
 		for k, v := range extra {
 			payload[k] = v
 		}
@@ -96,6 +104,7 @@ func main() {
 	}
 
 	hook("SessionStart", map[string]any{"source": "startup"})
+	fmt.Print("\033[?2004h")
 	fmt.Println("ready")
 
 	record := func(line string) {
@@ -112,6 +121,7 @@ func main() {
 	var (
 		n       int
 		turn    string
+		asked   string // the turn's prompt
 		ends    <-chan time.Time
 		waiting []string
 		// dialog is the permission dialog on screen, as Claude Code shows it
@@ -119,6 +129,16 @@ func main() {
 		dialog  *prompt
 		decided = make(chan decision)
 	)
+	// begin starts a turn of the prompt, end finishes it with its reply.
+	begin := func(line string) {
+		turn, asked = fmt.Sprintf("t%d", n), line
+		writeTurn(agent, transcript, turn, line, "")
+		hook("UserPromptSubmit", map[string]any{turnKey: turn, "prompt": line})
+	}
+	end := func() {
+		writeTurn(agent, transcript, turn, "", reply(asked))
+		hook("Stop", map[string]any{turnKey: turn, "last_assistant_message": "done"})
+	}
 	// ask opens a dialog like Claude Code's: the call starts, the answer
 	// hook waits beside the dialog, and whichever answers first decides.
 	ask := func(tool string, input map[string]any) {
@@ -141,7 +161,7 @@ func main() {
 		} else {
 			hook("PostToolBatch", map[string]any{turnKey: turn})
 		}
-		hook("Stop", map[string]any{turnKey: turn, "last_assistant_message": "done"})
+		end()
 		dialog = nil
 	}
 	handle := func(line string) {
@@ -156,23 +176,23 @@ func main() {
 		case strings.HasPrefix(line, "/"):
 			// slash commands start no turn
 		case line == "block" && answering:
+			begin(line)
 			ask("Bash", map[string]any{"command": "date"})
 		case line == "ask" && answering:
+			begin(line)
 			ask("AskUserQuestion", map[string]any{"questions": []map[string]any{{"question": "Pick a color", "options": []map[string]string{{"label": "red"}, {"label": "blue"}}}}})
 		case line == "block":
 			hook("PermissionRequest", map[string]any{turnKey: fmt.Sprintf("t%d", n), "tool_name": "Bash"})
 		case strings.HasPrefix(line, "tmag "):
-			turn = fmt.Sprintf("t%d", n)
+			begin(line)
 			call := fmt.Sprintf("u%d", n)
-			hook("UserPromptSubmit", map[string]any{turnKey: turn, "prompt": line})
 			hook("PreToolUse", map[string]any{turnKey: turn, "tool_name": "Bash", "tool_use_id": call})
 			code, out := tool(agent, session, strings.Fields(line)[1:])
 			record(fmt.Sprintf("tool %d %s", code, strings.Join(strings.Fields(out), " ")))
 			hook("PostToolUse", map[string]any{turnKey: turn, "tool_name": "Bash", "tool_use_id": call})
 			ends = time.After(time.Duration(turnMS) * time.Millisecond)
 		default:
-			turn = fmt.Sprintf("t%d", n)
-			hook("UserPromptSubmit", map[string]any{turnKey: turn, "prompt": line})
+			begin(line)
 			ends = time.After(time.Duration(turnMS) * time.Millisecond)
 		}
 	}
@@ -200,7 +220,7 @@ loop:
 			}
 		case <-ends:
 			ends = nil
-			hook("Stop", map[string]any{turnKey: turn, "last_assistant_message": "done"})
+			end()
 		case d := <-decided:
 			// Claude Code ignores what a hook prints once its dialog closed.
 			if d.prompt != dialog || len(d.out) == 0 {
@@ -240,6 +260,36 @@ loop:
 	hook("SessionEnd", map[string]any{"reason": "other"})
 }
 
+// reply is the fake's answer to a prompt.
+func reply(prompt string) string {
+	lines := strings.Split(prompt, "\n")
+	return "answered: " + lines[len(lines)-1]
+}
+
+// writeTurn appends a turn's start (its prompt) or its end (its reply) to
+// the transcript, in the agent's format.
+func writeTurn(agent, path, turn, prompt, answer string) {
+	var entry map[string]any
+	switch {
+	case agent == "claude" && answer == "":
+		entry = map[string]any{"type": "user", "promptId": turn, "isSidechain": false, "message": map[string]any{"role": "user", "content": prompt}}
+	case agent == "claude":
+		entry = map[string]any{"type": "assistant", "isSidechain": false, "message": map[string]any{"id": "msg-" + turn, "role": "assistant",
+			"content": []map[string]string{{"type": "text", "text": answer}}}}
+	case answer == "":
+		entry = map[string]any{"type": "event_msg", "payload": map[string]any{"type": "task_started", "turn_id": turn}}
+	default:
+		entry = map[string]any{"type": "event_msg", "payload": map[string]any{"type": "task_complete", "turn_id": turn, "last_agent_message": answer}}
+	}
+	b, _ := json.Marshal(entry)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	_, _ = f.Write(append(b, '\n'))
+}
+
 // toolVars are the variables each agent sets for its tools' commands.
 var toolVars = map[string]string{"claude": "CLAUDE_CODE_SESSION_ID", "codex": "CODEX_THREAD_ID"}
 
@@ -266,17 +316,40 @@ type keyInput struct {
 	escape bool
 }
 
-// readInput delivers the terminal's input. By default the terminal is left
-// in canonical mode and delivers lines. With keys set it reads keys as they
-// come, like a TUI: Escape alone, Enter ending a line, Ctrl+D ending input.
+// Bracketed paste brackets what tmux pastes, when the program asks for it.
+const (
+	pasteStart = "\x1b[200~"
+	pasteEnd   = "\x1b[201~"
+)
+
+// readInput delivers the terminal's input, a paste as one input. By default
+// the terminal is left in canonical mode and delivers lines. With keys set it
+// reads keys as they come, like a TUI: Escape alone, Enter ending a line,
+// Ctrl+D ending input.
 func readInput(keys bool) <-chan keyInput {
 	ch := make(chan keyInput)
 	go func() {
 		defer close(ch)
 		if !keys {
 			sc := bufio.NewScanner(os.Stdin)
+			var paste []string
+			pasting := false
 			for sc.Scan() {
-				ch <- keyInput{line: sc.Text()}
+				line := sc.Text()
+				if i := strings.Index(line, pasteStart); i >= 0 {
+					line, pasting = line[:i]+line[i+len(pasteStart):], true
+				}
+				if !pasting {
+					ch <- keyInput{line: line}
+					continue
+				}
+				if i := strings.Index(line, pasteEnd); i >= 0 {
+					paste = append(paste, line[:i]+line[i+len(pasteEnd):])
+					ch <- keyInput{line: strings.Join(paste, "\n")}
+					paste, pasting = nil, false
+					continue
+				}
+				paste = append(paste, line)
 			}
 			return
 		}
@@ -287,13 +360,29 @@ func readInput(keys bool) <-chan keyInput {
 		}
 		r := bufio.NewReader(os.Stdin)
 		var line []byte
+		pasting := false
 		for {
 			b, err := r.ReadByte()
 			switch {
 			case err != nil || b == 0x04:
 				return
+			case b == 0x1b && r.Buffered() >= len(pasteStart)-1:
+				// A sequence, not the Escape key: tmux writes it whole.
+				seq, _ := r.Peek(len(pasteStart) - 1)
+				switch "\x1b" + string(seq) {
+				case pasteStart:
+					pasting = true
+				case pasteEnd:
+					pasting = false
+				default:
+					ch <- keyInput{escape: true}
+					continue
+				}
+				_, _ = r.Discard(len(seq))
 			case b == 0x1b:
 				ch <- keyInput{escape: true}
+			case (b == '\n' || b == '\r') && pasting:
+				line = append(line, '\n')
 			case b == '\n' || b == '\r':
 				ch <- keyInput{line: string(line)}
 				line = line[:0]
@@ -344,6 +433,11 @@ func daemon() {
 	select {}
 }
 
+// rollout is where the daemon keeps a thread's rollout.
+func (d *fakeDaemon) rollout(thread string) string {
+	return filepath.Join(d.cwd, thread+".rollout.jsonl")
+}
+
 type fakeDaemon struct {
 	mu     sync.Mutex // one hook at a time, as the state it keeps
 	cwd    string
@@ -376,14 +470,17 @@ func (d *fakeDaemon) hook(payload map[string]any) {
 }
 
 func (d *fakeDaemon) run(payload map[string]any) {
+	thread, _ := payload["session_id"].(string)
 	if _, ok := payload["cwd"]; !ok {
 		payload["cwd"] = d.cwd
+	}
+	if _, ok := payload["transcript_path"]; !ok {
+		payload["transcript_path"] = d.rollout(thread)
 	}
 	b, _ := json.Marshal(payload)
 	cmd := exec.Command(os.Getenv("TMAG_BIN"), "hook", "codex")
 	cmd.Stdin = strings.NewReader(string(b))
 	_ = cmd.Run()
-	thread, _ := payload["session_id"].(string)
 	turn, _ := payload["turn_id"].(string)
 	switch payload["hook_event_name"] {
 	case "SessionStart", "Stop", "Interrupt":
@@ -506,12 +603,30 @@ func (d *fakeDaemon) answer(c *svctest.Conn, m svctest.Message) {
 			_ = c.Reply(m.ID, map[string]any{"turn": map[string]string{"id": turn}}) // steers
 			return
 		}
+		var in struct {
+			Input []struct {
+				Text string `json:"text"`
+			} `json:"input"`
+		}
+		_ = json.Unmarshal(m.Params, &in)
+		var prompt string
+		if len(in.Input) > 0 {
+			prompt = in.Input[0].Text
+		}
+		if out := os.Getenv("FAKE_OUT"); out != "" {
+			if f, err := os.OpenFile(out, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600); err == nil {
+				fmt.Fprintf(f, "%s %s\n", p.ThreadID, prompt)
+				f.Close()
+			}
+		}
 		d.n++
 		thread, turn := p.ThreadID, fmt.Sprintf("turn-%d", d.n)
+		writeTurn("codex", d.rollout(thread), turn, prompt, "")
 		d.run(map[string]any{"hook_event_name": "UserPromptSubmit", "session_id": thread, "turn_id": turn})
 		_ = c.Reply(m.ID, map[string]any{"turn": map[string]string{"id": turn}})
 		stop := func() {
 			if d.turns[thread] == turn {
+				writeTurn("codex", d.rollout(thread), turn, "", reply(prompt))
 				d.run(map[string]any{"hook_event_name": "Stop", "session_id": thread, "turn_id": turn})
 			}
 		}
