@@ -468,6 +468,47 @@ func TestRequestsNameOpenPrompts(t *testing.T) {
 	}
 }
 
+func TestRequestIsAboutTheOneCallItCanBe(t *testing.T) {
+	ask := func(agent, tool, id string) adapter.Transition {
+		tr := askFor(agent, tool)
+		tr.Request = id
+		return tr
+	}
+	call := func(rec Record) string { return rec.Requests[0].Call }
+
+	// One running call of the tool: the request is about it.
+	rec := play(t, startOf("", "Bash", "a"), ask("", "Bash", "r1"))
+	if call(rec) != "a" {
+		t.Fatalf("request = %+v", rec.Requests)
+	}
+	// Approved in the terminal, a still runs; b asks next. Either may be
+	// asking now, so the request is about neither.
+	rec = play(t, startOf("", "Bash", "a"), ask("", "Bash", "r1"), startOf("", "Bash", "b"), ask("", "Bash", "r1"))
+	if len(rec.Requests) != 1 || call(rec) != "" {
+		t.Fatalf("request = %+v", rec.Requests)
+	}
+	// a finished, b asks: the request is about b from now on.
+	rec = play(t, startOf("", "Bash", "a"), ask("", "Bash", "r1"), startOf("", "Bash", "b"), finishOf("", "Bash", "a"), ask("", "Bash", "r1"))
+	if call(rec) != "b" {
+		t.Fatalf("request = %+v", rec.Requests)
+	}
+	// Another tool's call, or another agent's, is no candidate.
+	rec = play(t, startOf("", "Bash", "a"), startOf("", "write_stdin", "w"), startOf("sub", "Bash", "s"), ask("", "Bash", "r1"))
+	if call(rec) != "a" {
+		t.Fatalf("request = %+v", rec.Requests)
+	}
+	// An Ask that names its call is about that call.
+	tr := ask("", "AskUserQuestion", "q1")
+	tr.Call = adapter.Call{Tool: "AskUserQuestion", ID: "q"}
+	if rec = play(t, startOf("", "AskUserQuestion", "x"), tr); call(rec) != "q" {
+		t.Fatalf("request = %+v", rec.Requests)
+	}
+	// No running call: about none known.
+	if rec = play(t, ask("", "Bash", "r1")); call(rec) != "" {
+		t.Fatalf("request = %+v", rec.Requests)
+	}
+}
+
 func TestAnsweringARequestClosesItsPromptOnce(t *testing.T) {
 	ask := func(id string) adapter.Transition {
 		tr := askFor("", "Bash")

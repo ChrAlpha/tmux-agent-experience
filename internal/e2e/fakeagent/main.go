@@ -23,7 +23,8 @@
 // child, outside any pane's agent, and serves the control socket under
 // $CODEX_HOME (thread/read, turn/start, turn/interrupt, and approvals: a
 // PermissionRequest it runs becomes an approval request that thread/resume
-// replays and a client answers). With FAKE_HOOKS=1 and
+// replays and a client answers, about the call the thread's last PreToolUse
+// of that tool started, as Codex names it). With FAKE_HOOKS=1 and
 // FAKE_SESSION set it first reports that session's start. A turn started
 // through the socket lasts FAKE_TURN_MS, default 0.
 //
@@ -285,6 +286,7 @@ func daemon() {
 	d := &fakeDaemon{status: map[string]string{}, turns: map[string]string{}, stops: map[string]*time.Timer{},
 		approvals: map[int]approval{}, watchers: map[string]map[*svctest.Conn]bool{}}
 	d.turnMS, _ = strconv.Atoi(os.Getenv("FAKE_TURN_MS"))
+	d.calls = map[[2]string]string{}
 	d.cwd, _ = os.Getwd()
 	go d.serve()
 	if session := os.Getenv("FAKE_SESSION"); session != "" && os.Getenv("FAKE_HOOKS") == "1" {
@@ -316,11 +318,14 @@ type fakeDaemon struct {
 	approvals map[int]approval
 	watchers  map[string]map[*svctest.Conn]bool
 	requests  int
+	// calls are the last call each thread started of each tool, which its
+	// next approval of the tool is about.
+	calls map[[2]string]string
 }
 
 // approval is an approval request of the daemon's.
 type approval struct {
-	thread, turn, tool, method string
+	thread, turn, tool, call, method string
 }
 
 // hook runs `tmag hook codex` for payload as the daemon's child, and keeps
@@ -347,6 +352,9 @@ func (d *fakeDaemon) run(payload map[string]any) {
 		delete(d.turns, thread)
 	case "UserPromptSubmit":
 		d.status[thread], d.turns[thread] = "active", turn
+	case "PreToolUse":
+		tool, _ := payload["tool_name"].(string)
+		d.calls[[2]string{thread, tool}], _ = payload["tool_use_id"].(string)
 	case "PermissionRequest":
 		// No hook decided it: the daemon asks its clients.
 		tool, _ := payload["tool_name"].(string)
@@ -355,7 +363,7 @@ func (d *fakeDaemon) run(payload map[string]any) {
 			method = "item/commandExecution/requestApproval"
 		}
 		d.requests++
-		a := approval{thread: thread, turn: turn, tool: tool, method: method}
+		a := approval{thread: thread, turn: turn, tool: tool, call: d.calls[[2]string{thread, tool}], method: method}
 		d.approvals[d.requests] = a
 		for c := range d.watchers[thread] {
 			d.ask(c, d.requests, a)
@@ -365,7 +373,7 @@ func (d *fakeDaemon) run(payload map[string]any) {
 
 func (d *fakeDaemon) ask(c *svctest.Conn, id int, a approval) {
 	_ = c.Send(map[string]any{"id": id, "method": a.method, "params": map[string]any{
-		"threadId": a.thread, "turnId": a.turn, "itemId": fmt.Sprintf("item-%d", id), "command": "date",
+		"threadId": a.thread, "turnId": a.turn, "itemId": a.call, "command": "date",
 	}})
 }
 
@@ -508,7 +516,7 @@ func (d *fakeDaemon) decided(m svctest.Message) {
 	}
 	delete(d.approvals, id)
 	if result.Decision == "accept" {
-		d.run(map[string]any{"hook_event_name": "PostToolUse", "session_id": a.thread, "turn_id": a.turn, "tool_name": a.tool})
+		d.run(map[string]any{"hook_event_name": "PostToolUse", "session_id": a.thread, "turn_id": a.turn, "tool_name": a.tool, "tool_use_id": a.call})
 	} else {
 		d.run(map[string]any{"hook_event_name": "PreModelRequest", "session_id": a.thread, "turn_id": a.turn})
 	}

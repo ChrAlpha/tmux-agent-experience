@@ -183,9 +183,11 @@ func approvalOf(tool string) string {
 
 // pendingApproval joins the thread a request belongs to (a subagent's own,
 // or the session's) and finds the daemon's approval request it is: the one
-// of that thread and turn asking about the request's tool. A request stays
-// open after its approval while the tool runs, so another approval of the
-// turn is never taken for it.
+// of that thread and turn asking about the request's tool call, which Codex
+// names by the call's id. A request stays open after its approval while the
+// call runs, and several calls of one turn may ask, so nothing but the call
+// binds an approval to a request; a request that may be about several calls
+// is not answered here.
 func pendingApproval(ctx context.Context, c *codexsvc.Client, s Session, q session.Request) (string, codexsvc.Message, error) {
 	thread := s.ID
 	if q.Prompt.Agent != "" {
@@ -194,6 +196,9 @@ func pendingApproval(ctx context.Context, c *codexsvc.Client, s Session, q sessi
 	method := approvalOf(q.Prompt.Tool)
 	if method == "" {
 		return thread, codexsvc.Message{}, &RefusedError{RefuseUnsupported, fmt.Sprintf("request %s of %s asks about tool %q, which Codex approves in a way tmag cannot answer", q.ID, s.ID, q.Prompt.ToolName())}
+	}
+	if q.Call == "" {
+		return thread, codexsvc.Message{}, fmt.Errorf("%w: request %s of %s may be about any of several %s calls; answer it in the agent", ErrAmbiguous, q.ID, s.ID, q.Prompt.ToolName())
 	}
 	pending, err := c.Join(ctx, thread)
 	if err != nil {
@@ -207,8 +212,9 @@ func pendingApproval(ctx context.Context, c *codexsvc.Client, s Session, q sessi
 		var p struct {
 			ThreadID string `json:"threadId"`
 			TurnID   string `json:"turnId"`
+			ItemID   string `json:"itemId"`
 		}
-		if json.Unmarshal(m.Params, &p) != nil || p.ThreadID != thread || (q.Turn != "" && p.TurnID != q.Turn) {
+		if json.Unmarshal(m.Params, &p) != nil || p.ThreadID != thread || p.ItemID != q.Call || (q.Turn != "" && p.TurnID != q.Turn) {
 			continue
 		}
 		found = append(found, m)

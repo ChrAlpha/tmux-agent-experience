@@ -711,8 +711,11 @@ func TestCodexDaemonCarriesAnswers(t *testing.T) {
 	d := h.daemon()
 	d.hook(map[string]any{"hook_event_name": "SessionStart", "session_id": sidC, "source": "startup"})
 	d.hook(map[string]any{"hook_event_name": "UserPromptSubmit", "session_id": sidC, "turn_id": "t1"})
+	calls := 0
 	blocked := func() eventlog.Request {
 		t.Helper()
+		calls++
+		d.hook(map[string]any{"hook_event_name": "PreToolUse", "session_id": sidC, "turn_id": "t1", "tool_name": "Bash", "tool_use_id": fmt.Sprintf("call-%d", calls)})
 		d.hook(map[string]any{"hook_event_name": "PermissionRequest", "session_id": sidC, "turn_id": "t1", "tool_name": "Bash"})
 		s := h.waitSession(sidC, "blocked")
 		if len(s.Requests) != 1 || s.Requests[0].Tool != "Bash" || !slices.Contains(s.Capabilities, "answer") {

@@ -89,6 +89,11 @@ type Request struct {
 	ID     string         `json:"id"`
 	Prompt adapter.Prompt `json:"prompt"`
 	Turn   string         `json:"turn,omitempty"`
+	// Call is the tool call the request asks about, when the last Ask for
+	// its prompt can be about one call only: the one running call of the
+	// prompt's tool by the agent that asked. An agent service names the call
+	// its approval is for, so there a request is answered only with one.
+	Call string `json:"call,omitempty"`
 	// Hook says the id is an answer hook's, which waits for the answer.
 	Hook  bool      `json:"hook,omitempty"`
 	Since time.Time `json:"since"`
@@ -301,7 +306,7 @@ func Apply(cur Record, tr adapter.Transition, now time.Time) (Record, bool) {
 		if opened {
 			rec.Pending = append(rec.Pending, tr.Prompt)
 		}
-		rec.Requests = request(rec.Requests, tr, now)
+		rec.Requests = request(rec.Requests, tr, asked(rec.Calls, tr), now)
 		rec.running(main)
 	case adapter.Start:
 		rec.Calls = startCall(rec.Calls, rec.Done, tr.Call)
@@ -373,19 +378,45 @@ func Apply(cur Record, tr adapter.Transition, now time.Time) (Record, bool) {
 
 // request names the prompt an Ask is about. A prompt without a request
 // gets the Ask's id; an answer hook's id names the prompt's request no hook
-// waits on, or else adds one: two hooks may wait on equal prompts.
-func request(reqs []Request, tr adapter.Transition, now time.Time) []Request {
+// waits on, or else adds one: two hooks may wait on equal prompts. Each Ask
+// asks anew, so the request it names is about call from now on.
+func request(reqs []Request, tr adapter.Transition, call string, now time.Time) []Request {
 	named := slices.ContainsFunc(reqs, func(q Request) bool { return q.Prompt == tr.Prompt })
 	if tr.Request == "" || (named && !tr.Waits) {
+		for i := range reqs {
+			if reqs[i].Prompt == tr.Prompt && !reqs[i].Hook {
+				reqs[i].Call = call
+			}
+		}
 		return reqs
 	}
 	if tr.Waits {
 		if i := slices.IndexFunc(reqs, func(q Request) bool { return q.Prompt == tr.Prompt && !q.Hook }); i >= 0 {
-			reqs[i].ID, reqs[i].Hook = tr.Request, true
+			reqs[i].ID, reqs[i].Hook, reqs[i].Call = tr.Request, true, call
 			return reqs
 		}
 	}
-	return append(reqs, Request{ID: tr.Request, Prompt: tr.Prompt, Turn: tr.Turn, Hook: tr.Waits, Since: now.UTC().Truncate(time.Second)})
+	return append(reqs, Request{ID: tr.Request, Prompt: tr.Prompt, Turn: tr.Turn, Call: call, Hook: tr.Waits, Since: now.UTC().Truncate(time.Second)})
+}
+
+// asked is the tool call an Ask can only be about: the one it names, or else
+// the one running call of the prompt's tool by the agent that asked; "" when
+// it may be about several, or none is known.
+func asked(calls []adapter.Call, tr adapter.Transition) string {
+	if tr.Call.ID != "" {
+		return tr.Call.ID
+	}
+	id := ""
+	for _, c := range calls {
+		if c.Agent != tr.Prompt.Agent || c.Tool != tr.Prompt.Tool {
+			continue
+		}
+		if id != "" {
+			return ""
+		}
+		id = c.ID
+	}
+	return id
 }
 
 // running records that a main-agent call proves a turn is under way: in a

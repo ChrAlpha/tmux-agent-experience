@@ -261,11 +261,14 @@ leaves without a word and the dialog alone decides. With `@tmag-answer`
 
 For a thread in Codex's daemon, `answer` joins the thread through the
 daemon's control socket, under the same proof as `send`. The daemon replays
-the approvals still waiting, and tmag answers the one of the request's turn
-that asks about its tool (a command for `Bash` and `write_stdin`, a file
-change for `apply_patch`), then leaves once the daemon reports it resolved.
-Approvals of other tools, such as MCP tools, are answered only in the agent
-(`unsupported`). Codex shows its dialog only
+the approvals still waiting, each naming the tool call it is about, and tmag
+answers the one for the request's call (a command approval for `Bash` and
+`write_stdin`, a file change for `apply_patch`), then leaves once the daemon
+reports it resolved. Codex's `PermissionRequest` hook does not name the call,
+so a request is about the one call of its tool the agent was running when it
+asked; when the agent ran several, any of them may be asking, and the request
+is answered only in the agent (`ambiguous`). Approvals of other tools, such
+as MCP tools, are answered only in the agent (`unsupported`). Codex shows its dialog only
 after its hooks have run, so no hook waits there. A Codex decision carries no
 message, and a Codex session run with `--no-daemon` can be answered only in
 the agent.
