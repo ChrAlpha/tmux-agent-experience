@@ -366,6 +366,15 @@ alone, so the tunnel is the one way in.
     request.
 - Pane `send` may join a draft left in the composer. For one person working
   alone this is rare, and the README says it.
+- Agents do not use these verbs unprompted. Observed with Claude Code
+  2.1.317 (Haiku) asked to find a peer agent in tmux and message it: with
+  `tmag` only in the plugin's directory, and again with it on `PATH`, the
+  agent used raw `tmux list-panes`, `capture-pane` and `send-keys`, judged
+  the peer idle from its screen, left no `Send` event, and once pressed
+  Enter twice. Given four lines describing `tmag list`, `send --wait`,
+  `wait` and `read`, it used those three calls and was gated and recorded.
+  The verbs are complete for agents; telling agents about them, and where
+  the binary is, belongs to the agent plugins and is a separate decision.
 
 ## Alternatives considered
 
