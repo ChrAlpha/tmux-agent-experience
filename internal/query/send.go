@@ -24,22 +24,82 @@ func pending(rec session.Record, now time.Time) bool {
 	return !rec.Sent.IsZero() && now.Sub(rec.Sent) < PendingWindow
 }
 
+// Marker starts the first line tmag writes atop a prompt an agent sends:
+// who sent it, and how to answer. No prompt given to send starts with it,
+// so a prompt that does came from the agent the line names, as far as tmag
+// delivered it.
+const Marker = "[tmag]"
+
+// ErrMarker refuses a prompt that starts with Marker: that line is tmag's.
+var ErrMarker = errors.New("a prompt may not start with " + Marker + "; tmag writes that line")
+
+// ErrNoSender reports a reply, or a prompt asking for one, from a caller
+// that is no agent session tmag can prove: the reply would have nowhere to go.
+var ErrNoSender = errors.New("only an agent whose session tmag proves sends or asks for a reply; run it from the agent's own tool")
+
+// Ask is how a prompt an agent sends asks to be answered.
+type Ask int
+
+const (
+	// AskFinal asks for the answer in the receiver's final message, which
+	// the sender reads once the turn is over (read --last).
+	AskFinal Ask = iota
+	// AskReply asks the receiver to answer later with tmag reply.
+	AskReply
+	// Answering makes the prompt a reply, which nobody answers.
+	Answering
+)
+
+// header is the line tmag writes atop a prompt the caller sends: none for a
+// person's, whose prompts are their own.
+func header(c Caller, ask Ask) (string, error) {
+	switch {
+	case ask != AskFinal && (c.By == nil || c.By.Session == ""):
+		return "", ErrNoSender
+	case c.By == nil:
+		return "", nil
+	}
+	from := c.By.Agent
+	if c.By.Session != "" {
+		from += " " + c.By.Session
+	}
+	switch ask {
+	case AskReply:
+		return fmt.Sprintf("%s From %s, another agent. When done, send your answer on stdin to: tmag reply %s -", Marker, from, c.By.Session), nil
+	case Answering:
+		return fmt.Sprintf("%s Reply from %s, another agent, to your prompt. Do not reply to it.", Marker, from), nil
+	}
+	return fmt.Sprintf("%s From %s, another agent. Answer in your final message.", Marker, from), nil
+}
+
 // Send delivers text as one submitted prompt to an idle session, by the
-// channel its driver uses, and returns where it went.
+// channel its driver uses, and returns where it went. When an agent sends
+// it, tmag writes the first line: which agent and session sent it, and how
+// ask has it answered.
 //
 // The session must be idle with no prompt of tmag's still unconfirmed, and
 // not the caller's own. The Send event is logged under the session's lock,
 // which the session's hooks wait for, so the turn the prompt starts is
 // logged after it; until a hook confirms that turn, further sends are
 // refused.
-func Send(ctx context.Context, log *eventlog.Log, target, text string) (Delivery, error) {
+func Send(ctx context.Context, log *eventlog.Log, target, text string, ask Ask) (Delivery, error) {
 	text = strings.TrimRight(tmux.SanitizePrompt(text), "\n")
 	if strings.TrimSpace(text) == "" {
 		return Delivery{}, errors.New("nothing to send")
 	}
+	if first, _, _ := strings.Cut(strings.TrimLeft(text, " \t\n"), "\n"); strings.HasPrefix(strings.ToLower(first), Marker) {
+		return Delivery{}, ErrMarker
+	}
 	v, caller, err := prepare(ctx, log)
 	if err != nil {
 		return Delivery{}, err
+	}
+	line, err := header(caller, ask)
+	if err != nil {
+		return Delivery{}, err
+	}
+	if line != "" {
+		text = line + "\n" + text
 	}
 	s, named, err := controlled(v, target)
 	if err != nil {

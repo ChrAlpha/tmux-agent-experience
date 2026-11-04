@@ -7,8 +7,13 @@
   "plugins": [
     {
       "name": "tmag",
-      "source": "./plugins/claude",
+      "source": "./plugins/claude/tmag",
       "description": "Reports Claude Code session state to tmag so tmux, other agents and remote clients can see it."
+    },
+    {
+      "name": "tmag-peers",
+      "source": "./plugins/claude/tmag-peers",
+      "description": "Lets Claude Code work with the other coding agents in your tmux panes through tmag."
     }
   ]
 }

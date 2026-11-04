@@ -10,10 +10,12 @@
 #   @tmag-key-setup   M-a         prefix key to connect Claude Code and Codex, then check
 #   @tmag-alert       blocked,finished   ring a pane's bell on these changes
 #   @tmag-answer      on          who may decide prompts with `tmag answer`: on (people), agents, off
+#   @tmag-peers       on          tmag setup gives agents the tmag-peers skill, to work with each other
 #   #{tmag_status}               placeholder for status-left / status-right
 #
 # Set a key option to "off" to leave that key unbound, @tmag-alert to "off" to
-# disable bells, @tmag-answer to "off" to answer prompts only in the agent.
+# disable bells, @tmag-answer to "off" to answer prompts only in the agent,
+# @tmag-peers to "off" to keep tmag out of the agents' context.
 
 dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 tmag="$dir/scripts/tmag"
@@ -24,7 +26,7 @@ option() {
 	echo "${value:-$2}"
 }
 
-version="$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "$dir/plugins/codex/.codex-plugin/plugin.json")"
+version="$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "$dir/plugins/codex/tmag/.codex-plugin/plugin.json")"
 tmux set-option -g @tmag-plugin-version "$version"
 
 # The binary lives in bin/; install or replace it when the plugin changed.
@@ -38,6 +40,10 @@ tmux set-option -g @tmag-alert "$(option @tmag-alert blocked,finished)"
 # `tmag answer` reads this to decide who may answer an agent's prompts, and
 # Claude Code's permission hook whether to wait for one beside its dialog.
 tmux set-option -g @tmag-answer "$(option @tmag-answer on)"
+
+# `tmag setup` reads this to install the tmag-peers plugin in the agents, or
+# to remove it.
+tmux set-option -g @tmag-peers "$(option @tmag-peers on)"
 
 # A pane's live state, for pane-border-format and friends. It is empty once the
 # agent that wrote it has exited: at once when another program takes the pane,

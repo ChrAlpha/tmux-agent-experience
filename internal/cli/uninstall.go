@@ -40,13 +40,13 @@ func (a *app) cmdUninstall(args []string) int {
 
 1. tmag's state (pane options and %[1]s), while the binary still exists:
      tmag uninstall --purge
-2. The agent plugins:
-     claude plugin uninstall %[2]s && claude plugin marketplace remove %[3]s
-     codex plugin remove %[2]s && codex plugin marketplace remove %[3]s
+2. The agent plugins (skip tmag-peers where it is not installed):
+     claude plugin uninstall %[5]s && claude plugin uninstall %[2]s && claude plugin marketplace remove %[3]s
+     codex plugin remove %[5]s && codex plugin remove %[2]s && codex plugin marketplace remove %[3]s
 3. The tmux plugin and its binary: delete this line from tmux.conf, then press
    prefix + alt + u (TPM's clean) to remove the plugin directory
      set -g @plugin '%[4]s'
-`, a.log.Dir, pluginID, marketplace, repo)
+`, a.log.Dir, pluginID(pluginName), marketplace, repo, pluginID(peersName))
 	if !inPluginDir(canonical(self)) {
 		fmt.Fprintf(a.stdout, "4. This binary, installed outside the tmux plugin:\n     %s\n", removeBinary(self))
 	}

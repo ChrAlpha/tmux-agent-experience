@@ -1,7 +1,7 @@
 {
   "name": "tmag",
   "version": "0.1.0",
-  "description": "Reports Claude Code session state to tmag so tmux, other agents and remote clients can see it. Requires the tmag binary on PATH.",
+  "description": "Reports Claude Code session state to tmag so tmux, other agents and remote clients can see it. Runs the tmag binary of the tmux-agent-experience tmux plugin.",
   "author": { "name": "ChrAlpha" },
   "homepage": "https://github.com/ChrAlpha/tmux-agent-experience",
   "repository": "https://github.com/ChrAlpha/tmux-agent-experience",

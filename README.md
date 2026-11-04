@@ -16,6 +16,9 @@ and whether it is working, waiting for you, or done — and shows it the tmux wa
   `2 blocked · 1 working`.
 - **`#{E:@tmag-pane-status}`** in `pane-border-format` labels each pane
   (`claude working`, `codex blocked permission`).
+- **Agents working together.** Ask an agent to involve another one, and it
+  prompts the other through tmag, waits for its turn and reads its answer:
+  delivered once, only while that agent is idle, and recorded.
 
 Underneath, the `tmag` command gives agents, scripts and remote clients the
 same state as a versioned JSON contract, and can hand an idle agent its next
@@ -25,7 +28,8 @@ prompt safely.
 - Agents report through their own plugin hooks, which fail open: a broken or
   missing `tmag` never blocks a turn.
 - Everything lives in the plugin's TPM directory; nothing edits your
-  configuration. Prompts and agent output are never stored.
+  configuration. Prompts and agent output are never stored; `tmag read
+  --last` reads an agent's reply from its own transcript when asked.
 
 ## Requirements
 
@@ -60,7 +64,9 @@ the same procedure, readable by people. Use the same prompt to update.
 
 2. Press `prefix + M-a`. A popup shows the commands that connect Claude Code
    and Codex through their own plugin managers, runs them once you confirm, and
-   checks the result.
+   checks the result. Each agent gets two plugins: `tmag`, whose hooks report
+   its state, and `tmag-peers`, a skill that teaches it to work with the other
+   agents through tmag (see [Agents acting on agents](#agents-acting-on-agents)).
 
 3. Start new agent sessions in tmux panes. In Codex, approve tmag's hooks with
    `/hooks`, and run `/title` once to turn on `thread-id` (see
@@ -90,16 +96,19 @@ load. Then `prefix + M-a` brings the agent plugins to the same version.
 | `@tmag-key-setup` | `M-a` | prefix key to connect the agents and check the installation |
 | `@tmag-alert` | `blocked,finished` | which changes ring a pane's bell |
 | `@tmag-answer` | `on` | who may decide an agent's permission prompts and questions with `tmag answer`, beside the agent's own dialog: `on` for people, `agents` for agents too, `off` for nobody |
+| `@tmag-peers` | `on` | whether `prefix + M-a` gives the agents the `tmag-peers` skill, for working with each other; `off` removes it |
 | `@tmag-release-url` | GitHub releases | where to download the binary, for mirrors |
 
 Set a key option to `off` to leave it unbound, `@tmag-alert` to `off` for
-no bells, and `@tmag-answer` to `off` to answer prompts only in the agent. Set options before TPM's `run` line.
+no bells, `@tmag-answer` to `off` to answer prompts only in the agent, and
+`@tmag-peers` to `off`, then press `prefix + M-a`, to keep tmag out of the
+agents' context. Set options before TPM's `run` line.
 
 ## The `tmag` command
 
-Agent hooks find the plugin's binary on their own. To use `tmag` from a shell
-or let agents call it (agent-to-agent work, scripts), put the plugin's `bin`
-directory on your `PATH`, or install the released binary separately with
+Agent hooks find the plugin's binary on their own, and so do agents with the
+`tmag-peers` skill. To use `tmag` from a shell or a script, put the plugin's
+`bin` directory on your `PATH`, or install the released binary separately with
 `mise use -g github:ChrAlpha/tmux-agent-experience` or an archive from
 [Releases](https://github.com/ChrAlpha/tmux-agent-experience/releases).
 
@@ -115,6 +124,7 @@ work:3.0   %9    codex   unknown              -    -         ~/src/web
 
 $ tmag send 01a19fda --wait "Review the diff in HEAD and list risky changes"
 01a19fda idle
+$ tmag read 01a19fda --last    # the reply that ended its turn
 
 $ tmag interrupt 01a1          # stop the running turn
 $ tmag request 1787 3f9c2a01b6d4             # what an open request asks
@@ -217,6 +227,55 @@ one only when `@tmag-answer` is `agents`; otherwise it is refused with
 prompts by accident, and the log shows every decision an agent made. It is
 no security boundary: an agent can type into any pane with tmux itself.
 
+Agents do not use these verbs unless told about them: asked to message
+another agent, they type into its pane with `tmux send-keys` and judge its
+state from its screen. The `tmag-peers` plugin is what tells them. Its skill,
+`peers`, covers when to act on another agent (when the person asks, or a
+peer's prompt asks within the person's work), the verbs and their refusals,
+and never to fall back to tmux. In Claude Code the plugin puts `tmag` on the
+agent's `PATH`; in Codex the skill runs it from its own directory. Either way
+it is a launcher that runs the binary the agent's hooks run.
+
+A prompt carries no sender of its own, so when an agent sends one, tmag
+writes its first line from the caller it proved: which agent and session sent
+it, and how to answer. An agent without the skill can follow it too:
+
+```
+[tmag] From claude 1787a44e-…, another agent. Answer in your final message.
+[tmag] From claude 1787a44e-…, another agent. When done, send your answer on stdin to: tmag reply 1787a44e-… -
+[tmag] Reply from codex 01a19fda-…, another agent, to your prompt. Do not reply to it.
+```
+
+The first is what `send` writes, for a sender that waits for the turn
+(`send --wait`) and reads the answer with `read --last`; the second is what
+`send --reply` writes, for a sender that ends its turn and takes the reply as
+its next prompt; the third is what `tmag reply` writes. A prompt given to
+`send` or `reply` may not itself start with `[tmag]` (a usage error), so a
+first line that does was written by tmag about an agent it proved. A
+person's prompt gets no such line. An agent with the skill treats such a
+prompt as a colleague's request rather than the person's, and does not
+answer a reply. Like the rest of the gate, this holds for prompts tmag
+delivers; it is no security boundary against text typed into a pane by
+other means.
+
+`tmag reply` sends like `send`, but waits for an asker that is busy, until
+its `--timeout` (one minute by default), and prompts it once it is idle;
+exit 4 then means nothing was delivered. Only an agent whose session tmag
+proves can send a reply or ask for one.
+
+#### Reading a reply
+
+`tmag read ID --last` prints the reply that ended a session's last turn,
+read from the agent's transcript at the moment of the call: the text of
+Claude Code's last assistant message, or Codex's `last_agent_message` of the
+turn's end. tmag keeps nothing of it. It reads only an idle session (`busy`
+otherwise), and only the turn the session's hooks reported, waiting a few
+seconds for the agent to write that turn's end; a turn that ended without a
+reply, or a transcript that does not catch up, is the error `no_reply`. It
+needs no pane, so it reads sessions in the Codex daemon and Claude Code's
+background sessions too. `--json` adds the session and the `turn`. Without
+`--last`, `read` prints the pane's recent text.
+
 #### Sending
 
 `tmag send` delivers a prompt to an idle session through the one pane that
@@ -237,10 +296,10 @@ a key that clears a draft without side effects, so tmag does not try.
 Hooks update a session under the same session lock, so the turn a prompt
 starts is always logged after its `Send` event. Further sends are refused
 until the agent's own hook confirms the turn by starting it, including after
-typing reported an error, since the prompt may have arrived all the same. `send --wait`
-waits for that turn to end; input that starts no turn, such as a slash
-command, releases the session after 15 seconds, and `send --wait` then
-reports `"started": false`.
+typing reported an error, since the prompt may have arrived all the same.
+`send --wait` waits until that turn ends or blocks on a request, and reports
+which; input that starts no turn, such as a slash command, releases the
+session after 15 seconds, and `send --wait` then reports `"started": false`.
 
 `wait` and `send --wait` end with error code `ended` when the session ends.
 
@@ -437,14 +496,14 @@ timeout. With `--json`, errors are also printed as
 `not_found`, `ambiguous`, `refused:unbound`, `refused:busy`,
 `refused:background`, `refused:subagent`, `refused:changed`,
 `refused:idle`, `refused:unsupported`, `refused:self`, `refused:agent`,
-`ended`, `timeout` and `error`.
+`ended`, `no_reply`, `timeout` and `error`.
 
 ## Footprint
 
 | Piece | Where | Removed by |
 | --- | --- | --- |
 | tmux plugin and `tmag` | `$TMUX_PLUGIN_MANAGER_PATH/tmux-agent-experience/` | removing the `@plugin` line, then `prefix + alt + u` |
-| Agent plugins | each agent's plugin directory | the agent's plugin manager |
+| Agent plugins `tmag` and `tmag-peers` | each agent's plugin directory | the agent's plugin manager |
 | Pane state | `@tmag_*` pane options, gone with the pane | `tmag uninstall --purge` |
 | Sessions and event log | `$XDG_STATE_HOME/tmag` (default `~/.local/state/tmag`): one small file per live session, at most two 8 MB event files, and `req/<id>.sock` while an answer hook waits | `tmag uninstall --purge` |
 

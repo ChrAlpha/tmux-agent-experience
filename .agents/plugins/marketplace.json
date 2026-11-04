@@ -8,7 +8,19 @@
       "name": "tmag",
       "source": {
         "source": "local",
-        "path": "./plugins/codex"
+        "path": "./plugins/codex/tmag"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    },
+    {
+      "name": "tmag-peers",
+      "source": {
+        "source": "local",
+        "path": "./plugins/codex/tmag-peers"
       },
       "policy": {
         "installation": "AVAILABLE",

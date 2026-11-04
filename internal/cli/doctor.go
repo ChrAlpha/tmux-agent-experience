@@ -33,7 +33,8 @@ func (a *app) cmdDoctor(args []string) int {
 		return a.usageError("doctor", err)
 	}
 	checks := []check{checkTmux(), checkPlugin(), checkBinary(), a.checkState(), a.checkHookErrors()}
-	checks = append(checks, claudeCheck(claudeHost()), codexCheck(codexHost()), a.checkAgents())
+	peers := peersWanted(context.Background())
+	checks = append(checks, claudeCheck(claudeHost(), peers), codexCheck(codexHost(), peers), a.checkAgents())
 
 	failed := false
 	for _, c := range checks {
@@ -201,34 +202,50 @@ func (a *app) checkHookErrors() check {
 	return check{"hooks", "warn", fmt.Sprintf("%d hook error(s) in the last 24h; latest: %s", len(recent), recent[len(recent)-1])}
 }
 
-// pluginNote describes the tmag plugin in a host and whether it needs action.
-func pluginNote(h host) (status, note string) {
-	switch {
-	case !h.Listed:
+// pluginNote describes tmag's plugins in a host and whether they need action.
+func pluginNote(h host, peers bool) (status, note string) {
+	if !h.Listed {
 		return "warn", "cannot list plugins"
-	case !h.Installed:
-		return "warn", "tmag plugin not installed; run tmag setup (prefix + M-a)"
-	case !h.Enabled:
-		return "warn", "tmag plugin disabled"
-	case h.PluginVer != "" && h.PluginVer != version.Version:
-		return "warn", fmt.Sprintf("tmag plugin %s, binary %s; run tmag setup to update", h.PluginVer, version.Version)
 	}
-	return "ok", "tmag plugin " + h.PluginVer + " enabled"
+	var notes []string
+	status = "ok"
+	for _, name := range []string{pluginName, peersName} {
+		p := *h.of(name)
+		switch {
+		case name == peersName && !peers && p.Installed:
+			status = "warn"
+			notes = append(notes, fmt.Sprintf("%s installed although %s is off; run tmag setup to remove it", name, peersOption))
+		case name == peersName && !peers:
+			notes = append(notes, fmt.Sprintf("%s off (%s)", name, peersOption))
+		case !p.Installed:
+			status = "warn"
+			notes = append(notes, name+" plugin not installed; run tmag setup (prefix + M-a)")
+		case !p.Enabled:
+			status = "warn"
+			notes = append(notes, name+" plugin disabled; run tmag setup to enable it")
+		case p.outdated():
+			status = "warn"
+			notes = append(notes, fmt.Sprintf("%s plugin %s, binary %s; run tmag setup to update", name, p.Version, version.Version))
+		default:
+			notes = append(notes, name+" plugin "+p.Version+" enabled")
+		}
+	}
+	return status, strings.Join(notes, "; ")
 }
 
-func claudeCheck(h host) check {
+func claudeCheck(h host, peers bool) check {
 	if !h.Present {
 		return check{"claude", "skip", "Claude Code not installed"}
 	}
-	status, note := pluginNote(h)
+	status, note := pluginNote(h, peers)
 	return check{"claude", status, h.Version + "; " + note}
 }
 
-func codexCheck(h host) check {
+func codexCheck(h host, peers bool) check {
 	if !h.Present {
 		return check{"codex", "skip", "Codex not installed"}
 	}
-	status, note := pluginNote(h)
+	status, note := pluginNote(h, peers)
 	notes := []string{h.Version, note}
 	switch {
 	case status != "ok":

@@ -383,6 +383,7 @@ func (a *app) cmdRead(args []string) int {
 	fs := flag.NewFlagSet("read", flag.ContinueOnError)
 	fs.BoolVar(&a.json, "json", false, "")
 	lines := fs.Int("lines", 100, "")
+	last := fs.Bool("last", false, "")
 	pos, err := parse(fs, args)
 	if err == nil && len(pos) != 1 {
 		err = errors.New("expected one target")
@@ -390,11 +391,26 @@ func (a *app) cmdRead(args []string) int {
 	if err == nil && *lines <= 0 {
 		err = errors.New("--lines must be positive")
 	}
+	if err == nil && *last && flagSet(fs, "lines") {
+		err = errors.New("--last reads the agent's reply, not lines of its pane; drop --lines")
+	}
 	if err != nil {
 		return a.usageError("read", err)
 	}
 	ctx, cancel := signalContext()
 	defer cancel()
+	if *last {
+		s, r, err := query.LastReply(ctx, a.store(), pos[0])
+		if err != nil {
+			return a.fail("read", err)
+		}
+		if a.json {
+			a.emit(map[string]any{"session": s, "turn": r.Turn, "text": r.Text})
+			return ExitOK
+		}
+		fmt.Fprintln(a.stdout, strings.TrimRight(r.Text, "\n"))
+		return ExitOK
+	}
 	t, err := a.resolve(ctx, pos[0])
 	if err != nil {
 		return a.fail("read", err)
@@ -414,29 +430,50 @@ func (a *app) cmdRead(args []string) int {
 	return ExitOK
 }
 
+// flagSet reports whether the command line set the named flag.
+func flagSet(fs *flag.FlagSet, name string) bool {
+	set := false
+	fs.Visit(func(f *flag.Flag) { set = set || f.Name == name })
+	return set
+}
+
+// promptText is the prompt a command was given: its words after the
+// target, or stdin when there are none or only "-".
+func (a *app) promptText(pos []string) (string, error) {
+	if len(pos) == 1 || (len(pos) == 2 && pos[1] == "-") {
+		b, err := io.ReadAll(io.LimitReader(a.stdin, 1<<20))
+		return string(b), err
+	}
+	return strings.Join(pos[1:], " "), nil
+}
+
 func (a *app) cmdSend(args []string) int {
 	fs := flag.NewFlagSet("send", flag.ContinueOnError)
 	fs.BoolVar(&a.json, "json", false, "")
 	wait := fs.Bool("wait", false, "")
+	reply := fs.Bool("reply", false, "")
 	timeout := fs.Duration("timeout", 30*time.Minute, "")
 	pos, err := parse(fs, args)
 	if err == nil && len(pos) < 1 {
 		err = errors.New("expected a target")
 	}
+	if err == nil && *wait && *reply {
+		err = errors.New("--reply has the peer prompt you later, which it cannot while --wait keeps your turn going; use one")
+	}
 	if err != nil {
 		return a.usageError("send", err)
 	}
-	text := strings.Join(pos[1:], " ")
-	if len(pos) == 1 || (len(pos) == 2 && pos[1] == "-") {
-		b, err := io.ReadAll(io.LimitReader(a.stdin, 1<<20))
-		if err != nil {
-			return a.fail("send", err)
-		}
-		text = string(b)
+	text, err := a.promptText(pos)
+	if err != nil {
+		return a.fail("send", err)
+	}
+	ask := query.AskFinal
+	if *reply {
+		ask = query.AskReply
 	}
 	ctx, cancel := signalContext()
 	defer cancel()
-	d, err := query.Send(ctx, a.log, pos[0], text)
+	d, err := query.Send(ctx, a.log, pos[0], text, ask)
 	if err != nil {
 		return a.fail("send", err)
 	}
@@ -447,6 +484,74 @@ func (a *app) cmdSend(args []string) int {
 	return a.awaitAndReport("send", d.Session, query.WaitOptions{
 		States: []string{adapter.Idle, adapter.Blocked}, After: d.Seq, StartGrace: query.PendingWindow,
 	}, *timeout)
+}
+
+// cmdReply answers a prompt that asked for a reply: the peer gets it as a
+// prompt whose first line says it is one. A peer still busy is waited for,
+// until --timeout, and prompted once it is idle.
+func (a *app) cmdReply(args []string) int {
+	fs := flag.NewFlagSet("reply", flag.ContinueOnError)
+	fs.BoolVar(&a.json, "json", false, "")
+	timeout := fs.Duration("timeout", time.Minute, "")
+	pos, err := parse(fs, args)
+	if err == nil && len(pos) < 1 {
+		err = errors.New("expected a target")
+	}
+	if err != nil {
+		return a.usageError("reply", err)
+	}
+	text, err := a.promptText(pos)
+	if err != nil {
+		return a.fail("reply", err)
+	}
+	ctx, cancel := signalContext()
+	defer cancel()
+	ctx, cancelTimeout := context.WithTimeout(ctx, *timeout)
+	defer cancelTimeout()
+	for {
+		// Read the cursor before trying: the peer turning idle in between
+		// is then seen rather than waited for.
+		cursor, err := a.log.Seq()
+		if err != nil {
+			return a.fail("reply", err)
+		}
+		d, err := query.Send(ctx, a.log, pos[0], text, query.Answering)
+		if err == nil {
+			a.reportDelivery("replied to", d)
+			return ExitOK
+		}
+		var refused *query.RefusedError
+		if !errors.As(err, &refused) || refused.Reason != query.RefuseBusy {
+			return a.fail("reply", a.deadline(ctx, *timeout, err))
+		}
+		t, err := a.resolve(ctx, pos[0])
+		if err == nil {
+			_, err = needSession(t)
+		}
+		if err != nil {
+			return a.fail("reply", a.deadline(ctx, *timeout, err))
+		}
+		// Wait for the peer's next idle, or a pending window at most: a
+		// prompt tmag just delivered may start no turn.
+		wait, stop := context.WithTimeout(ctx, query.PendingWindow)
+		_, err = query.Wait(wait, a.log, *t.Session, query.WaitOptions{States: []string{adapter.Idle}, After: cursor})
+		stop()
+		if ctx.Err() != nil {
+			return a.fail("reply", a.deadline(ctx, *timeout, refused))
+		}
+		if err != nil && !errors.Is(err, context.DeadlineExceeded) {
+			return a.fail("reply", err)
+		}
+	}
+}
+
+// deadline reports err as a timeout when ctx ran out of time. It keeps
+// only err's message: a refusal it wraps would report the timeout as one.
+func (a *app) deadline(ctx context.Context, timeout time.Duration, err error) error {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return fmt.Errorf("%w after %s, nothing delivered: %s", errTimeout, timeout, err.Error())
+	}
+	return err
 }
 
 func (a *app) cmdInterrupt(args []string) int {

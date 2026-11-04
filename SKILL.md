@@ -108,8 +108,11 @@ If it never appears, read `tmux show-messages` and see [Triage](#triage).
 "$TMAG" setup --yes --agent claude     # or --agent codex
 ```
 
-`setup` installs or updates tmag's plugin through the agent's own plugin
-manager and prints what is left to do. If the other agent is also installed
+`setup` installs or updates tmag's plugins through the agent's own plugin
+manager and prints what is left to do: `tmag`, whose hooks report the agent's
+state, and `tmag-peers`, a skill for working with the other agents through
+tmag. With `@tmag-peers` set to `off` in tmux, it leaves out `tmag-peers`, or
+removes it. If the other agent is also installed
 (`command -v claude`, `command -v codex`), ask whether to connect it as well.
 Other hosts are not supported: tmag still lists their panes, but cannot know
 their state.
@@ -133,8 +136,8 @@ their state.
    itself. Do not edit Codex's configuration for them. Codex started with
    `--no-daemon` needs no setting.
 5. In the fresh session, `"$TMAG" doctor` should show the plugin loaded and the
-   agent plugin enabled, and `"$TMAG" list` should show that pane with the
-   session's id:
+   agent's `tmag` and `tmag-peers` plugins enabled (or `tmag-peers off`), and
+   `"$TMAG" list` should show that pane with the session's id:
    - Claude Code: state `idle` right away; `list --json` gives the pane
      evidence `process`.
    - Codex: after the first prompt, evidence `title-id` (or `process` with
@@ -144,7 +147,9 @@ their state.
 Report the final `tmag doctor` lines, and tell the user about the keys:
 `prefix + A` jumps to the agent waiting longest, `prefix + a` lists agents,
 `prefix + M-a` re-runs setup and doctor, and `#{tmag_status}` can go in their
-status line.
+status line. Tell them too that agents can now work with each other through
+tmag when asked to, and that `set -g @tmag-peers off` followed by
+`prefix + M-a` turns that off.
 
 ## Triage
 
@@ -174,4 +179,4 @@ confirms; run `"$TMAG" uninstall --purge` first, while the binary exists.
 
 ---
 
-**Last updated**: 2026-11-03
+**Last updated**: 2026-11-04

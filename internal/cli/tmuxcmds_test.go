@@ -74,39 +74,49 @@ func TestWaiting(t *testing.T) {
 }
 
 func TestSetupPlan(t *testing.T) {
-	first := func(plan [][]string) string {
-		if len(plan) == 0 {
-			return ""
-		}
-		return strings.Join(plan[0], " ")
+	cur := plugin{Installed: true, Enabled: true, Version: version.Version}
+	old := plugin{Installed: true, Enabled: true, Version: "0.0.1"}
+	off := plugin{Installed: true, Version: version.Version}
+	claude := func(tmag, peers plugin) host {
+		return host{CLI: "claude", Present: true, Listed: true, Tmag: tmag, Peers: peers}
 	}
+	codex := func(tmag, peers plugin) host {
+		return host{CLI: "codex", Present: true, Listed: true, Tmag: tmag, Peers: peers}
+	}
+	cm, xm := "claude plugin marketplace ", "codex plugin marketplace "
+	ci, xi := "claude plugin ", "codex plugin "
+	tmag, peers := pluginID(pluginName), pluginID(peersName)
 	for _, c := range []struct {
-		name string
-		h    host
-		want string
-		n    int
+		name  string
+		h     host
+		peers bool
+		want  []string
 	}{
-		{"absent", host{CLI: "claude"}, "", 0},
-		{"unlistable", host{CLI: "claude", Present: true}, "", 0},
-		{"claude install", host{CLI: "claude", Present: true, Listed: true}, "claude plugin marketplace add " + repo + " --sparse .claude-plugin plugins/claude", 2},
-		{"claude current", host{CLI: "claude", Present: true, Listed: true, Installed: true, Enabled: true, PluginVer: version.Version}, "", 0},
-		{"claude disabled", host{CLI: "claude", Present: true, Listed: true, Installed: true, PluginVer: version.Version}, "claude plugin enable " + pluginID, 1},
-		{"claude disabled and outdated", host{CLI: "claude", Present: true, Listed: true, Installed: true, PluginVer: "0.0.1"}, "claude plugin marketplace update " + marketplace, 3},
-		{"claude outdated", host{CLI: "claude", Present: true, Listed: true, Installed: true, Enabled: true, PluginVer: "0.0.1"}, "claude plugin marketplace update " + marketplace, 2},
-		{"codex install", host{CLI: "codex", Present: true, Listed: true}, "codex plugin marketplace add " + repo + " --sparse .agents --sparse plugins/codex", 2},
-		{"codex outdated", host{CLI: "codex", Present: true, Listed: true, Installed: true, Enabled: true, PluginVer: "0.0.1"}, "codex plugin marketplace upgrade " + marketplace, 2},
+		{"absent", host{CLI: "claude"}, true, nil},
+		{"unlistable", host{CLI: "claude", Present: true}, true, nil},
+		{"claude install", claude(plugin{}, plugin{}), true, []string{cm + "add " + repo + " --sparse .claude-plugin plugins/claude", ci + "install " + tmag, ci + "install " + peers}},
+		{"claude install without peers", claude(plugin{}, plugin{}), false, []string{cm + "add " + repo + " --sparse .claude-plugin plugins/claude", ci + "install " + tmag}},
+		{"claude current", claude(cur, cur), true, nil},
+		{"claude current without peers", claude(cur, plugin{}), false, nil},
+		{"claude peers turned off", claude(cur, cur), false, []string{ci + "uninstall " + peers}},
+		{"claude peers turned on", claude(cur, plugin{}), true, []string{cm + "update " + marketplace, ci + "install " + peers}},
+		{"claude disabled", claude(off, off), true, []string{ci + "enable " + tmag, ci + "enable " + peers}},
+		{"claude outdated", claude(old, old), true, []string{cm + "update " + marketplace, ci + "update " + tmag, ci + "update " + peers}},
+		{"claude outdated and disabled", claude(plugin{Installed: true, Version: "0.0.1"}, cur), true, []string{cm + "update " + marketplace, ci + "update " + tmag, ci + "enable " + tmag}},
+		{"claude outdated, peers off", claude(old, old), false, []string{cm + "update " + marketplace, ci + "update " + tmag, ci + "uninstall " + peers}},
+		{"codex install", codex(plugin{}, plugin{}), true, []string{xm + "add " + repo + " --sparse .agents --sparse plugins/codex", xi + "add " + tmag, xi + "add " + peers}},
+		{"codex current", codex(cur, cur), true, nil},
+		{"codex outdated", codex(old, old), true, []string{xm + "upgrade " + marketplace, xi + "add " + tmag, xi + "add " + peers}},
+		{"codex peers turned on", codex(cur, plugin{}), true, []string{xm + "upgrade " + marketplace, xi + "add " + peers}},
+		{"codex peers turned off", codex(cur, cur), false, []string{xi + "remove " + peers}},
+		{"codex disabled", codex(off, cur), true, []string{xi + "add " + tmag}},
 	} {
-		plan := setupPlan(c.h)
-		if first(plan) != c.want || len(plan) != c.n {
-			t.Errorf("%s: plan %v", c.name, plan)
+		var got []string
+		for _, argv := range setupPlan(c.h, c.peers) {
+			got = append(got, strings.Join(argv, " "))
 		}
-	}
-	plan := setupPlan(host{CLI: "claude", Present: true, Listed: true, Installed: true, PluginVer: "0.0.1"})
-	if !reflect.DeepEqual(plan[2], []string{"claude", "plugin", "enable", pluginID}) {
-		t.Errorf("disabled outdated claude plugin ends with %v", plan[2])
-	}
-	plan = setupPlan(host{CLI: "codex", Present: true, Listed: true})
-	if !reflect.DeepEqual(plan[1], []string{"codex", "plugin", "add", pluginID}) {
-		t.Errorf("codex install ends with %v", plan[1])
+		if !reflect.DeepEqual(got, c.want) {
+			t.Errorf("%s: plan\n  %s\nwant\n  %s", c.name, strings.Join(got, "\n  "), strings.Join(c.want, "\n  "))
+		}
 	}
 }
