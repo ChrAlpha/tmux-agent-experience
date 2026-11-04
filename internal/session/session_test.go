@@ -367,3 +367,265 @@ func TestSaveLeavesNoChangeUnlogged(t *testing.T) {
 		t.Fatalf("end not finished: found %v, events %s", found, events())
 	}
 }
+
+func TestEventsReportTheWholeSession(t *testing.T) {
+	dir := t.TempDir()
+	s, log := Store{Dir: dir}, eventlog.Open(dir)
+	ctx := context.Background()
+	last := func() eventlog.Event {
+		all, _, err := log.Since(ctx, 0)
+		if err != nil || len(all) == 0 {
+			t.Fatalf("events: %v %v", all, err)
+		}
+		return all[len(all)-1]
+	}
+
+	rec, _ := Apply(Record{Agent: proc.Codex, ID: "s1", Cwd: "/a", Host: Host{PID: 9, Role: proc.Service}, Transcript: "/t.jsonl"},
+		adapter.Transition{Action: adapter.Set, State: adapter.Idle}, t0)
+	rec, err := s.Save(ctx, log, rec, eventlog.Event{Event: "SessionStart"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ev := last()
+	if ev.Cwd != "/a" || ev.Runtime != "service" || ev.Transcript == nil ||
+		*ev.Transcript != (eventlog.Transcript{Path: "/t.jsonl", Format: "codex-rollout"}) || ev.Subagents != nil {
+		t.Fatalf("first event = %+v", ev)
+	}
+
+	// Each of these changes nothing but what an event reports, and is logged.
+	moved := rec
+	moved.Cwd = "/b"
+	if rec, err = s.Save(ctx, log, moved, eventlog.Event{Event: "PreToolUse"}); err != nil || last().Event != "PreToolUse" || last().Cwd != "/b" {
+		t.Fatalf("cwd change: %v %+v", err, last())
+	}
+	spawned, _ := Apply(rec, spawnOf("a1"), t0)
+	if rec, err = s.Save(ctx, log, spawned, eventlog.Event{Event: "SubagentStart"}); err != nil || strings.Join(last().Subagents, ",") != "a1" {
+		t.Fatalf("subagent start: %v %+v", err, last())
+	}
+	reaped, _ := Apply(rec, reapOf("a1"), t0)
+	if _, err = s.Save(ctx, log, reaped, eventlog.Event{Event: "SubagentStop"}); err != nil || last().Event != "SubagentStop" || last().Subagents != nil {
+		t.Fatalf("subagent stop: %v %+v", err, last())
+	}
+}
+
+func TestMainAgentReportClearsAnInterrupt(t *testing.T) {
+	rec := play(t)
+	rec.Halted = t0
+	if sub, _ := Apply(rec, startOf("a1", "Read", "r1"), t0); sub.Halted.IsZero() {
+		t.Fatal("a subagent's call cleared the interrupt")
+	}
+	if idle, _ := Apply(rec, stopWith(), t0); !idle.Halted.IsZero() {
+		t.Fatal("the main agent's Stop left the interrupt standing")
+	}
+}
+
+func TestRequestsNameOpenPrompts(t *testing.T) {
+	ask := func(tool, id string, waits bool) adapter.Transition {
+		tr := askFor("", tool)
+		tr.Request, tr.Waits = id, waits
+		return tr
+	}
+	ids := func(rec Record) string {
+		var out []string
+		for _, q := range rec.Requests {
+			out = append(out, q.ID)
+		}
+		return strings.Join(out, ",")
+	}
+
+	// A plain hook names a new prompt, not one already open.
+	rec := play(t, ask("Bash", "r1", false), ask("Bash", "r2", false))
+	if ids(rec) != "r1" {
+		t.Fatalf("requests = %s", ids(rec))
+	}
+	// An answer hook takes over the name no hook waits on, then adds its own.
+	rec, _ = Apply(rec, ask("Bash", "h1", true), t0)
+	rec, _ = Apply(rec, ask("Bash", "h2", true), t0)
+	if ids(rec) != "h1,h2" || !rec.Requests[0].Hook {
+		t.Fatalf("requests = %+v", rec.Requests)
+	}
+	// They close with their prompt.
+	rec, _ = Apply(rec, finishOf("", "Bash", "b1"), t0)
+	if len(rec.Requests) != 0 || len(rec.Pending) != 0 {
+		t.Fatalf("after the call: %+v %+v", rec.Pending, rec.Requests)
+	}
+
+	plan := play(t, ask("ExitPlanMode", "p1", true), ask("AskUserQuestion", "q1", true))
+	refs := plan.RequestRefs()
+	if len(refs) != 2 || refs[0].Kind != "plan" || refs[1].Kind != "question" || refs[1].Tool != "AskUserQuestion" {
+		t.Fatalf("refs = %+v", refs)
+	}
+	if plan.Reports().Requests != "p1\nq1" {
+		t.Fatalf("report = %+v", plan.Reports())
+	}
+	var ev eventlog.Event
+	plan.Report(&ev)
+	if len(ev.Requests) != 2 || ev.Requests[0].ID != "p1" {
+		t.Fatalf("event requests = %+v", ev.Requests)
+	}
+	if id := NewRequestID(); len(id) != 12 || id == NewRequestID() {
+		t.Fatalf("request id %q", id)
+	}
+}
+
+func TestRequestIsAboutTheOneCallItCanBe(t *testing.T) {
+	ask := func(agent, tool, id string) adapter.Transition {
+		tr := askFor(agent, tool)
+		tr.Request = id
+		return tr
+	}
+	call := func(rec Record) string { return rec.Requests[0].Call }
+
+	// One running call of the tool: the request is about it.
+	rec := play(t, startOf("", "Bash", "a"), ask("", "Bash", "r1"))
+	if call(rec) != "a" {
+		t.Fatalf("request = %+v", rec.Requests)
+	}
+	// Approved in the terminal, a still runs; b asks next. Either may be
+	// asking now, so the request is about neither.
+	rec = play(t, startOf("", "Bash", "a"), ask("", "Bash", "r1"), startOf("", "Bash", "b"), ask("", "Bash", "r1"))
+	if len(rec.Requests) != 1 || call(rec) != "" {
+		t.Fatalf("request = %+v", rec.Requests)
+	}
+	// a finished, b asks: the request is about b from now on.
+	rec = play(t, startOf("", "Bash", "a"), ask("", "Bash", "r1"), startOf("", "Bash", "b"), finishOf("", "Bash", "a"), ask("", "Bash", "r1"))
+	if call(rec) != "b" {
+		t.Fatalf("request = %+v", rec.Requests)
+	}
+	// Another tool's call, or another agent's, is no candidate.
+	rec = play(t, startOf("", "Bash", "a"), startOf("", "write_stdin", "w"), startOf("sub", "Bash", "s"), ask("", "Bash", "r1"))
+	if call(rec) != "a" {
+		t.Fatalf("request = %+v", rec.Requests)
+	}
+	// An Ask that names its call is about that call.
+	tr := ask("", "AskUserQuestion", "q1")
+	tr.Call = adapter.Call{Tool: "AskUserQuestion", ID: "q"}
+	if rec = play(t, startOf("", "AskUserQuestion", "x"), tr); call(rec) != "q" {
+		t.Fatalf("request = %+v", rec.Requests)
+	}
+	// No running call: about none known.
+	if rec = play(t, ask("", "Bash", "r1")); call(rec) != "" {
+		t.Fatalf("request = %+v", rec.Requests)
+	}
+}
+
+func TestAnsweringARequestClosesItsPromptOnce(t *testing.T) {
+	ask := func(id string) adapter.Transition {
+		tr := askFor("", "Bash")
+		tr.Request, tr.Waits = id, true
+		return tr
+	}
+	answered := func(id string) adapter.Transition { return adapter.Transition{Action: adapter.Answer, Request: id} }
+	// Two dialogs for equal prompts: the first answer leaves the other open.
+	rec := play(t, ask("h1"), ask("h2"))
+	rec, _ = Apply(rec, answered("h1"), t0)
+	if len(rec.Requests) != 1 || rec.Requests[0].ID != "h2" {
+		t.Fatalf("after one answer: %+v", rec.Requests)
+	}
+	is(t, rec, adapter.Blocked, adapter.KindPermission)
+	rec, _ = Apply(rec, answered("h2"), t0)
+	if len(rec.Requests) != 0 || len(rec.Pending) != 0 {
+		t.Fatalf("after both answers: %+v %+v", rec.Pending, rec.Requests)
+	}
+	is(t, rec, adapter.Working, "")
+	if _, changed := Apply(rec, answered("h2"), t0); changed {
+		t.Fatal("answering a closed request changed the session")
+	}
+}
+
+func TestReportedDeliveryIsLoggedWhole(t *testing.T) {
+	dir := t.TempDir()
+	s, log := Store{Dir: dir}, eventlog.Open(dir)
+	ctx := context.Background()
+	tr := askFor("", "Bash")
+	tr.Request, tr.Waits = "h1", true
+	asked := play(t, tr)
+	rec, _ := Apply(asked, adapter.Transition{Action: adapter.Answer, Request: "h1"}, t0)
+
+	// A writer that dies after storing what its answer did and before
+	// logging the answer, as Store.Report leaves it.
+	rec.Change = eventlog.Answer
+	rec.Delivery = &eventlog.Event{Event: eventlog.Answer, Via: "hook", Request: "h1", Decision: "allow"}
+	if err := s.Put(rec); err != nil {
+		t.Fatal(err)
+	}
+	stored, _, _ := s.Get(proc.Claude, "s1")
+	settled, _, err := s.Settle(ctx, log, stored)
+	if err != nil || settled.Delivery != nil || settled.Unsettled() {
+		t.Fatalf("Settle = %+v, %v", settled, err)
+	}
+	all, _, _ := log.Since(ctx, 0)
+	if len(all) != 1 {
+		t.Fatalf("events %+v", all)
+	}
+	if ev := all[0]; ev.Event != eventlog.Answer || ev.Via != "hook" || ev.Request != "h1" || ev.Decision != "allow" || ev.State != adapter.Working {
+		t.Fatalf("settled event = %+v", ev)
+	}
+
+	// Report itself leaves nothing behind.
+	ev := eventlog.Event{Event: eventlog.Halt, Via: "pane"}
+	reported, err := s.Report(ctx, log, settled, &ev)
+	if err != nil || ev.Seq == 0 || reported.Delivery != nil || reported.Change != "" {
+		t.Fatalf("Report = %+v, %v (seq %d)", reported, err, ev.Seq)
+	}
+	if stored, _, _ := s.Get(proc.Claude, "s1"); stored.Delivery != nil || stored.Change != "" {
+		t.Fatalf("stored after Report: %+v", stored)
+	}
+}
+
+func TestDeliveryThatChangedNothingIsLoggedToo(t *testing.T) {
+	dir := t.TempDir()
+	s, log := Store{Dir: dir}, eventlog.Open(dir)
+	ctx := context.Background()
+	// A service answer takes the request and leaves the session as it was
+	// reported; its writer dies before logging it.
+	rec := play(t)
+	rec.Logged = rec.Reports()
+	rec.Change = eventlog.Answer
+	rec.Delivery = &eventlog.Event{Event: eventlog.Answer, Via: "service", Request: "r1", Decision: "allow"}
+	if err := s.Put(rec); err != nil {
+		t.Fatal(err)
+	}
+	if rec.Unlogged() || !rec.Unsettled() {
+		t.Fatalf("a delivery left unlogged is not unsettled: %+v", rec)
+	}
+	// The next writer reads it settled, so it cannot overwrite the delivery.
+	cur, ok, err := s.Current(ctx, log, proc.Claude, "s1")
+	if err != nil || !ok || cur.Delivery != nil || cur.Unsettled() {
+		t.Fatalf("Current = %+v %v %v", cur, ok, err)
+	}
+	if all, _, _ := log.Since(ctx, 0); len(all) != 1 || all[0].Event != eventlog.Answer || all[0].Request != "r1" {
+		t.Fatalf("events %+v", all)
+	}
+}
+
+func TestSettleNamesPromptsAnOlderTmagLeft(t *testing.T) {
+	dir := t.TempDir()
+	s, log := Store{Dir: dir}, eventlog.Open(dir)
+	ctx := context.Background()
+	// A record of tmag 0.1.0: a pending prompt, no requests, logged as such.
+	old := Record{Agent: proc.Codex, ID: "s1", Main: adapter.Working, Turn: "t1", Since: t0,
+		Pending: []adapter.Prompt{{Tool: "Bash"}}}
+	old.Logged = Report{State: old.State(), Kind: old.Kind(), Turn: old.Turn}
+	if err := s.Put(old); err != nil {
+		t.Fatal(err)
+	}
+	stored, _, _ := s.Get(proc.Codex, "s1")
+	if !stored.Unsettled() {
+		t.Fatal("a prompt without a request counts as settled")
+	}
+	settled, _, err := s.Settle(ctx, log, stored)
+	if err != nil || len(settled.Requests) != 1 || settled.Requests[0].Prompt != (adapter.Prompt{Tool: "Bash"}) || settled.Requests[0].Turn != "t1" || settled.Unsettled() {
+		t.Fatalf("Settle = %+v, %v", settled, err)
+	}
+	all, _, _ := log.Since(ctx, 0)
+	if len(all) != 1 || len(all[0].Requests) != 1 || all[0].Requests[0].ID != settled.Requests[0].ID {
+		t.Fatalf("events %+v", all)
+	}
+	// The next Ask about the same prompt keeps the name.
+	tr := askFor("", "Bash")
+	tr.Request = "r2"
+	if again, _ := Apply(settled, tr, t0); len(again.Requests) != 1 || again.Requests[0].ID != settled.Requests[0].ID {
+		t.Fatalf("after another Ask: %+v", again.Requests)
+	}
+}

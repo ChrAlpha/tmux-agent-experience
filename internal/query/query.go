@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"regexp"
 	"sort"
 	"strings"
@@ -39,6 +38,16 @@ type Session struct {
 	// Runtime is how the session runs: in a terminal's own agent process, or
 	// in a background service; "" when its hooks did not say.
 	Runtime string `json:"runtime,omitempty"`
+	// Transcript is where the agent writes the session's transcript.
+	Transcript *eventlog.Transcript `json:"transcript,omitempty"`
+	// Subagents are the session's running subagents.
+	Subagents []string `json:"subagents,omitempty"`
+	// Capabilities are the verbs some channel carries to the session; each
+	// still checks its own gate when used.
+	Capabilities []string `json:"capabilities"`
+	// Requests are the prompts the session waits on the user for, by the ids
+	// `answer` takes.
+	Requests []eventlog.Request `json:"requests,omitempty"`
 	// Panes are the panes that show the session.
 	Panes []Shown `json:"panes"`
 }
@@ -87,7 +96,8 @@ func Build(w *attach.World, recs []session.Record) View {
 	for _, r := range live {
 		s := Session{
 			ID: r.ID, Agent: r.Agent, State: r.State(), Kind: r.Kind(), Turn: r.Turn,
-			Cwd: r.Cwd, Runtime: string(r.Host.Role), Panes: shown[[2]string{r.Agent, r.ID}],
+			Cwd: r.Cwd, Runtime: string(r.Host.Role), Transcript: r.TranscriptRef(), Subagents: r.RunningSubagents(),
+			Capabilities: r.Capabilities(), Requests: r.RequestRefs(), Panes: shown[[2]string{r.Agent, r.ID}],
 		}
 		if s.Panes == nil {
 			s.Panes = []Shown{}
@@ -138,9 +148,11 @@ func Load(ctx context.Context, store session.Store) (View, *attach.World, error)
 	return Build(w, recs), w, nil
 }
 
-// Snapshot is the full current state, consistent with events after Seq.
+// Snapshot is the full current state, consistent with events after Seq, and
+// who took it.
 type Snapshot struct {
-	Seq int64 `json:"seq"`
+	Seq    int64  `json:"seq"`
+	Caller Caller `json:"caller"`
 	View
 }
 
@@ -151,11 +163,11 @@ func TakeSnapshot(ctx context.Context, log *eventlog.Log) (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, err
 	}
-	v, _, err := Load(ctx, session.Store{Dir: log.Dir})
+	v, w, err := Load(ctx, session.Store{Dir: log.Dir})
 	if err != nil {
 		return Snapshot{}, err
 	}
-	return Snapshot{Seq: seq, View: v}, nil
+	return Snapshot{Seq: seq, Caller: v.Caller(w), View: v}, nil
 }
 
 // Errors returned by target resolution and waiting.
@@ -226,14 +238,6 @@ func Resolve(v View, target string) (Target, error) {
 		return t, nil
 	}
 	return Target{}, fmt.Errorf("%w: %s matches %d sessions", ErrAmbiguous, target, len(matches))
-}
-
-// Sender returns the pane the calling process runs in, if any, for provenance.
-func Sender(w *attach.World) *eventlog.PaneRef {
-	if p, ok := w.Enclosing(os.Getpid()); ok {
-		return &eventlog.PaneRef{Server: p.Server, ID: p.ID}
-	}
-	return nil
 }
 
 // SessionEvents returns the most recent events of one session, oldest first.

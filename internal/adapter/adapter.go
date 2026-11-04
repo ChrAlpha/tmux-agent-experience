@@ -1,7 +1,8 @@
 // Package adapter maps agent hook payloads onto tmag state transitions.
 //
 // Payload deliberately declares no prompt, message or tool-input fields: content
-// is discarded at decode time and can never reach tmux options or the event log.
+// is discarded at decode time and can never reach tmux options or the event
+// log. It keeps where the agent's transcript is, which is a path.
 package adapter
 
 import (
@@ -23,6 +24,7 @@ const (
 const (
 	KindPermission = "permission" // blocked on a tool permission prompt
 	KindQuestion   = "question"   // blocked on a question to the user
+	KindPlan       = "plan"       // a request to approve a plan (blocks as permission)
 	KindBackground = "background" // working on background tasks after the turn ended
 	KindError      = "error"      // idle after a failed turn
 )
@@ -40,6 +42,9 @@ type Payload struct {
 	ToolName         string `json:"tool_name"`
 	ToolUseID        string `json:"tool_use_id"`
 	NotificationType string `json:"notification_type"`
+	// TranscriptPath is where the agent writes the session's transcript: a
+	// path, not content.
+	TranscriptPath string `json:"transcript_path"`
 	// BackgroundTasks lists the tasks a Stop reports still running; nil when
 	// the payload does not say.
 	BackgroundTasks *[]Task `json:"background_tasks"`
@@ -104,12 +109,33 @@ const elicitation = "@elicitation"
 // askUserQuestion is Claude Code's tool for asking the user a question.
 const askUserQuestion = "AskUserQuestion"
 
+// exitPlanMode is Claude Code's tool for presenting a plan for approval.
+const exitPlanMode = "ExitPlanMode"
+
 // Kind is the record kind a prompt blocks with.
 func (p Prompt) Kind() string {
 	if p.Tool == askUserQuestion || p.Tool == elicitation {
 		return KindQuestion
 	}
 	return KindPermission
+}
+
+// RequestKind is what a prompt asks the user to do: approve a tool call
+// (permission), answer a question, or approve a plan.
+func (p Prompt) RequestKind() string {
+	if p.Tool == exitPlanMode {
+		return KindPlan
+	}
+	return p.Kind()
+}
+
+// ToolName is the tool the prompt is about, "" when it names none or is not
+// about a tool.
+func (p Prompt) ToolName() string {
+	if p.Tool == elicitation {
+		return ""
+	}
+	return p.Tool
 }
 
 // Transition is the effect of one hook event.
@@ -142,6 +168,10 @@ type Transition struct {
 	// Late marks a Set from an event that may arrive after the next turn has
 	// begun: it applies only while the session is still in Turn.
 	Late bool
+	// Request names the prompt an Ask opens, so it can be answered; Waits
+	// says an answer hook waits under that name (see package answer).
+	Request string
+	Waits   bool
 }
 
 // Map returns the transition for a payload from the given agent.

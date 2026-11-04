@@ -1,5 +1,5 @@
 {
-  "description": "Report session state to tmag. Fails open: never blocks or alters a turn.",
+  "description": "Report session state to tmag, and carry a permission decision made with tmag answer. Fails open: never blocks a turn, and decides a prompt only when you answer it through tmag.",
   "hooks": {
     "SessionStart": [
       {
@@ -41,8 +41,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "for r in \"${TMUX_PLUGIN_MANAGER_PATH%/}\" \"$HOME/.tmux/plugins\" \"${XDG_CONFIG_HOME:-$HOME/.config}/tmux/plugins\"; do case $r in /*) t=\"$r/tmux-agent-experience/bin/tmag\"; [ -x \"$t\" ] && exec \"$t\" hook claude 2>/dev/null;; esac; done; t=$(command -v tmag) && exec \"$t\" hook claude 2>/dev/null; exit 0",
-            "timeout": 10
+            "command": "for r in \"${TMUX_PLUGIN_MANAGER_PATH%/}\" \"$HOME/.tmux/plugins\" \"${XDG_CONFIG_HOME:-$HOME/.config}/tmux/plugins\"; do case $r in /*) t=\"$r/tmux-agent-experience/bin/tmag\"; [ -x \"$t\" ] && exec \"$t\" answer-hook claude 2>/dev/null;; esac; done; t=$(command -v tmag) && exec \"$t\" answer-hook claude 2>/dev/null; exit 0",
+            "timeout": 600
           }
         ]
       }

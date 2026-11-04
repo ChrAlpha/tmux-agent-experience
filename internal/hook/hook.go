@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/adapter"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/answer"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/attach"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
@@ -36,6 +37,9 @@ type Input struct {
 	// PID starts the ancestry walk; normally os.Getpid().
 	PID int
 	Now func() time.Time
+	// Request is the id an answer hook waits under, for the prompt this
+	// event opens; "" for a plain hook.
+	Request string
 }
 
 // Run processes the hook within Deadline. It never writes to stdout: agents
@@ -55,6 +59,12 @@ func Run(in Input) error {
 	tr := adapter.Map(in.Agent, p)
 	if tr.Action == adapter.Ignore {
 		return nil
+	}
+	if tr.Action == adapter.Ask {
+		tr.Request, tr.Waits = in.Request, in.Request != ""
+		if !tr.Waits {
+			tr.Request = session.NewRequestID()
+		}
 	}
 	if !session.ValidID(p.SessionID) {
 		return fmt.Errorf("unusable session id %q", p.SessionID)
@@ -77,16 +87,7 @@ func Run(in Input) error {
 	host, hostKnown := w.Proc.HostOf(in.PID)
 	ev := eventlog.Event{Agent: in.Agent, Session: p.SessionID, Event: p.HookEventName, Cwd: p.Cwd}
 
-	// get reads the session and finishes whatever a writer that died left
-	// undone (see session.Store.Save), so that this hook starts from a
-	// record the log reports. The caller holds the session's lock.
-	get := func() (session.Record, bool, error) {
-		cur, found, err := env.Store.Get(in.Agent, p.SessionID)
-		if err != nil || !found {
-			return cur, false, err
-		}
-		return env.Store.Settle(ctx, in.Log, cur)
-	}
+	get := func() (session.Record, bool, error) { return env.Store.Current(ctx, in.Log, in.Agent, p.SessionID) }
 
 	if tr.Action == adapter.End {
 		err := env.Store.Lock(ctx, in.Agent, p.SessionID, func() error {
@@ -121,12 +122,15 @@ func Run(in Input) error {
 		if hostKnown {
 			base.Host = session.Host{PID: host.Process.PID, Start: host.Process.Start, Role: host.Role}
 		}
+		if p.TranscriptPath != "" {
+			base.Transcript = p.TranscriptPath
+		}
 		next, changed := session.Apply(base, tr, now())
-		if found && !changed && base.Cwd == cur.Cwd && base.Host == cur.Host {
+		if found && !changed && base.Cwd == cur.Cwd && base.Host == cur.Host && base.Transcript == cur.Transcript {
 			return nil
 		}
-		// Calls, background work and the host change without an event; a new
-		// state, kind or turn is logged.
+		// Calls and other background work change without an event; whatever
+		// an event reports of the session (session.Report) is logged.
 		saved, err := env.Store.Save(ctx, in.Log, next, ev)
 		if err != nil {
 			return err
@@ -136,6 +140,14 @@ func Run(in Input) error {
 	})
 	if err != nil || rec.ID == "" {
 		return err
+	}
+	// An answer hook whose prompt closed (answered in the terminal, the call
+	// ran, the turn ended) would otherwise wait on: the agent ignores what it
+	// prints now.
+	for _, q := range prev.Requests {
+		if _, open := rec.Request(q.ID); !open && q.Hook {
+			answer.Close(ctx, in.Log.Dir, q.ID)
+		}
 	}
 
 	ring := Alert(prev.State(), rec.State())

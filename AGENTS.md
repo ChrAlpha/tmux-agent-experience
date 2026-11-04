@@ -12,7 +12,9 @@ layers, in order of importance:
    TPM, it keeps the `tmag` binary in its own directory and gives tmux users
    alerts, key bindings and status placeholders by default.
 2. **Agent plugins** (`plugins/`) are sensors: Claude Code and Codex hooks that
-   report state by calling `tmag hook`.
+   report state by calling `tmag hook`, and for Claude Code's permission
+   prompts `tmag answer-hook`, which also carries a decision made with
+   `tmag answer`.
 3. **The `tmag` binary** is the substrate: sessions and their state, which
    panes show them, the event log and a versioned JSON contract (`tmag/v1`)
    for agents, scripts and remote clients.
@@ -23,7 +25,8 @@ Every change must keep these. Tests guard most of them; treat a failing one as
 a design problem, not a test problem.
 
 - **tmux stays the entry point.** No daemon, no wrapper around agents, no
-  second session model. Anything resident is out of scope.
+  second session model. Anything resident is out of scope. A tmag command may
+  connect to an agent's own service for its duration and no longer.
 - **Users only ever get released binaries.** The plugin downloads the archive
   for its own version and verifies its checksum; there is no build-from-source
   fallback. To try an unreleased checkout, a developer builds `bin/tmag`
@@ -36,10 +39,17 @@ a design problem, not a test problem.
   its defaults; each one has an option that turns it off.
 - **Hooks fail open.** `tmag hook` always exits 0, never writes stdout (agents
   inject hook stdout into the model context), finishes within `hook.Deadline`,
-  and records failures only in `<state dir>/hook.log`.
+  and records failures only in `<state dir>/hook.log`. `tmag answer-hook`
+  also always exits 0, writes to stdout only a decision delivered by
+  `tmag answer`, and on any failure, timeout, close or signal prints nothing,
+  leaving the decision to the agent's own dialog, which is on screen
+  meanwhile.
 - **No content is stored.** Hook payloads decode into `adapter.Payload`, which
-  declares no prompt, message or tool-input fields. Never add one. Event log
-  records hold ids, states and timestamps only.
+  declares no prompt, message or tool-input fields. Never add one. Session
+  files and event log records hold ids, states, paths and timestamps only.
+  `tmag answer-hook` is the one reader of a tool input: it keeps it in memory
+  to show it to `tmag request` and to hand it back to the agent, and writes
+  it nowhere.
 - **A session's state never depends on a pane.** Hooks apply to the session
   (`internal/session`) wherever it runs: the Codex daemon and Claude's
   background supervisor run sessions no terminal owns.
@@ -51,19 +61,37 @@ a design problem, not a test problem.
 - **tmux surfaces show only proven attachments.** Bells, the pane border, the
   picker, the status line and `jump` act on attached panes; a pane tmag cannot
   prove anything about shows `unknown`.
-- **Control is gated.** `send` delivers only to an idle session through its
-  one attached pane, by `process` or `title-id`, showing the main agent and
-  holding its terminal's foreground, after re-verifying all of it under the
-  pane's lock and the session's; `wait` refuses a pane that shows no session.
-- **Locks.** A session changes only under its session lock (hooks, `send`); a
-  pane's attachment and projection only under its pane lock (hooks,
-  reconciliation, `send`). Whoever takes both takes the pane's first. Every
-  change is decided again under the lock against fresh state, and its event
-  is appended before the lock is released, so the log orders events as they
-  happened. Sessions change only through `session.Store.Save` and `End`, and
-  attachments only through `attach.Env`, which mark a change (`@tmag_change`
-  on a pane) before logging it, so a writer that dies leaves it for the next
-  one to log rather than unreported.
+- **Control is gated.** `send`, `interrupt` and `answer` act only through a
+  channel proven to reach the session: its one attached pane (by `process` or
+  `title-id`, showing the main agent, holding its terminal's foreground), the
+  agent service it runs in (a socket whose peer is the session's host or an
+  ancestor of it), or the answer hook waiting on the request. Each checks the
+  state it needs (`send` idle, `interrupt` working or blocked, `answer` its
+  request open), checks all of it again under the pane's lock and the
+  session's, and logs its event before releasing them. `internal/driver`
+  alone decides which channel carries a verb. `wait` refuses a pane that
+  shows no session.
+- **Callers are proven too.** Who runs a verb comes from process ancestry
+  (`query.Caller`), like an attachment: a command below an agent's process is
+  that agent's, and its session is one that process hosts, told apart by the
+  agent's own tool variable, never named by it alone. People and agents use
+  the same verbs, and every control event records `from` and `by`. An agent
+  never acts on its own session, and answers for the person only when
+  `@tmag-answer` is `agents`. Tests run tmag as a person outside the test's
+  process tree (`harness.tmag`), and as an agent from a fake agent's tool.
+- **Locks.** A session changes only under its session lock (hooks, control
+  verbs); a pane's attachment and projection only under its pane lock (hooks,
+  reconciliation, control verbs through a pane). Whoever takes both takes the
+  pane's first. Every change is decided again under the lock against fresh
+  state, a session's read through `session.Store.Current`, which first logs
+  whatever a writer that died left unlogged, and its event is appended
+  before the lock is released, so the log
+  orders events as they happened. Sessions change only through
+  `session.Store.Save`, `Report` (what a delivery of tmag's did, which the
+  agent does not report) and `End`, and attachments only through
+  `attach.Env`, which mark a change (`@tmag_change` on a pane) before logging
+  it, so a writer that dies leaves it for the next one to log rather than
+  unreported.
 - **Nothing edits user configuration.** Install and uninstall go through each
   host's own mechanism (`claude plugin`, `codex plugin`, TPM).
 - **The contract is versioned.** Changing a JSON field's meaning or removing
@@ -82,14 +110,17 @@ a design problem, not a test problem.
 | `internal/adapter` | Hook payload → state transition, per agent |
 | `internal/session` | Session records, the state machine, the per-session file store and lock |
 | `internal/attach` | Clients, attachments and their evidence, the `@tmag_*` pane projection, reconciliation |
-| `internal/query` | list / send / wait / snapshot over sessions and panes |
+| `internal/query` | list / send / wait / snapshot over sessions and panes; the control verbs' gates |
+| `internal/driver` | Which channel (pane, service, hook) carries each verb for each agent and runtime |
+| `internal/codexsvc` | One-command client of the Codex daemon's control socket (JSON-RPC over WebSocket) |
+| `internal/answer` | The answer hook's socket protocol and the decision it prints for Claude Code |
 | `internal/eventlog` | Append-only, sequence-numbered event log |
 | `internal/tmux` | tmux CLI wrapper; sanitises every free-text field |
 | `internal/proc` | Process table, agent clients and services, hook hosts |
 | `internal/lockfile` | flock bounded by a context |
 | `internal/binpath` | Where hooks look for the binary; the hook command itself |
 | `internal/e2e` | End-to-end tests with real tmux and a fake agent |
-| `plugins/claude`, `plugins/codex` | Agent plugins (hooks only) |
+| `plugins/claude`, `plugins/codex` | Agent plugins (hooks only; Claude's `PermissionRequest` runs `tmag answer-hook`) |
 | `.claude-plugin/`, `.agents/plugins/` | Marketplace manifests |
 | `SKILL.md` | Install and update procedure that agents follow from its raw URL |
 
@@ -131,7 +162,14 @@ claude plugin validate .      # marketplace and plugin manifests
   `TMUX_TMPDIR`) and run `internal/e2e/fakeagent` installed as `claude` and
   `codex`, so process names and `pane_current_command` match real agents. Run
   as `codex app-server …` it is a Codex daemon outside every pane that runs
-  hooks for any thread. The same binary answers `--version` and `plugin …` as
+  hooks for any thread and serves a control socket under `CODEX_HOME`
+  (`internal/codexsvc/svctest` is its server end), replaying the approvals a
+  `PermissionRequest` leaves to its clients. `FAKE_KEYS=1` makes the
+  interactive fake read keys like a TUI, so Escape interrupts its turn;
+  `FAKE_ANSWER=1` makes it open permission dialogs as Claude Code does, with
+  `tmag answer-hook` waiting beside them. A line `tmag ARGS` typed into it,
+  or a `{"tool":[…]}` line given to the daemon, runs tmag as the agent's
+  tool, so tmag sees an agent calling. The same binary answers `--version` and `plugin …` as
   a fake host CLI. Plugin tests lay out a TPM directory and serve a local
   release over `file://`.
 - `#()` status jobs run only for attached clients; to see the status line,

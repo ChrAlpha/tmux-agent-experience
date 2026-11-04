@@ -13,11 +13,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
 
+	"github.com/ChrAlpha/tmux-agent-experience/internal/answer"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/attach"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/query"
@@ -112,21 +115,41 @@ type result struct {
 	code int
 }
 
+// tmag runs tmag as a person's shell would: outside the test's own process
+// tree, which is an agent's when a coding agent's tool runs go test, so that
+// tmag sees no agent above it. Agents' calls run from fake agents.
 func (h *harness) tmag(stdin string, args ...string) result {
 	h.t.Helper()
-	cmd := exec.Command(filepath.Join(bin, "tmag"), args...)
-	cmd.Stdin = strings.NewReader(stdin)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	err := cmd.Run()
-	code := 0
-	var exit *exec.ExitError
-	if errors.As(err, &exit) {
-		code = exit.ExitCode()
-	} else if err != nil {
+	dir, err := os.MkdirTemp(h.dir, "call")
+	if err != nil {
 		h.t.Fatal(err)
 	}
-	return result{out: stdout.String() + stderr.String(), code: code}
+	if err := os.WriteFile(filepath.Join(dir, "in"), []byte(stdin), 0o600); err != nil {
+		h.t.Fatal(err)
+	}
+	// The subshell outlives the shell that starts it, and init adopts it.
+	const detached = `( "$@" <"$D/in" >"$D/out" 2>"$D/err"; echo $? >"$D/code.tmp"; mv "$D/code.tmp" "$D/code" ) &`
+	cmd := exec.Command("sh", append([]string{"-c", detached, "sh", filepath.Join(bin, "tmag")}, args...)...)
+	cmd.Env = append(os.Environ(), "D="+dir)
+	if err := cmd.Run(); err != nil {
+		h.t.Fatal(err)
+	}
+	var code []byte
+	for deadline := time.Now().Add(time.Minute); ; time.Sleep(5 * time.Millisecond) {
+		if code, err = os.ReadFile(filepath.Join(dir, "code")); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			h.t.Fatalf("tmag %v did not finish", args)
+		}
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(string(code)))
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	stdout, _ := os.ReadFile(filepath.Join(dir, "out"))
+	stderr, _ := os.ReadFile(filepath.Join(dir, "err"))
+	return result{out: string(stdout) + string(stderr), code: n}
 }
 
 // view is `tmag list --json`.
@@ -253,6 +276,16 @@ func TestClaudeInProcess(t *testing.T) {
 	if s.ID != sidA || s.Agent != "claude" || s.Runtime != "terminal" || p.Command != "claude" || p.View != "main" {
 		t.Fatalf("pane %+v shows %+v", p, s)
 	}
+	if !slices.Equal(s.Capabilities, []string{"send", "interrupt", "answer"}) {
+		t.Fatalf("capabilities = %v", s.Capabilities)
+	}
+	transcript := eventlog.Transcript{Path: filepath.Join(h.dir, sidA+".jsonl"), Format: "claude-jsonl"}
+	if s.Transcript == nil || *s.Transcript != transcript {
+		t.Fatalf("transcript = %+v", s.Transcript)
+	}
+	if ev := h.events(sidA)[0]; ev.Runtime != "terminal" || ev.Transcript == nil || *ev.Transcript != transcript || ev.Cwd != h.dir {
+		t.Fatalf("first event does not report the session: %+v", ev)
+	}
 
 	r := h.tmag("", "send", sidA[:8], "--wait", "--json", "review", "the", "diff")
 	if r.code != 0 || !strings.Contains(r.out, `"state":"idle"`) {
@@ -303,6 +336,210 @@ func TestClaudeInProcess(t *testing.T) {
 	if _, ok := h.sessionOf(sidA); ok {
 		t.Fatal("ended session still listed")
 	}
+}
+
+// An interrupt presses Escape once in the session's pane, only while a turn
+// runs, and not again until the agent reports.
+func TestInterruptThroughThePane(t *testing.T) {
+	h := start(t)
+	out := filepath.Join(h.dir, "received")
+	claude := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_OUT": out, "FAKE_HOOKS": "1", "FAKE_KEYS": "1", "FAKE_TURN_MS": "20000"}, filepath.Join(bin, "claude"))
+	h.waitPane(claude, "idle", "process")
+	if r := h.tmag("", "interrupt", h.target(claude)); r.code != 3 || !strings.Contains(r.out, "idle") {
+		t.Fatalf("interrupt an idle agent: %d %s", r.code, r.out)
+	}
+
+	if r := h.tmag("", "send", h.target(claude), "long work"); r.code != 0 {
+		t.Fatalf("send: %d %s", r.code, r.out)
+	}
+	h.waitPane(claude, "working", "process")
+	r := h.tmag("", "interrupt", sidA[:8], "--json")
+	if r.code != 0 || !strings.Contains(r.out, `"via":"pane"`) {
+		t.Fatalf("interrupt: %d %s", r.code, r.out)
+	}
+	h.eventually("the agent sees Escape", func() bool {
+		got, _ := os.ReadFile(out)
+		return string(got) == "long work\ninterrupted\n"
+	})
+	// Claude Code reports nothing, so tmag reports the session idle itself;
+	// a second interrupt, which could open a menu, is refused.
+	if got := h.eventNames(sidA); !strings.HasSuffix(got, "Send: UserPromptSubmit:working Halt:idle") {
+		t.Fatalf("events = %s", got)
+	}
+	if r := h.tmag("", "interrupt", sidA[:8]); r.code != 3 || !strings.Contains(r.out, "idle") {
+		t.Fatalf("second interrupt: %d %s", r.code, r.out)
+	}
+	if r := h.tmag("", "send", sidA[:8], "next"); r.code != 0 {
+		t.Fatalf("send after an interrupt: %d %s", r.code, r.out)
+	}
+
+	// Codex reports the interrupt, and the session is idle.
+	codex := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidB, "FAKE_HOOKS": "1", "FAKE_KEYS": "1", "FAKE_TURN_MS": "20000"}, filepath.Join(bin, "codex"))
+	h.waitPane(codex, "idle", "process")
+	if r := h.tmag("", "send", h.target(codex), "long work"); r.code != 0 {
+		t.Fatalf("send: %d %s", r.code, r.out)
+	}
+	h.waitPane(codex, "working", "process")
+	if r := h.tmag("", "interrupt", h.target(codex)); r.code != 0 {
+		t.Fatalf("interrupt codex: %d %s", r.code, r.out)
+	}
+	h.waitPane(codex, "idle", "process")
+	if got := h.eventNames(sidB); !strings.HasSuffix(got, "Halt: Interrupt:idle") {
+		t.Fatalf("codex events = %s", got)
+	}
+}
+
+// Claude Code's answer hook waits beside the agent's dialog for a decision
+// made with tmag answer; whoever answers first decides.
+func TestClaudeAnswersThroughTheHook(t *testing.T) {
+	h := start(t)
+	out := filepath.Join(h.dir, "received")
+	pane := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_OUT": out, "FAKE_HOOKS": "1", "FAKE_ANSWER": "1"}, filepath.Join(bin, "claude"))
+	_, s := h.waitPane(pane, "idle", "process")
+	if !slices.Contains(s.Capabilities, "answer") {
+		t.Fatalf("capabilities = %v", s.Capabilities)
+	}
+	received := func(want string) {
+		t.Helper()
+		h.eventually("the agent receives "+want, func() bool {
+			got, _ := os.ReadFile(out)
+			return strings.HasSuffix(string(got), want+"\n")
+		})
+	}
+	// open types line into the agent and returns the request it opens, once
+	// its answer hook waits.
+	open := func(line string) eventlog.Request {
+		t.Helper()
+		h.tmux("send-keys", "-t", pane, line, "Enter")
+		var req eventlog.Request
+		h.eventually("a waiting request", func() bool {
+			s, ok := h.sessionOf(sidA)
+			if !ok || len(s.Requests) != 1 || !answer.Waiting(h.state, s.Requests[0].ID) {
+				return false
+			}
+			req = s.Requests[0]
+			return true
+		})
+		return req
+	}
+
+	req := open("block")
+	if req.Kind != "permission" || req.Tool != "Bash" {
+		t.Fatalf("request = %+v", req)
+	}
+	r := h.tmag("", "request", sidA[:8], req.ID, "--json")
+	if r.code != 0 || !strings.Contains(r.out, `"tool":"Bash"`) || !strings.Contains(r.out, `"input":{"command":"date"}`) {
+		t.Fatalf("request: %d %s", r.code, r.out)
+	}
+	if r := h.tmag("", "answer", sidA[:8], req.ID, "allow", "--json"); r.code != 0 || !strings.Contains(r.out, `"via":"hook"`) {
+		t.Fatalf("answer: %d %s", r.code, r.out)
+	}
+	received("hook:allow")
+	h.waitSession(sidA, "idle")
+	// The answer closes the request at once; the call runs on.
+	if got := h.eventNames(sidA); !strings.HasSuffix(got, "PermissionRequest:blocked Answer:working Stop:idle") {
+		t.Fatalf("events = %s", got)
+	}
+	if r := h.tmag("", "answer", sidA[:8], req.ID, "allow"); r.code != 3 || !strings.Contains(r.out, "changed") {
+		t.Fatalf("answering twice: %d %s", r.code, r.out)
+	}
+
+	req = open("block")
+	if r := h.tmag("", "answer", h.target(pane), req.ID, "deny", "--message", "not now"); r.code != 0 {
+		t.Fatalf("deny: %d %s", r.code, r.out)
+	}
+	received("hook:deny:not now")
+
+	// The person answers in the terminal first: the hook leaves, and the
+	// request is gone.
+	req = open("block")
+	h.tmux("send-keys", "-t", pane, "yes", "Enter")
+	received("terminal:yes")
+	h.eventually("the hook leaves", func() bool { return !answer.Waiting(h.state, req.ID) })
+	if r := h.tmag("", "answer", sidA[:8], req.ID, "allow"); r.code != 3 || !strings.Contains(r.out, "changed") {
+		t.Fatalf("answer after the terminal did: %d %s", r.code, r.out)
+	}
+
+	// A question is answered with labels, keyed by its text.
+	req = open("ask")
+	if req.Kind != "question" || req.Tool != "AskUserQuestion" {
+		t.Fatalf("question request = %+v", req)
+	}
+	if r := h.tmag("", "answer", sidA[:8], req.ID, "allow"); r.code != 2 || !strings.Contains(r.out, `no answer to "Pick a color"`) {
+		t.Fatalf("a question answered without answers: %d %s", r.code, r.out)
+	}
+	if r := h.tmag("", "answer", sidA[:8], req.ID, "allow", "--answers", `{"Pick a colour":"blue"}`); r.code != 2 || !strings.Contains(r.out, "not one of the questions") {
+		t.Fatalf("an answer to another question: %d %s", r.code, r.out)
+	}
+	if r := h.tmag("", "answer", sidA[:8], req.ID, "allow", "--answers", `{"Pick a color":"blue"}`); r.code != 0 {
+		t.Fatalf("answer a question: %d %s", r.code, r.out)
+	}
+	received("hook:allow Pick a color=blue")
+
+	// With answering off, the hook does not wait and the dialog alone decides.
+	h.tmux("set-option", "-g", "@tmag-answer", "off")
+	h.tmux("send-keys", "-t", pane, "block", "Enter")
+	h.waitSession(sidA, "blocked")
+	s, _ = h.sessionOf(sidA)
+	if len(s.Requests) != 1 || answer.Waiting(h.state, s.Requests[0].ID) {
+		t.Fatalf("requests with answering off = %+v", s.Requests)
+	}
+	if r := h.tmag("", "answer", sidA[:8], s.Requests[0].ID, "allow"); r.code != 3 || !strings.Contains(r.out, "unsupported") {
+		t.Fatalf("answer with answering off: %d %s", r.code, r.out)
+	}
+	if r := h.tmag("", "request", sidA[:8], s.Requests[0].ID); r.code != 3 || !strings.Contains(r.out, "unsupported") {
+		t.Fatalf("request with answering off: %d %s", r.code, r.out)
+	}
+	h.tmux("send-keys", "-t", pane, "no", "Enter")
+	received("terminal:no")
+}
+
+// A Claude Code background session runs in its supervisor, which no
+// terminal owns: it takes no prompt or interrupt, but its answer hook runs
+// there too, so its prompts can be answered.
+func TestClaudeBackgroundSessionTakesAnswersOnly(t *testing.T) {
+	h := start(t)
+	out := filepath.Join(h.dir, "received")
+	worker := exec.Command(filepath.Join(bin, "claude"), "daemon", "run")
+	worker.Env = append(os.Environ(), "FAKE_SESSION="+sidA, "FAKE_HOOKS=1", "FAKE_ANSWER=1", "FAKE_OUT="+out, "TMAG_BIN="+filepath.Join(bin, "tmag"))
+	in, err := worker.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := worker.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		in.Close()
+		_ = worker.Wait()
+	})
+	s := h.waitSession(sidA, "idle")
+	if s.Runtime != "service" || len(s.Panes) != 0 || !slices.Equal(s.Capabilities, []string{"answer"}) {
+		t.Fatalf("background session = %+v", s)
+	}
+	if r := h.tmag("", "send", sidA[:8], "hello"); r.code != 3 || !strings.Contains(r.out, "unsupported") {
+		t.Fatalf("send to a background session: %d %s", r.code, r.out)
+	}
+
+	if _, err := io.WriteString(in, "block\n"); err != nil {
+		t.Fatal(err)
+	}
+	var id string
+	h.eventually("a waiting request", func() bool {
+		s, _ := h.sessionOf(sidA)
+		if len(s.Requests) == 1 && answer.Waiting(h.state, s.Requests[0].ID) {
+			id = s.Requests[0].ID
+		}
+		return id != ""
+	})
+	if r := h.tmag("", "answer", sidA[:8], id, "allow"); r.code != 0 {
+		t.Fatalf("answer a background session: %d %s", r.code, r.out)
+	}
+	h.eventually("the agent receives the answer", func() bool {
+		got, _ := os.ReadFile(out)
+		return strings.HasSuffix(string(got), "hook:allow\n")
+	})
+	h.waitSession(sidA, "idle")
 }
 
 func TestPaneWithoutProofIsVisibleButNotControllable(t *testing.T) {
@@ -366,6 +603,27 @@ func (d *fakeDaemon) hook(payload map[string]any) {
 	}
 }
 
+// tool runs tmag as a tool of thread's, a child of the daemon, and returns
+// what it printed.
+func (d *fakeDaemon) tool(thread string, args ...string) result {
+	d.h.t.Helper()
+	b, _ := json.Marshal(map[string]any{"tool": args, "session_id": thread})
+	if _, err := d.in.Write(append(b, '\n')); err != nil {
+		d.h.t.Fatal(err)
+	}
+	if !d.lines.Scan() {
+		d.h.t.Fatal("daemon stopped")
+	}
+	var r struct {
+		Code int    `json:"code"`
+		Out  string `json:"out"`
+	}
+	if err := json.Unmarshal(d.lines.Bytes(), &r); err != nil {
+		d.h.t.Fatalf("tool result %q: %v", d.lines.Text(), err)
+	}
+	return result{out: r.Out, code: r.Code}
+}
+
 // codexTitle renders a Codex 0.166 title with the thread-id item last.
 func codexTitle(name, id string) string { return name + " | repo | " + id[:29] + "..." }
 
@@ -398,9 +656,14 @@ func TestCodexDaemonSessions(t *testing.T) {
 	if p, _, _ := h.paneIn(named); p.Session != "" {
 		t.Fatalf("named pane attached to %s", p.Session)
 	}
-	if r := h.tmag("", "send", h.target(byID), "--json", "hello"); r.code != 0 {
-		t.Fatalf("send through title-id: %d %s", r.code, r.out)
+	// A daemon's thread takes prompts through the daemon, whatever its pane
+	// shows; its turn comes after the Send.
+	if r := h.tmag("", "send", h.target(byID), "--json", "hello"); r.code != 0 || !strings.Contains(r.out, `"via":"service"`) || !strings.Contains(r.out, `"pane":null`) {
+		t.Fatalf("send to a daemon's thread: %d %s", r.code, r.out)
 	}
+	h.eventually("the daemon's turn", func() bool {
+		return strings.HasSuffix(h.eventNames(sidB), "Send: UserPromptSubmit:working Stop:idle")
+	})
 
 	// Watching a subagent: still the session's pane, but it takes no input.
 	sub := "0f000000-0000-7000-8000-00000000000f"
@@ -416,8 +679,8 @@ func TestCodexDaemonSessions(t *testing.T) {
 	if p, _ := h.waitPane(byID, "idle", "title-id"); p.View != "subagent" || p.Session != sidB {
 		t.Fatalf("subagent view = %+v", p)
 	}
-	if r := h.tmag("", "send", h.target(byID), "hello"); r.code != 3 || !strings.Contains(r.out, "subagent") {
-		t.Fatalf("send to a subagent view: %d %s", r.code, r.out)
+	if r := h.tmag("", "send", h.target(byID), "--json", "hello"); r.code != 0 || !strings.Contains(r.out, `"via":"service"`) {
+		t.Fatalf("send while the pane shows a subagent: %d %s", r.code, r.out)
 	}
 
 	// Showing another thread moves the pane to it.
@@ -443,6 +706,118 @@ func TestCodexDaemonSessions(t *testing.T) {
 	}
 	if v := h.view(); len(v.Sessions) != 0 {
 		t.Fatalf("sessions outlived their daemon: %+v", v.Sessions)
+	}
+}
+
+// The Codex daemon carries prompts and interrupts for its threads, once its
+// control socket proves to be served by the process the thread runs in.
+func TestCodexDaemonCarriesSendAndInterrupt(t *testing.T) {
+	t.Setenv("FAKE_TURN_MS", "20000")
+	h := start(t)
+	d := h.daemon()
+	d.hook(map[string]any{"hook_event_name": "SessionStart", "session_id": sidC, "source": "startup"})
+	s := h.waitSession(sidC, "idle")
+	if !slices.Equal(s.Capabilities, []string{"send", "interrupt", "answer"}) {
+		t.Fatalf("daemon session capabilities = %v", s.Capabilities)
+	}
+	if r := h.tmag("", "interrupt", sidC[:8]); r.code != 3 || !strings.Contains(r.out, "idle") {
+		t.Fatalf("interrupt an idle thread: %d %s", r.code, r.out)
+	}
+	if r := h.tmag("", "send", sidC[:8], "--json", "long work"); r.code != 0 || !strings.Contains(r.out, `"via":"service"`) {
+		t.Fatalf("send: %d %s", r.code, r.out)
+	}
+	h.waitSession(sidC, "working")
+	if r := h.tmag("", "send", sidC[:8], "more"); r.code != 3 || !strings.Contains(r.out, "busy") {
+		t.Fatalf("send to a busy thread: %d %s", r.code, r.out)
+	}
+	if r := h.tmag("", "interrupt", sidC[:8], "--json"); r.code != 0 || !strings.Contains(r.out, `"via":"service"`) {
+		t.Fatalf("interrupt: %d %s", r.code, r.out)
+	}
+	h.waitSession(sidC, "idle")
+	if got := h.eventNames(sidC); !strings.HasSuffix(got, "Send: UserPromptSubmit:working Halt: Interrupt:idle") {
+		t.Fatalf("events = %s", got)
+	}
+
+	// Another daemon now answers on the socket: it does not run the thread.
+	h.daemon()
+	h.eventually("the second daemon listens", func() bool {
+		r := h.tmag("", "send", sidC[:8], "hello")
+		return r.code == 3 && strings.Contains(r.out, "unbound") && strings.Contains(r.out, "does not run")
+	})
+}
+
+// The Codex daemon carries answers too: tmag joins the thread, answers the
+// approval the daemon replays to it, and leaves once the daemon resolved it.
+func TestCodexDaemonCarriesAnswers(t *testing.T) {
+	h := start(t)
+	d := h.daemon()
+	d.hook(map[string]any{"hook_event_name": "SessionStart", "session_id": sidC, "source": "startup"})
+	d.hook(map[string]any{"hook_event_name": "UserPromptSubmit", "session_id": sidC, "turn_id": "t1"})
+	calls := 0
+	blocked := func() eventlog.Request {
+		t.Helper()
+		calls++
+		d.hook(map[string]any{"hook_event_name": "PreToolUse", "session_id": sidC, "turn_id": "t1", "tool_name": "Bash", "tool_use_id": fmt.Sprintf("call-%d", calls)})
+		d.hook(map[string]any{"hook_event_name": "PermissionRequest", "session_id": sidC, "turn_id": "t1", "tool_name": "Bash"})
+		s := h.waitSession(sidC, "blocked")
+		if len(s.Requests) != 1 || s.Requests[0].Tool != "Bash" || !slices.Contains(s.Capabilities, "answer") {
+			t.Fatalf("blocked session = %+v", s)
+		}
+		return s.Requests[0]
+	}
+
+	req := blocked()
+	r := h.tmag("", "request", sidC[:8], req.ID, "--json")
+	if r.code != 0 || !strings.Contains(r.out, `"tool":"Bash"`) || !strings.Contains(r.out, `"command":"date"`) {
+		t.Fatalf("request: %d %s", r.code, r.out)
+	}
+	if r := h.tmag("", "answer", sidC[:8], req.ID, "deny", "--message", "no"); r.code != 2 || !strings.Contains(r.out, "message") {
+		t.Fatalf("a message for Codex: %d %s", r.code, r.out)
+	}
+	if r := h.tmag("", "answer", sidC[:8], req.ID, "allow", "--json"); r.code != 0 || !strings.Contains(r.out, `"via":"service"`) {
+		t.Fatalf("answer: %d %s", r.code, r.out)
+	}
+	h.waitSession(sidC, "working")
+	if got := h.eventNames(sidC); !strings.HasSuffix(got, "PermissionRequest:blocked Answer:blocked PostToolUse:working") {
+		t.Fatalf("events = %s", got)
+	}
+
+	req = blocked()
+	if r := h.tmag("", "answer", sidC[:8], req.ID, "deny"); r.code != 0 {
+		t.Fatalf("deny: %d %s", r.code, r.out)
+	}
+	h.waitSession(sidC, "working")
+	if got := h.eventNames(sidC); !strings.HasSuffix(got, "Answer:blocked PreModelRequest:working") {
+		t.Fatalf("events after deny = %s", got)
+	}
+
+	// Two answers at once: one is delivered, the other refused.
+	req = blocked()
+	results := make(chan result, 2)
+	for _, decision := range []string{"allow", "deny"} {
+		go func() { results <- h.tmag("", "answer", sidC[:8], req.ID, decision) }()
+	}
+	var codes []int
+	for range 2 {
+		r := <-results
+		if r.code == 3 && !strings.Contains(r.out, "changed") {
+			t.Fatalf("refused for another reason: %s", r.out)
+		}
+		codes = append(codes, r.code)
+	}
+	if slices.Sort(codes); !slices.Equal(codes, []int{0, 3}) {
+		t.Fatalf("two answers at once exited %v", codes)
+	}
+	h.waitSession(sidC, "working")
+	if got := h.eventNames(sidC); strings.Count(got[strings.LastIndex(got, "PermissionRequest:"):], "Answer:") != 1 {
+		t.Fatalf("events after two answers = %s", got)
+	}
+
+	// With answering off, no answer goes through the daemon either.
+	h.tmux("set-option", "-g", "@tmag-answer", "off")
+	req = blocked()
+	if r := h.tmag("", "answer", sidC[:8], req.ID, "allow"); r.code != 3 || !strings.Contains(r.out, "unsupported") {
+		t.Fatalf("answer with answering off: %d %s", r.code, r.out)
 	}
 }
 
@@ -925,5 +1300,131 @@ func TestAttachmentEventsSurviveACrash(t *testing.T) {
 	h.tmag("", "status")
 	if got := h.tmux("display-message", "-p", "-t", quiet, "#{@tmag_state}"); got != "" {
 		t.Fatalf("broken options left: %q", got)
+	}
+}
+
+// Agents act on one another with the same verbs people use: tmag knows which
+// agent runs a verb, records it, refuses an agent's verb on its own session,
+// and lets agents answer for the person only when @tmag-answer says so.
+func TestAgentsActOnEachOther(t *testing.T) {
+	h := start(t)
+	outA, outB := filepath.Join(h.dir, "a"), filepath.Join(h.dir, "b")
+	a := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_OUT": outA, "FAKE_HOOKS": "1"}, filepath.Join(bin, "claude"))
+	b := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidB, "FAKE_OUT": outB, "FAKE_HOOKS": "1", "FAKE_ANSWER": "1"}, filepath.Join(bin, "claude"))
+	h.waitPane(a, "idle", "process")
+	h.waitPane(b, "idle", "process")
+	// run has agent A run tmag as its tool and returns what it printed.
+	runs := 0
+	run := func(args string) string {
+		t.Helper()
+		h.tmux("send-keys", "-t", a, "tmag "+args, "Enter")
+		var got string
+		h.eventually("A runs tmag "+args, func() bool {
+			lines, _ := os.ReadFile(outA)
+			var tools []string
+			for _, l := range strings.Split(string(lines), "\n") {
+				if strings.HasPrefix(l, "tool ") {
+					tools = append(tools, l)
+				}
+			}
+			if len(tools) <= runs {
+				return false
+			}
+			got = tools[runs]
+			return true
+		})
+		runs++
+		h.waitSession(sidA, "idle")
+		return got
+	}
+	by := fmt.Sprintf(`"by":{"agent":"claude","session":"%s"}`, sidA)
+
+	// An agent's tool knows itself; a person's shell is no agent.
+	if got := run("list --json"); !strings.HasPrefix(got, "tool 0 ") || !strings.Contains(got, by) {
+		t.Fatalf("list from A: %s", got)
+	}
+	if r := h.tmag("", "list", "--json"); r.code != 0 || strings.Contains(r.out, `"by"`) {
+		t.Fatalf("list from a person: %d %s", r.code, r.out)
+	}
+
+	// A prompts B, and the Send event says who.
+	if got := run("send " + sidB[:8] + " hello"); !strings.HasPrefix(got, "tool 0 ") {
+		t.Fatalf("send from A: %s", got)
+	}
+	h.waitSession(sidB, "idle")
+	var send eventlog.Event
+	for _, e := range h.events(sidB) {
+		if e.Event == eventlog.Send {
+			send = e
+		}
+	}
+	if send.By == nil || send.By.Session != sidA || send.From == nil || send.From.ID != a {
+		t.Fatalf("Send event = %+v", send)
+	}
+
+	// An agent does not act on its own session, which is running its tool.
+	for _, verb := range []string{"interrupt " + sidA[:8], "send " + sidA[:8] + " again"} {
+		if got := run(verb); !strings.HasPrefix(got, "tool 3 ") || !strings.Contains(got, "refused (self)") {
+			t.Fatalf("%s from A: %s", verb, got)
+		}
+	}
+
+	// B asks the person; A may not answer for them.
+	h.tmux("send-keys", "-t", b, "block", "Enter")
+	var req eventlog.Request
+	h.eventually("B's request waits", func() bool {
+		s, ok := h.sessionOf(sidB)
+		if !ok || len(s.Requests) != 1 || !answer.Waiting(h.state, s.Requests[0].ID) {
+			return false
+		}
+		req = s.Requests[0]
+		return true
+	})
+	if got := run("answer " + sidB[:8] + " " + req.ID + " allow"); !strings.HasPrefix(got, "tool 3 ") || !strings.Contains(got, "refused (agent)") {
+		t.Fatalf("answer from A: %s", got)
+	}
+	h.tmux("set-option", "-g", "@tmag-answer", "agents")
+	if got := run("answer " + sidB[:8] + " " + req.ID + " allow"); !strings.HasPrefix(got, "tool 0 ") {
+		t.Fatalf("answer from A with agents allowed: %s", got)
+	}
+	h.eventually("B receives the answer", func() bool {
+		got, _ := os.ReadFile(outB)
+		return strings.Contains(string(got), "hook:allow")
+	})
+	var answered eventlog.Event
+	for _, e := range h.events(sidB) {
+		if e.Event == eventlog.Answer {
+			answered = e
+		}
+	}
+	if answered.By == nil || answered.By.Session != sidA || answered.From == nil || answered.From.ID != a {
+		t.Fatalf("Answer event = %+v", answered)
+	}
+}
+
+// A thread in the Codex daemon is told from the daemon's others by the
+// variable Codex sets for its tools.
+func TestDaemonThreadsActOnEachOther(t *testing.T) {
+	h := start(t)
+	d := h.daemon()
+	for _, id := range []string{sidC, sidD} {
+		d.hook(map[string]any{"hook_event_name": "SessionStart", "session_id": id, "source": "startup"})
+		h.waitSession(id, "idle")
+	}
+	if r := d.tool(sidC, "send", sidC[:8], "hello"); r.code != 3 || !strings.Contains(r.out, "refused (self)") {
+		t.Fatalf("a thread prompting itself: %d %s", r.code, r.out)
+	}
+	if r := d.tool(sidC, "send", sidD[:8], "hello"); r.code != 0 {
+		t.Fatalf("a thread prompting another: %d %s", r.code, r.out)
+	}
+	h.waitSession(sidD, "idle")
+	var send eventlog.Event
+	for _, e := range h.events(sidD) {
+		if e.Event == eventlog.Send {
+			send = e
+		}
+	}
+	if send.By == nil || send.By.Agent != "codex" || send.By.Session != sidC || send.From != nil {
+		t.Fatalf("Send event = %+v", send)
 	}
 }

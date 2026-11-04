@@ -29,7 +29,8 @@ func TestManifestVersions(t *testing.T) {
 	}
 }
 
-// The agent plugins run exactly binpath.HookCommand for every hook.
+// The agent plugins run exactly binpath.HookCommand for every hook, except
+// Claude Code's PermissionRequest, which runs binpath.AnswerHookCommand.
 func TestPluginHooksUseHookCommand(t *testing.T) {
 	for agent, path := range map[string]string{
 		"claude": "plugins/claude/hooks/hooks.json",
@@ -41,7 +42,10 @@ func TestPluginHooksUseHookCommand(t *testing.T) {
 		}
 		var doc struct {
 			Hooks map[string][]struct {
-				Hooks []struct{ Command string }
+				Hooks []struct {
+					Command string
+					Timeout int
+				}
 			}
 		}
 		if err := json.Unmarshal(b, &doc); err != nil {
@@ -50,8 +54,13 @@ func TestPluginHooksUseHookCommand(t *testing.T) {
 		for event, groups := range doc.Hooks {
 			for _, g := range groups {
 				for _, h := range g.Hooks {
-					if h.Command != binpath.HookCommand(agent) {
-						t.Errorf("%s %s: command %q", path, event, h.Command)
+					want, timeout := binpath.HookCommand(agent), 10
+					if agent == "claude" && event == "PermissionRequest" {
+						// It waits for an answer as long as Claude lets it.
+						want, timeout = binpath.AnswerHookCommand(agent), 600
+					}
+					if h.Command != want || h.Timeout != timeout {
+						t.Errorf("%s %s: command %q, timeout %d", path, event, h.Command, h.Timeout)
 					}
 				}
 			}

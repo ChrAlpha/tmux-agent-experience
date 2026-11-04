@@ -132,7 +132,7 @@ func Reconcile(ctx context.Context, env Env, w *World) {
 		env.exit(ctx, r)
 	}
 	for _, r := range live {
-		if r.Unlogged() {
+		if r.Unsettled() {
 			env.settle(ctx, r)
 		}
 	}
@@ -245,7 +245,7 @@ func (env Env) Attach(ctx context.Context, w *World, c Client, rec session.Recor
 
 // finish logs the event an attachment is in the middle of and completes it:
 // an Attach is confirmed, a Detach clears the pane. The caller holds the
-// pane's lock; fresh is the pane as read under it.
+// pane's lock, and no session's; fresh is the pane as read under it.
 func (env Env) finish(ctx context.Context, srv tmux.Server, fresh tmux.Pane, a Attachment) error {
 	switch a.Change {
 	case eventlog.Attach:
@@ -254,11 +254,16 @@ func (env Env) finish(ctx context.Context, srv tmux.Server, fresh tmux.Pane, a A
 				return err
 			}
 		}
+		// The event reports the session in full, so it is read and logged
+		// under the session's lock: a hook changing the session meanwhile
+		// logs after it, never before with this event reporting less.
 		ev := eventlog.Event{Agent: a.Agent, Session: a.Session, Event: eventlog.Attach, Pane: ref(fresh), Evidence: a.Evidence}
-		if rec, ok, _ := env.Store.Get(a.Agent, a.Session); ok {
-			ev.State, ev.Kind, ev.Turn = rec.State(), rec.Kind(), rec.Turn
-		}
-		if err := env.append(ctx, ev); err != nil {
+		if err := env.Store.Lock(ctx, a.Agent, a.Session, func() error {
+			if rec, ok, _ := env.Store.Get(a.Agent, a.Session); ok {
+				rec.Report(&ev)
+			}
+			return env.append(ctx, ev)
+		}); err != nil {
 			return err
 		}
 		return srv.SetPaneOptions(ctx, fresh.ID, nil, []string{optChange, optReplaced})
@@ -350,13 +355,9 @@ func (env Env) detach(ctx context.Context, p tmux.Pane, a Attachment) error {
 // ends a session whose host process exited, if it still has.
 func (env Env) exit(ctx context.Context, r session.Record) {
 	_ = env.Store.Lock(ctx, r.Agent, r.ID, func() error {
-		cur, ok, err := env.Store.Get(r.Agent, r.ID)
+		cur, ok, err := env.Store.Current(ctx, env.Log, r.Agent, r.ID)
 		if err != nil || !ok {
-			return err
-		}
-		if cur.Ended != "" {
-			_, _, err := env.Store.Settle(ctx, env.Log, cur)
-			return err
+			return err // or an end already decided is now finished
 		}
 		if cur.Host != r.Host {
 			return nil // reported from another process since
@@ -368,11 +369,7 @@ func (env Env) exit(ctx context.Context, r session.Record) {
 // settle logs a change its writer did not get to log, if it still is not.
 func (env Env) settle(ctx context.Context, r session.Record) {
 	_ = env.Store.Lock(ctx, r.Agent, r.ID, func() error {
-		cur, ok, err := env.Store.Get(r.Agent, r.ID)
-		if err != nil || !ok {
-			return err
-		}
-		_, _, err = env.Store.Settle(ctx, env.Log, cur)
+		_, _, err := env.Store.Current(ctx, env.Log, r.Agent, r.ID)
 		return err
 	})
 }

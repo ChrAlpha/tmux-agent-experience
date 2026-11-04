@@ -216,6 +216,13 @@ func (s Server) Submit(ctx context.Context, pane, text string) error {
 	return err
 }
 
+// Interrupt presses Escape in the pane, the key both Claude Code and Codex
+// stop a running turn with.
+func (s Server) Interrupt(ctx context.Context, pane string) error {
+	_, err := s.Run(ctx, "send-keys", "-t", pane, "Escape")
+	return err
+}
+
 // SanitizePrompt normalises line endings to \n and drops every other C0 and C1
 // control character and DEL, keeping tabs.
 func SanitizePrompt(text string) string {

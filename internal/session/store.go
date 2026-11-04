@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/lockfile"
@@ -116,6 +117,7 @@ func (s Store) Delete(agent, id string) error {
 // logged twice, never not at all. The caller holds the session's lock. It
 // returns the record as stored.
 func (s Store) Save(ctx context.Context, log *eventlog.Log, rec Record, ev eventlog.Event) (Record, error) {
+	rec.Delivery = nil
 	if !rec.Unlogged() {
 		rec.Change = ""
 		return rec, s.Put(rec)
@@ -128,13 +130,31 @@ func (s Store) Save(ctx context.Context, log *eventlog.Log, rec Record, ev event
 }
 
 func (s Store) logged(ctx context.Context, log *eventlog.Log, rec Record, ev eventlog.Event) (Record, error) {
-	ev.Agent, ev.Session = rec.Agent, rec.ID
-	rep := rec.Reports()
-	ev.State, ev.Kind, ev.Turn = rep.State, rep.Kind, rep.Turn
+	rec.Report(&ev)
 	if err := log.Append(ctx, &ev); err != nil {
 		return rec, err
 	}
-	rec.Logged, rec.Change = rep, ""
+	rec.Logged, rec.Change, rec.Delivery = rec.Reports(), "", nil
+	return rec, s.Put(rec)
+}
+
+// Report stores rec and logs ev reporting it, whether or not what it
+// reports changed: ev is a delivery of tmag's (an interrupt, an answer) and
+// rec what it did to the session, which the agent does not report itself.
+// Like Save, it marks the change before logging it, and keeps ev with the
+// mark, so that the next holder of the lock logs ev as it was (Settle). ev
+// receives its sequence number. The caller holds the session's lock.
+func (s Store) Report(ctx context.Context, log *eventlog.Log, rec Record, ev *eventlog.Event) (Record, error) {
+	kept := *ev
+	rec.Change, rec.Delivery = ev.Event, &kept
+	if err := s.Put(rec); err != nil {
+		return rec, err
+	}
+	rec.Report(ev)
+	if err := log.Append(ctx, ev); err != nil {
+		return rec, err
+	}
+	rec.Logged, rec.Change, rec.Delivery = rec.Reports(), "", nil
 	return rec, s.Put(rec)
 }
 
@@ -162,21 +182,40 @@ func (s Store) ended(ctx context.Context, log *eventlog.Log, rec Record, ev even
 }
 
 // Settle finishes what a writer of rec did not: it logs a change left
-// unlogged, or completes an end. It returns the record as it stands after,
-// and false when the session is gone. The caller holds the session's lock.
+// unlogged, a delivery of tmag's whole, or completes an end. A prompt that
+// an older tmag left without a request gets one, and is logged with it. It
+// returns the record as it stands after, and false when the session is gone.
+// The caller holds the session's lock.
 func (s Store) Settle(ctx context.Context, log *eventlog.Log, rec Record) (Record, bool, error) {
 	if rec.Ended != "" {
 		return Record{}, false, s.ended(ctx, log, rec, eventlog.Event{})
+	}
+	rec.name(time.Now())
+	if rec.Delivery != nil && rec.Delivery.Event == rec.Change {
+		rec, err := s.logged(ctx, log, rec, *rec.Delivery)
+		return rec, true, err
 	}
 	if rec.Unlogged() {
 		change := rec.Change
 		if change == "" {
 			change = "Unlogged"
 		}
-		rec, err := s.logged(ctx, log, rec, eventlog.Event{Event: change, Cwd: rec.Cwd})
+		rec, err := s.logged(ctx, log, rec, eventlog.Event{Event: change})
 		return rec, true, err
 	}
 	return rec, true, nil
+}
+
+// Current reads a session and settles it (Settle), so that a writer starts
+// from a record the log reports and nothing a writer that died left
+// unlogged is overwritten; ok is false when there is none. The caller holds
+// the session's lock.
+func (s Store) Current(ctx context.Context, log *eventlog.Log, agent, id string) (Record, bool, error) {
+	rec, ok, err := s.Get(agent, id)
+	if err != nil || !ok {
+		return rec, false, err
+	}
+	return s.Settle(ctx, log, rec)
 }
 
 // All reads every session. Unreadable files are skipped: one corrupt session
