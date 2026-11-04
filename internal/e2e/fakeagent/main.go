@@ -15,7 +15,10 @@
 //	TMAG_BIN      tmag binary
 //
 // Lines starting with "/" behave like slash commands: no turn, no hooks. The
-// line "block" raises a permission prompt that the next line resolves.
+// line "block" raises a permission prompt that the next line resolves. A line
+// "tmag ARGS" is a turn whose Bash tool runs tmag ARGS, with the variable the
+// agent sets for its tools naming the session; FAKE_OUT gets "tool CODE
+// OUTPUT".
 // Every line, and how each dialog was answered, goes to FAKE_OUT.
 //
 // Run as "codex app-server ..." it imitates Codex's shared daemon instead: it
@@ -24,7 +27,9 @@
 // $CODEX_HOME (thread/read, turn/start, turn/interrupt, and approvals: a
 // PermissionRequest it runs becomes an approval request that thread/resume
 // replays and a client answers, about the call the thread's last PreToolUse
-// of that tool started, as Codex names it). With FAKE_HOOKS=1 and
+// of that tool started, as Codex names it). A line {"tool":[ARGS],
+// "session_id":THREAD} runs tmag ARGS as a tool of that thread, and its
+// answer line is {"code":CODE,"out":OUTPUT} instead. With FAKE_HOOKS=1 and
 // FAKE_SESSION set it first reports that session's start. A turn started
 // through the socket lasts FAKE_TURN_MS, default 0.
 //
@@ -156,6 +161,15 @@ func main() {
 			ask("AskUserQuestion", map[string]any{"questions": []map[string]any{{"question": "Pick a color", "options": []map[string]string{{"label": "red"}, {"label": "blue"}}}}})
 		case line == "block":
 			hook("PermissionRequest", map[string]any{turnKey: fmt.Sprintf("t%d", n), "tool_name": "Bash"})
+		case strings.HasPrefix(line, "tmag "):
+			turn = fmt.Sprintf("t%d", n)
+			call := fmt.Sprintf("u%d", n)
+			hook("UserPromptSubmit", map[string]any{turnKey: turn, "prompt": line})
+			hook("PreToolUse", map[string]any{turnKey: turn, "tool_name": "Bash", "tool_use_id": call})
+			code, out := tool(agent, session, strings.Fields(line)[1:])
+			record(fmt.Sprintf("tool %d %s", code, strings.Join(strings.Fields(out), " ")))
+			hook("PostToolUse", map[string]any{turnKey: turn, "tool_name": "Bash", "tool_use_id": call})
+			ends = time.After(time.Duration(turnMS) * time.Millisecond)
 		default:
 			turn = fmt.Sprintf("t%d", n)
 			hook("UserPromptSubmit", map[string]any{turnKey: turn, "prompt": line})
@@ -224,6 +238,17 @@ loop:
 		}
 	}
 	hook("SessionEnd", map[string]any{"reason": "other"})
+}
+
+// toolVars are the variables each agent sets for its tools' commands.
+var toolVars = map[string]string{"claude": "CLAUDE_CODE_SESSION_ID", "codex": "CODEX_THREAD_ID"}
+
+// tool runs tmag as a tool of the session's, a child of the agent's process.
+func tool(agent, session string, args []string) (int, string) {
+	cmd := exec.Command(os.Getenv("TMAG_BIN"), args...)
+	cmd.Env = append(os.Environ(), toolVars[agent]+"="+session)
+	out, _ := cmd.CombinedOutput()
+	return cmd.ProcessState.ExitCode(), string(out)
 }
 
 // prompt is a permission dialog of a tool call.
@@ -296,9 +321,23 @@ func daemon() {
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for sc.Scan() {
 		var payload map[string]any
-		if json.Unmarshal(sc.Bytes(), &payload) == nil {
-			d.hook(payload)
+		if json.Unmarshal(sc.Bytes(), &payload) != nil {
+			fmt.Println("ran")
+			continue
 		}
+		if list, ok := payload["tool"].([]any); ok {
+			// Unlocked: the command may call the daemon's own socket.
+			var args []string
+			for _, a := range list {
+				args = append(args, fmt.Sprint(a))
+			}
+			thread, _ := payload["session_id"].(string)
+			code, out := tool("codex", thread, args)
+			b, _ := json.Marshal(map[string]any{"code": code, "out": out})
+			fmt.Println(string(b))
+			continue
+		}
+		d.hook(payload)
 		fmt.Println("ran")
 	}
 	// A daemon outlives its clients; stay until killed.

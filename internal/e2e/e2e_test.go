@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -114,21 +115,41 @@ type result struct {
 	code int
 }
 
+// tmag runs tmag as a person's shell would: outside the test's own process
+// tree, which is an agent's when a coding agent's tool runs go test, so that
+// tmag sees no agent above it. Agents' calls run from fake agents.
 func (h *harness) tmag(stdin string, args ...string) result {
 	h.t.Helper()
-	cmd := exec.Command(filepath.Join(bin, "tmag"), args...)
-	cmd.Stdin = strings.NewReader(stdin)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	err := cmd.Run()
-	code := 0
-	var exit *exec.ExitError
-	if errors.As(err, &exit) {
-		code = exit.ExitCode()
-	} else if err != nil {
+	dir, err := os.MkdirTemp(h.dir, "call")
+	if err != nil {
 		h.t.Fatal(err)
 	}
-	return result{out: stdout.String() + stderr.String(), code: code}
+	if err := os.WriteFile(filepath.Join(dir, "in"), []byte(stdin), 0o600); err != nil {
+		h.t.Fatal(err)
+	}
+	// The subshell outlives the shell that starts it, and init adopts it.
+	const detached = `( "$@" <"$D/in" >"$D/out" 2>"$D/err"; echo $? >"$D/code.tmp"; mv "$D/code.tmp" "$D/code" ) &`
+	cmd := exec.Command("sh", append([]string{"-c", detached, "sh", filepath.Join(bin, "tmag")}, args...)...)
+	cmd.Env = append(os.Environ(), "D="+dir)
+	if err := cmd.Run(); err != nil {
+		h.t.Fatal(err)
+	}
+	var code []byte
+	for deadline := time.Now().Add(time.Minute); ; time.Sleep(5 * time.Millisecond) {
+		if code, err = os.ReadFile(filepath.Join(dir, "code")); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			h.t.Fatalf("tmag %v did not finish", args)
+		}
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(string(code)))
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	stdout, _ := os.ReadFile(filepath.Join(dir, "out"))
+	stderr, _ := os.ReadFile(filepath.Join(dir, "err"))
+	return result{out: string(stdout) + string(stderr), code: n}
 }
 
 // view is `tmag list --json`.
@@ -582,6 +603,27 @@ func (d *fakeDaemon) hook(payload map[string]any) {
 	}
 }
 
+// tool runs tmag as a tool of thread's, a child of the daemon, and returns
+// what it printed.
+func (d *fakeDaemon) tool(thread string, args ...string) result {
+	d.h.t.Helper()
+	b, _ := json.Marshal(map[string]any{"tool": args, "session_id": thread})
+	if _, err := d.in.Write(append(b, '\n')); err != nil {
+		d.h.t.Fatal(err)
+	}
+	if !d.lines.Scan() {
+		d.h.t.Fatal("daemon stopped")
+	}
+	var r struct {
+		Code int    `json:"code"`
+		Out  string `json:"out"`
+	}
+	if err := json.Unmarshal(d.lines.Bytes(), &r); err != nil {
+		d.h.t.Fatalf("tool result %q: %v", d.lines.Text(), err)
+	}
+	return result{out: r.Out, code: r.Code}
+}
+
 // codexTitle renders a Codex 0.166 title with the thread-id item last.
 func codexTitle(name, id string) string { return name + " | repo | " + id[:29] + "..." }
 
@@ -769,6 +811,13 @@ func TestCodexDaemonCarriesAnswers(t *testing.T) {
 	h.waitSession(sidC, "working")
 	if got := h.eventNames(sidC); strings.Count(got[strings.LastIndex(got, "PermissionRequest:"):], "Answer:") != 1 {
 		t.Fatalf("events after two answers = %s", got)
+	}
+
+	// With answering off, no answer goes through the daemon either.
+	h.tmux("set-option", "-g", "@tmag-answer", "off")
+	req = blocked()
+	if r := h.tmag("", "answer", sidC[:8], req.ID, "allow"); r.code != 3 || !strings.Contains(r.out, "unsupported") {
+		t.Fatalf("answer with answering off: %d %s", r.code, r.out)
 	}
 }
 
@@ -1251,5 +1300,131 @@ func TestAttachmentEventsSurviveACrash(t *testing.T) {
 	h.tmag("", "status")
 	if got := h.tmux("display-message", "-p", "-t", quiet, "#{@tmag_state}"); got != "" {
 		t.Fatalf("broken options left: %q", got)
+	}
+}
+
+// Agents act on one another with the same verbs people use: tmag knows which
+// agent runs a verb, records it, refuses an agent's verb on its own session,
+// and lets agents answer for the person only when @tmag-answer says so.
+func TestAgentsActOnEachOther(t *testing.T) {
+	h := start(t)
+	outA, outB := filepath.Join(h.dir, "a"), filepath.Join(h.dir, "b")
+	a := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_OUT": outA, "FAKE_HOOKS": "1"}, filepath.Join(bin, "claude"))
+	b := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidB, "FAKE_OUT": outB, "FAKE_HOOKS": "1", "FAKE_ANSWER": "1"}, filepath.Join(bin, "claude"))
+	h.waitPane(a, "idle", "process")
+	h.waitPane(b, "idle", "process")
+	// run has agent A run tmag as its tool and returns what it printed.
+	runs := 0
+	run := func(args string) string {
+		t.Helper()
+		h.tmux("send-keys", "-t", a, "tmag "+args, "Enter")
+		var got string
+		h.eventually("A runs tmag "+args, func() bool {
+			lines, _ := os.ReadFile(outA)
+			var tools []string
+			for _, l := range strings.Split(string(lines), "\n") {
+				if strings.HasPrefix(l, "tool ") {
+					tools = append(tools, l)
+				}
+			}
+			if len(tools) <= runs {
+				return false
+			}
+			got = tools[runs]
+			return true
+		})
+		runs++
+		h.waitSession(sidA, "idle")
+		return got
+	}
+	by := fmt.Sprintf(`"by":{"agent":"claude","session":"%s"}`, sidA)
+
+	// An agent's tool knows itself; a person's shell is no agent.
+	if got := run("list --json"); !strings.HasPrefix(got, "tool 0 ") || !strings.Contains(got, by) {
+		t.Fatalf("list from A: %s", got)
+	}
+	if r := h.tmag("", "list", "--json"); r.code != 0 || strings.Contains(r.out, `"by"`) {
+		t.Fatalf("list from a person: %d %s", r.code, r.out)
+	}
+
+	// A prompts B, and the Send event says who.
+	if got := run("send " + sidB[:8] + " hello"); !strings.HasPrefix(got, "tool 0 ") {
+		t.Fatalf("send from A: %s", got)
+	}
+	h.waitSession(sidB, "idle")
+	var send eventlog.Event
+	for _, e := range h.events(sidB) {
+		if e.Event == eventlog.Send {
+			send = e
+		}
+	}
+	if send.By == nil || send.By.Session != sidA || send.From == nil || send.From.ID != a {
+		t.Fatalf("Send event = %+v", send)
+	}
+
+	// An agent does not act on its own session, which is running its tool.
+	for _, verb := range []string{"interrupt " + sidA[:8], "send " + sidA[:8] + " again"} {
+		if got := run(verb); !strings.HasPrefix(got, "tool 3 ") || !strings.Contains(got, "refused (self)") {
+			t.Fatalf("%s from A: %s", verb, got)
+		}
+	}
+
+	// B asks the person; A may not answer for them.
+	h.tmux("send-keys", "-t", b, "block", "Enter")
+	var req eventlog.Request
+	h.eventually("B's request waits", func() bool {
+		s, ok := h.sessionOf(sidB)
+		if !ok || len(s.Requests) != 1 || !answer.Waiting(h.state, s.Requests[0].ID) {
+			return false
+		}
+		req = s.Requests[0]
+		return true
+	})
+	if got := run("answer " + sidB[:8] + " " + req.ID + " allow"); !strings.HasPrefix(got, "tool 3 ") || !strings.Contains(got, "refused (agent)") {
+		t.Fatalf("answer from A: %s", got)
+	}
+	h.tmux("set-option", "-g", "@tmag-answer", "agents")
+	if got := run("answer " + sidB[:8] + " " + req.ID + " allow"); !strings.HasPrefix(got, "tool 0 ") {
+		t.Fatalf("answer from A with agents allowed: %s", got)
+	}
+	h.eventually("B receives the answer", func() bool {
+		got, _ := os.ReadFile(outB)
+		return strings.Contains(string(got), "hook:allow")
+	})
+	var answered eventlog.Event
+	for _, e := range h.events(sidB) {
+		if e.Event == eventlog.Answer {
+			answered = e
+		}
+	}
+	if answered.By == nil || answered.By.Session != sidA || answered.From == nil || answered.From.ID != a {
+		t.Fatalf("Answer event = %+v", answered)
+	}
+}
+
+// A thread in the Codex daemon is told from the daemon's others by the
+// variable Codex sets for its tools.
+func TestDaemonThreadsActOnEachOther(t *testing.T) {
+	h := start(t)
+	d := h.daemon()
+	for _, id := range []string{sidC, sidD} {
+		d.hook(map[string]any{"hook_event_name": "SessionStart", "session_id": id, "source": "startup"})
+		h.waitSession(id, "idle")
+	}
+	if r := d.tool(sidC, "send", sidC[:8], "hello"); r.code != 3 || !strings.Contains(r.out, "refused (self)") {
+		t.Fatalf("a thread prompting itself: %d %s", r.code, r.out)
+	}
+	if r := d.tool(sidC, "send", sidD[:8], "hello"); r.code != 0 {
+		t.Fatalf("a thread prompting another: %d %s", r.code, r.out)
+	}
+	h.waitSession(sidD, "idle")
+	var send eventlog.Event
+	for _, e := range h.events(sidD) {
+		if e.Event == eventlog.Send {
+			send = e
+		}
+	}
+	if send.By == nil || send.By.Agent != "codex" || send.By.Session != sidC || send.From != nil {
+		t.Fatalf("Send event = %+v", send)
 	}
 }

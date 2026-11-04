@@ -27,21 +27,25 @@ func pending(rec session.Record, now time.Time) bool {
 // Send delivers text as one submitted prompt to an idle session, by the
 // channel its driver uses, and returns where it went.
 //
-// The session must be idle with no prompt of tmag's still unconfirmed. The
-// Send event is logged under the session's lock, which the session's hooks
-// wait for, so the turn the prompt starts is logged after it; until a hook
-// confirms that turn, further sends are refused.
-func Send(ctx context.Context, log *eventlog.Log, target, text string, from *eventlog.PaneRef) (Delivery, error) {
+// The session must be idle with no prompt of tmag's still unconfirmed, and
+// not the caller's own. The Send event is logged under the session's lock,
+// which the session's hooks wait for, so the turn the prompt starts is
+// logged after it; until a hook confirms that turn, further sends are
+// refused.
+func Send(ctx context.Context, log *eventlog.Log, target, text string) (Delivery, error) {
 	text = strings.TrimRight(tmux.SanitizePrompt(text), "\n")
 	if strings.TrimSpace(text) == "" {
 		return Delivery{}, errors.New("nothing to send")
 	}
-	v, err := prepare(ctx, log)
+	v, caller, err := prepare(ctx, log)
 	if err != nil {
 		return Delivery{}, err
 	}
 	s, named, err := controlled(v, target)
 	if err != nil {
+		return Delivery{}, err
+	}
+	if err := caller.selfGate(s, "prompt"); err != nil {
 		return Delivery{}, err
 	}
 	switch driver.Channel(s.Agent, s.Runtime, driver.Send) {
@@ -53,7 +57,9 @@ func Send(ctx context.Context, log *eventlog.Log, target, text string, from *eve
 			},
 			mark: func(rec *session.Record) eventlog.Event {
 				rec.Sent = time.Now().UTC().Truncate(time.Second)
-				return eventlog.Event{Event: eventlog.Send, Cwd: rec.Cwd, From: from, Bytes: len(text)}
+				ev := eventlog.Event{Event: eventlog.Send, Cwd: rec.Cwd, Bytes: len(text)}
+				caller.stamp(&ev)
+				return ev
 			},
 			deliver: func(ctx context.Context, c *codexsvc.Client) error {
 				_, err := c.StartTurn(ctx, s.ID, text)
@@ -75,7 +81,9 @@ func Send(ctx context.Context, log *eventlog.Log, target, text string, from *eve
 				return eventlog.Event{}, nil, fmt.Errorf("typing into %s failed, perhaps after the prompt was delivered; %s takes no other prompt for %s: %w",
 					p.ID, s.ID, PendingWindow, err)
 			}
-			return eventlog.Event{Event: eventlog.Send, Cwd: p.Cwd, From: from, Bytes: len(text)}, nil, nil
+			ev := eventlog.Event{Event: eventlog.Send, Cwd: p.Cwd, Bytes: len(text)}
+			caller.stamp(&ev)
+			return ev, nil, nil
 		})
 	}
 	return Delivery{}, unsupported(s, driver.Send)

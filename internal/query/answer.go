@@ -52,7 +52,7 @@ func refOf(s Session, id string) eventlog.Request {
 // Show returns what an open request asks: the tool and its input, relayed
 // from where the agent holds them and never stored.
 func Show(ctx context.Context, log *eventlog.Log, target, id string) (Asked, error) {
-	v, err := prepare(ctx, log)
+	v, _, err := prepare(ctx, log)
 	if err != nil {
 		return Asked{}, err
 	}
@@ -84,13 +84,15 @@ func Show(ctx context.Context, log *eventlog.Log, target, id string) (Asked, err
 
 // Answer decides an open request, by the channel the session's driver uses.
 //
-// The request must still be open, checked again under the session's lock;
-// the Answer event is logged before the lock is released. Delivery reaches
-// the request and no other; a request the person answered in the terminal a
+// A decision stands in for the person's, so @tmag-answer says who may give
+// one: nobody, people, or agents too; no session answers its own. The
+// request must still be open, checked again under the session's lock; the
+// Answer event is logged before the lock is released. Delivery reaches the
+// request and no other; a request the person answered in the terminal a
 // moment before may take a decision the agent then ignores, which the
 // events that follow show.
 func Answer(ctx context.Context, log *eventlog.Log, target, id string, d answer.Decision) (Delivery, error) {
-	v, err := prepare(ctx, log)
+	v, caller, err := prepare(ctx, log)
 	if err != nil {
 		return Delivery{}, err
 	}
@@ -98,20 +100,40 @@ func Answer(ctx context.Context, log *eventlog.Log, target, id string, d answer.
 	if err != nil {
 		return Delivery{}, err
 	}
+	if err := caller.selfGate(s, "answer"); err != nil {
+		return Delivery{}, err
+	}
+	if err := answerGate(ctx, s, caller); err != nil {
+		return Delivery{}, err
+	}
 	switch driver.Channel(s.Agent, s.Runtime, driver.Answer) {
 	case driver.Hook:
-		return answerHook(ctx, log, s, id, d)
+		return answerHook(ctx, log, s, id, d, caller)
 	case driver.Service:
-		return answerService(ctx, log, v, s, id, d)
+		return answerService(ctx, log, v, s, id, d, caller)
 	}
 	return Delivery{}, unsupported(s, driver.Answer)
+}
+
+// answerGate applies @tmag-answer to the caller.
+func answerGate(ctx context.Context, s Session, c Caller) error {
+	quick, cancel := context.WithTimeout(ctx, time.Second)
+	mode := answer.Mode(quick)
+	cancel()
+	switch {
+	case mode == answer.Off:
+		return &RefusedError{RefuseUnsupported, fmt.Sprintf("answering is off (@tmag-answer); answer %s in the agent", s.ID)}
+	case c.By != nil && mode != answer.Agents:
+		return &RefusedError{RefuseAgent, fmt.Sprintf("a %s agent runs this command, and its decision would stand in for the person's; @tmag-answer lets agents answer when set to %s", c.By.Agent, answer.Agents)}
+	}
+	return nil
 }
 
 // answerHook hands the decision to the answer hook waiting on the request,
 // under the session's lock: the hook prints it and leaves, the request
 // closes, and what the agent then does reaches tmag through hooks that wait
 // for the same lock.
-func answerHook(ctx context.Context, log *eventlog.Log, s Session, id string, d answer.Decision) (Delivery, error) {
+func answerHook(ctx context.Context, log *eventlog.Log, s Session, id string, d answer.Decision, caller Caller) (Delivery, error) {
 	if !answer.Waiting(log.Dir, id) {
 		return Delivery{}, noHook(s, id)
 	}
@@ -134,6 +156,7 @@ func answerHook(ctx context.Context, log *eventlog.Log, s Session, id string, d 
 		// the request is answered.
 		after, _ := session.Apply(rec, adapter.Transition{Action: adapter.Answer, Request: id}, time.Now())
 		ev := eventlog.Event{Event: eventlog.Answer, Via: driver.Hook, Request: id, Decision: d.Behavior}
+		caller.stamp(&ev)
 		if _, err := store.Report(ctx, log, after, &ev); err != nil {
 			return fmt.Errorf("answer delivered but not logged: %w", err)
 		}
@@ -144,7 +167,7 @@ func answerHook(ctx context.Context, log *eventlog.Log, s Session, id string, d 
 }
 
 func noHook(s Session, id string) error {
-	return &RefusedError{RefuseUnsupported, fmt.Sprintf("no answer hook waits on request %s of %s: answering is off (@tmag-answer), or the hook gave up; answer it in the agent", id, s.ID)}
+	return &RefusedError{RefuseUnsupported, fmt.Sprintf("no answer hook waits on request %s of %s: answering was off (@tmag-answer) when it opened, or the hook gave up; answer it in the agent", id, s.ID)}
 }
 
 func hookError(s Session, id string, err error) error {
@@ -254,7 +277,7 @@ func showService(ctx context.Context, v View, s Session, id string) (answer.Aske
 // decision goes out after the lock is released (the daemon runs the
 // session's hooks, which wait for it). The answer is done when the daemon
 // reports the approval resolved.
-func answerService(ctx context.Context, log *eventlog.Log, v View, s Session, id string, d answer.Decision) (Delivery, error) {
+func answerService(ctx context.Context, log *eventlog.Log, v View, s Session, id string, d answer.Decision, caller Caller) (Delivery, error) {
 	decision := codexsvc.Accept
 	switch {
 	case d.Message != "":
@@ -302,6 +325,7 @@ func answerService(ctx context.Context, log *eventlog.Log, v View, s Session, id
 		rec.Requests = slices.Clone(rec.Requests)
 		rec.Requests[i].Answered = now.UTC()
 		ev := eventlog.Event{Event: eventlog.Answer, Via: driver.Service, Request: id, Decision: d.Behavior}
+		caller.stamp(&ev)
 		if _, err := store.Report(ctx, log, rec, &ev); err != nil {
 			return err
 		}

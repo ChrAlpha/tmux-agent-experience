@@ -28,19 +28,37 @@ import (
 	"github.com/ChrAlpha/tmux-agent-experience/internal/tmux"
 )
 
-// Option is the tmux option that turns answering off when set to "off".
+// Option is the tmux option that says who may answer through tmag.
 const Option = "@tmag-answer"
 
-// Enabled reports whether answer hooks should wait: unless a tmux server
-// sets @tmag-answer to off. Sessions outside tmux follow the servers tmag
-// finds; with none, answering is on.
-func Enabled(ctx context.Context) bool {
+// Who may answer, as Option sets it.
+const (
+	Off    = "off"    // nobody: prompts are answered only in the agent
+	People = "on"     // people, scripts and remote clients, but no agent
+	Agents = "agents" // agents too, for one another
+)
+
+// Mode is who may answer, across the tmux servers tmag finds: the least any
+// of them allows. Sessions outside tmux follow those servers; with none,
+// and for a server that does not say, it is People.
+func Mode(ctx context.Context) string {
+	mode := ""
 	for _, srv := range tmux.Servers() {
-		if srv.GlobalOption(ctx, Option) == "off" {
-			return false
+		switch srv.GlobalOption(ctx, Option) {
+		case Off:
+			return Off
+		case Agents:
+			if mode == "" {
+				mode = Agents
+			}
+		default:
+			mode = People
 		}
 	}
-	return true
+	if mode == "" {
+		return People
+	}
+	return mode
 }
 
 // Path is the socket of the hook waiting on request id.

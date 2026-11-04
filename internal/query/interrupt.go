@@ -26,17 +26,21 @@ func halting(rec session.Record, now time.Time) bool {
 // session's driver uses, and returns where it went.
 //
 // The session must be working on a turn of its main agent or blocked on a
-// prompt (which an interrupt declines), and not interrupted by tmag since
-// the agent last reported. The Halt event is logged under the session's lock.
+// prompt (which an interrupt declines), not interrupted by tmag since the
+// agent last reported, and not the caller's own. The Halt event is logged
+// under the session's lock.
 // What the agent does next comes from its hooks: Codex reports the interrupt,
 // Claude Code reports nothing until it notices it is idle.
-func Interrupt(ctx context.Context, log *eventlog.Log, target string, from *eventlog.PaneRef) (Delivery, error) {
-	v, err := prepare(ctx, log)
+func Interrupt(ctx context.Context, log *eventlog.Log, target string) (Delivery, error) {
+	v, caller, err := prepare(ctx, log)
 	if err != nil {
 		return Delivery{}, err
 	}
 	s, named, err := controlled(v, target)
 	if err != nil {
+		return Delivery{}, err
+	}
+	if err := caller.selfGate(s, "interrupt"); err != nil {
 		return Delivery{}, err
 	}
 	switch driver.Channel(s.Agent, s.Runtime, driver.Interrupt) {
@@ -49,7 +53,9 @@ func Interrupt(ctx context.Context, log *eventlog.Log, target string, from *even
 			},
 			mark: func(rec *session.Record) eventlog.Event {
 				rec.Halted, turn = time.Now().UTC().Truncate(time.Second), rec.Turn
-				return eventlog.Event{Event: eventlog.Halt, Cwd: rec.Cwd, From: from}
+				ev := eventlog.Event{Event: eventlog.Halt, Cwd: rec.Cwd}
+				caller.stamp(&ev)
+				return ev
 			},
 			deliver: func(ctx context.Context, c *codexsvc.Client) error {
 				return c.InterruptTurn(ctx, s.ID, turn)
@@ -66,7 +72,8 @@ func Interrupt(ctx context.Context, log *eventlog.Log, target string, from *even
 			if err := (tmux.Server{Socket: p.Server}).Interrupt(ctx, p.ID); err != nil {
 				return eventlog.Event{}, nil, fmt.Errorf("pressing Escape in %s failed: %w", p.ID, err)
 			}
-			ev := eventlog.Event{Event: eventlog.Halt, Cwd: p.Cwd, From: from}
+			ev := eventlog.Event{Event: eventlog.Halt, Cwd: p.Cwd}
+			caller.stamp(&ev)
 			if driver.ReportsInterrupt(s.Agent) {
 				return ev, nil, nil
 			}

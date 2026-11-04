@@ -20,6 +20,8 @@ const (
 	RefuseSubagent    = "subagent"    // the pane shows a subagent, which takes no input
 	RefuseChanged     = "changed"     // the target changed between check and delivery
 	RefuseUnsupported = "unsupported" // no channel carries the verb to this session
+	RefuseSelf        = "self"        // the session's own agent runs the command
+	RefuseAgent       = "agent"       // an agent answers only when @tmag-answer lets agents
 )
 
 // RefusedError is returned when a verb's safety gate rejects delivery.
@@ -39,14 +41,18 @@ type Delivery struct {
 }
 
 // prepare stores what the world proves, so that an attachment checked
-// afterwards is one the pane's lock guards, and returns the view.
-func prepare(ctx context.Context, log *eventlog.Log) (View, error) {
+// afterwards is one the pane's lock guards, and returns the view and who
+// runs the verb.
+func prepare(ctx context.Context, log *eventlog.Log) (View, Caller, error) {
 	store := session.Store{Dir: log.Dir}
 	if w, err := attach.Load(ctx); err == nil {
 		attach.Reconcile(ctx, attach.Env{Log: log, Store: store}, w)
 	}
-	v, _, err := Load(ctx, store)
-	return v, err
+	v, w, err := Load(ctx, store)
+	if err != nil {
+		return View{}, Caller{}, err
+	}
+	return v, v.Caller(w), nil
 }
 
 // controlled resolves target to the session a verb acts on and the pane it

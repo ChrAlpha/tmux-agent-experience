@@ -9,7 +9,7 @@
 #   @tmag-key-jump    A           prefix key to jump to the agent waiting longest
 #   @tmag-key-setup   M-a         prefix key to connect Claude Code and Codex, then check
 #   @tmag-alert       blocked,finished   ring a pane's bell on these changes
-#   @tmag-answer      on          let `tmag answer` decide Claude Code's permission prompts
+#   @tmag-answer      on          who may decide prompts with `tmag answer`: on (people), agents, off
 #   #{tmag_status}               placeholder for status-left / status-right
 #
 # Set a key option to "off" to leave that key unbound, @tmag-alert to "off" to
@@ -35,8 +35,8 @@ fi
 # Agent hooks read this to decide when to ring a pane's bell.
 tmux set-option -g @tmag-alert "$(option @tmag-alert blocked,finished)"
 
-# Claude Code's permission hook reads this to decide whether to wait for an
-# answer given with `tmag answer`, beside the agent's own dialog.
+# `tmag answer` reads this to decide who may answer an agent's prompts, and
+# Claude Code's permission hook whether to wait for one beside its dialog.
 tmux set-option -g @tmag-answer "$(option @tmag-answer on)"
 
 # A pane's live state, for pane-border-format and friends. It is empty once the

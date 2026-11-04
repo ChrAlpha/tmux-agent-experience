@@ -123,7 +123,7 @@ func (a *app) answerHook() error {
 	}
 	in := hook.Input{Agent: proc.Claude, Payload: bytes.NewReader(data), Log: a.log, PID: os.Getpid()}
 	quick, cancel := context.WithTimeout(ctx, time.Second)
-	enabled := answer.Enabled(quick)
+	enabled := answer.Mode(quick) != answer.Off
 	cancel()
 	if !enabled {
 		return hook.Run(in)

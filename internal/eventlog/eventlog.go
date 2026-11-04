@@ -27,6 +27,16 @@ type PaneRef struct {
 	ID     string `json:"id"`
 }
 
+// Actor is the agent a control verb came from: one whose tool ran tmag.
+// Session is the session it ran for, and Subagent the subagent, when the
+// process table and the agent's own variables tell; Session is "" when the
+// agent's process runs several sessions and nothing tells which.
+type Actor struct {
+	Agent    string `json:"agent"`
+	Session  string `json:"session,omitempty"`
+	Subagent string `json:"subagent,omitempty"`
+}
+
 // Transcript is where an agent writes a session's transcript, in the agent's
 // own format.
 type Transcript struct {
@@ -74,8 +84,10 @@ type Event struct {
 	Pane *PaneRef `json:"pane,omitempty"`
 	// Evidence is what an Attach rests on.
 	Evidence string `json:"evidence,omitempty"`
-	// From is the pane a Send or Halt came from, and Bytes a prompt's size.
+	// From is the pane a Send, Halt or Answer came from, and By the agent,
+	// when an agent's tool ran it. Bytes is a prompt's size.
 	From  *PaneRef `json:"from,omitempty"`
+	By    *Actor   `json:"by,omitempty"`
 	Bytes int      `json:"bytes,omitempty"`
 	// Via is the channel tmag delivered by: pane, service or hook.
 	Via string `json:"via,omitempty"`

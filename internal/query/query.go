@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"regexp"
 	"sort"
 	"strings"
@@ -149,9 +148,11 @@ func Load(ctx context.Context, store session.Store) (View, *attach.World, error)
 	return Build(w, recs), w, nil
 }
 
-// Snapshot is the full current state, consistent with events after Seq.
+// Snapshot is the full current state, consistent with events after Seq, and
+// who took it.
 type Snapshot struct {
-	Seq int64 `json:"seq"`
+	Seq    int64  `json:"seq"`
+	Caller Caller `json:"caller"`
 	View
 }
 
@@ -162,11 +163,11 @@ func TakeSnapshot(ctx context.Context, log *eventlog.Log) (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, err
 	}
-	v, _, err := Load(ctx, session.Store{Dir: log.Dir})
+	v, w, err := Load(ctx, session.Store{Dir: log.Dir})
 	if err != nil {
 		return Snapshot{}, err
 	}
-	return Snapshot{Seq: seq, View: v}, nil
+	return Snapshot{Seq: seq, Caller: v.Caller(w), View: v}, nil
 }
 
 // Errors returned by target resolution and waiting.
@@ -237,14 +238,6 @@ func Resolve(v View, target string) (Target, error) {
 		return t, nil
 	}
 	return Target{}, fmt.Errorf("%w: %s matches %d sessions", ErrAmbiguous, target, len(matches))
-}
-
-// Sender returns the pane the calling process runs in, if any, for provenance.
-func Sender(w *attach.World) *eventlog.PaneRef {
-	if p, ok := w.Enclosing(os.Getpid()); ok {
-		return &eventlog.PaneRef{Server: p.Server, ID: p.ID}
-	}
-	return nil
 }
 
 // SessionEvents returns the most recent events of one session, oldest first.

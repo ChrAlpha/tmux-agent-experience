@@ -65,18 +65,19 @@ func (a *app) cmdList(args []string) int {
 		return a.fail("list", err)
 	}
 	if a.json {
-		a.emit(map[string]any{"seq": snap.Seq, "sessions": snap.Sessions, "panes": snap.Panes})
+		a.emit(map[string]any{"seq": snap.Seq, "caller": snap.Caller, "sessions": snap.Sessions, "panes": snap.Panes})
 		return ExitOK
 	}
-	a.printView(snap.View)
+	a.printView(snap.View, snap.Caller)
 	if hint := codexHint(snap.View); hint != "" {
 		fmt.Fprintln(a.stderr, "\n"+hint)
 	}
 	return ExitOK
 }
 
-// printView lists every agent pane, then every session no pane shows.
-func (a *app) printView(v query.View) {
+// printView lists every agent pane, then every session no pane shows,
+// marking the caller's own session.
+func (a *app) printView(v query.View, caller query.Caller) {
 	if len(v.Panes) == 0 && len(v.Sessions) == 0 {
 		fmt.Fprintln(a.stdout, "no agents")
 		return
@@ -92,6 +93,12 @@ func (a *app) printView(v query.View) {
 		}
 		return path
 	}
+	own := func(s query.Session) string {
+		if caller.Is(s) {
+			return shortID(s.ID) + " (you)"
+		}
+		return shortID(s.ID)
+	}
 	tw := tabwriter.NewWriter(a.stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(tw, "TARGET\tPANE\tAGENT\tSTATE\tFOR\tID\tCWD")
 	for _, p := range v.Panes {
@@ -101,7 +108,7 @@ func (a *app) printView(v query.View) {
 		}
 		state, since, id := adapter.Unknown, (*time.Time)(nil), "-"
 		if s, ok := v.Session(p.Agent, p.Session); ok {
-			state, since, id = describe(s.State, s.Kind), s.Since, shortID(s.ID)
+			state, since, id = describe(s.State, s.Kind), s.Since, own(s)
 			if p.View == attach.ViewSubagent {
 				state += " [subagent]"
 			}
@@ -110,7 +117,7 @@ func (a *app) printView(v query.View) {
 	}
 	for _, s := range v.Sessions {
 		if len(s.Panes) == 0 {
-			fmt.Fprintf(tw, "-\t-\t%s\t%s\t%s\t%s\t%s\n", s.Agent, describe(s.State, s.Kind), age(s.Since), shortID(s.ID), short(s.Cwd))
+			fmt.Fprintf(tw, "-\t-\t%s\t%s\t%s\t%s\t%s\n", s.Agent, describe(s.State, s.Kind), age(s.Since), own(s), short(s.Cwd))
 		}
 	}
 	tw.Flush()
@@ -218,7 +225,7 @@ func (a *app) cmdInspect(args []string) int {
 			v.Sessions[0].Panes = nil // list it on its own row
 		}
 	}
-	a.printView(v)
+	a.printView(v, query.Caller{})
 	if s := t.Session; s != nil {
 		fmt.Fprintf(a.stdout, "\nid: %s\nruntime: %s\n", s.ID, s.Runtime)
 		for _, p := range s.Panes {
@@ -429,11 +436,7 @@ func (a *app) cmdSend(args []string) int {
 	}
 	ctx, cancel := signalContext()
 	defer cancel()
-	w, err := attach.Load(ctx)
-	if err != nil {
-		return a.fail("send", err)
-	}
-	d, err := query.Send(ctx, a.log, pos[0], text, query.Sender(w))
+	d, err := query.Send(ctx, a.log, pos[0], text)
 	if err != nil {
 		return a.fail("send", err)
 	}
@@ -458,11 +461,7 @@ func (a *app) cmdInterrupt(args []string) int {
 	}
 	ctx, cancel := signalContext()
 	defer cancel()
-	w, err := attach.Load(ctx)
-	if err != nil {
-		return a.fail("interrupt", err)
-	}
-	d, err := query.Interrupt(ctx, a.log, pos[0], query.Sender(w))
+	d, err := query.Interrupt(ctx, a.log, pos[0])
 	if err != nil {
 		return a.fail("interrupt", err)
 	}

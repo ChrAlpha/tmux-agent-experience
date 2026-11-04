@@ -89,7 +89,7 @@ load. Then `prefix + M-a` brings the agent plugins to the same version.
 | `@tmag-key-jump` | `A` | prefix key to jump to the agent waiting longest |
 | `@tmag-key-setup` | `M-a` | prefix key to connect the agents and check the installation |
 | `@tmag-alert` | `blocked,finished` | which changes ring a pane's bell |
-| `@tmag-answer` | `on` | let `tmag answer` decide Claude Code's permission prompts and questions, beside the agent's own dialog |
+| `@tmag-answer` | `on` | who may decide an agent's permission prompts and questions with `tmag answer`, beside the agent's own dialog: `on` for people, `agents` for agents too, `off` for nobody |
 | `@tmag-release-url` | GitHub releases | where to download the binary, for mirrors |
 
 Set a key option to `off` to leave it unbound, `@tmag-alert` to `off` for
@@ -197,6 +197,26 @@ A session's `capabilities` list the verbs some channel carries to it; a verb
 nothing carries is refused with `unsupported`. Every delivery reports its
 channel as `via`, in its output and its event.
 
+#### Agents acting on agents
+
+Agents use the same verbs, run from their tools, and tmag tells who runs one
+the way it tells which pane shows a session: from the process table. A
+command whose ancestors include an agent's process is that agent's; its
+session is one of those the agent's process runs, named by the variable the
+agent sets for its tools (`CLAUDE_CODE_SESSION_ID`, `CODEX_THREAD_ID`), or
+the only one. The variable alone proves nothing, and when nothing tells which
+session it is, the agent is known and its session is not. `tmag list` marks
+the caller's own session, and `--json` reports the caller as `caller`.
+
+Every `Send`, `Halt` and `Answer` records where it came from: the pane, as
+`from`, and the agent, as `by`. An agent's verb on its own session is refused
+with `self`: the turn it would prompt, stop or answer is the one running the
+command. An answer stands in for the person's decision, so an agent may give
+one only when `@tmag-answer` is `agents`; otherwise it is refused with
+`agent`. This keeps an agent from approving its own or another agent's
+prompts by accident, and the log shows every decision an agent made. It is
+no security boundary: an agent can type into any pane with tmux itself.
+
 #### Sending
 
 `tmag send` delivers a prompt to an idle session through the one pane that
@@ -257,7 +277,8 @@ terminal or through tmag; when the dialog is answered in the terminal, the
 hook leaves. It waits in background sessions too, so their prompts can be
 answered with no terminal at all. On any failure, or after 590 seconds, it
 leaves without a word and the dialog alone decides. With `@tmag-answer`
-`off` it does not wait, and `answer` is refused with `unsupported`.
+`off` it does not wait; `answer` is then refused with `unsupported`, for
+every agent.
 
 For a thread in Codex's daemon, `answer` joins the thread through the
 daemon's control socket, under the same proof as `send`. The daemon replays
@@ -308,6 +329,7 @@ Every JSON document carries `"schema": "tmag/v1"`.
 {
   "schema": "tmag/v1",
   "seq": 42,
+  "caller": { "pane": { "server": "/tmp/tmux-1000/default", "id": "%5" } },
   "sessions": [
     {
       "id": "1787a44e-244c-4c3c-aeea-40a74ff7ef8c",
@@ -356,6 +378,8 @@ lists the session's running subagents. `capabilities` lists the verbs tmag
 can carry to the session (see [Control](#control)); each still checks its
 gate when used. `requests` are the prompts it waits on (see
 [Answering](#answering)). A pane without `session` runs an agent tmag has no proof for.
+`caller` is who ran the command: its pane, and `by` the agent whose tool ran
+it, as in events.
 
 `tmag watch` prints one JSON document per line: first
 `{"type":"snapshot","seq":N,"sessions":[…],"panes":[…]}`, then
@@ -373,9 +397,13 @@ of them is such an event. `event` is the hook's name, or one of:
 | --- | --- |
 | `Attach` | A pane (`pane`) started showing the session, by `evidence`. |
 | `Detach` | A pane (`pane`) stopped showing the session. |
-| `Send` | `tmag send` delivered a prompt `via` `pane` (then through `pane`) or `service`, from the sending pane `from`, `bytes` long. |
-| `Halt` | `tmag interrupt` delivered an interrupt `via` `pane` (then through `pane`) or `service`, from `from`. For Claude Code it reports the session, now idle. |
+| `Send` | `tmag send` delivered a prompt `via` `pane` (then through `pane`) or `service`, `bytes` long. |
+| `Halt` | `tmag interrupt` delivered an interrupt `via` `pane` (then through `pane`) or `service`. For Claude Code it reports the session, now idle. |
 | `Answer` | `tmag answer` delivered a `decision` (`allow` or `deny`) on `request`, `via` `hook` or `service`. It reports the session: through the hook with the request closed, through the service before Codex reports what followed. |
+
+`Send`, `Halt` and `Answer` carry `from`, the pane the command ran in, and
+`by`, the agent whose tool ran it (`agent`, and `session` and `subagent` when
+known), when there is one (see [Agents acting on agents](#agents-acting-on-agents)).
 | `Exit` | The session's process exited without `SessionEnd`; the session is gone. |
 
 A session changes only through events, so a client that applies
@@ -408,7 +436,7 @@ timeout. With `--json`, errors are also printed as
 `{"schema":"tmag/v1","error":{"code":…,"message":…}}`; codes are `usage`,
 `not_found`, `ambiguous`, `refused:unbound`, `refused:busy`,
 `refused:background`, `refused:subagent`, `refused:changed`,
-`refused:idle`, `refused:unsupported`,
+`refused:idle`, `refused:unsupported`, `refused:self`, `refused:agent`,
 `ended`, `timeout` and `error`.
 
 ## Footprint

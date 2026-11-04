@@ -71,6 +71,14 @@ a design problem, not a test problem.
   session's, and logs its event before releasing them. `internal/driver`
   alone decides which channel carries a verb. `wait` refuses a pane that
   shows no session.
+- **Callers are proven too.** Who runs a verb comes from process ancestry
+  (`query.Caller`), like an attachment: a command below an agent's process is
+  that agent's, and its session is one that process hosts, told apart by the
+  agent's own tool variable, never named by it alone. People and agents use
+  the same verbs, and every control event records `from` and `by`. An agent
+  never acts on its own session, and answers for the person only when
+  `@tmag-answer` is `agents`. Tests run tmag as a person outside the test's
+  process tree (`harness.tmag`), and as an agent from a fake agent's tool.
 - **Locks.** A session changes only under its session lock (hooks, control
   verbs); a pane's attachment and projection only under its pane lock (hooks,
   reconciliation, control verbs through a pane). Whoever takes both takes the
@@ -159,7 +167,9 @@ claude plugin validate .      # marketplace and plugin manifests
   `PermissionRequest` leaves to its clients. `FAKE_KEYS=1` makes the
   interactive fake read keys like a TUI, so Escape interrupts its turn;
   `FAKE_ANSWER=1` makes it open permission dialogs as Claude Code does, with
-  `tmag answer-hook` waiting beside them. The same binary answers `--version` and `plugin …` as
+  `tmag answer-hook` waiting beside them. A line `tmag ARGS` typed into it,
+  or a `{"tool":[…]}` line given to the daemon, runs tmag as the agent's
+  tool, so tmag sees an agent calling. The same binary answers `--version` and `plugin …` as
   a fake host CLI. Plugin tests lay out a TPM directory and serve a local
   release over `file://`.
 - `#()` status jobs run only for attached clients; to see the status line,
