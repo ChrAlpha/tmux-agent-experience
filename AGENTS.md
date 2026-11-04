@@ -214,10 +214,15 @@ Hook payloads and TUI behaviour change between agent releases. Before changing
 an adapter or the Codex title rules, observe the real thing:
 
 - Claude Code: `claude --plugin-dir ./plugins/claude/tmag --setting-sources
-  local --permission-mode default` inside a private tmux server, with a
-  freshly built `tmag` first on `PATH` and `TMAG_STATE_DIR` pointing at a
-  scratch directory. This loads the plugin without installing it; add
-  `--plugin-dir ./plugins/claude/tmag-peers` for the skill.
+  local --permission-mode default` inside a private tmux server, with
+  `TMAG_STATE_DIR` and `TMUX_PLUGIN_MANAGER_PATH` pointing at scratch
+  directories and a freshly built `tmag` in
+  `$TMUX_PLUGIN_MANAGER_PATH/tmux-agent-experience/bin/`: hooks and the
+  launcher look there before `PATH`, so an installed plugin's binary would
+  run instead. This loads the plugin without installing it; add
+  `--plugin-dir ./plugins/claude/tmag-peers` for the skill. Your own
+  commands run below an agent's process when an agent runs them, so act as
+  the person from outside its tree (`setsid -f`).
 - Codex: `tmag` reads the `thread-id` title item of Codex 0.166 (the id's
   first 29 characters and `...`). Hooks load from a project's
   `.codex/hooks.json` once the project and its hooks are trusted; Codex writes
