@@ -41,6 +41,12 @@ agent and normalise its messages; that requires wrapping the agent and flattens
 what makes each agent useful. tmag's verbs are only what a person at the
 terminal can already do, made safe to do from elsewhere.
 
+The same verbs serve agents acting on one another, run from their tools.
+Prompting or stopping another session is what a person could type, so it
+stays the same verb with the same gate; deciding a permission prompt is not:
+it stands in for the person's consent. tmag therefore proves who runs a verb
+as it proves which pane shows a session (see [Callers](#callers)).
+
 ### Verbs
 
 | Verb | Acts when | Guarantees |
@@ -51,9 +57,11 @@ terminal can already do, made safe to do from elsewhere.
 | `request <target> <request>` | the named request still open | shows what the request asks (tool and input), relayed live, never stored |
 
 All verbs share the existing refusal codes and exit codes, add
-`refused:unsupported` for a verb no channel carries to the session and
-`refused:idle` for an interrupt with nothing to stop, and report `via`
-(`pane`, `service` or `hook`) in their JSON output. `Interrupt` is already a
+`refused:unsupported` for a verb no channel carries to the session,
+`refused:idle` for an interrupt with nothing to stop, `refused:self` for an
+agent's verb on its own session and `refused:agent` for an agent's answer
+that `@tmag-answer` does not allow, and report `via` (`pane`, `service` or
+`hook`) in their JSON output. `Interrupt` is already a
 Codex hook name, so tmag's own event for a delivered interrupt is `Halt`.
 
 ### Drivers
@@ -111,6 +119,44 @@ and runtime only, so every event that reports the session carries them, and
 clients never branch on the agent. A pane channel still needs the
 attachment when the verb is used, and is refused `unbound` without one.
 
+### Callers
+
+Who runs a verb is proven from the process table, never taken from the
+environment alone, as attachments are:
+
+- **An agent's command** has an agent client or service among its
+  ancestors. Its session is one of those hosted by the nearest such process
+  that hosts any (a sandbox helper between the tool and its agent hosts
+  none): the one named by the variable the agent sets for its tools'
+  commands, `CLAUDE_CODE_SESSION_ID` (Claude Code 2.1.317) or
+  `CODEX_THREAD_ID` (Codex 0.166, a subagent's own thread, which maps to its
+  session), or else the only one. A variable naming a session that process
+  does not host proves nothing; when nothing tells, the agent is known and
+  its session is not. Both variables were observed live: a Claude Code Bash
+  tool and a `codex exec` shell command each ran `tmag list` and were
+  identified with their session.
+- **A person's command**, a script's or a remote client's has no agent
+  above it. Its pane is the one whose process tree holds it outside any
+  agent service, as `from` already was.
+
+Every `Send`, `Halt` and `Answer` records the caller: `from`, its pane, and
+`by`, its agent (`agent`, and `session`, `subagent` when known). Two rules
+follow:
+
+- **No session acts on itself.** An agent's `send`, `interrupt` or `answer`
+  on its own session is refused `self`: the turn it would prompt, stop or
+  answer is the one running the command.
+- **Agents answer only when allowed.** `@tmag-answer` says who may answer:
+  `on` (the default) people, scripts and remote clients; `agents` agents too;
+  `off` nobody, for every agent and channel. An agent's answer under `on` is
+  refused `agent`. Across several tmux servers the least permissive setting
+  applies.
+
+These rules keep a cooperative agent from approving its own or a peer's
+prompts by accident and make every agent decision visible in the log. They
+are not a security boundary: an agent running as the user can leave the
+process tree or type into a pane with tmux itself.
+
 ### Requests
 
 A request is one prompt for the person that tmag can answer. It is a
@@ -144,14 +190,19 @@ answered it. A request closes with its prompt.
   was serving when told to leave. The dialog is up throughout, so waiting
   costs nothing.
 - **Codex daemon.** tmag's hook marks the prompt from `PermissionRequest`,
-  which Codex fires before prompting. `tmag answer` joins the thread
+  which Codex fires before prompting. Its payload names no call, but every
+  approval the daemon sends names one as `itemId`, the id `PreToolUse`
+  reported as `tool_use_id`. So each Ask binds its request to the call it can
+  only be about, the one running call of its tool by the agent that asked,
+  and to none when there are several. `tmag answer` joins the thread
   (`thread/resume` with `excludeTurns`) and takes the replayed server request
-  of the request's thread and turn that asks about its tool, as Codex 0.166
-  maps hook tools to approvals: `Bash` and `write_stdin` to a command
-  approval, `apply_patch` to a file change; other tools are `unsupported`.
-  The tool is always checked, not only to tell several apart: a request stays
-  open after its approval while the call runs, and must not take another
-  approval of the turn. Approvals resolved during the replay are left out.
+  of the request's thread, turn and call, of the approval kind Codex 0.166
+  maps its tool to: `Bash` and `write_stdin` to a command approval,
+  `apply_patch` to a file change; other tools are `unsupported`. A request
+  stays open after its approval while the call runs, and several calls of one
+  turn may ask, so nothing but the call binds an approval to it; a request
+  bound to no call is answered only in the agent (`ambiguous`). Approvals
+  resolved during the replay are left out.
   It answers (`accept`, or `decline`, which Codex 0.166 takes although its
   approvals do not list it), waits for `serverRequest/resolved`, and leaves.
   `request` relays the replayed request's parameters.
@@ -181,7 +232,10 @@ decision closes its dialog. tmag records those effects itself, through
 event reporting it, under the session's lock like every change. Like `Save`
 it marks the change first, and it keeps the delivery's event with the mark,
 so that a writer that dies before logging leaves the event to be logged
-whole by the next holder of the lock.
+whole by the next holder of the lock. A record keeping a delivery is
+unsettled even when what it reports did not change, and every writer reads
+a session under its lock through `session.Store.Current`, which logs such a
+leftover first, so no later write drops it.
 
 ### Reaching the Codex daemon
 
@@ -219,13 +273,16 @@ whole by the next holder of the lock.
   before the first turn), `capabilities`, `requests` (`id`, `kind`
   (`permission`, `question` or `plan`), `tool`, `agent` for a subagent's,
   `since`), and `subagents` (ids of running subagents).
+- `list --json`: `caller`, with the caller's `pane` and `by`.
 - Events: an event with `state` reports the session in full: `state`,
   `kind`, `turn`, `cwd`, `runtime`, `transcript`, `subagents`,
   `capabilities` and `requests`, and every change to any of them is such an
   event, so a client applying events to a snapshot stays current. New tmag
   events `Halt` and `Answer` (with `request` and `decision`), each with `via`
-  where it delivered.
-- Errors: `refused:unsupported`, `refused:idle`.
+  where it delivered. `Send`, `Halt` and `Answer` carry `from` (now on
+  `Answer` too) and `by` (see [Callers](#callers)).
+- Errors: `refused:unsupported`, `refused:idle`, `refused:self`,
+  `refused:agent`.
 
 A record written by tmag 0.1.0 reports less than the session is, so the next
 tmag to settle it logs it once in full, naming its open prompts.
@@ -262,13 +319,20 @@ These replace the corresponding entries in AGENTS.md:
   session's, and logs its event before releasing them. `internal/driver`
   alone decides which channel carries a verb. `wait` refuses a pane that
   shows no session.
+- **Callers are proven too.** Who runs a verb comes from process ancestry,
+  told apart by the agent's own tool variable and never named by it alone.
+  People and agents use the same verbs and every control event records
+  `from` and `by`; an agent never acts on its own session, and answers for
+  the person only when `@tmag-answer` is `agents`.
 - **Locks**, extended: sessions change only through `session.Store.Save`,
   `Report` (what a delivery of tmag's did, which the agent does not report)
   and `End`.
 
-Answering is a default like the others: the `@tmag-answer` option (default
-`on`) turns it off. `answer-hook` reads it from the tmux servers it finds,
-as `@tmag-alert` is read, and does not wait if any of them sets it `off`.
+Answering is a default like the others: the `@tmag-answer` option (`on`,
+`agents` or `off`; default `on`) says who may answer, as in
+[Callers](#callers). `tmag answer` and `answer-hook` read it from the tmux
+servers they find, as `@tmag-alert` is read; `answer-hook` does not wait if
+any of them sets it `off`.
 
 ### Remote access
 
@@ -305,6 +369,13 @@ alone, so the tunnel is the one way in.
 
 ## Alternatives considered
 
+- **A separate verb set or protocol for agents.** Agents calling agents is
+  the A2A ground the line above excludes, and a person and an agent asking
+  the same session for the same thing need the same gate. Only who may give
+  consent differs, and that is one rule on one verb.
+- **Trusting the agent's session variable alone.** It is set per command by
+  the agent, but any process can set it; like `$TMUX_PANE`, it only narrows
+  what ancestry proves.
 - **Clients pick the channel per agent.** This was the previous proposal. Every
   agent release would touch tmag and every client, and each client would need
   its own gate.
