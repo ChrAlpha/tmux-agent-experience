@@ -46,8 +46,9 @@ type Record struct {
 
 	// Pending are the prompts awaiting the user, oldest first.
 	Pending []adapter.Prompt `json:"pending,omitempty"`
-	// Requests name the pending prompts, so they can be answered. A prompt
-	// two answer hooks wait on has two; each closes with its prompt.
+	// Requests name the pending prompts, so they can be answered: each has
+	// one, and a prompt two answer hooks wait on has two. A request closes
+	// with its prompt.
 	Requests []Request `json:"requests,omitempty"`
 	// Calls are the tool calls started and not yet over.
 	Calls []adapter.Call `json:"calls,omitempty"`
@@ -74,6 +75,9 @@ type Record struct {
 	// Change names the event that made it. See Store.Save.
 	Logged Report `json:"logged"`
 	Change string `json:"change,omitempty"`
+	// Delivery is the event of a delivery of tmag's that Change names, kept
+	// until it is logged so that it is logged whole. See Store.Report.
+	Delivery *eventlog.Event `json:"delivery,omitempty"`
 	// Ended names the event that ends the session (SessionEnd or Exit) once
 	// that is decided. The record is deleted after the event is logged; until
 	// then it counts as gone. See Store.End.
@@ -88,6 +92,9 @@ type Request struct {
 	// Hook says the id is an answer hook's, which waits for the answer.
 	Hook  bool      `json:"hook,omitempty"`
 	Since time.Time `json:"since"`
+	// Answered is when tmag last took an answer to the request for an agent
+	// service to deliver, which reports it only once it is over.
+	Answered time.Time `json:"answered,omitzero"`
 }
 
 // NewRequestID returns a fresh request id: short, so that a socket path
@@ -189,6 +196,26 @@ func (r Record) RunningSubagents() []string {
 // it is.
 func (r Record) Unlogged() bool { return r.Reports() != r.Logged }
 
+// Unsettled reports whether Store.Settle has something to do: a change to
+// log, or a prompt an older tmag left without a request.
+func (r Record) Unsettled() bool { return r.Unlogged() || r.unnamed() }
+
+// unnamed reports whether a pending prompt has no request.
+func (r Record) unnamed() bool {
+	return slices.ContainsFunc(r.Pending, func(p adapter.Prompt) bool {
+		return !slices.ContainsFunc(r.Requests, func(q Request) bool { return q.Prompt == p })
+	})
+}
+
+// name gives every pending prompt without a request one, as an Ask does.
+func (r *Record) name(now time.Time) {
+	for _, p := range r.Pending {
+		if !slices.ContainsFunc(r.Requests, func(q Request) bool { return q.Prompt == p }) {
+			r.Requests = append(r.Requests, Request{ID: NewRequestID(), Prompt: p, Turn: r.Turn, Since: now.UTC().Truncate(time.Second)})
+		}
+	}
+}
+
 // maxSubagents bounds Record.Subagents.
 const maxSubagents = 32
 
@@ -274,7 +301,7 @@ func Apply(cur Record, tr adapter.Transition, now time.Time) (Record, bool) {
 		if opened {
 			rec.Pending = append(rec.Pending, tr.Prompt)
 		}
-		rec.Requests = request(rec.Requests, tr, opened, now)
+		rec.Requests = request(rec.Requests, tr, now)
 		rec.running(main)
 	case adapter.Start:
 		rec.Calls = startCall(rec.Calls, rec.Done, tr.Call)
@@ -344,11 +371,12 @@ func Apply(cur Record, tr adapter.Transition, now time.Time) (Record, bool) {
 	return rec, !rec.equal(cur)
 }
 
-// request names the prompt an Ask is about. A newly opened prompt gets the
-// Ask's id; an answer hook's id names the prompt's request no hook waits on,
-// or else adds one: two hooks may wait on equal prompts.
-func request(reqs []Request, tr adapter.Transition, opened bool, now time.Time) []Request {
-	if tr.Request == "" || (!opened && !tr.Waits) {
+// request names the prompt an Ask is about. A prompt without a request
+// gets the Ask's id; an answer hook's id names the prompt's request no hook
+// waits on, or else adds one: two hooks may wait on equal prompts.
+func request(reqs []Request, tr adapter.Transition, now time.Time) []Request {
+	named := slices.ContainsFunc(reqs, func(q Request) bool { return q.Prompt == tr.Prompt })
+	if tr.Request == "" || (named && !tr.Waits) {
 		return reqs
 	}
 	if tr.Waits {

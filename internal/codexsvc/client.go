@@ -16,6 +16,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"time"
 
@@ -67,6 +68,9 @@ type Client struct {
 	PeerPID int
 	next    int64
 	inbox   []Message
+	// resolved are the server requests the daemon reported resolved, by
+	// their ids, whoever read the report.
+	resolved map[string]bool
 }
 
 // Dial connects to the socket, learns which process serves it, and
@@ -182,7 +186,7 @@ func (c *Client) Next(ctx context.Context) (Message, error) {
 	if len(c.inbox) > 0 {
 		m := c.inbox[0]
 		c.inbox = c.inbox[1:]
-		return m, nil
+		return c.seen(m), nil
 	}
 	var m Message
 	err := c.within(ctx, func() error {
@@ -190,7 +194,27 @@ func (c *Client) Next(ctx context.Context) (Message, error) {
 		m, err = c.read()
 		return err
 	})
-	return m, err
+	return c.seen(m), err
+}
+
+// resolvedMethod is the notification that a server request is over.
+const resolvedMethod = "serverRequest/resolved"
+
+// seen notes m if it reports a server request resolved.
+func (c *Client) seen(m Message) Message {
+	if m.Method != resolvedMethod {
+		return m
+	}
+	var p struct {
+		RequestID json.RawMessage `json:"requestId"`
+	}
+	if json.Unmarshal(m.Params, &p) == nil && len(p.RequestID) > 0 {
+		if c.resolved == nil {
+			c.resolved = map[string]bool{}
+		}
+		c.resolved[string(p.RequestID)] = true
+	}
+	return m
 }
 
 // Respond answers a request of the server's.
@@ -249,7 +273,8 @@ func (c *Client) InterruptTurn(ctx context.Context, thread, turn string) error {
 
 // Join subscribes to a loaded thread, without overrides (which would restart
 // an idle thread nobody else watches), and returns the requests of the
-// daemon's still waiting for an answer, which it replays to a newcomer.
+// daemon's still waiting for an answer, which it replays to a newcomer. A
+// request resolved while the replay lasts is not among them.
 func (c *Client) Join(ctx context.Context, thread string) ([]Message, error) {
 	if err := c.Call(ctx, "thread/resume", map[string]any{"threadId": thread, "excludeTurns": true}, nil); err != nil {
 		return nil, err
@@ -264,7 +289,7 @@ func (c *Client) Join(ctx context.Context, thread string) ([]Message, error) {
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
 			}
-			return out, nil
+			return slices.DeleteFunc(out, func(r Message) bool { return c.resolved[string(r.ID)] }), nil
 		}
 		if m.Request() {
 			out = append(out, m)
@@ -283,21 +308,12 @@ func (c *Client) Leave(ctx context.Context, thread string) error {
 // AwaitResolved waits until the daemon reports request id resolved, by
 // this client's answer or another's: responses get no acknowledgement.
 func (c *Client) AwaitResolved(ctx context.Context, id json.RawMessage) error {
-	for {
-		m, err := c.Next(ctx)
-		if err != nil {
+	for !c.resolved[string(id)] {
+		if _, err := c.Next(ctx); err != nil {
 			return err
 		}
-		if m.Method != "serverRequest/resolved" {
-			continue
-		}
-		var p struct {
-			RequestID json.RawMessage `json:"requestId"`
-		}
-		if json.Unmarshal(m.Params, &p) == nil && string(p.RequestID) == string(id) {
-			return nil
-		}
 	}
+	return nil
 }
 
 // Approval requests tmag can answer, with the decisions they take.

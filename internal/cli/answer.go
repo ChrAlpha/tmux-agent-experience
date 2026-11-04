@@ -113,12 +113,16 @@ func (a *app) cmdAnswerHook(args []string) (code int) {
 }
 
 func (a *app) answerHook() error {
+	// A signal ends the wait from the start: whatever the hook has opened is
+	// closed on the way out, and nothing is printed.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+	defer stop()
 	data, err := io.ReadAll(io.LimitReader(a.stdin, 64<<20))
 	if err != nil {
 		return err
 	}
 	in := hook.Input{Agent: proc.Claude, Payload: bytes.NewReader(data), Log: a.log, PID: os.Getpid()}
-	quick, cancel := context.WithTimeout(context.Background(), time.Second)
+	quick, cancel := context.WithTimeout(ctx, time.Second)
 	enabled := answer.Enabled(quick)
 	cancel()
 	if !enabled {
@@ -139,7 +143,7 @@ func (a *app) answerHook() error {
 		return errors.Join(err, hook.Run(in))
 	}
 	defer ln.Close()
-	if err := hook.Run(in); err != nil {
+	if err := hook.Run(in); err != nil || ctx.Err() != nil {
 		return err
 	}
 	// Wait only for a prompt the session now names this way.
@@ -148,8 +152,6 @@ func (a *app) answerHook() error {
 	} else if _, open := rec.Request(in.Request); !open {
 		return nil
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
-	defer stop()
 	ctx, cancel = context.WithTimeout(ctx, answerWindow)
 	defer cancel()
 	answer.Wait(ctx, ln, answer.Asked{Tool: p.ToolName, Input: p.ToolInput}, func(out []byte) error {

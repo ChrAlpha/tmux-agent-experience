@@ -125,3 +125,36 @@ func TestClientGivesUpWithItsContext(t *testing.T) {
 		t.Fatalf("ThreadStatus without an answer: %v after %s", err, time.Since(start))
 	}
 }
+
+func TestJoinLeavesOutWhatResolvesDuringTheReplay(t *testing.T) {
+	sock := serve(t, func(c *svctest.Conn, m svctest.Message) {
+		if m.Method != "thread/resume" {
+			return
+		}
+		_ = c.Reply(m.ID, map[string]any{})
+		// Two approvals are replayed; someone answers the first meanwhile.
+		_ = c.Send(map[string]any{"id": 4, "method": codexsvc.CommandApproval, "params": map[string]string{"threadId": "t1"}})
+		_ = c.Send(map[string]any{"id": 5, "method": codexsvc.FileApproval, "params": map[string]string{"threadId": "t1"}})
+		_ = c.Send(map[string]any{"method": "serverRequest/resolved", "params": map[string]any{"threadId": "t1", "requestId": 4}})
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	c, err := codexsvc.Dial(ctx, sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	pending, err := c.Join(ctx, "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 || string(pending[0].ID) != "5" {
+		t.Fatalf("Join = %+v, want only request 5", pending)
+	}
+	// The report Join read still counts for a wait on it.
+	short, cancelShort := context.WithTimeout(ctx, time.Second)
+	defer cancelShort()
+	if err := c.AwaitResolved(short, json.RawMessage("4")); err != nil {
+		t.Fatalf("AwaitResolved(4) = %v", err)
+	}
+}

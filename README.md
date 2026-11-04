@@ -261,8 +261,11 @@ leaves without a word and the dialog alone decides. With `@tmag-answer`
 
 For a thread in Codex's daemon, `answer` joins the thread through the
 daemon's control socket, under the same proof as `send`. The daemon replays
-the approvals still waiting, and tmag answers the one of the request's turn,
-then leaves once the daemon reports it resolved. Codex shows its dialog only
+the approvals still waiting, and tmag answers the one of the request's turn
+that asks about its tool (a command for `Bash` and `write_stdin`, a file
+change for `apply_patch`), then leaves once the daemon reports it resolved.
+Approvals of other tools, such as MCP tools, are answered only in the agent
+(`unsupported`). Codex shows its dialog only
 after its hooks have run, so no hook waits there. A Codex decision carries no
 message, and a Codex session run with `--no-daemon` can be answered only in
 the agent.
@@ -271,9 +274,11 @@ the agent.
 Through the hook it logs `Answer` once the hook has taken the decision, and
 the request closes with it: the event reports the session, working on if
 the prompt was its last. Through the daemon it logs `Answer` before the
-daemon is told, and the request closes when Codex reports what followed (the
-call, or the agent moving on); Codex 0.166 takes `decline` although its
-approvals do not list it. A request answered in the
+daemon is told, still blocked, and the request closes when Codex reports
+what followed (the call, or the agent moving on); Codex 0.166 takes
+`decline` although its approvals do not list it. Of two answers to one
+request at once, one is delivered and the other refused with `changed`. A
+request answered in the
 terminal a moment before may still take one that the agent then ignores;
 what the agent did shows in the events that follow. A sandboxed command's
 network request reaches no hook, and can be answered only in the agent.
@@ -367,7 +372,7 @@ of them is such an event. `event` is the hook's name, or one of:
 | `Detach` | A pane (`pane`) stopped showing the session. |
 | `Send` | `tmag send` delivered a prompt `via` `pane` (then through `pane`) or `service`, from the sending pane `from`, `bytes` long. |
 | `Halt` | `tmag interrupt` delivered an interrupt `via` `pane` (then through `pane`) or `service`, from `from`. For Claude Code it reports the session, now idle. |
-| `Answer` | `tmag answer` delivered a `decision` (`allow` or `deny`) on `request`, `via` `hook` or `service`. Through the hook it reports the session, the request closed. |
+| `Answer` | `tmag answer` delivered a `decision` (`allow` or `deny`) on `request`, `via` `hook` or `service`. It reports the session: through the hook with the request closed, through the service before Codex reports what followed. |
 | `Exit` | The session's process exited without `SessionEnd`; the session is gone. |
 
 A session changes only through events, so a client that applies

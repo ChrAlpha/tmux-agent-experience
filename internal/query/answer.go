@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/adapter"
@@ -165,13 +166,34 @@ func openRequest(v View, s Session, id string) (session.Request, session.Record,
 	return session.Request{}, session.Record{}, false
 }
 
+// approvalOf is the daemon's approval request a Codex PermissionRequest
+// hook's tool asks through, as Codex 0.166 maps them
+// (core/src/tools/approvals.rs): shell commands, their stdin and network
+// access as commands, patches as file changes. Other tools ask in ways tmag
+// cannot answer.
+func approvalOf(tool string) string {
+	switch tool {
+	case "Bash", "write_stdin":
+		return codexsvc.CommandApproval
+	case "apply_patch":
+		return codexsvc.FileApproval
+	}
+	return ""
+}
+
 // pendingApproval joins the thread a request belongs to (a subagent's own,
 // or the session's) and finds the daemon's approval request it is: the one
-// of that thread and turn, told apart by the tool when there are several.
+// of that thread and turn asking about the request's tool. A request stays
+// open after its approval while the tool runs, so another approval of the
+// turn is never taken for it.
 func pendingApproval(ctx context.Context, c *codexsvc.Client, s Session, q session.Request) (string, codexsvc.Message, error) {
 	thread := s.ID
 	if q.Prompt.Agent != "" {
 		thread = q.Prompt.Agent
+	}
+	method := approvalOf(q.Prompt.Tool)
+	if method == "" {
+		return thread, codexsvc.Message{}, &RefusedError{RefuseUnsupported, fmt.Sprintf("request %s of %s asks about tool %q, which Codex approves in a way tmag cannot answer", q.ID, s.ID, q.Prompt.ToolName())}
 	}
 	pending, err := c.Join(ctx, thread)
 	if err != nil {
@@ -179,7 +201,7 @@ func pendingApproval(ctx context.Context, c *codexsvc.Client, s Session, q sessi
 	}
 	var found []codexsvc.Message
 	for _, m := range pending {
-		if m.Method != codexsvc.CommandApproval && m.Method != codexsvc.FileApproval {
+		if m.Method != method {
 			continue
 		}
 		var p struct {
@@ -190,15 +212,6 @@ func pendingApproval(ctx context.Context, c *codexsvc.Client, s Session, q sessi
 			continue
 		}
 		found = append(found, m)
-	}
-	if len(found) > 1 {
-		var byTool []codexsvc.Message
-		for _, m := range found {
-			if (m.Method == codexsvc.CommandApproval) == (q.Prompt.Tool == "Bash") {
-				byTool = append(byTool, m)
-			}
-		}
-		found = byTool
 	}
 	switch len(found) {
 	case 0:
@@ -262,6 +275,9 @@ func answerService(ctx context.Context, log *eventlog.Log, v View, s Session, id
 	}
 	defer func() { _ = c.Leave(ctx, thread) }()
 
+	// The request is taken under the lock, so that of two answers at once
+	// one is delivered and the other refused. It is free again once the
+	// taker has given up: deliveries end within serviceTimeout.
 	store := session.Store{Dir: log.Dir}
 	var dl Delivery
 	err = store.Lock(ctx, s.Agent, s.ID, func() error {
@@ -269,11 +285,18 @@ func answerService(ctx context.Context, log *eventlog.Log, v View, s Session, id
 		if err != nil || !ok {
 			return &RefusedError{RefuseChanged, fmt.Sprintf("%s has ended", s.ID)}
 		}
-		if _, open := rec.Request(id); !open {
+		i := slices.IndexFunc(rec.Requests, func(o session.Request) bool { return o.ID == id })
+		if i < 0 {
 			return &RefusedError{RefuseChanged, fmt.Sprintf("request %s of %s was answered or withdrawn", id, s.ID)}
 		}
-		ev := eventlog.Event{Agent: s.Agent, Session: s.ID, Event: eventlog.Answer, Cwd: rec.Cwd, Via: driver.Service, Request: id, Decision: d.Behavior}
-		if err := log.Append(ctx, &ev); err != nil {
+		now := time.Now()
+		if at := rec.Requests[i].Answered; now.Before(at.Add(serviceTimeout)) {
+			return &RefusedError{RefuseChanged, fmt.Sprintf("request %s of %s is being answered", id, s.ID)}
+		}
+		rec.Requests = slices.Clone(rec.Requests)
+		rec.Requests[i].Answered = now.UTC()
+		ev := eventlog.Event{Event: eventlog.Answer, Via: driver.Service, Request: id, Decision: d.Behavior}
+		if _, err := store.Report(ctx, log, rec, &ev); err != nil {
 			return err
 		}
 		dl = Delivery{Session: s, Via: driver.Service, Seq: ev.Seq}

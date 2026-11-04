@@ -733,7 +733,7 @@ func TestCodexDaemonCarriesAnswers(t *testing.T) {
 		t.Fatalf("answer: %d %s", r.code, r.out)
 	}
 	h.waitSession(sidC, "working")
-	if got := h.eventNames(sidC); !strings.HasSuffix(got, "PermissionRequest:blocked Answer: PostToolUse:working") {
+	if got := h.eventNames(sidC); !strings.HasSuffix(got, "PermissionRequest:blocked Answer:blocked PostToolUse:working") {
 		t.Fatalf("events = %s", got)
 	}
 
@@ -742,8 +742,30 @@ func TestCodexDaemonCarriesAnswers(t *testing.T) {
 		t.Fatalf("deny: %d %s", r.code, r.out)
 	}
 	h.waitSession(sidC, "working")
-	if got := h.eventNames(sidC); !strings.HasSuffix(got, "Answer: PreModelRequest:working") {
+	if got := h.eventNames(sidC); !strings.HasSuffix(got, "Answer:blocked PreModelRequest:working") {
 		t.Fatalf("events after deny = %s", got)
+	}
+
+	// Two answers at once: one is delivered, the other refused.
+	req = blocked()
+	results := make(chan result, 2)
+	for _, decision := range []string{"allow", "deny"} {
+		go func() { results <- h.tmag("", "answer", sidC[:8], req.ID, decision) }()
+	}
+	var codes []int
+	for range 2 {
+		r := <-results
+		if r.code == 3 && !strings.Contains(r.out, "changed") {
+			t.Fatalf("refused for another reason: %s", r.out)
+		}
+		codes = append(codes, r.code)
+	}
+	if slices.Sort(codes); !slices.Equal(codes, []int{0, 3}) {
+		t.Fatalf("two answers at once exited %v", codes)
+	}
+	h.waitSession(sidC, "working")
+	if got := h.eventNames(sidC); strings.Count(got[strings.LastIndex(got, "PermissionRequest:"):], "Answer:") != 1 {
+		t.Fatalf("events after two answers = %s", got)
 	}
 }
 

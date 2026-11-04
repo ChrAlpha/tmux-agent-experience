@@ -491,3 +491,74 @@ func TestAnsweringARequestClosesItsPromptOnce(t *testing.T) {
 		t.Fatal("answering a closed request changed the session")
 	}
 }
+
+func TestReportedDeliveryIsLoggedWhole(t *testing.T) {
+	dir := t.TempDir()
+	s, log := Store{Dir: dir}, eventlog.Open(dir)
+	ctx := context.Background()
+	tr := askFor("", "Bash")
+	tr.Request, tr.Waits = "h1", true
+	asked := play(t, tr)
+	rec, _ := Apply(asked, adapter.Transition{Action: adapter.Answer, Request: "h1"}, t0)
+
+	// A writer that dies after storing what its answer did and before
+	// logging the answer, as Store.Report leaves it.
+	rec.Change = eventlog.Answer
+	rec.Delivery = &eventlog.Event{Event: eventlog.Answer, Via: "hook", Request: "h1", Decision: "allow"}
+	if err := s.Put(rec); err != nil {
+		t.Fatal(err)
+	}
+	stored, _, _ := s.Get(proc.Claude, "s1")
+	settled, _, err := s.Settle(ctx, log, stored)
+	if err != nil || settled.Delivery != nil || settled.Unsettled() {
+		t.Fatalf("Settle = %+v, %v", settled, err)
+	}
+	all, _, _ := log.Since(ctx, 0)
+	if len(all) != 1 {
+		t.Fatalf("events %+v", all)
+	}
+	if ev := all[0]; ev.Event != eventlog.Answer || ev.Via != "hook" || ev.Request != "h1" || ev.Decision != "allow" || ev.State != adapter.Working {
+		t.Fatalf("settled event = %+v", ev)
+	}
+
+	// Report itself leaves nothing behind.
+	ev := eventlog.Event{Event: eventlog.Halt, Via: "pane"}
+	reported, err := s.Report(ctx, log, settled, &ev)
+	if err != nil || ev.Seq == 0 || reported.Delivery != nil || reported.Change != "" {
+		t.Fatalf("Report = %+v, %v (seq %d)", reported, err, ev.Seq)
+	}
+	if stored, _, _ := s.Get(proc.Claude, "s1"); stored.Delivery != nil || stored.Change != "" {
+		t.Fatalf("stored after Report: %+v", stored)
+	}
+}
+
+func TestSettleNamesPromptsAnOlderTmagLeft(t *testing.T) {
+	dir := t.TempDir()
+	s, log := Store{Dir: dir}, eventlog.Open(dir)
+	ctx := context.Background()
+	// A record of tmag 0.1.0: a pending prompt, no requests, logged as such.
+	old := Record{Agent: proc.Codex, ID: "s1", Main: adapter.Working, Turn: "t1", Since: t0,
+		Pending: []adapter.Prompt{{Tool: "Bash"}}}
+	old.Logged = Report{State: old.State(), Kind: old.Kind(), Turn: old.Turn}
+	if err := s.Put(old); err != nil {
+		t.Fatal(err)
+	}
+	stored, _, _ := s.Get(proc.Codex, "s1")
+	if !stored.Unsettled() {
+		t.Fatal("a prompt without a request counts as settled")
+	}
+	settled, _, err := s.Settle(ctx, log, stored)
+	if err != nil || len(settled.Requests) != 1 || settled.Requests[0].Prompt != (adapter.Prompt{Tool: "Bash"}) || settled.Requests[0].Turn != "t1" || settled.Unsettled() {
+		t.Fatalf("Settle = %+v, %v", settled, err)
+	}
+	all, _, _ := log.Since(ctx, 0)
+	if len(all) != 1 || len(all[0].Requests) != 1 || all[0].Requests[0].ID != settled.Requests[0].ID {
+		t.Fatalf("events %+v", all)
+	}
+	// The next Ask about the same prompt keeps the name.
+	tr := askFor("", "Bash")
+	tr.Request = "r2"
+	if again, _ := Apply(settled, tr, t0); len(again.Requests) != 1 || again.Requests[0].ID != settled.Requests[0].ID {
+		t.Fatalf("after another Ask: %+v", again.Requests)
+	}
+}

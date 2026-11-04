@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"os"
 	"strings"
 	"testing"
@@ -89,5 +90,44 @@ func TestWait(t *testing.T) {
 	os.Remove(Path(dir, "r2"))
 	if err := Decide(ctx, dir, "r2", Decision{Behavior: Allow}); !errors.Is(err, ErrGone) {
 		t.Fatalf("deciding a request no hook waits on: %v", err)
+	}
+}
+
+func TestWaitPrintsNothingOnceItEnds(t *testing.T) {
+	dir, err := os.MkdirTemp("", "ans")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	ln, err := Listen(dir, "r1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	var out strings.Builder
+	done := make(chan bool, 1)
+	go func() { done <- Wait(ctx, ln, Asked{Tool: "Bash"}, func(b []byte) error { out.Write(b); return nil }) }()
+
+	// A connection is being served when the hook is told to leave.
+	conn, err := net.Dial("unix", Path(dir, "r1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	time.Sleep(100 * time.Millisecond) // let Wait accept it
+	cancel()
+	_ = json.NewEncoder(conn).Encode(message{Op: "decide", Decision: &Decision{Behavior: Allow}})
+	select {
+	case emitted := <-done:
+		if emitted || out.Len() != 0 {
+			t.Fatalf("after its end the hook printed %q", out.String())
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Wait did not end with its context")
+	}
+	var r reply
+	if err := json.NewDecoder(conn).Decode(&r); err == nil && r.OK {
+		t.Fatal("the decider was told the decision was printed")
 	}
 }

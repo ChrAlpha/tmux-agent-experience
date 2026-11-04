@@ -174,7 +174,8 @@ type reply struct {
 }
 
 // Wait serves the request until a decision is printed through emit, the
-// prompt closes, or ctx ends. It returns whether it emitted a decision.
+// prompt closes, or ctx ends. It returns whether it emitted a decision; once
+// ctx has ended it emits none, even for a connection it was serving.
 func Wait(ctx context.Context, ln net.Listener, a Asked, emit func([]byte) error) bool {
 	stop := context.AfterFunc(ctx, func() { ln.Close() })
 	defer stop()
@@ -183,7 +184,7 @@ func Wait(ctx context.Context, ln net.Listener, a Asked, emit func([]byte) error
 		if err != nil {
 			return false
 		}
-		done, emitted := serve(conn, a, emit)
+		done, emitted := serve(ctx, conn, a, emit)
 		if done {
 			return emitted
 		}
@@ -191,8 +192,10 @@ func Wait(ctx context.Context, ln net.Listener, a Asked, emit func([]byte) error
 }
 
 // serve answers one connection; done says the wait is over.
-func serve(conn net.Conn, a Asked, emit func([]byte) error) (done, emitted bool) {
+func serve(ctx context.Context, conn net.Conn, a Asked, emit func([]byte) error) (done, emitted bool) {
 	defer conn.Close()
+	stop := context.AfterFunc(ctx, func() { conn.Close() })
+	defer stop()
 	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
 	var m message
 	if err := json.NewDecoder(bufio.NewReader(conn)).Decode(&m); err != nil {
@@ -215,6 +218,9 @@ func serve(conn net.Conn, a Asked, emit func([]byte) error) (done, emitted bool)
 		if err != nil {
 			_ = enc.Encode(reply{Error: strings.TrimPrefix(err.Error(), ErrInvalid.Error()+": ")})
 			return false, false
+		}
+		if ctx.Err() != nil {
+			return true, false // the hook is leaving; the connection is closed
 		}
 		if err := emit(out); err != nil {
 			_ = enc.Encode(reply{Error: "printing the decision failed: " + err.Error()})
