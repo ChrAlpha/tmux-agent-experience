@@ -222,7 +222,10 @@ an adapter or the Codex title rules, observe the real thing:
   run instead. This loads the plugin without installing it; add
   `--plugin-dir ./plugins/claude/tmag-peers` for the skill. Your own
   commands run below an agent's process when an agent runs them, so act as
-  the person from outside its tree (`setsid -f`).
+  the person from outside its tree (`setsid -f`). An agent's shell tool may
+  kill what its command leaves running, a tmux server too: keep the command
+  that starts the private server running, in the background, for as long as
+  the check takes.
 - Codex: `tmag` reads the `thread-id` title item of Codex 0.166 (the id's
   first 29 characters and `...`). Hooks load from a project's
   `.codex/hooks.json` once the project and its hooks are trusted; Codex writes
@@ -231,8 +234,11 @@ an adapter or the Codex title rules, observe the real thing:
   `TMAG_STATE_DIR=… tmag hook codex` in the hook command, and expect its hooks
   not to see a tmux server under a private `TMUX_TMPDIR`. To imitate a
   daemon-run hook without Codex, start it outside every pane's process tree
-  (`setsid -f sh -c 'tmag hook codex < payload'`).
-- Transcripts: `internal/transcript` reads Claude Code 2.1.317's JSONL (a
+  (`setsid -f sh -c 'tmag hook codex < payload'`). `codex --no-daemon` runs
+  hooks in its own environment, so in the private server an installed `tmag`
+  plugin's hooks run the scratch build, and the skill loads from the
+  project's `.agents/skills/peers`, a copy of the Codex plugin's.
+- Transcripts: `internal/transcript` reads Claude Code 2.1.318's JSONL (a
   line per content block, each user entry's `promptId` the hooks'
   `prompt_id`) and Codex 0.166's rollout (`task_complete` with `turn_id` and
   `last_agent_message`). Before changing it, run a turn and check that
