@@ -6,8 +6,10 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/binpath"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/hook"
 )
 
 // manifests are the agent plugins' manifests: the hooks plugin tmag and the
@@ -85,6 +87,7 @@ func TestMarketplaces(t *testing.T) {
 
 // The agent plugins run exactly binpath.HookCommand for every hook, except
 // Claude Code's PermissionRequest, which runs binpath.AnswerHookCommand.
+// Every timeout leaves the hook its whole hook.Deadline.
 func TestPluginHooksUseHookCommand(t *testing.T) {
 	for agent, path := range map[string]string{
 		"claude": "plugins/claude/tmag/hooks/hooks.json",
@@ -109,9 +112,16 @@ func TestPluginHooksUseHookCommand(t *testing.T) {
 			for _, g := range groups {
 				for _, h := range g.Hooks {
 					want, timeout := binpath.HookCommand(agent), 10
-					if agent == "claude" && event == "PermissionRequest" {
+					switch {
+					case agent == "claude" && event == "PermissionRequest":
 						// It waits for an answer as long as Claude lets it.
 						want, timeout = binpath.AnswerHookCommand(agent), 600
+					case agent == "codex" && (event == "SessionEnd" || event == "Interrupt"):
+						// Codex 0.166 caps these at 3 s and warns about more.
+						timeout = 3
+					}
+					if time.Duration(timeout)*time.Second < hook.Deadline {
+						t.Errorf("%s %s: timeout %d s is shorter than hook.Deadline", path, event, timeout)
 					}
 					if h.Command != want || h.Timeout != timeout {
 						t.Errorf("%s %s: command %q, timeout %d", path, event, h.Command, h.Timeout)

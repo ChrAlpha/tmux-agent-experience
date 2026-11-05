@@ -108,7 +108,7 @@
           {
             "type": "command",
             "command": "for r in \"${TMUX_PLUGIN_MANAGER_PATH%/}\" \"$HOME/.tmux/plugins\" \"${XDG_CONFIG_HOME:-$HOME/.config}/tmux/plugins\"; do case $r in /*) t=\"$r/tmux-agent-experience/bin/tmag\"; [ -x \"$t\" ] && exec \"$t\" hook codex 2>/dev/null;; esac; done; t=$(command -v tmag) && exec \"$t\" hook codex 2>/dev/null; exit 0",
-            "timeout": 10
+            "timeout": 3
           }
         ]
       }
@@ -119,7 +119,7 @@
           {
             "type": "command",
             "command": "for r in \"${TMUX_PLUGIN_MANAGER_PATH%/}\" \"$HOME/.tmux/plugins\" \"${XDG_CONFIG_HOME:-$HOME/.config}/tmux/plugins\"; do case $r in /*) t=\"$r/tmux-agent-experience/bin/tmag\"; [ -x \"$t\" ] && exec \"$t\" hook codex 2>/dev/null;; esac; done; t=$(command -v tmag) && exec \"$t\" hook codex 2>/dev/null; exit 0",
-            "timeout": 10
+            "timeout": 3
           }
         ]
       }
