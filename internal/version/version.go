@@ -2,7 +2,7 @@
 package version
 
 // Version is the tmag release version. Plugin manifests must carry the same value.
-const Version = "0.1.0"
+const Version = "0.2.0"
 
 // Schema names the JSON contract emitted by every machine-readable command.
 const Schema = "tmag/v1"
