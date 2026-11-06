@@ -434,7 +434,8 @@ Each device you use pairs once. On the machine itself, open the address the
 window shows: it carries the token after `#`. On a phone, open the page
 through the tunnel and enter the six-digit code the window shows; a code pairs
 one device, and the window shows a new one after each use, after ten minutes,
-or after five wrong tries. The page keeps the token in the browser's storage
+or after five wrong tries. After a wrong code, the next try waits, twice as
+long each time. The page keeps the token in the browser's storage
 for its address, and sends it with every request: a tunnel's login alone is
 what any process on the machine could claim. On an iPhone, add the page to
 the Home Screen first and pair it there, since an app on the Home Screen keeps

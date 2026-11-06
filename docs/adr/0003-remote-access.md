@@ -68,7 +68,9 @@ host and set the tunnel's headers. So:
   serve's window shows, and receives the token. A code pairs one device,
   lasts ten minutes, and gives way to a new one after five wrong tries, each
   shown in the window, so only someone who can see that window pairs a
-  device. The page keeps the token in its origin's storage and sends it as a
+  device. Each wrong try makes the next one wait twice as long as the last,
+  from five seconds up to an hour, so guessing through code after code takes
+  longer than anyone waits. The page keeps the token in its origin's storage and sends it as a
   header: no other page, and no other port of the machine, can make the
   browser send it, and no other site can make it be sent at all.
 - **A tunnel adds its proof of the owner.** A request under a host name

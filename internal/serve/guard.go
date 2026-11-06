@@ -110,12 +110,16 @@ func loopback(host string) bool {
 // Pairing hands a device the token for a code from tmag serve's window: so
 // that a phone gets it only from someone who can see that window. A code
 // pairs one device, lasts ten minutes, and gives way to a new one after five
-// wrong tries, each new code shown in the window.
+// wrong tries, each new code shown in the window. Every wrong try makes the
+// next one wait, twice as long each time, so that guessing through code
+// after code takes longer than anyone waits; a device that pairs resets it.
 type pairing struct {
 	mu       sync.Mutex
 	code     string
 	expires  time.Time
-	attempts int
+	attempts int // wrong tries of this code
+	failures int // wrong tries since the last device paired
+	until    time.Time
 	now      func() time.Time
 	show     func(code, why string)
 }
@@ -123,6 +127,8 @@ type pairing struct {
 const (
 	pairCodeLife = 10 * time.Minute
 	pairAttempts = 5
+	pairWait     = 5 * time.Second
+	pairWaitMax  = time.Hour
 )
 
 func newPairing(show func(code, why string)) *pairing {
@@ -160,14 +166,20 @@ func (p *pairing) Code() string {
 func (p *pairing) try(code, from string) (bool, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if wait := p.until.Sub(p.now()); wait > 0 {
+		return false, fmt.Errorf("after a wrong code, try again in %s", wait.Round(time.Second))
+	}
 	switch {
 	case p.now().After(p.expires):
 		p.renew("the last code expired")
 		return false, errors.New("that code expired; tmag serve's window shows a new one")
 	case subtle.ConstantTimeCompare([]byte(code), []byte(p.code)) == 1:
+		p.failures = 0
 		p.renew(fmt.Sprintf("a device paired through %q", from))
 		return true, nil
 	}
+	p.failures++
+	p.until = p.now().Add(min(pairWait<<min(p.failures-1, 20), pairWaitMax))
 	if p.attempts++; p.attempts >= pairAttempts {
 		p.renew(fmt.Sprintf("%d wrong codes were tried", pairAttempts))
 		return false, errors.New("too many wrong codes; tmag serve's window shows a new one")

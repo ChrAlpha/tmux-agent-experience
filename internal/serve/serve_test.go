@@ -137,7 +137,15 @@ func TestPairing(t *testing.T) {
 	p := newPairing(func(code, why string) { shown = append(shown, why) })
 	p.now = func() time.Time { return now }
 	first := p.Code()
-	for i := range pairAttempts - 1 {
+	// Each wrong try makes the next one wait, twice as long each time.
+	if ok, _ := p.try("x", "here"); ok {
+		t.Fatal("a wrong code paired")
+	}
+	if ok, err := p.try(first, "here"); ok || !strings.Contains(err.Error(), "try again in 5s") {
+		t.Fatalf("right after a wrong try: %v %v", ok, err)
+	}
+	for i := 1; i < pairAttempts-1; i++ {
+		now = now.Add(pairWait << i)
 		if ok, _ := p.try("x", "here"); ok {
 			t.Fatalf("wrong code %d paired", i)
 		}
@@ -145,13 +153,25 @@ func TestPairing(t *testing.T) {
 	if p.Code() != first {
 		t.Fatal("the code changed before too many wrong tries")
 	}
+	now = now.Add(time.Minute)
 	if ok, err := p.try("x", "here"); ok || !strings.Contains(err.Error(), "too many") || p.Code() == first {
 		t.Fatalf("the last wrong try: %v, code %s", err, p.Code())
 	}
+	if _, err := p.try("x", "here"); err == nil || !strings.Contains(err.Error(), "try again in 1m20s") {
+		t.Fatalf("the wait after five wrong tries: %v", err)
+	}
 	second := p.Code()
+	now = now.Add(2 * time.Minute)
 	if ok, err := p.try(second, "here"); !ok || err != nil || p.Code() == second {
 		t.Fatalf("the right code: %v, %v; a code pairs one device", ok, err)
 	}
+	if ok, _ := p.try("x", "here"); ok {
+		t.Fatal("a wrong code paired")
+	}
+	if _, err := p.try("x", "here"); err == nil || !strings.Contains(err.Error(), "try again in 5s") {
+		t.Fatalf("a device that paired resets the wait: %v", err)
+	}
+	now = now.Add(pairWait)
 	third := p.Code()
 	now = now.Add(pairCodeLife + time.Second)
 	if ok, err := p.try(third, "here"); ok || !strings.Contains(err.Error(), "expired") {
@@ -328,6 +348,8 @@ func TestPageAndAPIAreForTheOwnerOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	clock := time.Now()
+	s.pair.now = func() time.Time { return clock }
 	hs2 := httptest.NewServer(s)
 	defer hs2.Close()
 	pair := func(code string) *http.Response {
@@ -344,6 +366,7 @@ func TestPageAndAPIAreForTheOwnerOnly(t *testing.T) {
 	if res := pair("000000x"); res.StatusCode != http.StatusForbidden {
 		t.Fatalf("a wrong code: %s", res.Status)
 	}
+	clock = clock.Add(pairWait)
 	code := s.PairingCode()
 	res = pair(code)
 	var got struct{ Token string }
