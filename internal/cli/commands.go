@@ -257,6 +257,20 @@ func (a *app) cmdWatch(args []string) int {
 	defer cancel()
 	ctx, stop := context.WithCancelCause(ctx)
 	defer stop(nil)
+	// A reader that goes away without a word, as a client over ssh does when
+	// its connection drops, would otherwise go unnoticed until the next
+	// write, which may not come for hours.
+	if f, ok := a.stdout.(*os.File); ok {
+		if gone := hangup(f, ctx.Done()); gone != nil {
+			go func() {
+				select {
+				case <-gone:
+					stop(errReaderGone)
+				case <-ctx.Done():
+				}
+			}()
+		}
+	}
 
 	out := bufio.NewWriter(a.stdout)
 	enc := json.NewEncoder(out)
@@ -366,7 +380,7 @@ func (a *app) cmdWatch(args []string) int {
 }
 
 func (a *app) watchEnd(err error) int {
-	if err != nil && !errors.Is(err, context.Canceled) && !isClosedPipe(err) {
+	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, errReaderGone) && !isClosedPipe(err) {
 		return a.fail("watch", err)
 	}
 	return ExitOK

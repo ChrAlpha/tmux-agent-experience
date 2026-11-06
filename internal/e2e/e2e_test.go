@@ -984,6 +984,101 @@ func TestWatchReportsWhatChangesWithoutHooks(t *testing.T) {
 	w.stop()
 }
 
+// A client that goes away without a word, as a phone does when its ssh
+// connection drops, must not leave a watch running on the host: with nothing
+// to send, watch would learn of it only from its next write.
+func TestWatchEndsWhenItsReaderGoesAway(t *testing.T) {
+	h := start(t)
+	tmag := filepath.Join(bin, "tmag")
+
+	// A pipe, as in `ssh host tmag watch | client`.
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	piped := exec.Command(tmag, "watch")
+	piped.Stdout = w
+	if err := piped.Start(); err != nil {
+		t.Fatal(err)
+	}
+	w.Close()
+	if line := readLine(t, bufio.NewReader(r)); !strings.Contains(line, `"type":"snapshot"`) {
+		t.Fatalf("first line = %q", line)
+	}
+	r.Close()
+	exited(t, piped, "after the reader closed its pipe")
+
+	// One socket for input and output, as sshd runs a command without a
+	// terminal. The end of the client's input reaches it as a half-close,
+	// which is no hang-up. Neither end may leak into the watch, which would
+	// then hold the client's end open itself.
+	syscall.ForkLock.RLock()
+	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
+	if err == nil {
+		syscall.CloseOnExec(fds[0])
+		syscall.CloseOnExec(fds[1])
+	}
+	syscall.ForkLock.RUnlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	theirs, ours := os.NewFile(uintptr(fds[0]), "watch"), os.NewFile(uintptr(fds[1]), "client")
+	socketed := exec.Command(tmag, "watch")
+	socketed.Stdin, socketed.Stdout = theirs, theirs
+	if err := socketed.Start(); err != nil {
+		t.Fatal(err)
+	}
+	theirs.Close()
+	lines := bufio.NewReader(ours)
+	if line := readLine(t, lines); !strings.Contains(line, `"type":"snapshot"`) {
+		t.Fatalf("first line = %q", line)
+	}
+	if err := syscall.Shutdown(fds[1], syscall.SHUT_WR); err != nil {
+		t.Fatal(err)
+	}
+	h.externalHook("claude", map[string]any{"hook_event_name": "Stop", "session_id": sidA, "cwd": h.dir})
+	if line := readLine(t, lines); !strings.Contains(line, sidA) {
+		t.Fatalf("after the end of its input, watch sent %q", line)
+	}
+	ours.Close()
+	exited(t, socketed, "after the client disconnected its socket")
+}
+
+// readLine reads one line, failing after a few seconds without one.
+func readLine(t *testing.T, r *bufio.Reader) string {
+	t.Helper()
+	ch := make(chan string, 1)
+	go func() {
+		line, _ := r.ReadString('\n')
+		ch <- line
+	}()
+	select {
+	case line := <-ch:
+		return line
+	case <-time.After(5 * time.Second):
+		t.Fatal("no line within 5s")
+	}
+	return ""
+}
+
+// exited fails unless the watch ends on its own, successfully, within a few
+// seconds.
+func exited(t *testing.T, cmd *exec.Cmd, when string) {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("watch ended with %v %s", err, when)
+		}
+	case <-time.After(5 * time.Second):
+		_ = cmd.Process.Kill()
+		<-done
+		t.Fatalf("watch still ran 5s %s", when)
+	}
+}
+
 func TestRestartedAgentDoesNotInheritTheSession(t *testing.T) {
 	h := start(t)
 	out := filepath.Join(h.dir, "received")

@@ -480,7 +480,10 @@ replays what was missed
 and sends the pane list, or starts over with a new snapshot if those events
 were already rotated away.
 
-Over SSH, a remote client needs nothing else: `ssh host tmag watch`.
+Over SSH, a remote client needs nothing else: `ssh host tmag watch`. A watch
+ends as soon as nobody reads it, even with nothing to send: when its reader
+closes the pipe, or when the connection of a command ssh runs without a
+terminal drops.
 
 Sequence numbers increase across the life of the state directory and start from
 the current time when it is created, so a cursor kept from before
