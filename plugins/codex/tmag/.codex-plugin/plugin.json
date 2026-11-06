@@ -1,6 +1,6 @@
 {
   "name": "tmag",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Reports Codex thread state to tmag so tmux, other agents and remote clients can see it. Runs the tmag binary of the tmux-agent-experience tmux plugin.",
   "hooks": "./hooks/hooks.json",
   "interface": {
