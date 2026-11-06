@@ -17,7 +17,7 @@ import (
 
 var (
 	serveAddress = regexp.MustCompile(`http://(127\.0\.0\.1:\d+)/#token=([0-9a-f]+)`)
-	pairingCode  = regexp.MustCompile(`enter (\d{6})`)
+	pairingCode  = regexp.MustCompile(`enter ([0-9A-Z]{4}-[0-9A-Z]{4}-[0-9A-Z]{4})`)
 )
 
 // tmag serve runs in a tmux window as prefix + M-r opens it, serves the page
@@ -184,7 +184,7 @@ func TestServeCarriesThePageVerbs(t *testing.T) {
 		b, _ := io.ReadAll(res.Body)
 		return res.StatusCode, string(b)
 	}
-	if code, body := tailscale(http.MethodGet, "/api/machines", "me@example.com", "", ""); code != http.StatusForbidden {
+	if code, body := tailscale(http.MethodGet, "/api/machines", "me@example.com", "", ""); code != http.StatusUnauthorized {
 		t.Fatalf("the owner's login without a token: %d %s", code, body)
 	}
 	if code, body := tailscale(http.MethodGet, "/api/machines", "eve@example.com", token, ""); code != http.StatusForbidden {

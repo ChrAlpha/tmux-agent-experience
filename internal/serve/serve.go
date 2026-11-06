@@ -134,14 +134,25 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.guard.entry(r); err != nil {
-		http.Error(w, "forbidden: "+err.Error(), http.StatusForbidden)
+		refuse(w, http.StatusForbidden, "forbidden", err.Error())
 		return
 	}
+	// A device without the token, alone, is told so with its own status: the
+	// page forgets a token only then, not when a tunnel's check fails for a
+	// moment.
 	if !page[r.URL.Path] && !s.guard.hasToken(r) {
-		http.Error(w, "forbidden: "+errToken.Error(), http.StatusForbidden)
+		refuse(w, http.StatusUnauthorized, "token", errToken.Error())
 		return
 	}
 	s.mux.ServeHTTP(w, r)
+}
+
+// refuse answers with an error document, as tmag's commands do.
+func refuse(w http.ResponseWriter, status int, code, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]any{"schema": "tmag/v1", "error": map[string]string{"code": code, "message": message}})
 }
 
 func (s *Server) asset(w http.ResponseWriter, r *http.Request) {
@@ -155,6 +166,10 @@ func (s *Server) asset(w http.ResponseWriter, r *http.Request) {
 // pairDevice gives the token to a device that sends the code tmag serve
 // shows. Like an action, it takes only a JSON body from the page's origin.
 func (s *Server) pairDevice(w http.ResponseWriter, r *http.Request) {
+	if local(r) {
+		refuse(w, http.StatusForbidden, "pairing", "on this machine, open the address tmag serve shows; a phone pairs through a tunnel")
+		return
+	}
 	if !jsonFromPage(w, r) {
 		return
 	}
@@ -165,15 +180,14 @@ func (s *Server) pairDevice(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	ok, err := s.pair.try(strings.TrimSpace(body.Code), hostName(r.Host))
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "no-store")
+	ok, err := s.pair.try(body.Code, hostName(r.Host))
 	if !ok {
 		s.cfg.Log.Printf("pairing refused through %q: %v", hostName(r.Host), err)
-		w.WriteHeader(http.StatusForbidden)
-		_ = json.NewEncoder(w).Encode(map[string]any{"schema": "tmag/v1", "error": map[string]string{"code": "pairing", "message": err.Error()}})
+		refuse(w, http.StatusForbidden, "pairing", err.Error())
 		return
 	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
 	_ = json.NewEncoder(w).Encode(map[string]string{"token": s.cfg.Token})
 }
 

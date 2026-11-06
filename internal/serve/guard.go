@@ -63,7 +63,7 @@ type guard struct {
 func (g guard) entry(r *http.Request) error {
 	host := hostName(r.Host)
 	switch {
-	case loopback(host) && !forwarded(r):
+	case local(r):
 		return nil
 	case slices.Contains(g.tailscale, host):
 		if who := r.Header.Get("Tailscale-User-Login"); who != "" && strings.EqualFold(who, g.owner) {
@@ -85,6 +85,10 @@ func (g guard) hasToken(r *http.Request) bool {
 	t := r.Header.Get(tokenHeader)
 	return t != "" && subtle.ConstantTimeCompare([]byte(t), []byte(g.token)) == 1
 }
+
+// local reports whether a request comes straight from this machine: a
+// loopback host name and no forwarding header.
+func local(r *http.Request) bool { return loopback(hostName(r.Host)) && !forwarded(r) }
 
 func forwarded(r *http.Request) bool {
 	return slices.ContainsFunc(forwardingHeaders, func(h string) bool { return r.Header.Get(h) != "" })
@@ -108,28 +112,23 @@ func loopback(host string) bool {
 }
 
 // Pairing hands a device the token for a code from tmag serve's window: so
-// that a phone gets it only from someone who can see that window. A code
-// pairs one device, lasts ten minutes, and gives way to a new one after five
-// wrong tries, each new code shown in the window. Every wrong try makes the
-// next one wait, twice as long each time, so that guessing through code
-// after code takes longer than anyone waits; a device that pairs resets it.
+// that a phone gets it only from someone who can see that window. A code is
+// twelve characters of Crockford's base32, about 60 bits, too many to guess
+// through however fast one tries, so a wrong try costs nothing but itself and
+// locks nobody out. A code pairs one device and lasts ten minutes; each new
+// code is shown in the window.
 type pairing struct {
-	mu       sync.Mutex
-	code     string
-	expires  time.Time
-	attempts int // wrong tries of this code
-	failures int // wrong tries since the last device paired
-	until    time.Time
-	now      func() time.Time
-	show     func(code, why string)
+	mu      sync.Mutex
+	code    string // normalized: twelve symbols, no dashes
+	expires time.Time
+	now     func() time.Time
+	show    func(code, why string)
 }
 
-const (
-	pairCodeLife = 10 * time.Minute
-	pairAttempts = 5
-	pairWait     = 5 * time.Second
-	pairWaitMax  = time.Hour
-)
+const pairCodeLife = 10 * time.Minute
+
+// crockford is Crockford's base32 alphabet: no I, L, O or U to misread.
+const crockford = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 
 func newPairing(show func(code, why string)) *pairing {
 	p := &pairing{now: time.Now, show: show}
@@ -139,50 +138,64 @@ func newPairing(show func(code, why string)) *pairing {
 
 // renew draws a new code and shows it, saying why the last one went.
 func (p *pairing) renew(why string) {
-	n, err := rand.Int(rand.Reader, big.NewInt(1_000_000))
-	if err != nil {
-		panic(err) // crypto/rand does not fail on supported platforms
+	var b [12]byte
+	for i := range b {
+		n, err := rand.Int(rand.Reader, big.NewInt(int64(len(crockford))))
+		if err != nil {
+			panic(err) // crypto/rand does not fail on supported platforms
+		}
+		b[i] = crockford[n.Int64()]
 	}
-	p.code = fmt.Sprintf("%06d", n.Int64())
+	p.code = string(b[:])
 	p.expires = p.now().Add(pairCodeLife)
-	p.attempts = 0
 	if p.show != nil {
-		p.show(p.code, why)
+		p.show(grouped(p.code), why)
 	}
 }
 
-// Code is the code that pairs a device now.
+// grouped writes a code as people read it: XXXX-XXXX-XXXX.
+func grouped(code string) string { return code[:4] + "-" + code[4:8] + "-" + code[8:] }
+
+// normalized reads a code as people type it: in either case, with dashes or
+// spaces, O for 0 and I or L for 1.
+func normalized(code string) string {
+	var b strings.Builder
+	for _, c := range strings.ToUpper(code) {
+		switch c {
+		case '-', ' ':
+		case 'O':
+			b.WriteRune('0')
+		case 'I', 'L':
+			b.WriteRune('1')
+		default:
+			b.WriteRune(c)
+		}
+	}
+	return b.String()
+}
+
+// Code is the code that pairs a device now, as people read it.
 func (p *pairing) Code() string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.now().After(p.expires) {
 		p.renew("the last code expired")
 	}
-	return p.code
+	return grouped(p.code)
 }
 
-// try reports whether code pairs a device, which asks through from; it uses
-// up the code either way it ends: paired, expired, or tried too often.
+// try reports whether code pairs a device, which asks through from. A code
+// pairs one device: a new one replaces it once it has.
 func (p *pairing) try(code, from string) (bool, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if wait := p.until.Sub(p.now()); wait > 0 {
-		return false, fmt.Errorf("after a wrong code, try again in %s", wait.Round(time.Second))
-	}
-	switch {
-	case p.now().After(p.expires):
+	if p.now().After(p.expires) {
 		p.renew("the last code expired")
 		return false, errors.New("that code expired; tmag serve's window shows a new one")
-	case subtle.ConstantTimeCompare([]byte(code), []byte(p.code)) == 1:
-		p.failures = 0
-		p.renew(fmt.Sprintf("a device paired through %q", from))
-		return true, nil
 	}
-	p.failures++
-	p.until = p.now().Add(min(pairWait<<min(p.failures-1, 20), pairWaitMax))
-	if p.attempts++; p.attempts >= pairAttempts {
-		p.renew(fmt.Sprintf("%d wrong codes were tried", pairAttempts))
-		return false, errors.New("too many wrong codes; tmag serve's window shows a new one")
+	if subtle.ConstantTimeCompare([]byte(normalized(code)), []byte(p.code)) != 1 {
+		return false, errors.New("wrong code")
 	}
-	return false, errors.New("wrong code")
+	p.renew(fmt.Sprintf("a device paired through %q", from))
+	return true, nil
 }

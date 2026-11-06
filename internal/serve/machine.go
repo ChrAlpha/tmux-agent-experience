@@ -49,10 +49,12 @@ func (m Machine) command(ctx context.Context, args ...string) *exec.Cmd {
 	}
 	argv := append(slices.Clone(m.Argv), args...)
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
-	// In a process group of its own, so that what a wrapper script starts,
-	// ssh and the watch at the other end with it, ends with the command. Let
-	// tmag, or ssh, end on its own terms first.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// In a session of its own: it has no terminal to ask anything on, so a
+	// machine that would prompt (an unknown host key, a password) fails at
+	// once and says why, rather than waiting unseen; and what a wrapper script
+	// starts, ssh and the watch at the other end with it, ends with the
+	// command. Let tmag, or ssh, end on its own terms first.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM) }
 	cmd.WaitDelay = 2 * time.Second
 	return cmd

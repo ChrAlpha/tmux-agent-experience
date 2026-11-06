@@ -432,18 +432,20 @@ the application's audience tag, and admits your email only.
 
 Each device you use pairs once. On the machine itself, open the address the
 window shows: it carries the token after `#`. On a phone, open the page
-through the tunnel and enter the six-digit code the window shows; a code pairs
-one device, and the window shows a new one after each use, after ten minutes,
-or after five wrong tries. After a wrong code, the next try waits, twice as
-long each time. The page keeps the token in the browser's storage
+through the tunnel and enter the code the window shows, twelve letters and
+digits; a code pairs one device, and the window shows a new one after each
+use and after ten minutes. The page keeps the token in the browser's storage
 for its address, and sends it with every request: a tunnel's login alone is
-what any process on the machine could claim. On an iPhone, add the page to
+what any process on the machine could claim. Give `tmag serve` a host name of
+its own: another page under the same host name could read that storage. On an iPhone, add the page to
 the Home Screen first and pair it there, since an app on the Home Screen keeps
 storage of its own. To unpair every device, delete `serve.token` in tmag's
 state directory and open `tmag serve` again.
 
 Agents on other machines show on the same page: name each with the command
-that runs tmag there, without `-t` for ssh.
+that runs tmag there. It gets no terminal, so it must not ask anything: for
+ssh, a key and a known host, and no `-t`. One that asks fails at once, and
+the page shows why.
 
 ```tmux
 set -g @tmag-serve '--tailscale box.tail1234.ts.net --owner you@example.com --machine "laptop=ssh laptop tmag" --machine "dev=docker exec -i dev tmag"'

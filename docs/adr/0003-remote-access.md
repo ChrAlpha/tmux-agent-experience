@@ -47,7 +47,9 @@ runs), closing the window stops it. Nothing else is resident: the invariant
 - **Machines are commands.** The local machine is serve's own binary; another
   is the command that runs tmag there, such as `ssh box tmag` or
   `docker exec -i dev tmag`. Nothing runs on those machines beyond those
-  commands, for as long as a page watches.
+  commands, for as long as a page watches. Each runs in a session of its own,
+  without a terminal: one that would ask something fails at once and the page
+  says why, and whatever it started ends with it.
 - **It stores nothing** but the token that admits the person's devices, in
   the state directory.
   A request's input, a reply and a pane's text are fetched when the page asks
@@ -64,13 +66,13 @@ host and set the tunnel's headers. So:
 - **Every request for data carries the token** in a header, `X-Tmag-Token`.
   The token is a secret in the state directory. The browser on this machine
   gets it in the address serve prints, after `#`, which the browser keeps to
-  itself. A phone gets it by **pairing**: it sends a six-digit code that
-  serve's window shows, and receives the token. A code pairs one device,
-  lasts ten minutes, and gives way to a new one after five wrong tries, each
-  shown in the window, so only someone who can see that window pairs a
-  device. Each wrong try makes the next one wait twice as long as the last,
-  from five seconds up to an hour, so guessing through code after code takes
-  longer than anyone waits. The page keeps the token in its origin's storage and sends it as a
+  itself. A phone gets it by **pairing**: through a tunnel, it sends the code
+  serve's window shows, and receives the token, so only someone who can see
+  that window pairs a device. A code is twelve characters of Crockford's
+  base32, about 60 bits: too many to guess at any speed, so a wrong try costs
+  nothing but itself, and nobody can lock the person out by trying. A code
+  pairs one device and lasts ten minutes; each new one is shown in the
+  window. The page keeps the token in its origin's storage and sends it as a
   header: no other page, and no other port of the machine, can make the
   browser send it, and no other site can make it be sent at all.
 - **A tunnel adds its proof of the owner.** A request under a host name
@@ -168,6 +170,9 @@ no hang-up).
   and with requests other sites start, so another service on the machine
   would receive it, and a page elsewhere could start a watch through the
   tunnel with it.
+- **A short code with a lockout.** Six digits need a limit on wrong tries,
+  and any process that reaches loopback could spend that limit and keep the
+  person from pairing.
 - **Proving the tunnel by the connecting process** (its user, from the
   socket table). Containers that share the host's network commonly run as
   the same user id, and macOS has no cheap way to tell; a secret the person

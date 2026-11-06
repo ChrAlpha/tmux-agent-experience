@@ -136,48 +136,30 @@ func TestPairing(t *testing.T) {
 	now := time.Now()
 	p := newPairing(func(code, why string) { shown = append(shown, why) })
 	p.now = func() time.Time { return now }
-	first := p.Code()
-	// Each wrong try makes the next one wait, twice as long each time.
-	if ok, _ := p.try("x", "here"); ok {
-		t.Fatal("a wrong code paired")
+	code := p.Code()
+	if len(code) != 14 || code[4] != '-' || code[9] != '-' {
+		t.Fatalf("code %q is not XXXX-XXXX-XXXX", code)
 	}
-	if ok, err := p.try(first, "here"); ok || !strings.Contains(err.Error(), "try again in 5s") {
-		t.Fatalf("right after a wrong try: %v %v", ok, err)
-	}
-	for i := 1; i < pairAttempts-1; i++ {
-		now = now.Add(pairWait << i)
-		if ok, _ := p.try("x", "here"); ok {
-			t.Fatalf("wrong code %d paired", i)
+	// A wrong try costs nothing but itself: nobody can lock the person out.
+	for range 100 {
+		if ok, _ := p.try("0000-0000-0000", "box"); ok {
+			t.Fatal("a wrong code paired")
 		}
 	}
-	if p.Code() != first {
-		t.Fatal("the code changed before too many wrong tries")
+	// As a phone's keyboard types it: lower case, no dashes, o for 0, l for 1.
+	typed := strings.NewReplacer("-", "", "0", "o", "1", "l").Replace(strings.ToLower(code))
+	if ok, err := p.try(typed, "box"); !ok || err != nil {
+		t.Fatalf("the right code, typed %q: %v %v", typed, ok, err)
 	}
-	now = now.Add(time.Minute)
-	if ok, err := p.try("x", "here"); ok || !strings.Contains(err.Error(), "too many") || p.Code() == first {
-		t.Fatalf("the last wrong try: %v, code %s", err, p.Code())
+	if ok, _ := p.try(code, "box"); ok || p.Code() == code {
+		t.Fatal("a code paired a second device")
 	}
-	if _, err := p.try("x", "here"); err == nil || !strings.Contains(err.Error(), "try again in 1m20s") {
-		t.Fatalf("the wait after five wrong tries: %v", err)
-	}
-	second := p.Code()
-	now = now.Add(2 * time.Minute)
-	if ok, err := p.try(second, "here"); !ok || err != nil || p.Code() == second {
-		t.Fatalf("the right code: %v, %v; a code pairs one device", ok, err)
-	}
-	if ok, _ := p.try("x", "here"); ok {
-		t.Fatal("a wrong code paired")
-	}
-	if _, err := p.try("x", "here"); err == nil || !strings.Contains(err.Error(), "try again in 5s") {
-		t.Fatalf("a device that paired resets the wait: %v", err)
-	}
-	now = now.Add(pairWait)
-	third := p.Code()
+	next := p.Code()
 	now = now.Add(pairCodeLife + time.Second)
-	if ok, err := p.try(third, "here"); ok || !strings.Contains(err.Error(), "expired") {
+	if ok, err := p.try(next, "box"); ok || !strings.Contains(err.Error(), "expired") {
 		t.Fatalf("an expired code: %v %v", ok, err)
 	}
-	if len(shown) != 4 || shown[0] != "" {
+	if len(shown) != 3 || shown[0] != "" || !strings.Contains(shown[1], `"box"`) || !strings.Contains(shown[2], "expired") {
 		t.Fatalf("codes shown, by reason: %q", shown)
 	}
 }
@@ -327,7 +309,7 @@ func TestPageAndAPIAreForTheOwnerOnly(t *testing.T) {
 	if res.StatusCode != http.StatusOK || !strings.Contains(string(body), "/app.js") || !strings.Contains(res.Header.Get("Content-Security-Policy"), "frame-ancestors 'none'") {
 		t.Fatalf("page: %s %s", res.Status, body)
 	}
-	if res := call(http.MethodGet, "/api/machines", "", nil); res.StatusCode != http.StatusForbidden {
+	if res := call(http.MethodGet, "/api/machines", "", nil); res.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("without the token: %s", res.Status)
 	}
 	if res := call(http.MethodGet, "/api/machines", "", map[string]string{tokenHeader: token}); res.StatusCode != http.StatusOK {
@@ -336,11 +318,19 @@ func TestPageAndAPIAreForTheOwnerOnly(t *testing.T) {
 	// A process on this machine that names the tunnel's host and the owner's
 	// login gets nothing without the token.
 	tailscale := map[string]string{"Host": "box.tail1234.ts.net", "Tailscale-User-Login": "me@example.com"}
-	if res := call(http.MethodGet, "/api/machines", "", tailscale); res.StatusCode != http.StatusForbidden {
+	if res := call(http.MethodGet, "/api/machines", "", tailscale); res.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("Tailscale's headers without the token: %s", res.Status)
 	}
-	if res := call(http.MethodPost, "/api/act", `{"machine":"here","verb":"interrupt","target":"s1"}`, map[string]string{"Host": "box.tail1234.ts.net", "Tailscale-User-Login": "me@example.com", "Content-Type": "application/json"}); res.StatusCode != http.StatusForbidden {
+	if res := call(http.MethodPost, "/api/act", `{"machine":"here","verb":"interrupt","target":"s1"}`, map[string]string{"Host": "box.tail1234.ts.net", "Tailscale-User-Login": "me@example.com", "Content-Type": "application/json"}); res.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("an action with Tailscale's headers and no token: %s", res.Status)
+	}
+	// A tunnel's check that fails is not the token's: the page keeps it.
+	if res := call(http.MethodGet, "/api/machines", "", map[string]string{"Host": "box.tail1234.ts.net", tokenHeader: token}); res.StatusCode != http.StatusForbidden {
+		t.Fatalf("a token without the tunnel's login: %s", res.Status)
+	}
+	// On this machine, the address serve prints gives the token: no pairing.
+	if res := call(http.MethodPost, "/api/pair", `{"code":"x"}`, map[string]string{"Content-Type": "application/json"}); res.StatusCode != http.StatusForbidden {
+		t.Fatalf("pairing on this machine: %s", res.Status)
 	}
 	// Pairing: the code from serve's window gives the token, once.
 	pairing := map[string]string{"Host": "box.tail1234.ts.net", "Tailscale-User-Login": "me@example.com", "Content-Type": "application/json"}
@@ -348,8 +338,6 @@ func TestPageAndAPIAreForTheOwnerOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	clock := time.Now()
-	s.pair.now = func() time.Time { return clock }
 	hs2 := httptest.NewServer(s)
 	defer hs2.Close()
 	pair := func(code string) *http.Response {
@@ -363,10 +351,9 @@ func TestPageAndAPIAreForTheOwnerOnly(t *testing.T) {
 		}
 		return res
 	}
-	if res := pair("000000x"); res.StatusCode != http.StatusForbidden {
+	if res := pair("0000-0000-0000"); res.StatusCode != http.StatusForbidden {
 		t.Fatalf("a wrong code: %s", res.Status)
 	}
-	clock = clock.Add(pairWait)
 	code := s.PairingCode()
 	res = pair(code)
 	var got struct{ Token string }

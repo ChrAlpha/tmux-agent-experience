@@ -370,8 +370,9 @@ textarea { min-height: 112px; resize: vertical; }
 .pair h1 { margin: 28px 0 6px; font-size: 23px; line-height: 1.2; font-weight: 700; letter-spacing: -0.015em; }
 .pair input {
   margin-top: 18px;
-  font: 600 28px/1.2 var(--mono);
-  letter-spacing: 0.35em;
+  font: 600 22px/1.2 var(--mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
   text-align: center;
   font-variant-numeric: tabular-nums;
 }

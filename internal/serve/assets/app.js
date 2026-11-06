@@ -44,6 +44,7 @@ const st = {
   replies: new Map(), // machine/session -> { turn, state, text, error }
   screens: new Map(), // machine/session -> { state, text, at, error }
   check: "", // the last comparison with tmag list
+  refused: "", // why tmag serve refused the stream last, until it accepts it
   pairing: null, // { error, busy } while this device needs pairing
 };
 
@@ -137,6 +138,9 @@ let retry = 0;
 let heard = 0;
 
 async function connect() {
+  // One stream at a time, whoever asked for it.
+  clearTimeout(retryTimer);
+  if (stream) stream.abort();
   const since = [];
   for (const [name, m] of st.m) if (m.seq !== null) since.push(name + ":" + m.seq);
   const ctl = new AbortController();
@@ -149,17 +153,21 @@ async function connect() {
     if (stream === ctl) reconnect(false);
     return;
   }
-  if (res.status === 403) {
-    needPairing(await res.text());
+  if (res.status === 401) {
+    needPairing();
     return;
   }
   if (!res.ok || !res.body) {
+    // Refused by a tunnel's check, which may pass in a moment: keep the
+    // token, say why, and try again.
+    try { st.refused = (JSON.parse(await res.text()).error || {}).message || res.statusText; } catch { st.refused = res.statusText; }
     if (stream === ctl) reconnect(false);
     return;
   }
   retry = 0;
   heard = Date.now();
   st.connected = true;
+  st.refused = "";
   render();
   const reader = res.body.getReader();
   const text = new TextDecoder();
@@ -199,13 +207,16 @@ function frame(block) {
   }
 }
 
+let retryTimer = 0;
+
 function reconnect(now) {
   const old = stream;
   stream = null;
   if (old) old.abort();
   st.connected = false;
   render();
-  setTimeout(connect, now ? 0 : Math.min(1000 * 2 ** retry++, 15000));
+  clearTimeout(retryTimer);
+  retryTimer = setTimeout(connect, now ? 0 : Math.min(1000 * 2 ** retry++, 15000));
 }
 
 // A phone suspends the page and its stream; coming back, the page catches up.
@@ -270,7 +281,7 @@ async function api(path, body) {
   const text = await res.text();
   let doc = null;
   try { doc = JSON.parse(text); } catch { /* a plain-text error */ }
-  if (res.status === 403 && !doc && path !== "/api/pair") needPairing(text);
+  if (res.status === 401) needPairing();
   if (!res.ok) {
     const e = doc && doc.error;
     throw e ? new Failure(e.code, e.message) : new Failure(String(res.status), text.trim());
@@ -280,14 +291,15 @@ async function api(path, body) {
 
 // needPairing forgets the token, which this device lacks or which no longer
 // opens anything, and asks for a code instead.
-function needPairing(why) {
+function needPairing() {
+  clearTimeout(retryTimer);
   token = "";
   localStorage.removeItem(TOKEN_KEY);
   const old = stream;
   stream = null;
   if (old) old.abort();
   st.connected = false;
-  st.pairing = { error: /pair this device/.test(why || "") ? "" : (why || "").replace(/^forbidden: /, "").trim(), busy: false };
+  st.pairing = { error: "", busy: false };
   render();
 }
 
@@ -541,7 +553,7 @@ function drawMachines() {
   if (st.pairing) {
     items = [];
   } else if (!st.connected) {
-    items = [el("span", { class: "machine down" }, dot("down"), "reconnecting")];
+    items = [el("span", { class: "machine down", title: st.refused }, dot("down"), st.refused ? "refused: " + st.refused : "reconnecting")];
   } else {
     const names = st.machines.length > 1 ? st.machines : st.machines.filter(n => !machine(n).up);
     items = names.map(n => {
@@ -562,8 +574,8 @@ function pairParts() {
     sig: JSON.stringify([p.error, p.busy]),
     build: () => {
       const input = el("input", {
-        type: "text", inputmode: "numeric", autocomplete: "one-time-code", maxlength: "6", pattern: "[0-9]*",
-        "data-key": "pair-code", "aria-label": "Pairing code", placeholder: "000000",
+        type: "text", autocomplete: "one-time-code", autocapitalize: "characters", autocorrect: "off", spellcheck: "false",
+        maxlength: "14", "data-key": "pair-code", "aria-label": "Pairing code", placeholder: "XXXX-XXXX-XXXX",
       });
       const submit = e => { e.preventDefault(); if (input.value.trim()) pair(input.value.trim()); };
       return el("form", { class: "pair", onsubmit: submit },
@@ -875,7 +887,7 @@ function toast(text, error) {
 async function start() {
   takeToken();
   if (!token) {
-    needPairing("");
+    needPairing();
     return;
   }
   try {
