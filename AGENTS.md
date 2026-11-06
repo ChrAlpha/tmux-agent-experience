@@ -28,8 +28,10 @@ Every change must keep these. Tests guard most of them; treat a failing one as
 a design problem, not a test problem.
 
 - **tmux stays the entry point.** No daemon, no wrapper around agents, no
-  second session model. Anything resident is out of scope. A tmag command may
-  connect to an agent's own service for its duration and no longer.
+  second session model, and nothing resident outside tmux: `tmag serve`, the
+  one command that runs until stopped, runs in a tmux window the person opens
+  and ends with it. A tmag command may connect to an agent's own service for
+  its duration and no longer.
 - **Users only ever get released binaries.** The plugin downloads the archive
   for its own version and verifies its checksum; there is no build-from-source
   fallback. To try an unreleased checkout, a developer builds `bin/tmag`
@@ -121,6 +123,14 @@ a design problem, not a test problem.
   `attach.Env`, which mark a change (`@tmag_change` on a pane) before logging
   it, so a writer that dies leaves it for the next one to log rather than
   unreported.
+- **The page is one person's, proven.** `tmag serve` listens on loopback and
+  admits a request only with a proof its way in gives: the local token
+  (`serve.token`, given in the URL it prints), the owner's login that
+  Tailscale Serve sets, or a Cloudflare Access token verified against the
+  team's keys. A request with any forwarding header is not local. Its only
+  actions are tmag's verbs, each one tmag command with its own gate, run to
+  its end even when the page goes away; it types no keys, opens no shell and
+  keeps nothing it relays.
 - **Nothing edits user configuration.** Install and uninstall go through each
   host's own mechanism (`claude plugin`, `codex plugin`, TPM).
 - **The contract is versioned.** Changing a JSON field's meaning or removing
@@ -137,6 +147,7 @@ a design problem, not a test problem.
 | `internal/cli` | Commands, flags, output, exit codes |
 | `internal/hook` | One hook invocation: apply to the session, attach on proof, update panes, alert, log |
 | `internal/notify` | An alert's variables, and `@tmag-notify` run detached within a time limit |
+| `internal/serve` | `tmag serve`: who gets in, the page (`assets/`), and its API over each machine's tmag |
 | `internal/adapter` | Hook payload → state transition, per agent |
 | `internal/session` | Session records, the state machine, the per-session file store and lock |
 | `internal/attach` | Clients, attachments and their evidence, the `@tmag_*` pane projection, reconciliation |

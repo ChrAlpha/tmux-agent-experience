@@ -19,12 +19,17 @@ and whether it is working, waiting for you, or done — and shows it the tmux wa
 - **Agents working together.** Ask an agent to involve another one, and it
   prompts the other through tmag, waits for its turn and reads its answer:
   delivered once, only while that agent is idle, and recorded.
+- **Away from the terminal.** `prefix + M-r` serves a page for your phone:
+  every agent on this machine and others you name, exactly what each one asks,
+  and the verbs to answer it, prompt it or stop it. A command of yours tells
+  you when one waits (see [Away from the terminal](#away-from-the-terminal)).
 
 Underneath, the `tmag` command gives agents, scripts and remote clients the
 same state as a versioned JSON contract, and can hand an idle agent its next
 prompt safely.
 
-- tmux stays the only terminal runtime: no daemon, no wrapper, no new entry point.
+- tmux stays the only terminal runtime: no daemon, no wrapper, no new entry
+  point. The page for your phone runs in a tmux window you open.
 - Agents report through their own plugin hooks, which fail open: a broken or
   missing `tmag` never blocks a turn.
 - Everything lives in the plugin's TPM directory; nothing edits your
@@ -97,6 +102,8 @@ session.
 | `@tmag-key-picker` | `a` | prefix key for the agent tree |
 | `@tmag-key-jump` | `A` | prefix key to jump to the agent waiting longest |
 | `@tmag-key-setup` | `M-a` | prefix key to connect the agents and check the installation |
+| `@tmag-key-serve` | `M-r` | prefix key to open `tmag serve`, the page for your phone, in a window, or tell where it runs |
+| `@tmag-serve` | unset | the arguments `prefix + M-r` gives `tmag serve` (see [The page](#the-page-tmag-serve)) |
 | `@tmag-alert` | `blocked,finished` | which changes alert you: ring a pane's bell, and run `@tmag-notify` |
 | `@tmag-notify` | unset | a command that tells you of an alert away from the terminal (see [Notifications](#notifications)) |
 | `@tmag-answer` | `on` | who may decide an agent's permission prompts and questions with `tmag answer`, beside the agent's own dialog: `on` for people, `agents` for agents too, `off` for nobody |
@@ -384,6 +391,68 @@ the `Halt` event reports the session idle, its prompts declined.
 
 ## Away from the terminal
 
+### The page: `tmag serve`
+
+`prefix + M-r` opens `tmag serve` in a tmux window: a page for your phone with
+every agent session on this machine, and on others you name. First comes what
+needs you: each request with exactly what it asks (the command, the change to
+a file, the question and its options) and its answers. Then every session by
+state, and for each its last reply, its pane's recent text, a box for the next
+prompt while it is idle, and Interrupt while it works. Each action is one tmag
+verb, with the gate it always has; the page types no keys and opens no shell.
+It runs while that window lives: close the window to stop it. Pressed again,
+the key tells where it runs.
+
+It listens on loopback only. To reach it from your phone, put a tunnel in front
+that proves who you are, and tell `tmag serve` about it in `@tmag-serve`.
+
+With [Tailscale](https://tailscale.com/kb/1312/serve), on the machine:
+
+```sh
+tailscale serve --bg 7777
+```
+
+```tmux
+set -g @tmag-serve '--tailscale box.tail1234.ts.net --owner you@example.com'
+```
+
+The owner is your tailnet login. Tailscale Serve sets it on every request from
+your devices and removes it from anything else; a tagged device or a Funnel
+request carries none and is refused.
+
+With Cloudflare Zero Trust: a tunnel to `http://127.0.0.1:7777` for a host name
+behind an Access application, and
+
+```tmux
+set -g @tmag-serve '--access tmag.example.com --access-team yourteam --access-aud AUD_TAG --owner you@example.com'
+```
+
+`tmag serve` verifies each request's Access token against your team's keys and
+the application's audience tag, and admits your email only.
+
+On the machine itself, open the address the window shows: it carries a token,
+kept in tmag's state directory, which keeps other users of the machine out.
+On an iPhone, add the page to the Home Screen to use it as an app.
+
+Agents on other machines show on the same page: name each with the command
+that runs tmag there, without `-t` for ssh.
+
+```tmux
+set -g @tmag-serve '--tailscale box.tail1234.ts.net --owner you@example.com --machine "laptop=ssh laptop tmag" --machine "dev=docker exec -i dev tmag"'
+```
+
+`tmag serve` runs `tmag watch` there for as long as the page is open, and one
+command for each action; nothing else runs on those machines.
+
+| Flag | |
+| --- | --- |
+| `--owner WHO` | who may come through a tunnel: a Tailscale login, or the email Access vouches for |
+| `--tailscale HOSTS` | host names Tailscale Serve forwards, comma-separated |
+| `--access HOSTS`, `--access-team TEAM`, `--access-aud TAG` | host names a Cloudflare tunnel forwards behind Access, your team's name, and the application's audience tag |
+| `--machine NAME=COMMAND` | another machine, and the command that runs tmag there; repeatable |
+| `--name NAME` | this machine's name on the page; its host name by default |
+| `--addr ADDR` | the loopback address to listen on; `127.0.0.1:7777` by default |
+
 ### Notifications
 
 The changes that ring a pane's bell (`@tmag-alert`: a session starts waiting
@@ -574,7 +643,8 @@ timeout. With `--json`, errors are also printed as
 | tmux plugin and `tmag` | `$TMUX_PLUGIN_MANAGER_PATH/tmux-agent-experience/` | removing the `@plugin` line, then `prefix + alt + u` |
 | Agent plugins `tmag` and `tmag-peers` | each agent's plugin directory | the agent's plugin manager |
 | Pane state | `@tmag_*` pane options, gone with the pane | `tmag uninstall --purge` |
-| Sessions and event log | `$XDG_STATE_HOME/tmag/<realm>/` (default `~/.local/state/tmag/<realm>/`): one small file per live session, at most two 8 MB event files, and `req/<id>.sock` while an answer hook waits. The realm names the process table tmag sees, one per container or machine and boot, so containers that share a home directory keep their sessions apart | `tmag uninstall --purge`; `tmag prune`, run by the picker key, removes other realms' state, and the state tmag 0.2.0 and earlier kept in `tmag/` itself, once unused for 30 days |
+| `tmag serve` | a tmux window, while you keep it open, and `@tmag_serve_url` while it runs behind a tunnel | closing the window |
+| Sessions and event log | `$XDG_STATE_HOME/tmag/<realm>/` (default `~/.local/state/tmag/<realm>/`): one small file per live session, at most two 8 MB event files, `req/<id>.sock` while an answer hook waits, and `serve.token` once `tmag serve` ran. The realm names the process table tmag sees, one per container or machine and boot, so containers that share a home directory keep their sessions apart | `tmag uninstall --purge`; `tmag prune`, run by the picker key, removes other realms' state, and the state tmag 0.2.0 and earlier kept in `tmag/` itself, once unused for 30 days |
 
 `tmag uninstall` prints the exact removal steps.
 

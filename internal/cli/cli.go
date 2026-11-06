@@ -47,6 +47,9 @@ Usage:
   tmag jump     [--client C] [--server S] [--from %N] [--json]
                                                go to the agent waiting longest
   tmag notify   [--json]                       send a test alert through @tmag-notify
+  tmag serve    [--owner WHO] [--tailscale HOSTS] [--access HOSTS --access-team T --access-aud TAG]
+                [--machine NAME=COMMAND]... [--name N] [--addr ADDR]
+                                               a page for your phone, until stopped
   tmag setup    [--yes] [--dry-run] [--agent claude|codex]
                                                install or update the agent plugins
   tmag doctor   [--json]                       check the installation
@@ -115,6 +118,8 @@ func (a *app) run(args []string) int {
 		return a.cmdJump(rest)
 	case "notify":
 		return a.cmdNotify(rest)
+	case "serve":
+		return a.cmdServe(rest)
 	case "setup":
 		return a.cmdSetup(rest)
 	case "doctor":

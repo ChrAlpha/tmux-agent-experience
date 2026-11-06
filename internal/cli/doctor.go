@@ -32,7 +32,7 @@ func (a *app) cmdDoctor(args []string) int {
 	if _, err := parse(fs, args); err != nil {
 		return a.usageError("doctor", err)
 	}
-	checks := []check{checkTmux(), checkPlugin(), checkBinary(), a.checkState(), a.checkHookErrors(), a.checkNotify()}
+	checks := []check{checkTmux(), checkPlugin(), checkBinary(), a.checkState(), a.checkHookErrors(), a.checkNotify(), checkServe()}
 	peers := peersWanted(context.Background())
 	checks = append(checks, claudeCheck(claudeHost(), peers), codexCheck(codexHost(), peers), a.checkAgents())
 

@@ -8,6 +8,8 @@
 #   @tmag-key-picker  a           prefix key for a tree of panes with agents
 #   @tmag-key-jump    A           prefix key to jump to the agent waiting longest
 #   @tmag-key-setup   M-a         prefix key to connect Claude Code and Codex, then check
+#   @tmag-key-serve   M-r         prefix key to open tmag serve, the page for your phone, in a window
+#   @tmag-serve       (unset)     arguments for tmag serve: --owner, --tailscale or --access, --machine
 #   @tmag-alert       blocked,finished   alert on these changes: ring a pane's bell, run @tmag-notify
 #   @tmag-notify      (unset)     command that tells you of an alert away from the terminal
 #   @tmag-answer      on          who may decide prompts with `tmag answer`: on (people), agents, off
@@ -85,4 +87,12 @@ key="$(option @tmag-key-setup M-a)"
 if [ "$key" != off ]; then
 	tmux bind-key -N "Connect Claude Code and Codex to tmag" "$key" \
 		display-popup -E -w 80% -h 80% "'$tmag' setup; echo; '$tmag' doctor; printf '\\nPress Enter to close.'; read -r _"
+fi
+
+# The page for your phone runs in a window of its own, for as long as that
+# window lives; the key opens it, or tells where it runs.
+key="$(option @tmag-key-serve M-r)"
+if [ "$key" != off ]; then
+	tmux bind-key -N "Open tmag serve, the page for your phone" "$key" \
+		run-shell "'$tmag' serve --open --server '#{socket_path}'"
 fi
