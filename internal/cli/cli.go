@@ -43,7 +43,7 @@ Usage:
   tmag wait     <target> [--for STATES] [--after SEQ] [--timeout D] [--json]
                                                wait for a state (default idle,blocked)
   tmag status   [--tmux] [--server S]          one-line summary for the status line
-  tmag prune    [--server S]                   clear records of agents gone from their pane
+  tmag prune    [--server S]                   clear records of agents gone, and old state
   tmag jump     [--client C] [--server S] [--from %N] [--json]
                                                go to the agent waiting longest
   tmag setup    [--yes] [--dry-run] [--agent claude|codex]

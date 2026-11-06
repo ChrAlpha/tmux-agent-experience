@@ -69,6 +69,11 @@ a design problem, not a test problem.
   it nowhere. `tmag read --last` is the one reader of a transcript
   (`internal/transcript`): it prints the reply it asked for and keeps
   nothing.
+- **State belongs to one process table.** tmag proves everything from the
+  processes it sees, so the default state directory is the realm's
+  (`proc.Realm`: the PID namespace and boot on Linux, the boot on macOS)
+  under `$XDG_STATE_HOME/tmag`: containers sharing a home would otherwise end
+  each other's sessions. `TMAG_STATE_DIR` names the directory itself.
 - **A session's state never depends on a pane.** Hooks apply to the session
   (`internal/session`) wherever it runs: the Codex daemon and Claude's
   background supervisor run sessions no terminal owns.

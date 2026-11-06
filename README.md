@@ -481,7 +481,8 @@ Over SSH, a remote client needs nothing else: `ssh host tmag watch`.
 
 Sequence numbers increase across the life of the state directory and start from
 the current time when it is created, so a cursor kept from before
-`tmag uninstall --purge` is recognised as stale. Treat them as opaque, ordered
+`tmag uninstall --purge`, or from before a reboot, which starts a new realm's
+directory, is recognised as stale. Treat them as opaque, ordered
 integers.
 
 Inside tmux, the same state is in pane options, read-only, for formats and
@@ -505,7 +506,7 @@ timeout. With `--json`, errors are also printed as
 | tmux plugin and `tmag` | `$TMUX_PLUGIN_MANAGER_PATH/tmux-agent-experience/` | removing the `@plugin` line, then `prefix + alt + u` |
 | Agent plugins `tmag` and `tmag-peers` | each agent's plugin directory | the agent's plugin manager |
 | Pane state | `@tmag_*` pane options, gone with the pane | `tmag uninstall --purge` |
-| Sessions and event log | `$XDG_STATE_HOME/tmag` (default `~/.local/state/tmag`): one small file per live session, at most two 8 MB event files, and `req/<id>.sock` while an answer hook waits | `tmag uninstall --purge` |
+| Sessions and event log | `$XDG_STATE_HOME/tmag/<realm>/` (default `~/.local/state/tmag/<realm>/`): one small file per live session, at most two 8 MB event files, and `req/<id>.sock` while an answer hook waits. The realm names the process table tmag sees, one per container or machine and boot, so containers that share a home directory keep their sessions apart | `tmag uninstall --purge`; `tmag prune`, run by the picker key, removes other realms' state, and the state tmag 0.2.0 and earlier kept in `tmag/` itself, once unused for 30 days |
 
 `tmag uninstall` prints the exact removal steps.
 

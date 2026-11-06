@@ -5,7 +5,9 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 
+	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/tmux"
 )
 
@@ -31,6 +33,9 @@ func (a *app) cmdUninstall(args []string) int {
 		}
 		if err := os.RemoveAll(a.log.Dir); err != nil {
 			return a.fail("uninstall", err)
+		}
+		if filepath.Dir(filepath.Clean(a.log.Dir)) == filepath.Clean(eventlog.Base()) {
+			_ = os.Remove(eventlog.Base()) // once no other realm keeps state there
 		}
 		fmt.Fprintf(a.stdout, "cleared tmag options from %d pane(s) and removed %s\n", cleared, a.log.Dir)
 		return ExitOK

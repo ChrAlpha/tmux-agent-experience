@@ -11,6 +11,7 @@ import (
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/adapter"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/attach"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/query"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/tmux"
 )
@@ -41,9 +42,10 @@ func (a *app) reconciled(ctx context.Context, server string) (query.View, error)
 	return v, nil
 }
 
-// cmdPrune reconciles the panes of one server or all. The picker key runs it
-// first, so that the tree it filters on pane options is current. It prints
-// nothing, so tmux shows nothing.
+// cmdPrune reconciles the panes of one server or all, and removes the state
+// other realms and older tmag left unwritten for eventlog.StaleAge. The
+// picker key runs it first, so that the tree it filters on pane options is
+// current. It prints nothing, so tmux shows nothing.
 func (a *app) cmdPrune(args []string) int {
 	fs := flag.NewFlagSet("prune", flag.ContinueOnError)
 	server := fs.String("server", "", "")
@@ -53,6 +55,9 @@ func (a *app) cmdPrune(args []string) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	if _, err := a.reconciled(ctx, *server); err != nil {
+		return a.fail("prune", err)
+	}
+	if _, err := eventlog.PruneStale(a.log.Dir, time.Now().Add(-eventlog.StaleAge)); err != nil {
 		return a.fail("prune", err)
 	}
 	return ExitOK

@@ -132,22 +132,6 @@ func Open(dir string) *Log {
 	return &Log{Dir: dir, MaxBytes: DefaultMaxBytes}
 }
 
-// DefaultDir resolves the state directory: $TMAG_STATE_DIR, then
-// $XDG_STATE_HOME/tmag, then ~/.local/state/tmag.
-func DefaultDir() string {
-	if d := os.Getenv("TMAG_STATE_DIR"); d != "" {
-		return d
-	}
-	if d := os.Getenv("XDG_STATE_HOME"); d != "" {
-		return filepath.Join(d, "tmag")
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		home = os.TempDir()
-	}
-	return filepath.Join(home, ".local", "state", "tmag")
-}
-
 func (l *Log) path(name string) string { return filepath.Join(l.Dir, name) }
 
 // WithLock runs fn while holding the log's exclusive lock. Waiting for the lock
