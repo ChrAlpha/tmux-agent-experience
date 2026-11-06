@@ -97,7 +97,8 @@ session.
 | `@tmag-key-picker` | `a` | prefix key for the agent tree |
 | `@tmag-key-jump` | `A` | prefix key to jump to the agent waiting longest |
 | `@tmag-key-setup` | `M-a` | prefix key to connect the agents and check the installation |
-| `@tmag-alert` | `blocked,finished` | which changes ring a pane's bell |
+| `@tmag-alert` | `blocked,finished` | which changes alert you: ring a pane's bell, and run `@tmag-notify` |
+| `@tmag-notify` | unset | a command that tells you of an alert away from the terminal (see [Notifications](#notifications)) |
 | `@tmag-answer` | `on` | who may decide an agent's permission prompts and questions with `tmag answer`, beside the agent's own dialog: `on` for people, `agents` for agents too, `off` for nobody |
 | `@tmag-peers` | `on` | whether `prefix + M-a` gives the agents the `tmag-peers` skill, for working with each other; `off` removes it |
 | `@tmag-release-url` | GitHub releases | where to download the binary, for mirrors |
@@ -380,6 +381,67 @@ another is refused until the agent reports again, or for 90 seconds. Codex
 then reports `Interrupt` and the session is idle. Claude Code reports
 nothing, not even its idle notification, so tmag records what it delivered:
 the `Halt` event reports the session idle, its prompts declined.
+
+## Away from the terminal
+
+### Notifications
+
+The changes that ring a pane's bell (`@tmag-alert`: a session starts waiting
+for you, or finishes a turn) can also run a command of yours, for every
+session, including those no pane shows, such as a Codex daemon thread: set
+`@tmag-notify` to a command that sends a notification. It runs unless you
+typed into a tmux client in the last minute, when you are at the terminal and
+the bell is there. It runs with `sh`, apart from the agent's hook, which does
+not wait for it, and is ended after 20 seconds. `tmag notify` sends a test
+alert and shows what the command printed; `tmag doctor` reports its latest
+failure.
+
+The command gets the alert in environment variables, never inside its own
+text, so quote them as below:
+
+| Variable | |
+| --- | --- |
+| `TMAG_ALERT` | `blocked` or `finished`; `test` from `tmag notify` |
+| `TMAG_TITLE`, `TMAG_MESSAGE` | a title such as `claude needs your approval`, and what and where: `Bash · api · work:1.0 · box` |
+| `TMAG_AGENT`, `TMAG_SESSION` | the agent, and the session's id |
+| `TMAG_STATE`, `TMAG_KIND` | the session's state and kind, as `tmag list` shows them |
+| `TMAG_REQUEST`, `TMAG_TOOL` | the request the session waits on, and its tool |
+| `TMAG_CWD`, `TMAG_TARGET` | the session's directory, and the pane that shows it, if one does |
+| `TMAG_HOST` | the machine's host name |
+| `TMAG_URL` | the request's page, or the session's, in a `tmag serve` running behind a tunnel |
+
+They carry no prompt, reply or tool input: a notification goes to a service
+of your choice, and nobody should approve a command they cannot see. Follow
+`TMAG_URL` to see it.
+
+With [ntfy](https://ntfy.sh) and its app (the topic is the password, so make
+it unguessable):
+
+```tmux
+set -g @tmag-notify 'curl -fsS --max-time 10 -H "Title: $TMAG_TITLE" ${TMAG_URL:+-H "Click: $TMAG_URL"} -d "$TMAG_MESSAGE" https://ntfy.sh/your-unguessable-topic'
+```
+
+With [Bark](https://github.com/Finb/Bark) on iOS:
+
+```tmux
+set -g @tmag-notify 'curl -fsS --max-time 10 --data-urlencode "title=$TMAG_TITLE" --data-urlencode "body=$TMAG_MESSAGE" --data-urlencode "url=$TMAG_URL" --data-urlencode group=tmag https://api.day.app/YOUR_KEY'
+```
+
+With [Pushover](https://pushover.net/api):
+
+```tmux
+set -g @tmag-notify 'curl -fsS --max-time 10 --form-string token=APP_TOKEN --form-string user=USER_KEY --form-string "title=$TMAG_TITLE" --form-string "message=$TMAG_MESSAGE" --form-string "url=$TMAG_URL" https://api.pushover.net/1/messages.json'
+```
+
+With a [Telegram](https://core.telegram.org/bots/api#sendmessage) bot of
+yours:
+
+```tmux
+set -g @tmag-notify 'curl -fsS --max-time 10 --data-urlencode chat_id=CHAT_ID --data-urlencode "text=$TMAG_TITLE: $TMAG_MESSAGE $TMAG_URL" https://api.telegram.org/botBOT_TOKEN/sendMessage'
+```
+
+To be told only when a session waits for you, start the command with
+`[ "$TMAG_ALERT" != finished ] &&`.
 
 ## Machine contract
 

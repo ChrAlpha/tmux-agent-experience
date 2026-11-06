@@ -46,6 +46,7 @@ Usage:
   tmag prune    [--server S]                   clear records of agents gone, and old state
   tmag jump     [--client C] [--server S] [--from %N] [--json]
                                                go to the agent waiting longest
+  tmag notify   [--json]                       send a test alert through @tmag-notify
   tmag setup    [--yes] [--dry-run] [--agent claude|codex]
                                                install or update the agent plugins
   tmag doctor   [--json]                       check the installation
@@ -112,6 +113,8 @@ func (a *app) run(args []string) int {
 		return a.cmdPrune(args)
 	case "jump":
 		return a.cmdJump(rest)
+	case "notify":
+		return a.cmdNotify(rest)
 	case "setup":
 		return a.cmdSetup(rest)
 	case "doctor":

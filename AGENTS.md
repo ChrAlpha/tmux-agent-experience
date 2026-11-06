@@ -60,7 +60,10 @@ a design problem, not a test problem.
   `tmag answer`, and on any failure, timeout, close or signal prints nothing,
   leaving the decision to the agent's own dialog, which is on screen
   meanwhile. A hook command that reaches the `tmag-peers` launcher on `PATH`
-  fails open the same way when no binary exists.
+  fails open the same way when no binary exists. A hook that alerts the
+  person starts `tmag notify` detached and does not wait for it; that process
+  runs `@tmag-notify` for at most `notify.Timeout` and records a failure in
+  `hook.log` too.
 - **No content is stored.** Hook payloads decode into `adapter.Payload`, which
   declares no prompt, message or tool-input fields. Never add one. Session
   files and event log records hold ids, states, paths and timestamps only.
@@ -68,7 +71,9 @@ a design problem, not a test problem.
   to show it to `tmag request` and to hand it back to the agent, and writes
   it nowhere. `tmag read --last` is the one reader of a transcript
   (`internal/transcript`): it prints the reply it asked for and keeps
-  nothing.
+  nothing. An alert's variables (`notify.Alert`) are ids, states, tool names,
+  paths and a page address, never content: a notification leaves the
+  machine.
 - **State belongs to one process table.** tmag proves everything from the
   processes it sees, so the default state directory is the realm's
   (`proc.Realm`: the PID namespace and boot on Linux, the boot on macOS)
@@ -130,7 +135,8 @@ a design problem, not a test problem.
 | `scripts/tmag` | Runs the plugin's binary, for key bindings and status jobs |
 | `cmd/tmag` | Entry point |
 | `internal/cli` | Commands, flags, output, exit codes |
-| `internal/hook` | One hook invocation: apply to the session, attach on proof, update panes, log |
+| `internal/hook` | One hook invocation: apply to the session, attach on proof, update panes, alert, log |
+| `internal/notify` | An alert's variables, and `@tmag-notify` run detached within a time limit |
 | `internal/adapter` | Hook payload → state transition, per agent |
 | `internal/session` | Session records, the state machine, the per-session file store and lock |
 | `internal/attach` | Clients, attachments and their evidence, the `@tmag_*` pane projection, reconciliation |

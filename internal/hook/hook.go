@@ -1,6 +1,7 @@
 // Package hook handles one agent hook invocation: map the event, apply it to
 // the session, attach the session to the pane it runs in when the hook
-// proves one, update the panes that show it, and log what changed.
+// proves one, update the panes that show it, alert the person, and log what
+// changed.
 package hook
 
 import (
@@ -9,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -16,6 +18,7 @@ import (
 	"github.com/ChrAlpha/tmux-agent-experience/internal/answer"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/attach"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/notify"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/tmux"
@@ -170,7 +173,7 @@ func Run(in Input) error {
 	for _, pane := range shown {
 		alert(ctx, tmux.Server{Socket: pane.Server}, pane, ring)
 	}
-	return nil
+	return tell(ctx, rec, shown, ring)
 }
 
 // Alert names the change worth a bell, or "": "blocked" when an agent starts
@@ -189,15 +192,71 @@ func Alert(prev, next string) string {
 // (@tmag-alert) and nobody is looking at the pane. tmux turns the bell into the
 // window's alert flag, which prefix + M-n jumps to.
 func alert(ctx context.Context, srv tmux.Server, pane tmux.Pane, kind string) {
-	if kind == "" || pane.Watched {
-		return
+	if kind != "" && !pane.Watched && alerts(ctx, srv, kind) {
+		_ = pane.Bell()
 	}
+}
+
+// alerts reports whether the server's @tmag-alert names this kind of alert.
+func alerts(ctx context.Context, srv tmux.Server, kind string) bool {
 	for _, enabled := range strings.Split(srv.GlobalOption(ctx, "@tmag-alert"), ",") {
 		if strings.TrimSpace(enabled) == kind {
-			_ = pane.Bell()
-			return
+			return true
 		}
 	}
+	return false
+}
+
+// tell runs the person's @tmag-notify for an alert, whether or not a pane
+// shows the session, unless they are at the terminal: a tmux client had
+// their input within notify.Present, and the bell reaches them there. Each
+// distinct command set on a server whose @tmag-alert names the alert runs
+// once, detached, so the hook does not wait for the network.
+func tell(ctx context.Context, rec session.Record, shown []tmux.Pane, kind string) error {
+	if kind == "" {
+		return nil
+	}
+	servers := tmux.Servers()
+	for _, srv := range servers {
+		if last, ok := srv.LastInput(ctx); ok && time.Since(last) < notify.Present {
+			return nil
+		}
+	}
+	var commands []string
+	var base string
+	for _, srv := range servers {
+		command := srv.GlobalOption(ctx, notify.Option)
+		if command == "" || slices.Contains(commands, command) || !alerts(ctx, srv, kind) {
+			continue
+		}
+		commands = append(commands, command)
+		if base == "" {
+			base = srv.GlobalOption(ctx, notify.URLOption)
+		}
+	}
+	if len(commands) == 0 {
+		return nil
+	}
+	a := notify.Alert{Kind: kind, Agent: rec.Agent, Session: rec.ID, State: rec.State(), StateKind: rec.Kind(), Cwd: rec.Cwd}
+	if refs := rec.RequestRefs(); kind == "blocked" && len(refs) > 0 {
+		q := refs[len(refs)-1] // the prompt that just opened
+		a.Request, a.RequestKind, a.Tool = q.ID, q.Kind, q.Tool
+	}
+	if len(shown) > 0 {
+		a.Target = shown[0].Target()
+	}
+	a.Host, _ = os.Hostname()
+	a.URL = notify.Link(base, rec.ID, a.Request)
+	bin, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("notify: %w", err)
+	}
+	for _, command := range commands {
+		if err := notify.Start(bin, command, a); err != nil {
+			return fmt.Errorf("notify: %w", err)
+		}
+	}
+	return nil
 }
 
 // maxErrLog bounds hook.log; it is truncated when exceeded.

@@ -270,6 +270,25 @@ func (p Pane) Bell() error {
 	return nil
 }
 
+// LastInput is when a client of the server last had input from the person:
+// keys or the mouse. It is false when no client is attached.
+func (s Server) LastInput(ctx context.Context) (time.Time, bool) {
+	out, err := s.Run(ctx, "list-clients", "-F", "#{client_activity}")
+	if err != nil {
+		return time.Time{}, false
+	}
+	var last int64
+	for _, f := range strings.Fields(string(out)) {
+		if n, err := strconv.ParseInt(f, 10, 64); err == nil && n > last {
+			last = n
+		}
+	}
+	if last == 0 {
+		return time.Time{}, false
+	}
+	return time.Unix(last, 0), true
+}
+
 // Version reports the server's tmux version string, e.g. "3.3a".
 func (s Server) Version(ctx context.Context) (string, error) {
 	out, err := s.Run(ctx, "display-message", "-p", "#{version}")
