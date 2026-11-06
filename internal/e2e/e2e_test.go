@@ -1369,6 +1369,10 @@ func TestAlertsRunTheNotifyCommand(t *testing.T) {
 	if got := len(lines("finished|" + sidA)); got != before {
 		t.Fatalf("notified while the person typed at the terminal: %d lines", got-before)
 	}
+	// A session no pane shows rings no bell anywhere: it notifies all the same.
+	d.hook(map[string]any{"hook_event_name": "PostToolUse", "session_id": sidC, "turn_id": "t1", "tool_name": "Bash"})
+	d.hook(map[string]any{"hook_event_name": "PermissionRequest", "session_id": sidC, "turn_id": "t1", "tool_name": "Bash"})
+	notified("blocked|" + sidC)
 }
 
 func TestRestartedAgentDoesNotInheritTheSession(t *testing.T) {

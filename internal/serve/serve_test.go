@@ -16,8 +16,10 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -80,7 +82,7 @@ func newServer(t *testing.T, cfg Config) *httptest.Server {
 func get(t *testing.T, url string, header map[string]string) *http.Response {
 	t.Helper()
 	req, _ := http.NewRequest(http.MethodGet, url, nil)
-	req.AddCookie(&http.Cookie{Name: tokenCookie, Value: token})
+	req.Header.Set(tokenHeader, token)
 	for k, v := range header {
 		req.Header.Set(k, v)
 	}
@@ -93,35 +95,70 @@ func get(t *testing.T, url string, header map[string]string) *http.Response {
 
 func TestGuard(t *testing.T) {
 	g := guard{owner: "me@example.com", tailscale: []string{"box.tail1234.ts.net"}, token: token}
-	req := func(host string, header map[string]string, cookie bool) *http.Request {
+	req := func(host string, header map[string]string) *http.Request {
 		r := httptest.NewRequest(http.MethodGet, "http://"+host+"/api/machines", nil)
 		for k, v := range header {
 			r.Header.Set(k, v)
 		}
-		if cookie {
-			r.AddCookie(&http.Cookie{Name: tokenCookie, Value: token})
-		}
 		return r
 	}
 	for _, c := range []struct {
-		name   string
-		r      *http.Request
-		admits bool
+		name    string
+		r       *http.Request
+		enters  bool
+		session bool // also carries the token
 	}{
-		{"local with the token", req("127.0.0.1:7777", nil, true), true},
-		{"local by name, with the token", req("localhost:7777", nil, true), true},
-		{"local without the token", req("127.0.0.1:7777", nil, false), false},
-		{"local with the token in the URL", httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7777/?token="+token, nil), true},
-		{"local with a wrong token", httptest.NewRequest(http.MethodGet, "http://127.0.0.1:7777/?token=nope", nil), false},
-		{"forwarded under a loopback name", req("127.0.0.1:7777", map[string]string{"X-Forwarded-For": "100.64.0.9"}, true), false},
-		{"the owner through Tailscale", req("box.tail1234.ts.net", map[string]string{"Tailscale-User-Login": "Me@Example.com"}, false), true},
-		{"someone else through Tailscale", req("box.tail1234.ts.net", map[string]string{"Tailscale-User-Login": "eve@example.com"}, false), false},
-		{"a tagged device through Tailscale", req("box.tail1234.ts.net", nil, false), false},
-		{"an unknown host name", req("evil.example", map[string]string{"Tailscale-User-Login": "me@example.com"}, true), false},
+		{"local", req("127.0.0.1:7777", nil), true, false},
+		{"local by name", req("localhost:7777", nil), true, false},
+		{"local over IPv6", req("[::1]:7777", nil), true, false},
+		{"local with the token", req("127.0.0.1:7777", map[string]string{tokenHeader: token}), true, true},
+		{"local with a wrong token", req("127.0.0.1:7777", map[string]string{tokenHeader: "nope"}), true, false},
+		{"forwarded under a loopback name", req("127.0.0.1:7777", map[string]string{"X-Forwarded-For": "100.64.0.9"}), false, false},
+		{"the owner through Tailscale", req("box.tail1234.ts.net", map[string]string{"Tailscale-User-Login": "Me@Example.com", tokenHeader: token}), true, true},
+		// Anyone who reaches loopback can name the host and set the login:
+		// without the token, that is all it is.
+		{"Tailscale's headers without the token", req("box.tail1234.ts.net", map[string]string{"Tailscale-User-Login": "me@example.com"}), true, false},
+		{"someone else through Tailscale", req("box.tail1234.ts.net", map[string]string{"Tailscale-User-Login": "eve@example.com", tokenHeader: token}), false, true},
+		{"a tagged device through Tailscale", req("box.tail1234.ts.net", map[string]string{tokenHeader: token}), false, true},
+		{"an unknown host name", req("evil.example", map[string]string{"Tailscale-User-Login": "me@example.com", tokenHeader: token}), false, true},
 	} {
-		if err := g.admit(c.r); (err == nil) != c.admits {
-			t.Errorf("%s: admit = %v", c.name, err)
+		if err := g.entry(c.r); (err == nil) != c.enters {
+			t.Errorf("%s: entry = %v", c.name, err)
 		}
+		if got := g.hasToken(c.r); got != c.session {
+			t.Errorf("%s: token = %v", c.name, got)
+		}
+	}
+}
+
+func TestPairing(t *testing.T) {
+	var shown []string
+	now := time.Now()
+	p := newPairing(func(code, why string) { shown = append(shown, why) })
+	p.now = func() time.Time { return now }
+	first := p.Code()
+	for i := range pairAttempts - 1 {
+		if ok, _ := p.try("x", "here"); ok {
+			t.Fatalf("wrong code %d paired", i)
+		}
+	}
+	if p.Code() != first {
+		t.Fatal("the code changed before too many wrong tries")
+	}
+	if ok, err := p.try("x", "here"); ok || !strings.Contains(err.Error(), "too many") || p.Code() == first {
+		t.Fatalf("the last wrong try: %v, code %s", err, p.Code())
+	}
+	second := p.Code()
+	if ok, err := p.try(second, "here"); !ok || err != nil || p.Code() == second {
+		t.Fatalf("the right code: %v, %v; a code pairs one device", ok, err)
+	}
+	third := p.Code()
+	now = now.Add(pairCodeLife + time.Second)
+	if ok, err := p.try(third, "here"); ok || !strings.Contains(err.Error(), "expired") {
+		t.Fatalf("an expired code: %v %v", ok, err)
+	}
+	if len(shown) != 4 || shown[0] != "" {
+		t.Fatalf("codes shown, by reason: %q", shown)
 	}
 }
 
@@ -235,43 +272,89 @@ func TestAccessThroughTheGuard(t *testing.T) {
 	claims := map[string]any{"aud": "aud-tag", "iss": "https://myteam.cloudflareaccess.com", "email": "me@example.com", "exp": time.Now().Add(time.Hour).Unix()}
 	r := httptest.NewRequest(http.MethodGet, "http://tmag.example.com/", nil)
 	r.Header.Set("Cf-Access-Jwt-Assertion", s.token(t, claims))
-	if err := g.admit(r); err != nil {
+	if err := g.entry(r); err != nil {
 		t.Fatalf("the owner through Access: %v", err)
 	}
 	// The plain email header proves nothing.
 	r = httptest.NewRequest(http.MethodGet, "http://tmag.example.com/", nil)
 	r.Header.Set("Cf-Access-Authenticated-User-Email", "me@example.com")
-	if err := g.admit(r); err == nil {
+	if err := g.entry(r); err == nil {
 		t.Fatal("admitted on the email header alone")
 	}
 }
 
 func TestPageAndAPIAreForTheOwnerOnly(t *testing.T) {
 	bin, _ := fakeTmag(t)
-	hs := newServer(t, Config{Machines: []Machine{{Name: "here", Argv: []string{bin}}}})
-	res, err := http.Get(hs.URL + "/api/machines")
-	if err != nil {
-		t.Fatal(err)
+	hs := newServer(t, Config{Machines: []Machine{{Name: "here", Argv: []string{bin}}}, Owner: "me@example.com", Tailscale: []string{"box.tail1234.ts.net"}})
+	call := func(method, path, body string, header map[string]string) *http.Response {
+		req, _ := http.NewRequest(method, hs.URL+path, strings.NewReader(body))
+		for k, v := range header {
+			if k == "Host" {
+				req.Host = v
+			} else {
+				req.Header.Set(k, v)
+			}
+		}
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res
 	}
-	if res.StatusCode != http.StatusForbidden {
-		t.Fatalf("without the token: %s", res.Status)
-	}
-	// The token in the URL becomes a cookie, out of the address bar.
-	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	res, err = client.Get(hs.URL + "/?token=" + token)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.StatusCode != http.StatusSeeOther || res.Header.Get("Location") != "/" || !strings.Contains(res.Header.Get("Set-Cookie"), "HttpOnly") {
-		t.Fatalf("token in the URL: %s %v", res.Status, res.Header)
-	}
-	res = get(t, hs.URL+"/", nil)
+	// The page holds no data, and asks for the token or a code.
+	res := call(http.MethodGet, "/", "", nil)
 	body, _ := io.ReadAll(res.Body)
 	if res.StatusCode != http.StatusOK || !strings.Contains(string(body), "/app.js") || !strings.Contains(res.Header.Get("Content-Security-Policy"), "frame-ancestors 'none'") {
 		t.Fatalf("page: %s %s", res.Status, body)
 	}
+	if res := call(http.MethodGet, "/api/machines", "", nil); res.StatusCode != http.StatusForbidden {
+		t.Fatalf("without the token: %s", res.Status)
+	}
+	if res := call(http.MethodGet, "/api/machines", "", map[string]string{tokenHeader: token}); res.StatusCode != http.StatusOK {
+		t.Fatalf("with the token: %s", res.Status)
+	}
+	// A process on this machine that names the tunnel's host and the owner's
+	// login gets nothing without the token.
+	tailscale := map[string]string{"Host": "box.tail1234.ts.net", "Tailscale-User-Login": "me@example.com"}
+	if res := call(http.MethodGet, "/api/machines", "", tailscale); res.StatusCode != http.StatusForbidden {
+		t.Fatalf("Tailscale's headers without the token: %s", res.Status)
+	}
+	if res := call(http.MethodPost, "/api/act", `{"machine":"here","verb":"interrupt","target":"s1"}`, map[string]string{"Host": "box.tail1234.ts.net", "Tailscale-User-Login": "me@example.com", "Content-Type": "application/json"}); res.StatusCode != http.StatusForbidden {
+		t.Fatalf("an action with Tailscale's headers and no token: %s", res.Status)
+	}
+	// Pairing: the code from serve's window gives the token, once.
+	pairing := map[string]string{"Host": "box.tail1234.ts.net", "Tailscale-User-Login": "me@example.com", "Content-Type": "application/json"}
+	s, err := New(Config{Machines: []Machine{{Name: "here", Argv: []string{bin}}}, Owner: "me@example.com", Tailscale: []string{"box.tail1234.ts.net"}, Token: token})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hs2 := httptest.NewServer(s)
+	defer hs2.Close()
+	pair := func(code string) *http.Response {
+		req, _ := http.NewRequest(http.MethodPost, hs2.URL+"/api/pair", strings.NewReader(`{"code":"`+code+`"}`))
+		req.Host = pairing["Host"]
+		req.Header.Set("Tailscale-User-Login", pairing["Tailscale-User-Login"])
+		req.Header.Set("Content-Type", "application/json")
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res
+	}
+	if res := pair("000000x"); res.StatusCode != http.StatusForbidden {
+		t.Fatalf("a wrong code: %s", res.Status)
+	}
+	code := s.PairingCode()
+	res = pair(code)
+	var got struct{ Token string }
+	if err := json.NewDecoder(res.Body).Decode(&got); err != nil || res.StatusCode != http.StatusOK || got.Token != token {
+		t.Fatalf("the right code: %s %+v %v", res.Status, got, err)
+	}
+	if res := pair(code); res.StatusCode != http.StatusForbidden {
+		t.Fatalf("a code paired a second device: %s", res.Status)
+	}
 	// What a browser fetches without credentials holds nothing private.
-	res, _ = http.Get(hs.URL + "/icon.png")
+	res = call(http.MethodGet, "/icon.png", "", nil)
 	img, err := png.Decode(res.Body)
 	if err != nil || img.Bounds().Dx() != 180 {
 		t.Fatalf("icon: %v", err)
@@ -319,9 +402,8 @@ func TestActionsAreOneGatedVerbEach(t *testing.T) {
 	hs := newServer(t, Config{Machines: []Machine{{Name: "here", Argv: []string{bin}}}})
 	post := func(body string, header map[string]string) *http.Response {
 		req, _ := http.NewRequest(http.MethodPost, hs.URL+"/api/act", strings.NewReader(body))
-		req.AddCookie(&http.Cookie{Name: tokenCookie, Value: token})
+		req.Header.Set(tokenHeader, token)
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("X-Tmag-Action", "1")
 		for k, v := range header {
 			if v == "" {
 				req.Header.Del(k)
@@ -348,9 +430,9 @@ func TestActionsAreOneGatedVerbEach(t *testing.T) {
 		t.Fatalf("calls = %q, want %q", got, want)
 	}
 	for name, header := range map[string]map[string]string{
-		"without the header": {"X-Tmag-Action": ""},
-		"as a form":          {"Content-Type": "application/x-www-form-urlencoded"},
-		"from another site":  {"Origin": "https://evil.example"},
+		"without the token": {tokenHeader: ""},
+		"as a form":         {"Content-Type": "application/x-www-form-urlencoded"},
+		"from another site": {"Origin": "https://evil.example"},
 	} {
 		if res := post(`{"machine":"here","verb":"interrupt","target":"s1"}`, header); res.StatusCode == http.StatusOK {
 			t.Errorf("an action %s went through", name)
@@ -376,9 +458,8 @@ func TestActionsOutliveTheirRequest(t *testing.T) {
 	bin, calls := fakeTmag(t)
 	hs := newServer(t, Config{Machines: []Machine{{Name: "here", Argv: []string{bin}}}})
 	req, _ := http.NewRequest(http.MethodPost, hs.URL+"/api/act", strings.NewReader(`{"machine":"here","verb":"interrupt","target":"s1"}`))
-	req.AddCookie(&http.Cookie{Name: tokenCookie, Value: token})
+	req.Header.Set(tokenHeader, token)
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Tmag-Action", "1")
 	if _, err := (&http.Client{Timeout: 200 * time.Millisecond}).Do(req); err == nil {
 		t.Fatal("the request did not time out")
 	}
@@ -388,6 +469,38 @@ func TestActionsOutliveTheirRequest(t *testing.T) {
 		}
 		if time.Now().After(deadline) {
 			t.Fatal("the interrupt was cut off with the connection")
+		}
+	}
+}
+
+// A machine's command ends with everything it started: a wrapper script's
+// ssh, and the watch at the other end with it.
+func TestMachineCommandsEndWhole(t *testing.T) {
+	dir := t.TempDir()
+	wrapper, pid := filepath.Join(dir, "wrapper"), filepath.Join(dir, "pid")
+	script := "#!/bin/sh\nsleep 30 &\necho $! > " + pid + "\nwait\n"
+	if err := os.WriteFile(wrapper, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cmd := Machine{Name: "w", Argv: []string{wrapper}}.command(ctx, "watch")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	var child int
+	for deadline := time.Now().Add(5 * time.Second); child == 0; time.Sleep(20 * time.Millisecond) {
+		if b, err := os.ReadFile(pid); err == nil {
+			child, _ = strconv.Atoi(strings.TrimSpace(string(b)))
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the wrapper started nothing")
+		}
+	}
+	cancel()
+	_ = cmd.Wait()
+	for deadline := time.Now().Add(3 * time.Second); syscall.Kill(child, 0) == nil; time.Sleep(20 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the wrapper's child %d outlived the command", child)
 		}
 	}
 }
@@ -402,10 +515,17 @@ func TestMachines(t *testing.T) {
 			t.Errorf("%q parsed", bad)
 		}
 	}
-	// Through ssh, every argument reaches tmag as it was.
-	cmd := m.command(context.Background(), "send", "--", "it's", "-")
-	if got := strings.Join(cmd.Args[len(cmd.Args)-4:], " "); got != `'send' '--' 'it'\''s' '-'` {
-		t.Fatalf("ssh arguments = %s", got)
+	// Through ssh, or what runs it, every argument reaches tmag as it was.
+	for _, spec := range []string{"box=ssh -p 2222 box tmag", "box=tsh ssh box tmag", "box=autossh -M 0 box tmag"} {
+		m, _ := ParseMachine(spec)
+		cmd := m.command(context.Background(), "send", "--", "it's", "-")
+		if got := strings.Join(cmd.Args[len(cmd.Args)-4:], " "); got != `'send' '--' 'it'\''s' '-'` {
+			t.Fatalf("%s: arguments = %s", spec, got)
+		}
+	}
+	m, _ = ParseMachine("dev=docker exec -i dev tmag")
+	if cmd := m.command(context.Background(), "it's"); cmd.Args[len(cmd.Args)-1] != "it's" {
+		t.Fatalf("docker exec arguments = %q", cmd.Args)
 	}
 	for _, bad := range []Config{{}, {Machines: []Machine{{Name: "a", Argv: []string{"tmag"}}}, Token: token, Tailscale: []string{"box.ts.net"}}} {
 		if _, err := New(bad); err == nil {

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/notify"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/tmux"
 )
 
@@ -30,6 +31,8 @@ func (a *app) cmdUninstall(args []string) int {
 					cleared++
 				}
 			}
+			// Left behind only by a tmag serve that was killed.
+			_, _ = s.Run(ctx, "set-option", "-gu", notify.URLOption)
 		}
 		if err := os.RemoveAll(a.log.Dir); err != nil {
 			return a.fail("uninstall", err)
@@ -42,6 +45,7 @@ func (a *app) cmdUninstall(args []string) int {
 	}
 	self, _ := os.Executable()
 	fmt.Fprintf(a.stdout, `Remove tmag in this order. Running agents and tmux sessions are not affected.
+Close tmag serve's window first, if it runs.
 
 1. tmag's state (pane options and %[1]s), while the binary still exists:
      tmag uninstall --purge

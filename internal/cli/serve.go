@@ -145,14 +145,18 @@ func (a *app) cmdServe(args []string) int {
 		names[i] = m.Name
 	}
 	fmt.Fprintf(a.stdout, "tmag serve %s: the agents on %s\n\n", version.Version, strings.Join(names, ", "))
-	fmt.Fprintf(a.stdout, "  on this machine   http://%s/?token=%s\n", ln.Addr(), token)
+	// The token goes in the fragment, which the browser keeps to itself.
+	fmt.Fprintf(a.stdout, "  on this machine   http://%s/#token=%s\n", ln.Addr(), token)
 	for _, h := range cfg.Tailscale {
 		fmt.Fprintf(a.stdout, "  through Tailscale https://%s, for %s\n", h, cfg.Owner)
 	}
 	for _, h := range cfg.Access.Hosts {
 		fmt.Fprintf(a.stdout, "  through Access    https://%s, for %s\n", h, cfg.Owner)
 	}
-	fmt.Fprintf(a.stdout, "\nPress Ctrl-C, or close this window, to stop. Actions taken:\n")
+	if len(cfg.Tailscale)+len(cfg.Access.Hosts) > 0 {
+		fmt.Fprintf(a.stdout, "\nTo pair a phone, open the page on it and enter %s.\n", srv.PairingCode())
+	}
+	fmt.Fprintf(a.stdout, "\nPress Ctrl-C, or close this window, to stop.\n")
 
 	hs := &http.Server{Handler: srv, ReadHeaderTimeout: 10 * time.Second, BaseContext: func(net.Listener) context.Context { return ctx }}
 	go func() {

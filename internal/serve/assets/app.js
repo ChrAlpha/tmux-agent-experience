@@ -10,6 +10,22 @@ const ENDED = new Set(["SessionEnd", "Exit"]);
 const REPORTED = ["state", "kind", "turn", "cwd", "runtime", "transcript", "subagents"];
 const ORDER = { blocked: 0, working: 1, idle: 2, unknown: 3 };
 const STALE = 45000; // a stream silent this long is presumed dead
+const TOKEN_HEADER = "X-Tmag-Token";
+const TOKEN_KEY = "tmag-token";
+
+// The token admits this device. It lives in this origin's storage, never in a
+// cookie, and goes with each request as a header: no other page, and no other
+// port on the machine, can make the browser send it.
+let token = "";
+
+function takeToken() {
+  const m = location.hash.match(/^#token=([0-9a-f]+)$/);
+  if (m) {
+    localStorage.setItem(TOKEN_KEY, m[1]);
+    history.replaceState(null, "", location.pathname + location.search);
+  }
+  token = localStorage.getItem(TOKEN_KEY) || "";
+}
 
 // ---- state ----
 
@@ -28,6 +44,7 @@ const st = {
   replies: new Map(), // machine/session -> { turn, state, text, error }
   screens: new Map(), // machine/session -> { state, text, at, error }
   check: "", // the last comparison with tmag list
+  pairing: null, // { error, busy } while this device needs pairing
 };
 
 function machine(name) {
@@ -113,41 +130,79 @@ function target(x) {
 
 // ---- the stream ----
 
-let source = null;
+// The stream is read with fetch, which can send the token, rather than
+// EventSource, which cannot; its server-sent events are parsed here.
+let stream = null; // the AbortController of the stream being read
 let retry = 0;
 let heard = 0;
 
-function connect() {
+async function connect() {
   const since = [];
   for (const [name, m] of st.m) if (m.seq !== null) since.push(name + ":" + m.seq);
-  source = new EventSource("/api/watch" + (since.length ? "?since=" + encodeURIComponent(since.join(",")) : ""));
-  source.onopen = () => {
-    retry = 0;
-    heard = Date.now();
-    st.connected = true;
-    render();
-  };
-  source.addEventListener("doc", ev => {
-    heard = Date.now();
-    const { machine: name, doc } = JSON.parse(ev.data);
+  const ctl = new AbortController();
+  stream = ctl;
+  let res;
+  try {
+    res = await fetch("/api/watch" + (since.length ? "?since=" + encodeURIComponent(since.join(",")) : ""),
+      { headers: { [TOKEN_HEADER]: token }, signal: ctl.signal, cache: "no-store" });
+  } catch {
+    if (stream === ctl) reconnect(false);
+    return;
+  }
+  if (res.status === 403) {
+    needPairing(await res.text());
+    return;
+  }
+  if (!res.ok || !res.body) {
+    if (stream === ctl) reconnect(false);
+    return;
+  }
+  retry = 0;
+  heard = Date.now();
+  st.connected = true;
+  render();
+  const reader = res.body.getReader();
+  const text = new TextDecoder();
+  let buf = "";
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += text.decode(value, { stream: true });
+      for (let i; (i = buf.indexOf("\n\n")) >= 0; buf = buf.slice(i + 2)) frame(buf.slice(0, i));
+    }
+  } catch { /* aborted, or the connection dropped */ }
+  if (stream === ctl) reconnect(false);
+}
+
+// frame handles one server-sent event: a document of a machine's watch, a
+// machine's stream starting or ending, or a ping.
+function frame(block) {
+  let type = "message";
+  const data = [];
+  for (const line of block.split("\n")) {
+    if (line.startsWith("event:")) type = line.slice(6).trim();
+    else if (line.startsWith("data:")) data.push(line.slice(5).replace(/^ /, ""));
+  }
+  if (!data.length) return; // a comment
+  heard = Date.now();
+  if (type === "doc") {
+    const { machine: name, doc } = JSON.parse(data.join("\n"));
     apply(name, doc);
     changed();
-  });
-  source.addEventListener("machine", ev => {
-    heard = Date.now();
-    const d = JSON.parse(ev.data);
+  } else if (type === "machine") {
+    const d = JSON.parse(data.join("\n"));
     const m = machine(d.machine);
     m.up = d.up;
     m.error = d.error || "";
     render();
-  });
-  source.addEventListener("ping", () => { heard = Date.now(); });
-  source.onerror = () => reconnect(false);
+  }
 }
 
 function reconnect(now) {
-  if (source) source.close();
-  source = null;
+  const old = stream;
+  stream = null;
+  if (old) old.abort();
   st.connected = false;
   render();
   setTimeout(connect, now ? 0 : Math.min(1000 * 2 ** retry++, 15000));
@@ -155,13 +210,13 @@ function reconnect(now) {
 
 // A phone suspends the page and its stream; coming back, the page catches up.
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "visible" && (!source || Date.now() - heard > STALE)) {
+  if (document.visibilityState === "visible" && token && !st.pairing && (!stream || Date.now() - heard > STALE)) {
     retry = 0;
     reconnect(true);
   }
 });
 setInterval(() => {
-  if (source && st.connected && Date.now() - heard > STALE) reconnect(true);
+  if (stream && st.connected && Date.now() - heard > STALE) reconnect(true);
 }, 10000);
 
 // changed keeps what the page fetched in step with the sessions.
@@ -200,10 +255,10 @@ class Failure extends Error {
 }
 
 async function api(path, body) {
-  const init = { credentials: "same-origin", cache: "no-store" };
+  const init = { cache: "no-store", headers: { [TOKEN_HEADER]: token } };
   if (body) {
     init.method = "POST";
-    init.headers = { "Content-Type": "application/json", "X-Tmag-Action": "1" };
+    init.headers["Content-Type"] = "application/json";
     init.body = JSON.stringify(body);
   }
   let res;
@@ -215,11 +270,41 @@ async function api(path, body) {
   const text = await res.text();
   let doc = null;
   try { doc = JSON.parse(text); } catch { /* a plain-text error */ }
+  if (res.status === 403 && !doc && path !== "/api/pair") needPairing(text);
   if (!res.ok) {
     const e = doc && doc.error;
     throw e ? new Failure(e.code, e.message) : new Failure(String(res.status), text.trim());
   }
   return doc;
+}
+
+// needPairing forgets the token, which this device lacks or which no longer
+// opens anything, and asks for a code instead.
+function needPairing(why) {
+  token = "";
+  localStorage.removeItem(TOKEN_KEY);
+  const old = stream;
+  stream = null;
+  if (old) old.abort();
+  st.connected = false;
+  st.pairing = { error: /pair this device/.test(why || "") ? "" : (why || "").replace(/^forbidden: /, "").trim(), busy: false };
+  render();
+}
+
+async function pair(code) {
+  st.pairing.busy = true;
+  st.pairing.error = "";
+  render();
+  try {
+    const doc = await api("/api/pair", { code });
+    localStorage.setItem(TOKEN_KEY, doc.token);
+    st.pairing = null;
+    start();
+  } catch (err) {
+    st.pairing.busy = false;
+    st.pairing.error = err.message;
+    render();
+  }
 }
 
 const qs = params => new URLSearchParams(params).toString();
@@ -398,13 +483,13 @@ window.addEventListener("hashchange", () => { render(); window.scrollTo(0, 0); }
 // stream of events leaves a prompt being written, and its focus, alone.
 function draw() {
   drawMachines();
-  const r = route();
+  const r = st.pairing ? { view: "pair" } : route();
   const key = r.view + ":" + (r.id || "");
   if (mounted.route !== key) {
     view.replaceChildren();
     mounted = { route: key, parts: new Map() };
   }
-  const parts = r.view === "session" ? sessionParts(r) : homeParts();
+  const parts = r.view === "pair" ? pairParts() : r.view === "session" ? sessionParts(r) : homeParts();
   const keep = new Set();
   let prev = null;
   for (const p of parts) {
@@ -453,7 +538,9 @@ function swap(old, node) {
 function drawMachines() {
   const box = document.getElementById("machines");
   let items;
-  if (!st.connected) {
+  if (st.pairing) {
+    items = [];
+  } else if (!st.connected) {
     items = [el("span", { class: "machine down" }, dot("down"), "reconnecting")];
   } else {
     const names = st.machines.length > 1 ? st.machines : st.machines.filter(n => !machine(n).up);
@@ -464,6 +551,29 @@ function drawMachines() {
     if (!items.length) items = [el("span", { class: "machine" }, dot("up"), "live")];
   }
   box.replaceChildren(...items);
+}
+
+// ---- pairing ----
+
+function pairParts() {
+  const p = st.pairing;
+  return [{
+    id: "pair",
+    sig: JSON.stringify([p.error, p.busy]),
+    build: () => {
+      const input = el("input", {
+        type: "text", inputmode: "numeric", autocomplete: "one-time-code", maxlength: "6", pattern: "[0-9]*",
+        "data-key": "pair-code", "aria-label": "Pairing code", placeholder: "000000",
+      });
+      const submit = e => { e.preventDefault(); if (input.value.trim()) pair(input.value.trim()); };
+      return el("form", { class: "pair", onsubmit: submit },
+        el("h1", { text: "Pair this device" }),
+        el("p", { class: "empty", text: "Enter the code tmag serve shows in its tmux window. A code pairs one device." }),
+        input,
+        el("div", { class: "actions single" }, el("button", { class: "btn primary", type: "submit", disabled: p.busy }, p.busy ? "Pairing" : "Pair")),
+        p.error ? el("p", { class: "note error", text: p.error }) : null);
+    },
+  }];
 }
 
 // ---- home ----
@@ -763,18 +873,23 @@ function toast(text, error) {
 // ---- start ----
 
 async function start() {
+  takeToken();
+  if (!token) {
+    needPairing("");
+    return;
+  }
   try {
     const doc = await api("/api/machines");
     st.machines = doc.machines;
     st.version = doc.version;
     for (const n of st.machines) machine(n);
   } catch (err) {
-    view.replaceChildren(el("p", { class: "empty" }, el("strong", { text: "This page cannot reach tmag." }), err.message));
+    if (!st.pairing) view.replaceChildren(el("p", { class: "empty" }, el("strong", { text: "This page cannot reach tmag." }), err.message));
     return;
   }
   connect();
   render();
-  setInterval(render, 15000); // the ages on screen
 }
 
+setInterval(render, 15000); // the ages on screen
 start();

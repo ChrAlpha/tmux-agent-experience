@@ -364,6 +364,20 @@ textarea { min-height: 112px; resize: vertical; }
 
 .panel-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
 
+/* ---- pairing ---- */
+
+.pair { max-width: 420px; }
+.pair h1 { margin: 28px 0 6px; font-size: 23px; line-height: 1.2; font-weight: 700; letter-spacing: -0.015em; }
+.pair input {
+  margin-top: 18px;
+  font: 600 28px/1.2 var(--mono);
+  letter-spacing: 0.35em;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.pair input::placeholder { color: var(--line); }
+
 /* ---- toast ---- */
 
 .toast {

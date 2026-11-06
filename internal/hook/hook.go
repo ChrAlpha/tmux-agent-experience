@@ -207,21 +207,18 @@ func alerts(ctx context.Context, srv tmux.Server, kind string) bool {
 	return false
 }
 
-// tell runs the person's @tmag-notify for an alert, whether or not a pane
-// shows the session, unless they are at the terminal: a tmux client had
-// their input within notify.Present, and the bell reaches them there. Each
-// distinct command set on a server whose @tmag-alert names the alert runs
-// once, detached, so the hook does not wait for the network.
+// tell runs the person's @tmag-notify for an alert, for every session,
+// unless they are at the terminal that shows it: a pane shows the session on
+// a tmux server one of whose clients had their input within notify.Present,
+// and the bell reaches them there. A session no pane shows rings no bell, so
+// its alerts always run the command. Each distinct command set on a server
+// whose @tmag-alert names the alert runs once, detached, so the hook does not
+// wait for the network.
 func tell(ctx context.Context, rec session.Record, shown []tmux.Pane, kind string) error {
 	if kind == "" {
 		return nil
 	}
 	servers := tmux.Servers()
-	for _, srv := range servers {
-		if last, ok := srv.LastInput(ctx); ok && time.Since(last) < notify.Present {
-			return nil
-		}
-	}
 	var commands []string
 	var base string
 	for _, srv := range servers {
@@ -235,6 +232,9 @@ func tell(ctx context.Context, rec session.Record, shown []tmux.Pane, kind strin
 		}
 	}
 	if len(commands) == 0 {
+		return nil // as by default: one tmux call per server, nothing more
+	}
+	if present(ctx, shown) {
 		return nil
 	}
 	a := notify.Alert{Kind: kind, Agent: rec.Agent, Session: rec.ID, State: rec.State(), StateKind: rec.Kind(), Cwd: rec.Cwd}
@@ -257,6 +257,22 @@ func tell(ctx context.Context, rec session.Record, shown []tmux.Pane, kind strin
 		}
 	}
 	return nil
+}
+
+// present reports whether the person is at a terminal that shows one of the
+// panes: its tmux server had their input within notify.Present.
+func present(ctx context.Context, shown []tmux.Pane) bool {
+	seen := map[string]bool{}
+	for _, p := range shown {
+		if seen[p.Server] {
+			continue
+		}
+		seen[p.Server] = true
+		if last, ok := (tmux.Server{Socket: p.Server}).LastInput(ctx); ok && time.Since(last) < notify.Present {
+			return true
+		}
+	}
+	return false
 }
 
 // maxErrLog bounds hook.log; it is truncated when exceeded.

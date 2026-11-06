@@ -48,42 +48,58 @@ runs), closing the window stops it. Nothing else is resident: the invariant
   is the command that runs tmag there, such as `ssh box tmag` or
   `docker exec -i dev tmag`. Nothing runs on those machines beyond those
   commands, for as long as a page watches.
-- **It stores nothing** but a token for local access, in the state directory.
+- **It stores nothing** but the token that admits the person's devices, in
+  the state directory.
   A request's input, a reply and a pane's text are fetched when the page asks
   and kept only in the page's memory.
 
 ### Who gets in
 
-serve listens on loopback only, so every request comes from the machine
-itself or through a tunnel the person set up. Each request is one of:
+serve listens on loopback only, so every request arrives as a connection from
+the machine itself, whether a browser here made it or a tunnel the person set
+up forwarded it. To such a listener a header proves nothing by itself: any
+process that reaches loopback, another user's included, can name a tunnel's
+host and set the tunnel's headers. So:
 
-- **Forwarded by Tailscale Serve** under a host name serve was given: it must
-  carry the owner's login in `Tailscale-User-Login`. tailscaled removes any
-  such header a client sends and sets its own for tailnet users only, not for
-  tagged devices or Funnel, so the header proves who it is.
-- **Forwarded by a Cloudflare tunnel behind Access** under a host name serve
-  was given: its `Cf-Access-Jwt-Assertion` must verify (RS256) against the
-  team's published keys, name the application's audience tag and the team as
-  issuer, be current, and carry the owner's email. The plain
+- **Every request for data carries the token** in a header, `X-Tmag-Token`.
+  The token is a secret in the state directory. The browser on this machine
+  gets it in the address serve prints, after `#`, which the browser keeps to
+  itself. A phone gets it by **pairing**: it sends a six-digit code that
+  serve's window shows, and receives the token. A code pairs one device,
+  lasts ten minutes, and gives way to a new one after five wrong tries, each
+  shown in the window, so only someone who can see that window pairs a
+  device. The page keeps the token in its origin's storage and sends it as a
+  header: no other page, and no other port of the machine, can make the
+  browser send it, and no other site can make it be sent at all.
+- **A tunnel adds its proof of the owner.** A request under a host name
+  Tailscale Serve forwards must carry the owner's login in
+  `Tailscale-User-Login`, which tailscaled sets for tailnet users and removes
+  from whatever a client sends; a tagged device or a Funnel request carries
+  none. One under a host name a Cloudflare tunnel forwards behind Access must
+  carry a `Cf-Access-Jwt-Assertion` that verifies (RS256) against the team's
+  published keys, names the application's audience tag and the team as
+  issuer, is current, and carries the owner's email. The plain
   `Cf-Access-Authenticated-User-Email` header is not trusted: a host name the
   tunnel forwards without an Access application would pass it on from anyone.
-- **Local**: a loopback host name and no forwarding header at all. It must
-  carry serve's token, given once as `?token=` in the URL serve prints and
-  kept as a strict same-site cookie: other users of the machine can reach
-  loopback too.
+- A request with a loopback host name but any forwarding header is not local,
+  and any other host name is refused, which keeps DNS rebinding out. Actions
+  and pairing further take only a JSON body from the page's own origin.
 
-Anything else is refused, which also keeps DNS rebinding out. Actions further
-need a same-origin JSON request with a custom header, which no other site can
-make a browser send. There are no accounts and no sharing: one person, the
-owner.
+The page itself holds no data and is served on these checks of the way in
+alone, so that it can ask for a code; the manifest and icons, which browsers
+fetch without credentials, are served to anyone under a known host name.
+There are no accounts and no sharing: one person, the owner. Deleting
+`serve.token` unpairs every device.
 
 ### Alerts reach the person through `@tmag-notify`
 
 A hook already decides when a change is worth a bell (`@tmag-alert`: a session
 starts waiting for the person, or finishes a turn). The same alerts run the
-person's `@tmag-notify` command, for every session, including those no pane
-shows, unless the person typed into a tmux client in the last minute: then
-they are at the terminal, and the bell is there.
+person's `@tmag-notify` command, for every session, unless a pane shows the
+session on a tmux server whose clients had the person's input in the last
+minute: then they are at that terminal, and the bell is there. A session no
+pane shows, a Codex daemon thread or a Claude Code background session, rings
+no bell anywhere, so its alerts always run the command.
 
 - The hook starts `tmag notify` detached and returns; that process runs the
   command with `sh -c`, ends it after 20 seconds, and records a failure in
@@ -143,8 +159,17 @@ no hang-up).
 - **Relaying transcripts.** ADR 0001 keeps content in each agent's format and
   where the agent writes it; the page reads a turn's reply with `read --last`
   like any client.
-- **Trusting `Cf-Access-Authenticated-User-Email`** or any identity header
-  without the tunnel's proof: see "Who gets in".
+- **Trusting a tunnel's identity header alone**, Tailscale's login or
+  `Cf-Access-Authenticated-User-Email`: anyone who reaches loopback can send
+  either. See "Who gets in".
+- **The token in a cookie.** Browsers send a cookie to every port of a host
+  and with requests other sites start, so another service on the machine
+  would receive it, and a page elsewhere could start a watch through the
+  tunnel with it.
+- **Proving the tunnel by the connecting process** (its user, from the
+  socket table). Containers that share the host's network commonly run as
+  the same user id, and macOS has no cheap way to tell; a secret the person
+  carries works the same everywhere.
 - **A heartbeat line in `watch`** to notice a dead reader. It would add a
   document type to the contract that every client must skip; the hang-up is
   visible without writing anything.

@@ -430,9 +430,16 @@ set -g @tmag-serve '--access tmag.example.com --access-team yourteam --access-au
 `tmag serve` verifies each request's Access token against your team's keys and
 the application's audience tag, and admits your email only.
 
-On the machine itself, open the address the window shows: it carries a token,
-kept in tmag's state directory, which keeps other users of the machine out.
-On an iPhone, add the page to the Home Screen to use it as an app.
+Each device you use pairs once. On the machine itself, open the address the
+window shows: it carries the token after `#`. On a phone, open the page
+through the tunnel and enter the six-digit code the window shows; a code pairs
+one device, and the window shows a new one after each use, after ten minutes,
+or after five wrong tries. The page keeps the token in the browser's storage
+for its address, and sends it with every request: a tunnel's login alone is
+what any process on the machine could claim. On an iPhone, add the page to
+the Home Screen first and pair it there, since an app on the Home Screen keeps
+storage of its own. To unpair every device, delete `serve.token` in tmag's
+state directory and open `tmag serve` again.
 
 Agents on other machines show on the same page: name each with the command
 that runs tmag there, without `-t` for ssh.
@@ -458,10 +465,11 @@ command for each action; nothing else runs on those machines.
 The changes that ring a pane's bell (`@tmag-alert`: a session starts waiting
 for you, or finishes a turn) can also run a command of yours, for every
 session, including those no pane shows, such as a Codex daemon thread: set
-`@tmag-notify` to a command that sends a notification. It runs unless you
-typed into a tmux client in the last minute, when you are at the terminal and
-the bell is there. It runs with `sh`, apart from the agent's hook, which does
-not wait for it, and is ended after 20 seconds. `tmag notify` sends a test
+`@tmag-notify` to a command that sends a notification. It runs unless a pane
+shows the session on a tmux server where you typed in the last minute, when
+you are at that terminal and the bell is there; a session no pane shows rings
+no bell, so it always runs. It runs with `sh`, apart from the agent's hook,
+which does not wait for it, and is ended after 20 seconds. `tmag notify` sends a test
 alert and shows what the command printed; `tmag doctor` reports its latest
 failure.
 

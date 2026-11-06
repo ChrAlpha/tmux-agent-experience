@@ -130,17 +130,27 @@ func (a *audience) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
+// key returns the team's key with the id a token names. A key not known yet
+// fetches the keys again, at most once a minute after the last fetch that
+// came to an end: a request that gives up does not keep the owner out.
 func (k *accessKeys) key(ctx context.Context, kid string) (*rsa.PublicKey, error) {
 	k.mu.Lock()
-	defer k.mu.Unlock()
-	if key := k.keys[kid]; key != nil {
+	key, recent := k.keys[kid], !k.fetched.IsZero() && k.now().Sub(k.fetched) < time.Minute
+	k.mu.Unlock()
+	if key != nil {
 		return key, nil
 	}
-	if !k.fetched.IsZero() && k.now().Sub(k.fetched) < time.Minute {
+	if recent {
 		return nil, fmt.Errorf("access: unknown key %q", kid)
 	}
+	// Not the request's context, nor under the lock: other requests go on
+	// meanwhile, and the result serves them all.
+	fetch, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	keys, err := k.fetch(fetch)
+	k.mu.Lock()
+	defer k.mu.Unlock()
 	k.fetched = k.now()
-	keys, err := k.fetch(ctx)
 	if err != nil {
 		return nil, err
 	}

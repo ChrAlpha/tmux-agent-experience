@@ -123,14 +123,16 @@ a design problem, not a test problem.
   `attach.Env`, which mark a change (`@tmag_change` on a pane) before logging
   it, so a writer that dies leaves it for the next one to log rather than
   unreported.
-- **The page is one person's, proven.** `tmag serve` listens on loopback and
-  admits a request only with a proof its way in gives: the local token
-  (`serve.token`, given in the URL it prints), the owner's login that
-  Tailscale Serve sets, or a Cloudflare Access token verified against the
-  team's keys. A request with any forwarding header is not local. Its only
-  actions are tmag's verbs, each one tmag command with its own gate, run to
-  its end even when the page goes away; it types no keys, opens no shell and
-  keeps nothing it relays.
+- **The page is one person's, proven.** `tmag serve` listens on loopback,
+  where any process can claim any header, so every request for data carries
+  the token (`serve.token`) in `X-Tmag-Token`: given after `#` in the address
+  serve prints, or to a device that pairs with the code serve's window shows.
+  A request through a tunnel must also carry the tunnel's proof of the owner:
+  the login Tailscale Serve sets, or a Cloudflare Access token verified
+  against the team's keys. A request with any forwarding header is not local.
+  Its only actions are tmag's verbs, each one tmag command with its own gate,
+  run to its end even when the page goes away; it types no keys, opens no
+  shell and keeps nothing it relays.
 - **Nothing edits user configuration.** Install and uninstall go through each
   host's own mechanism (`claude plugin`, `codex plugin`, TPM).
 - **The contract is versioned.** Changing a JSON field's meaning or removing
@@ -223,6 +225,14 @@ claude plugin validate .      # marketplace and plugin manifests
   tool, so tmag sees an agent calling. The same binary answers `--version` and `plugin …` as
   a fake host CLI. Plugin tests lay out a TPM directory and serve a local
   release over `file://`.
+- Control scenarios also run a `follower`: it rebuilds sessions and panes
+  from `tmag watch` as the contract tells a client to, and `agrees` checks
+  them against `tmag list --json` at the test's checkpoints. A change that
+  makes a session differ without an event fails there, not on a phone.
+- `tmag serve` is tested as `prefix + M-r` runs it: `serve --open` starts it
+  in a window of the private server, so the verbs the page asks for are a
+  person's. Its unit tests stand a script in for tmag, and sign Access tokens
+  with a key they publish themselves.
 - `#()` status jobs run only for attached clients; to see the status line,
   attach one in a pseudo-terminal (`script -qfc 'tmux attach' file`) and read
   what it drew.

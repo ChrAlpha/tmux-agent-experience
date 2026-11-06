@@ -36,10 +36,11 @@ func ParseMachine(s string) (Machine, error) {
 	return Machine{Name: name, Argv: argv}, nil
 }
 
-// command runs tmag on the machine. Through ssh the remote shell splits the
-// arguments again, so each is quoted for it.
+// command runs tmag on the machine. Through ssh, or a command that runs it
+// (autossh, sshpass, tsh), the remote shell splits the arguments again, so
+// each is quoted for it.
 func (m Machine) command(ctx context.Context, args ...string) *exec.Cmd {
-	if filepath.Base(m.Argv[0]) == "ssh" {
+	if slices.ContainsFunc(m.Argv, func(a string) bool { b := filepath.Base(a); return b == "ssh" || b == "autossh" }) {
 		quoted := make([]string, len(args))
 		for i, a := range args {
 			quoted[i] = "'" + strings.ReplaceAll(a, "'", `'\''`) + "'"
@@ -48,8 +49,11 @@ func (m Machine) command(ctx context.Context, args ...string) *exec.Cmd {
 	}
 	argv := append(slices.Clone(m.Argv), args...)
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
-	// Let tmag, or ssh, end on its own terms first.
-	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
+	// In a process group of its own, so that what a wrapper script starts,
+	// ssh and the watch at the other end with it, ends with the command. Let
+	// tmag, or ssh, end on its own terms first.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM) }
 	cmd.WaitDelay = 2 * time.Second
 	return cmd
 }

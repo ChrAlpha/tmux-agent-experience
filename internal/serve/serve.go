@@ -39,7 +39,8 @@ type Config struct {
 	Tailscale []string
 	// Access is the application behind Cloudflare Access, if any.
 	Access Access
-	// Token admits requests made on this machine.
+	// Token admits the person's devices: given in the address serve prints
+	// for this machine, and to a phone for the code it shows.
 	Token string
 	// Version is tmag's, shown on the page.
 	Version string
@@ -51,6 +52,7 @@ type Config struct {
 type Server struct {
 	cfg   Config
 	guard guard
+	pair  *pairing
 	mux   *http.ServeMux
 }
 
@@ -80,7 +82,7 @@ func New(cfg Config) (*Server, error) {
 	}
 	switch {
 	case cfg.Token == "":
-		return nil, errors.New("no token for local access")
+		return nil, errors.New("no token to admit the person's devices")
 	case len(cfg.Tailscale)+len(cfg.Access.Hosts) > 0 && cfg.Owner == "":
 		return nil, errors.New("a tunnel needs --owner: who may come through it")
 	case len(cfg.Access.Hosts) > 0 && (cfg.Access.Team == "" || cfg.Access.Audience == ""):
@@ -93,10 +95,13 @@ func New(cfg Config) (*Server, error) {
 	if len(cfg.Access.Hosts) > 0 {
 		s.guard.keys = newAccessKeys(cfg.Access)
 	}
+	s.pair = newPairing(nil)
+	s.pair.show = func(code, why string) { cfg.Log.Printf("%s; pair a device with %s", why, code) }
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /{$}", s.index)
+	mux.HandleFunc("GET /{$}", s.asset)
 	mux.HandleFunc("GET /app.js", s.asset)
 	mux.HandleFunc("GET /app.css", s.asset)
+	mux.HandleFunc("POST /api/pair", s.pairDevice)
 	mux.HandleFunc("GET /api/machines", s.machines)
 	mux.HandleFunc("GET /api/watch", s.watch)
 	mux.HandleFunc("GET /api/list", s.list)
@@ -111,6 +116,13 @@ func New(cfg Config) (*Server, error) {
 // fetch them without credentials, and they hold nothing but the page's look.
 var public = map[string]bool{"/manifest.webmanifest": true, "/icon.svg": true, "/icon.png": true}
 
+// page is the page itself, which holds no data either: it asks for the
+// token, or for a code to pair the device with, before it shows any.
+var page = map[string]bool{"/": true, "/app.js": true, "/app.css": true, "/api/pair": true}
+
+// PairingCode is the code that pairs a device now, for serve's window.
+func (s *Server) PairingCode() string { return s.pair.Code() }
+
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h := w.Header()
 	h.Set("X-Content-Type-Options", "nosniff")
@@ -121,25 +133,66 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.publicAsset(w, r)
 		return
 	}
-	if err := s.guard.admit(r); err != nil {
+	if err := s.guard.entry(r); err != nil {
 		http.Error(w, "forbidden: "+err.Error(), http.StatusForbidden)
+		return
+	}
+	if !page[r.URL.Path] && !s.guard.hasToken(r) {
+		http.Error(w, "forbidden: "+errToken.Error(), http.StatusForbidden)
 		return
 	}
 	s.mux.ServeHTTP(w, r)
 }
 
-func (s *Server) index(w http.ResponseWriter, r *http.Request) {
-	if t := r.URL.Query().Get("token"); s.guard.isToken(t) {
-		// Keep the token in the browser, and out of the address bar.
-		http.SetCookie(w, &http.Cookie{Name: tokenCookie, Value: t, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode})
-		http.Redirect(w, r, "/", http.StatusSeeOther)
-		return
+func (s *Server) asset(w http.ResponseWriter, r *http.Request) {
+	name := strings.TrimPrefix(r.URL.Path, "/")
+	if name == "" {
+		name = "index.html"
 	}
-	s.file(w, "index.html")
+	s.file(w, name)
 }
 
-func (s *Server) asset(w http.ResponseWriter, r *http.Request) {
-	s.file(w, strings.TrimPrefix(r.URL.Path, "/"))
+// pairDevice gives the token to a device that sends the code tmag serve
+// shows. Like an action, it takes only a JSON body from the page's origin.
+func (s *Server) pairDevice(w http.ResponseWriter, r *http.Request) {
+	if !jsonFromPage(w, r) {
+		return
+	}
+	var body struct {
+		Code string `json:"code"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 4<<10)).Decode(&body); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	ok, err := s.pair.try(strings.TrimSpace(body.Code), hostName(r.Host))
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	if !ok {
+		s.cfg.Log.Printf("pairing refused through %q: %v", hostName(r.Host), err)
+		w.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(w).Encode(map[string]any{"schema": "tmag/v1", "error": map[string]string{"code": "pairing", "message": err.Error()}})
+		return
+	}
+	_ = json.NewEncoder(w).Encode(map[string]string{"token": s.cfg.Token})
+}
+
+// jsonFromPage admits a JSON body sent by the page itself: a browser sends
+// none from another origin without asking first, and Origin, when present,
+// must be this host's.
+func jsonFromPage(w http.ResponseWriter, r *http.Request) bool {
+	ctype, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if ctype != "application/json" {
+		http.Error(w, "a JSON body, please", http.StatusBadRequest)
+		return false
+	}
+	if origin := r.Header.Get("Origin"); origin != "" {
+		if u, err := url.Parse(origin); err != nil || !strings.EqualFold(u.Host, r.Host) {
+			http.Error(w, "forbidden: cross-origin request", http.StatusForbidden)
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Server) publicAsset(w http.ResponseWriter, r *http.Request) {
@@ -408,20 +461,11 @@ type action struct {
 	Answers  map[string]string `json:"answers,omitempty"`  // answer, for a question
 }
 
-// act runs one control verb. It takes only a JSON body with a custom header
-// from the page's own origin, which a page elsewhere cannot make a browser
-// send.
+// act runs one control verb. Besides the token, which no page elsewhere has,
+// it takes only a JSON body from the page's own origin.
 func (s *Server) act(w http.ResponseWriter, r *http.Request) {
-	ctype, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
-	if r.Header.Get("X-Tmag-Action") != "1" || ctype != "application/json" {
-		http.Error(w, "an action takes a JSON body and the X-Tmag-Action header", http.StatusBadRequest)
+	if !jsonFromPage(w, r) {
 		return
-	}
-	if origin := r.Header.Get("Origin"); origin != "" {
-		if u, err := url.Parse(origin); err != nil || !strings.EqualFold(u.Host, r.Host) {
-			http.Error(w, "forbidden: cross-origin action", http.StatusForbidden)
-			return
-		}
 	}
 	var a action
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&a); err != nil || a.Target == "" {
@@ -459,11 +503,13 @@ func (s *Server) act(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	outcome := s.relay(w, cmd)
+	// Quoted: the page's strings reach a terminal here, before tmag checks
+	// them.
 	what := a.Verb
 	if a.Verb == "answer" {
-		what += " " + a.Decision + " " + a.Request
+		what += fmt.Sprintf(" %q %q", a.Decision, a.Request)
 	}
-	s.cfg.Log.Printf("%s %s on %s: %s", what, a.Target, a.Machine, outcome)
+	s.cfg.Log.Printf("%s %q on %q: %q", what, a.Target, a.Machine, outcome)
 }
 
 // relay runs a `tmag … --json` command and passes its document on: 200 when

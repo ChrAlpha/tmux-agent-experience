@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"net/http/cookiejar"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -16,7 +15,10 @@ import (
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 )
 
-var serveAddress = regexp.MustCompile(`http://(127\.0\.0\.1:\d+)/\?token=([0-9a-f]+)`)
+var (
+	serveAddress = regexp.MustCompile(`http://(127\.0\.0\.1:\d+)/#token=([0-9a-f]+)`)
+	pairingCode  = regexp.MustCompile(`enter (\d{6})`)
+)
 
 // tmag serve runs in a tmux window as prefix + M-r opens it, serves the page
 // what each agent does, and carries the verbs as a person's.
@@ -43,13 +45,14 @@ func TestServeCarriesThePageVerbs(t *testing.T) {
 		t.Fatalf("serve windows = %v", windows())
 	}
 	window := windows()[0]
-	var addr, token string
-	h.eventually("serve's address in its window", func() bool {
-		m := serveAddress.FindStringSubmatch(h.tmux("capture-pane", "-p", "-t", window))
-		if m != nil {
-			addr, token = m[1], m[2]
+	var addr, token, code string
+	h.eventually("serve's address and pairing code in its window", func() bool {
+		screen := h.tmux("capture-pane", "-p", "-t", window)
+		m, c := serveAddress.FindStringSubmatch(screen), pairingCode.FindStringSubmatch(screen)
+		if m != nil && c != nil {
+			addr, token, code = m[1], m[2], c[1]
 		}
-		return m != nil
+		return code != ""
 	})
 	base := "http://" + addr
 	h.eventually("the page's address in tmux", func() bool {
@@ -60,17 +63,13 @@ func TestServeCarriesThePageVerbs(t *testing.T) {
 		t.Fatalf("a second serve --open: %d %s, windows %v", r.code, r.out, windows())
 	}
 
-	jar, _ := cookiejar.New(nil)
-	client := &http.Client{Jar: jar, Timeout: 30 * time.Second}
-	if res, err := client.Get(base + "/?token=" + token); err != nil || res.StatusCode != http.StatusOK {
-		t.Fatalf("opening the page with its token: %v %v", res, err)
-	}
+	client := &http.Client{Timeout: 30 * time.Second}
 	call := func(method, path, body string) (int, string) {
 		t.Helper()
 		req, _ := http.NewRequest(method, base+path, strings.NewReader(body))
+		req.Header.Set("X-Tmag-Token", token)
 		if method == http.MethodPost {
 			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("X-Tmag-Action", "1")
 		}
 		res, err := client.Do(req)
 		if err != nil {
@@ -82,7 +81,9 @@ func TestServeCarriesThePageVerbs(t *testing.T) {
 	}
 
 	// The stream: the machine, then its snapshot, with the session in it.
-	res, err := client.Get(base + "/api/watch")
+	watch, _ := http.NewRequest(http.MethodGet, base+"/api/watch", nil)
+	watch.Header.Set("X-Tmag-Token", token)
+	res, err := client.Do(watch)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,21 +163,41 @@ func TestServeCarriesThePageVerbs(t *testing.T) {
 		t.Fatalf("answering twice: %d %s", code, body)
 	}
 
-	// Through Tailscale, the owner's login, and nobody else's.
-	for login, want := range map[string]int{"me@example.com": http.StatusOK, "eve@example.com": http.StatusForbidden} {
-		req, _ := http.NewRequest(http.MethodGet, base+"/api/machines", nil)
+	// Through Tailscale: the owner's login and a paired device's token. The
+	// login alone is what any process on this machine can claim.
+	tailscale := func(method, path, login, tok, body string) (int, string) {
+		t.Helper()
+		req, _ := http.NewRequest(method, base+path, strings.NewReader(body))
 		req.Host = "box.example.ts.net"
 		req.Header.Set("Tailscale-User-Login", login)
+		if tok != "" {
+			req.Header.Set("X-Tmag-Token", tok)
+		}
+		if method == http.MethodPost {
+			req.Header.Set("Content-Type", "application/json")
+		}
 		res, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatal(err)
 		}
-		var doc struct{ Machines []string }
-		_ = json.NewDecoder(res.Body).Decode(&doc)
-		res.Body.Close()
-		if res.StatusCode != want {
-			t.Errorf("%s through Tailscale: %s %v", login, res.Status, doc)
-		}
+		defer res.Body.Close()
+		b, _ := io.ReadAll(res.Body)
+		return res.StatusCode, string(b)
+	}
+	if code, body := tailscale(http.MethodGet, "/api/machines", "me@example.com", "", ""); code != http.StatusForbidden {
+		t.Fatalf("the owner's login without a token: %d %s", code, body)
+	}
+	if code, body := tailscale(http.MethodGet, "/api/machines", "eve@example.com", token, ""); code != http.StatusForbidden {
+		t.Fatalf("someone else's login: %d %s", code, body)
+	}
+	// A phone pairs with the code the window shows, and gets the token.
+	status, body := tailscale(http.MethodPost, "/api/pair", "me@example.com", "", `{"code":"`+code+`"}`)
+	var paired struct{ Token string }
+	if status != http.StatusOK || json.Unmarshal([]byte(body), &paired) != nil || paired.Token != token {
+		t.Fatalf("pairing: %d %s", status, body)
+	}
+	if code, body := tailscale(http.MethodGet, "/api/machines", "me@example.com", paired.Token, ""); code != http.StatusOK || !strings.Contains(body, `"here"`) {
+		t.Fatalf("a paired phone through Tailscale: %d %s", code, body)
 	}
 
 	// Closing the window stops it, and the page's address goes with it.
