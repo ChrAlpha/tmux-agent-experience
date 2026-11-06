@@ -134,8 +134,9 @@ no hang-up).
   a tunnel of their own, and answers the request they see, with the same
   gates and the same event log as at the terminal.
 - tmag now has one network-facing command. It is off until the person opens
-  it, listens on loopback, and admits one person by a proof the tunnel or the
-  machine gives; the verbs remain the only actions.
+  it, listens on loopback, and answers only devices the person paired from
+  its window, through a tunnel that proves the person too; the verbs remain
+  the only actions.
 - Notifications need a service the person chooses (ntfy, Bark, Pushover,
   Telegram); tmag sends them nowhere of its own.
 - A session on another machine gets its notification from that machine's

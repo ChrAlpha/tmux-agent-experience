@@ -85,7 +85,7 @@ Herdr is three products that do not share running agents
 | Prompt, stop | `send` to an idle session only, once; `interrupt` a running turn; through the pane or the Codex daemon |
 | Agents with agents | the same verbs, the sender proven from the process table and written by tmag |
 | Resume a stream | sequence numbers live with the state directory, `watch --since` resumes |
-| From the phone | `tmag serve`: a page in a tmux window, reached through Tailscale or Cloudflare Access, admitting one person by the tunnel's proof; its only actions are the verbs |
+| From the phone | `tmag serve`: a page in a tmux window, reached through Tailscale or Cloudflare Access, for the devices the person paired from its window, through a tunnel that proves the person too; its only actions are the verbs |
 | Told when away | `@tmag-notify`: the person's command per alert, for every session, never with content |
 | Agents covered | Claude Code and Codex |
 
