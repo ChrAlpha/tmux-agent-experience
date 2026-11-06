@@ -160,7 +160,7 @@ tmag when asked to, and that `set -g @tmag-peers off` followed by
 | `doctor`: tmux plugin version differs from the binary | `tmux source-file CONF` to let the plugin fetch the matching binary. |
 | `doctor`: `tmux` needs 3.2 or newer | Stop; the user upgrades tmux. |
 | `setup` fails on a plugin command | Read the error verbatim. An unknown flag means an outdated host: ask the user to update Claude Code or Codex. |
-| `doctor`: Codex hooks not approved, or Codex agents stay `unknown` after a plugin update although an approval is found | Codex honours an approval only for the hooks it was given for. After a restart, approve them in Codex with `/hooks`. |
+| `doctor`: Codex hooks not approved, or Codex agents stay `unknown` after a plugin update although an approval is found | Codex honours an approval only for the plugin version it was given for, even when the hooks did not change. After a restart, approve them in Codex with `/hooks`. |
 | `doctor`: hook errors recorded | Report the latest line; it names the failure. |
 | `tmag list` shows a Codex pane without an id long after a turn, and the session on its own row | The terminal title lacks the thread id. The user runs `/title` in Codex and turns on `thread-id`; the pane attaches at once. |
 
@@ -179,4 +179,4 @@ confirms; run `"$TMAG" uninstall --purge` first, while the binary exists.
 
 ---
 
-**Last updated**: 2026-11-04
+**Last updated**: 2026-11-06

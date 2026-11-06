@@ -85,7 +85,10 @@ run-shell ~/.tmux/plugins/tmux-agent-experience/tmag.tmux
 ### Update
 
 `prefix + U` updates the plugin; it fetches the matching binary on the next
-load. Then `prefix + M-a` brings the agent plugins to the same version.
+load. Then `prefix + M-a` brings the agent plugins to the same version. Codex
+holds an approval of hooks to the plugin version it was given for, so after
+each update it asks again: approve tmag's hooks with `/hooks` in a new Codex
+session.
 
 ### Options
 
