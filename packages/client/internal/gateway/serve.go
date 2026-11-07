@@ -1,4 +1,4 @@
-// Package serve is tmag serve: a page for one person's phone, and the API it
+// Package gateway is tmag-client: a page for one person's phone, and the API it
 // uses, over the tmag/v1 contract of each machine it is given. It relays and
 // keeps nothing: each page connection gets one `tmag watch` per machine, and
 // each action runs one tmag command, which checks its own gate.
@@ -27,7 +27,7 @@ import (
 //go:embed assets
 var assets embed.FS
 
-// Config is what tmag serve serves, and to whom.
+// Config is what tmag-client serves, and to whom.
 type Config struct {
 	// Machines are the machines whose agents the page shows; the first is
 	// this one.
@@ -163,11 +163,11 @@ func (s *Server) asset(w http.ResponseWriter, r *http.Request) {
 	s.file(w, name)
 }
 
-// pairDevice gives the token to a device that sends the code tmag serve
+// pairDevice gives the token to a device that sends the code tmag-client
 // shows. Like an action, it takes only a JSON body from the page's origin.
 func (s *Server) pairDevice(w http.ResponseWriter, r *http.Request) {
 	if local(r) {
-		refuse(w, http.StatusForbidden, "pairing", "on this machine, open the address tmag serve shows; a phone pairs through a tunnel")
+		refuse(w, http.StatusForbidden, "pairing", "on this machine, open the address tmag-client shows; a phone pairs through a tunnel")
 		return
 	}
 	if !jsonFromPage(w, r) {

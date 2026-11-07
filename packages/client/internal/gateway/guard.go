@@ -32,14 +32,14 @@ var forwardingHeaders = []string{
 var (
 	errNotOwner = errors.New("not the owner")
 	errHost     = errors.New("unknown host name")
-	errToken    = errors.New("pair this device: open the page and enter the code tmag serve shows")
+	errToken    = errors.New("pair this device: open the page and enter the code tmag-client shows")
 )
 
 // guard admits the owner alone. A request must come in a way serve knows,
 // with that way's proof of the owner, and, for anything but the page itself,
 // carry the token: the tunnels' proofs come with every request from anyone
 // who can reach loopback and set headers, other users of the machine too,
-// so only the token, which the person took from tmag serve's window, tells
+// so only the token, which the person took from tmag-client's window, tells
 // the owner's own browser.
 type guard struct {
 	owner     string
@@ -111,7 +111,7 @@ func loopback(host string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-// Pairing hands a device the token for a code from tmag serve's window: so
+// Pairing hands a device the token for a code from tmag-client's window: so
 // that a phone gets it only from someone who can see that window. A code is
 // twelve characters of Crockford's base32, about 60 bits, too many to guess
 // through however fast one tries, so a wrong try costs nothing but itself and
@@ -191,7 +191,7 @@ func (p *pairing) try(code, from string) (bool, error) {
 	defer p.mu.Unlock()
 	if p.now().After(p.expires) {
 		p.renew("the last code expired")
-		return false, errors.New("that code expired; tmag serve's window shows a new one")
+		return false, errors.New("that code expired; tmag-client's window shows a new one")
 	}
 	if subtle.ConstantTimeCompare([]byte(normalized(code)), []byte(p.code)) != 1 {
 		return false, errors.New("wrong code")

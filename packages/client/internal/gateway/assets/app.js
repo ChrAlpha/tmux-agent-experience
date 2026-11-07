@@ -1,4 +1,4 @@
-// tmag serve: the agents in tmux on each machine, from a phone.
+// tmag-client: the agents in tmux on each machine, from a phone.
 //
 // Everything shown is rebuilt from each machine's `tmag watch` stream, as
 // the tmag/v1 contract tells a client to: a snapshot, then every event (one
@@ -44,7 +44,7 @@ const st = {
   replies: new Map(), // machine/session -> { turn, state, text, error }
   screens: new Map(), // machine/session -> { state, text, at, error }
   check: "", // the last comparison with tmag list
-  refused: "", // why tmag serve refused the stream last, until it accepts it
+  refused: "", // why tmag-client refused the stream last, until it accepts it
   pairing: null, // { error, busy } while this device needs pairing
 };
 
@@ -276,7 +276,7 @@ async function api(path, body) {
   try {
     res = await fetch(path, init);
   } catch {
-    throw new Failure("network", "No connection to tmag serve.");
+    throw new Failure("network", "No connection to tmag-client.");
   }
   const text = await res.text();
   let doc = null;
@@ -580,7 +580,7 @@ function pairParts() {
       const submit = e => { e.preventDefault(); if (input.value.trim()) pair(input.value.trim()); };
       return el("form", { class: "pair", onsubmit: submit },
         el("h1", { text: "Pair this device" }),
-        el("p", { class: "empty", text: "Enter the code tmag serve shows in its tmux window. A code pairs one device." }),
+        el("p", { class: "empty", text: "Enter the code tmag-client shows in its tmux window. A code pairs one device." }),
         input,
         el("div", { class: "actions single" }, el("button", { class: "btn primary", type: "submit", disabled: p.busy }, p.busy ? "Pairing" : "Pair")),
         p.error ? el("p", { class: "note error", text: p.error }) : null);
@@ -604,7 +604,7 @@ function homeParts() {
       ? el("h2", { class: "section-label" }, "Needs you", el("span", { class: "count", text: String(asks.length) }))
       : el("div", {}, el("h2", { class: "section-label" }, "Needs you"),
         el("p", { class: "empty" }, el("strong", { text: "Nothing waits for you." }),
-          st.connected ? "When an agent asks to run something, or asks you a question, it shows here." : "Connecting to tmag serve.")),
+          st.connected ? "When an agent asks to run something, or asks you a question, it shows here." : "Connecting to tmag-client.")),
   });
   for (const { x, q } of asks) parts.push(requestPart(x, q, false));
 

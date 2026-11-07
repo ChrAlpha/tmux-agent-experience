@@ -19,7 +19,7 @@ import (
 )
 
 // Access is an application behind Cloudflare Access that a Cloudflare tunnel
-// forwards to tmag serve: its host names, the team whose keys sign its
+// forwards to tmag-client: its host names, the team whose keys sign its
 // tokens, and its audience tag.
 type Access struct {
 	Hosts    []string
