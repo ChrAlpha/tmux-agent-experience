@@ -1,0 +1,14 @@
+{
+  "name": "tmag",
+  "short_name": "tmag",
+  "description": "The coding agents in your tmux, from your phone",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#161412",
+  "theme_color": "#161412",
+  "icons": [
+    { "src": "/icon.png", "sizes": "180x180", "type": "image/png" },
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ]
+}
