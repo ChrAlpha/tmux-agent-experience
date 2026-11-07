@@ -546,3 +546,15 @@ func TestMachines(t *testing.T) {
 		t.Error("Access without a team and an audience tag accepted")
 	}
 }
+
+func TestHTTPWorkerArgumentsAreNotShellQuoted(t *testing.T) {
+	m, err := ParseMachine("remote=tmag")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.Argv = []string{"tmag-client", "http", "https://ssh", "/private/autossh"}
+	cmd := m.command(context.Background(), "watch", "--since", "17")
+	if got := strings.Join(cmd.Args[len(cmd.Args)-3:], " "); got != "watch --since 17" {
+		t.Fatalf("HTTP worker arguments were quoted: %s", got)
+	}
+}

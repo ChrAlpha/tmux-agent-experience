@@ -16,8 +16,9 @@ import (
 // Machine is one machine whose agents the page shows: a name, and the
 // command that runs tmag there with the arguments it is given.
 type Machine struct {
-	Name string   `json:"name"`
-	Argv []string `json:"-"`
+	Name        string   `json:"name"`
+	RemoteShell bool     `json:"-"` // arguments cross an SSH shell only for command backends
+	Argv        []string `json:"-"`
 }
 
 var machineName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$`)
@@ -33,14 +34,14 @@ func ParseMachine(s string) (Machine, error) {
 	case !machineName.MatchString(name):
 		return Machine{}, fmt.Errorf("machine %q: a name is letters, digits, '.', '_' and '-'", name)
 	}
-	return Machine{Name: name, Argv: argv}, nil
+	return Machine{Name: name, Argv: argv, RemoteShell: slices.ContainsFunc(argv, func(a string) bool { b := filepath.Base(a); return b == "ssh" || b == "autossh" })}, nil
 }
 
 // command runs tmag on the machine. Through ssh, or a command that runs it
 // (autossh, sshpass, tsh), the remote shell splits the arguments again, so
 // each is quoted for it.
 func (m Machine) command(ctx context.Context, args ...string) *exec.Cmd {
-	if slices.ContainsFunc(m.Argv, func(a string) bool { b := filepath.Base(a); return b == "ssh" || b == "autossh" }) {
+	if m.RemoteShell {
 		quoted := make([]string, len(args))
 		for i, a := range args {
 			quoted[i] = "'" + strings.ReplaceAll(a, "'", `'\''`) + "'"

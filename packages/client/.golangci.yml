@@ -22,4 +22,4 @@ formatters:
   settings:
     goimports:
       local-prefixes:
-        - github.com/ChrAlpha/tmux-agent-experience
+        - tmag-client
