@@ -1,10 +1,12 @@
 package query
 
 import (
+	"context"
 	"fmt"
 	"os"
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/attach"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/auth"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
@@ -14,8 +16,9 @@ import (
 // it: the pane it runs in, and the agent whose tool runs it. A person, a
 // script or a remote client has no By.
 type Caller struct {
-	Pane *eventlog.PaneRef `json:"pane,omitempty"`
-	By   *eventlog.Actor   `json:"by,omitempty"`
+	Credential string            `json:"credential,omitempty"`
+	Pane       *eventlog.PaneRef `json:"pane,omitempty"`
+	By         *eventlog.Actor   `json:"by,omitempty"`
 }
 
 // sessionVars are the variables each agent sets for the commands its tools
@@ -94,4 +97,24 @@ func (c Caller) selfGate(s Session, verb string) error {
 }
 
 // stamp records where an event's verb came from.
-func (c Caller) stamp(ev *eventlog.Event) { ev.From, ev.By = c.Pane, c.By }
+func (c Caller) stamp(ev *eventlog.Event) { ev.From, ev.By, ev.Credential = c.Pane, c.By, c.Credential }
+
+// WithOwner carries an authenticated HTTP admission into the common control
+// path. CLI callers still derive their identity from the process table.
+type ownerKey struct{}
+
+func WithOwner(ctx context.Context, grant auth.Grant) context.Context {
+	return context.WithValue(ctx, ownerKey{}, grant)
+}
+func callerFor(ctx context.Context, v View, w *attach.World) Caller {
+	if g, ok := ctx.Value(ownerKey{}).(auth.Grant); ok && g.ID() != "" {
+		return Caller{Credential: g.ID()}
+	}
+	return v.Caller(w)
+}
+
+// OwnerGrant returns only the previously authenticated grant carried by ctx.
+func OwnerGrant(ctx context.Context) auth.Grant {
+	g, _ := ctx.Value(ownerKey{}).(auth.Grant)
+	return g
+}

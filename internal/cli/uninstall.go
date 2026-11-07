@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/ChrAlpha/tmux-agent-experience/internal/auth"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/tmux"
 )
@@ -18,6 +19,9 @@ func (a *app) cmdUninstall(args []string) int {
 		return a.usageError("uninstall", err)
 	}
 	if *purge {
+		if err := (auth.Store{Dir: auth.DefaultDir()}).Revoke(context.Background(), "", true); err != nil {
+			return a.fail("uninstall", err)
+		}
 		cleared := 0
 		ctx := context.Background()
 		for _, s := range tmux.Servers() {
@@ -30,8 +34,13 @@ func (a *app) cmdUninstall(args []string) int {
 					cleared++
 				}
 			}
+			// Left behind only by a tmag serve that was killed.
+			_, _ = s.Run(ctx, "set-option", "-gu", serveAddressOption)
 		}
 		if err := os.RemoveAll(a.log.Dir); err != nil {
+			return a.fail("uninstall", err)
+		}
+		if err := os.RemoveAll(auth.DefaultDir()); err != nil {
 			return a.fail("uninstall", err)
 		}
 		if filepath.Dir(filepath.Clean(a.log.Dir)) == filepath.Clean(eventlog.Base()) {
@@ -42,6 +51,7 @@ func (a *app) cmdUninstall(args []string) int {
 	}
 	self, _ := os.Executable()
 	fmt.Fprintf(a.stdout, `Remove tmag in this order. Running agents and tmux sessions are not affected.
+Close tmag serve's window first, if it runs.
 
 1. tmag's state (pane options and %[1]s), while the binary still exists:
      tmag uninstall --purge

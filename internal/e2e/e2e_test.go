@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -77,6 +78,7 @@ func start(t *testing.T) *harness {
 	h := &harness{t: t, name: "e2e", dir: t.TempDir(), state: filepath.Join(sock, "state")}
 	t.Setenv("TMUX_TMPDIR", sock)
 	t.Setenv("TMAG_STATE_DIR", h.state)
+	t.Setenv("TMAG_AUTH_DIR", filepath.Join(h.dir, "auth"))
 	t.Setenv("CODEX_HOME", filepath.Join(h.dir, "codex-home"))
 	if out, err := exec.Command("tmux", "-L", h.name, "-f", "/dev/null", "new-session", "-d", "-s", "main", "-x", "200", "-y", "50").CombinedOutput(); err != nil {
 		t.Fatalf("start tmux: %v %s", err, out)
@@ -1271,6 +1273,106 @@ func exited(t *testing.T, cmd *exec.Cmd, when string) {
 		<-done
 		t.Fatalf("watch still ran 5s %s", when)
 	}
+}
+
+// Alerts reach the person through @tmag-notify for every session, one no
+// pane shows too, with ids and states but no content, and not while they
+// type at a terminal, where the bell reaches them.
+func TestAlertsRunTheNotifyCommand(t *testing.T) {
+	h := start(t)
+	sent := filepath.Join(h.dir, "notified")
+	h.tmux("set-option", "-g", "@tmag-alert", "blocked,finished")
+	h.tmux("set-option", "-g", "@tmag-notify", `printf '%s|%s|%s|%s|%s|%s|%s|%s|%s\n' "$TMAG_ALERT" "$TMAG_AGENT" "$TMAG_SESSION" "$TMAG_STATE" "$TMAG_KIND" "$TMAG_TOOL" "$TMAG_TARGET" "$TMAG_REQUEST" "$TMAG_TITLE" >> `+sent)
+	lines := func(prefix string) []string {
+		b, _ := os.ReadFile(sent)
+		var out []string
+		for _, l := range strings.Split(string(b), "\n") {
+			if strings.HasPrefix(l, prefix) {
+				out = append(out, l)
+			}
+		}
+		return out
+	}
+	notified := func(prefix string) string {
+		t.Helper()
+		h.eventually("a notification "+prefix, func() bool { return len(lines(prefix)) > 0 })
+		return lines(prefix)[0]
+	}
+
+	// A turn that finishes in a pane.
+	pane := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_HOOKS": "1"}, filepath.Join(bin, "claude"))
+	p, _ := h.waitPane(pane, "idle", "process")
+	if r := h.tmag("", "send", sidA[:8], "--wait", "the secret plan"); r.code != 0 {
+		t.Fatalf("send: %d %s", r.code, r.out)
+	}
+	if got, want := notified("finished|claude|"+sidA), "finished|claude|"+sidA+"|idle|||"+p.Target+"||claude finished"; got != want {
+		t.Fatalf("notified %q, want %q", got, want)
+	}
+
+	// A request of a session no pane shows exports its id for any notifier.
+	d := h.daemon()
+	d.hook(map[string]any{"hook_event_name": "PermissionRequest", "session_id": sidC, "cwd": h.dir, "turn_id": "t1", "tool_name": "Bash"})
+	s := h.waitSession(sidC, "blocked")
+	want := "blocked|codex|" + sidC + "|blocked|permission|Bash||" + s.Requests[0].ID + "|codex needs your approval"
+	if got := notified("blocked|codex|" + sidC); got != want {
+		t.Fatalf("notified %q, want %q", got, want)
+	}
+	if b, _ := os.ReadFile(sent); strings.Contains(string(b), "secret") {
+		t.Fatalf("a notification carried the prompt: %s", b)
+	}
+
+	// By hand, a test alert; a command that fails says how.
+	if r := h.tmag("", "notify"); r.code != 0 || !strings.Contains(r.out, "sent a test alert") {
+		t.Fatalf("notify: %d %s", r.code, r.out)
+	}
+	notified("test|")
+	h.tmux("set-option", "-g", "@tmag-notify", "echo unreachable >&2; exit 3")
+	if r := h.tmag("", "notify"); r.code != 1 || !strings.Contains(r.out, "unreachable") {
+		t.Fatalf("a failing notify: %d %s", r.code, r.out)
+	}
+	// From a hook, the failure goes where hook failures go.
+	d.hook(map[string]any{"hook_event_name": "PostToolUse", "session_id": sidC, "turn_id": "t1", "tool_name": "Bash"})
+	d.hook(map[string]any{"hook_event_name": "PermissionRequest", "session_id": sidC, "turn_id": "t1", "tool_name": "Bash"})
+	h.eventually("the failure in doctor", func() bool {
+		r := h.tmag("", "doctor")
+		return strings.Contains(r.out, "notify") && strings.Contains(r.out, "unreachable")
+	})
+
+	// Typing into a tmux client: the person is at the terminal.
+	if runtime.GOOS != "linux" {
+		t.Log("attaching a client needs util-linux script")
+		return
+	}
+	h.tmux("set-option", "-g", "@tmag-notify", `echo "$TMAG_ALERT|$TMAG_SESSION" >> `+sent)
+	client := exec.Command("script", "-qfc", "tmux -L "+h.name+" attach -t main", "/dev/null")
+	client.Env = append(os.Environ(), "TERM=xterm-256color")
+	keys, err := client.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = client.Process.Kill()
+		_ = client.Wait()
+	})
+	h.eventually("an attached client", func() bool { return h.tmux("list-clients") != "" })
+	if _, err := io.WriteString(keys, " "); err != nil {
+		t.Fatal(err)
+	}
+	before := len(lines("finished|" + sidA))
+	if r := h.tmag("", "send", sidA[:8], "--wait", "more"); r.code != 0 {
+		t.Fatalf("send: %d %s", r.code, r.out)
+	}
+	time.Sleep(time.Second) // a notification would have been written by now
+	if got := len(lines("finished|" + sidA)); got != before {
+		t.Fatalf("notified while the person typed at the terminal: %d lines", got-before)
+	}
+	// A session no pane shows rings no bell anywhere: it notifies all the same.
+	d.hook(map[string]any{"hook_event_name": "PostToolUse", "session_id": sidC, "turn_id": "t1", "tool_name": "Bash"})
+	d.hook(map[string]any{"hook_event_name": "PermissionRequest", "session_id": sidC, "turn_id": "t1", "tool_name": "Bash"})
+	notified("blocked|" + sidC)
 }
 
 func TestRestartedAgentDoesNotInheritTheSession(t *testing.T) {

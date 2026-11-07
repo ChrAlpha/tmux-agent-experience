@@ -19,12 +19,17 @@ and whether it is working, waiting for you, or done — and shows it the tmux wa
 - **Agents working together.** Ask an agent to involve another one, and it
   prompts the other through tmag, waits for its turn and reads its answer:
   delivered once, only while that agent is idle, and recorded.
+- **Local HTTP access.** `prefix + M-r` exposes the owner-authorized API:
+  local agent state, exactly what each session asks,
+  and the verbs to answer it, prompt it or stop it. A command of yours tells
+  you when one waits (see [Notifications](#notifications)).
 
 Underneath, the `tmag` command gives agents, scripts and remote clients the
 same state as a versioned JSON contract, and can hand an idle agent its next
 prompt safely.
 
-- tmux stays the only terminal runtime: no daemon, no wrapper, no new entry point.
+- tmux stays the only terminal runtime: no daemon, no wrapper, no new entry
+  point. The optional HTTP endpoint runs in a tmux window you open.
 - Agents report through their own plugin hooks, which fail open: a broken or
   missing `tmag` never blocks a turn.
 - Everything lives in the plugin's TPM directory; nothing edits your
@@ -97,7 +102,10 @@ session.
 | `@tmag-key-picker` | `a` | prefix key for the agent tree |
 | `@tmag-key-jump` | `A` | prefix key to jump to the agent waiting longest |
 | `@tmag-key-setup` | `M-a` | prefix key to connect the agents and check the installation |
-| `@tmag-alert` | `blocked,finished` | which changes ring a pane's bell |
+| `@tmag-key-serve` | `M-r` | prefix key to open the local HTTP API in a window, or tell where it runs |
+| `@tmag-serve` | unset | the arguments `prefix + M-r` gives `tmag serve` (see [Local HTTP access](#local-http-access)) |
+| `@tmag-alert` | `blocked,finished` | which changes alert you: ring a pane's bell, and run `@tmag-notify` |
+| `@tmag-notify` | unset | a command that tells you of an alert away from the terminal (see [Notifications](#notifications)) |
 | `@tmag-answer` | `on` | who may decide an agent's permission prompts and questions with `tmag answer`, beside the agent's own dialog: `on` for people, `agents` for agents too, `off` for nobody |
 | `@tmag-peers` | `on` | whether `prefix + M-a` gives the agents the `tmag-peers` skill, for working with each other; `off` removes it |
 | `@tmag-release-url` | GitHub releases | where to download the binary, for mirrors |
@@ -381,6 +389,66 @@ then reports `Interrupt` and the session is idle. Claude Code reports
 nothing, not even its idle notification, so tmag records what it delivered:
 the `Halt` event reports the session idle, its prompts declined.
 
+## Local HTTP access
+
+`tmag serve` exposes this local instance through the independently versioned
+[`tmag/http/v1` contract](docs/http-api.md). `prefix + M-r` starts it in a tmux
+window; closing that window stops it. Its default listener is
+`127.0.0.1:7777`. The tmux plugin, hooks and CLI work independently of serve.
+
+A client authenticates as the owner with its own bearer credential. All owner
+credentials have the same authority. Each can be revoked independently through
+`tmag auth`; `issue` creates a credential, `pair` opens a ten-minute, single-use
+invitation, `list` shows metadata, and `revoke` withdraws one credential or all
+of them. `issue` and `pair` accept a label and optional `--ttl` for the resulting
+credential. Tokens are returned only on issuance; only verification digests are
+stored. Existing subscriptions close within one second of revocation under a
+responsive authorization store. Accepted control operations finish within their
+existing timeout even if the client disconnects or loses authorization.
+
+Credentials persist in `$XDG_STATE_HOME/tmag/auth/` (default
+`~/.local/state/tmag/auth/`), independently of session realms. `TMAG_AUTH_DIR`
+selects an instance's authorization directory. Separate deployments sharing a
+home, including containers, must select separate directories unless they
+intentionally share owner authorization. Session cleanup and upgrades keep
+credentials; full uninstall with `--purge` removes this instance's credentials.
+
+| Serve flag | Meaning |
+| --- | --- |
+| `--addr ADDR` | loopback listen address |
+| `--host HOST` | additional exact HTTP Host value, including a port when present; repeatable |
+| `--origin ORIGIN` | additional exact browser origin, such as `https://client.example`; repeatable |
+
+Remote deployment supplies an encrypted tunnel or reverse proxy and configures
+its public host with `--host`. Every data request still needs the owner's
+credential. Proxy identity headers do not replace that credential. Independent
+web clients use explicitly allowed origins. A TLS-terminating reverse proxy
+also lists its public HTTPS origin, since the loopback listener itself uses HTTP.
+Tunnel accounts, deployment, UI assets and multi-machine aggregation belong to
+external clients. The extracted `tmag-client` repository owns the existing web
+client and command gateway; it consumes public contracts and releases separately.
+
+### Notifications
+
+`@tmag-notify` is an optional local command run for `blocked` and `finished`
+alerts enabled by `@tmag-alert`, including sessions without panes. It receives
+only metadata. It runs separately from the agent hook and has a 20-second bound.
+`tmag notify` sends a test alert; `tmag doctor` reports recent failures.
+
+| Variable | Meaning |
+| --- | --- |
+| `TMAG_ALERT` | blocked, finished, or test |
+| `TMAG_AGENT`, `TMAG_SESSION` | agent and session identity |
+| `TMAG_STATE`, `TMAG_KIND` | state and state kind |
+| `TMAG_REQUEST`, `TMAG_TOOL` | request id and tool name |
+| `TMAG_CWD`, `TMAG_TARGET`, `TMAG_HOST` | local working directory, pane target, and host |
+| `TMAG_TITLE`, `TMAG_MESSAGE` | a generic summary built from metadata |
+
+The command runs unless a pane shows the session on a tmux server where the
+owner typed in the last minute; sessions without panes always notify. This
+local notification policy leaves the complete event stream unchanged. Delivery
+channels and client-specific links are the configured command's responsibility.
+
 ## Machine contract
 
 Every JSON document carries `"schema": "tmag/v1"`.
@@ -512,7 +580,9 @@ timeout. With `--json`, errors are also printed as
 | tmux plugin and `tmag` | `$TMUX_PLUGIN_MANAGER_PATH/tmux-agent-experience/` | removing the `@plugin` line, then `prefix + alt + u` |
 | Agent plugins `tmag` and `tmag-peers` | each agent's plugin directory | the agent's plugin manager |
 | Pane state | `@tmag_*` pane options, gone with the pane | `tmag uninstall --purge` |
-| Sessions and event log | `$XDG_STATE_HOME/tmag/<realm>/` (default `~/.local/state/tmag/<realm>/`): one small file per live session, at most two 8 MB event files, and `req/<id>.sock` while an answer hook waits. The realm names the process table tmag sees, one per container or machine and boot, so containers that share a home directory keep their sessions apart | `tmag uninstall --purge`; `tmag prune`, run by the picker key, removes other realms' state, and the state tmag 0.2.0 and earlier kept in `tmag/` itself, once unused for 30 days |
+| `tmag serve` | a tmux window, while you keep it open, and `@tmag_api_addr` while it runs | closing the window |
+| Owner credentials | `$XDG_STATE_HOME/tmag/auth/`, or `TMAG_AUTH_DIR`: metadata and verification digests | `tmag auth revoke`, or `tmag uninstall --purge` |
+| Sessions and event log | `$XDG_STATE_HOME/tmag/<realm>/` (default `~/.local/state/tmag/<realm>/`): one small file per live session, at most two 8 MB event files, `req/<id>.sock` while an answer hook waits. The realm names the process table tmag sees, one per container or machine and boot, so containers that share a home directory keep their sessions apart | `tmag uninstall --purge`; `tmag prune`, run by the picker key, removes other realms' state, and the state tmag 0.2.0 and earlier kept in `tmag/` itself, once unused for 30 days |
 
 `tmag uninstall` prints the exact removal steps.
 

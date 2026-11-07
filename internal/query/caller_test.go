@@ -1,11 +1,14 @@
 package query
 
 import (
+	"context"
+	"os"
 	"reflect"
 	"testing"
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/adapter"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/attach"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/auth"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
@@ -99,5 +102,35 @@ func TestCallerGates(t *testing.T) {
 	self.stamp(&ev)
 	if ev.From == nil || ev.From.ID != "%1" || ev.By == nil || ev.By.Session != "s1" {
 		t.Fatalf("stamped %+v", ev)
+	}
+}
+
+func TestOnlyAValidatedGrantEstablishesOwnerAuthority(t *testing.T) {
+	v, w := callers()
+	w.Proc = proc.NewTable([]proc.Process{{PID: 1}, {PID: 11, PPID: 1, Comm: "claude", Args: "claude", Start: "c"}, {PID: os.Getpid(), PPID: 11, Comm: "tmag"}})
+	ctx := context.Background()
+	if c := callerFor(ctx, v, w); c.By == nil {
+		t.Fatal("ordinary CLI lost agent ancestry")
+	}
+	if c := callerFor(WithOwner(ctx, auth.Grant{}), v, w); c.By == nil {
+		t.Fatal("zero grant claimed owner")
+	}
+	store := auth.Store{Dir: t.TempDir()}
+	issued, err := store.Issue(ctx, "owner", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	grant, err := store.Authenticate(ctx, issued.Token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := callerFor(WithOwner(ctx, grant), v, w)
+	if owner.By != nil || owner.Credential != issued.ID {
+		t.Fatal("authenticated HTTP inherited launcher's agent identity")
+	}
+	var event eventlog.Event
+	owner.stamp(&event)
+	if event.By != nil || event.Credential != issued.ID {
+		t.Fatal("owner provenance was not logged separately")
 	}
 }

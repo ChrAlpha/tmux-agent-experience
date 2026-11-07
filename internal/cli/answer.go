@@ -30,7 +30,7 @@ func (a *app) cmdRequest(args []string) int {
 	if err != nil {
 		return a.usageError("request", err)
 	}
-	ctx, cancel := signalContext()
+	ctx, cancel := a.signalContext()
 	defer cancel()
 	asked, err := query.Show(ctx, a.log, pos[0], pos[1])
 	if err != nil {
@@ -72,7 +72,7 @@ func (a *app) cmdAnswer(args []string) int {
 	if err != nil {
 		return a.usageError("answer", err)
 	}
-	ctx, cancel := signalContext()
+	ctx, cancel := a.signalContext()
 	defer cancel()
 	dl, err := query.Answer(ctx, a.log, pos[0], pos[1], d)
 	if err != nil {
