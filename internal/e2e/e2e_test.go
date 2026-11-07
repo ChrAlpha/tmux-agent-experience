@@ -1270,8 +1270,8 @@ func exited(t *testing.T, cmd *exec.Cmd, when string) {
 		}
 	case <-time.After(5 * time.Second):
 		_ = cmd.Process.Kill()
-		<-done
-		t.Fatalf("watch still ran 5s %s", when)
+		err := <-done
+		t.Fatalf("watch still ran 5s %s; forced exit: %v", when, err)
 	}
 }
 
@@ -1280,6 +1280,12 @@ func exited(t *testing.T, cmd *exec.Cmd, when string) {
 // type at a terminal, where the bell reaches them.
 func TestAlertsRunTheNotifyCommand(t *testing.T) {
 	h := start(t)
+	t.Cleanup(func() {
+		if t.Failed() {
+			b, _ := os.ReadFile(filepath.Join(h.state, "hook.log"))
+			t.Logf("hook failures: %s; session events: %s", b, h.eventNames(sidA))
+		}
+	})
 	sent := filepath.Join(h.dir, "notified")
 	h.tmux("set-option", "-g", "@tmag-alert", "blocked,finished")
 	h.tmux("set-option", "-g", "@tmag-notify", `printf '%s|%s|%s|%s|%s|%s|%s|%s|%s\n' "$TMAG_ALERT" "$TMAG_AGENT" "$TMAG_SESSION" "$TMAG_STATE" "$TMAG_KIND" "$TMAG_TOOL" "$TMAG_TARGET" "$TMAG_REQUEST" "$TMAG_TITLE" >> `+sent)
