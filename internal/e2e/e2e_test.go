@@ -27,6 +27,7 @@ import (
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/query"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/tmux"
 )
 
 var bin string // directory holding tmag, claude and codex
@@ -1941,5 +1942,27 @@ func TestReplyWaitsForTheAsker(t *testing.T) {
 	h.waitSession(sidA, "idle")
 	if r := h.tmag("", "read", sidA[:8], "--last"); r.code != 0 || r.out != "answered: all done\n" {
 		t.Fatalf("read --last: %d %q", r.code, r.out)
+	}
+}
+
+// Printed options differ between tmux versions. Reading a command must keep
+// variable expansion, intentional escapes and literal controls intact.
+func TestGlobalOptionPreservesShellCommands(t *testing.T) {
+	h := start(t)
+	srv := tmux.ServerByName(h.name)
+	for _, value := range []string{
+		`printf '%s\n' "$TMAG_ALERT" "${TMAG_SESSION}"`,
+		`printf '%s' '\$literal' '\033' "\$9" "\$(literal)"`,
+		"first\nsecond\tline\r\x1b[0m",
+		`a 'single' and "double" quote; 100% #comment`,
+		"~", "", "on",
+	} {
+		h.tmux("set-option", "-g", "@tmag-test-option", value)
+		if got := srv.GlobalOption(context.Background(), "@tmag-test-option"); got != value {
+			t.Fatalf("global option = %q, want %q", got, value)
+		}
+	}
+	if got := srv.GlobalOption(context.Background(), "@tmag-option-unset"); got != "" {
+		t.Fatalf("unset option = %q", got)
 	}
 }

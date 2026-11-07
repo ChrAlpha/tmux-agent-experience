@@ -242,11 +242,81 @@ func SanitizePrompt(text string) string {
 
 // GlobalOption returns a global option's value, or "" when it is unset.
 func (s Server) GlobalOption(ctx context.Context, name string) string {
-	out, err := s.Run(ctx, "show-option", "-gqv", name)
+	// Read tmux's quoted representation so literal backslashes and control
+	// characters remain distinguishable. tmux 3.4 additionally escapes dollar
+	// variables when printing; probe that layer in the same command invocation.
+	const probe = "$TMAG_OPTION_PRINT"
+	out, err := s.Run(ctx, "show-option", "-gq", name, ";", "display-message", "-p", probe)
 	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(string(out))
+	line, printed, _ := strings.Cut(string(out), "\n")
+	value, ok := strings.CutPrefix(line, name+" ")
+	if !ok {
+		return ""
+	}
+	if strings.TrimSpace(printed) == `\`+probe {
+		value = unescapePrintedDollars(value)
+	}
+	value, err = unquoteOption(value)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(value)
+}
+
+// unescapePrintedDollars reverses just the extra printing layer of tmux 3.4.
+// An intentional backslash before a variable remains in the quoted layer.
+func unescapePrintedDollars(s string) string {
+	var out strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+2 < len(s) && s[i+1] == '$' {
+			c := s[i+2]
+			if c == '_' || c == '{' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' {
+				continue
+			}
+		}
+		out.WriteByte(s[i])
+	}
+	return out.String()
+}
+
+// unquoteOption reads the quoted C-style representation printed by tmux's
+// args_escape. It performs no shell, environment or format expansion.
+func unquoteOption(s string) (string, error) {
+	if len(s) >= 2 && (s[0] == '\'' || s[0] == '"') && s[len(s)-1] == s[0] {
+		s = s[1 : len(s)-1]
+	}
+	var out strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] != '\\' {
+			out.WriteByte(s[i])
+			continue
+		}
+		i++
+		if i == len(s) {
+			return "", fmt.Errorf("unfinished tmux option escape")
+		}
+		if s[i] >= '0' && s[i] <= '7' {
+			end := i + 1
+			for end < len(s) && end < i+3 && s[end] >= '0' && s[end] <= '7' {
+				end++
+			}
+			n, err := strconv.ParseUint(s[i:end], 8, 8)
+			if err != nil {
+				return "", err
+			}
+			out.WriteByte(byte(n))
+			i = end - 1
+			continue
+		}
+		if n := strings.IndexByte("nrbavtfs", s[i]); n >= 0 {
+			out.WriteByte("\n\r\b\a\v\t\f "[n])
+		} else {
+			out.WriteByte(s[i])
+		}
+	}
+	return out.String(), nil
 }
 
 // Bell rings the pane's terminal bell, which tmux turns into the window's
