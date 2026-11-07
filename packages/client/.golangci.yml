@@ -1,0 +1,25 @@
+version: "2"
+
+linters:
+  default: standard
+  enable:
+    - errorlint
+    - gocritic
+    - misspell
+    - nilerr
+    - unconvert
+    - unparam
+    - usestdlibvars
+  exclusions:
+    presets:
+      - std-error-handling
+      - common-false-positives
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/ChrAlpha/tmux-agent-experience
