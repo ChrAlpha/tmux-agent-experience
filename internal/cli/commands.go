@@ -58,7 +58,7 @@ func (a *app) cmdList(args []string) int {
 	if err != nil {
 		return a.usageError("list", err)
 	}
-	ctx, cancel := signalContext()
+	ctx, cancel := a.signalContext()
 	defer cancel()
 	snap, err := query.TakeSnapshot(ctx, a.log)
 	if err != nil {
@@ -196,7 +196,7 @@ func (a *app) cmdInspect(args []string) int {
 	if err != nil {
 		return a.usageError("inspect", err)
 	}
-	ctx, cancel := signalContext()
+	ctx, cancel := a.signalContext()
 	defer cancel()
 	t, err := a.resolve(ctx, pos[0])
 	if err != nil {
@@ -238,6 +238,13 @@ func (a *app) cmdInspect(args []string) int {
 	return ExitOK
 }
 
+func (a *app) signalContext() (context.Context, context.CancelFunc) {
+	if a.ctx != nil {
+		return context.WithCancel(a.ctx)
+	}
+	return signalContext()
+}
+
 func signalContext() (context.Context, context.CancelFunc) {
 	return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 }
@@ -253,10 +260,24 @@ func (a *app) cmdWatch(args []string) int {
 		return a.usageError("watch", err)
 	}
 	a.json = true
-	ctx, cancel := signalContext()
+	ctx, cancel := a.signalContext()
 	defer cancel()
 	ctx, stop := context.WithCancelCause(ctx)
 	defer stop(nil)
+	// A reader that goes away without a word, as a client over ssh does when
+	// its connection drops, would otherwise go unnoticed until the next
+	// write, which may not come for hours.
+	if f, ok := a.stdout.(*os.File); ok {
+		if gone := hangup(f, ctx.Done()); gone != nil {
+			go func() {
+				select {
+				case <-gone:
+					stop(errReaderGone)
+				case <-ctx.Done():
+				}
+			}()
+		}
+	}
 
 	out := bufio.NewWriter(a.stdout)
 	enc := json.NewEncoder(out)
@@ -366,7 +387,7 @@ func (a *app) cmdWatch(args []string) int {
 }
 
 func (a *app) watchEnd(err error) int {
-	if err != nil && !errors.Is(err, context.Canceled) && !isClosedPipe(err) {
+	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, errReaderGone) && !isClosedPipe(err) {
 		return a.fail("watch", err)
 	}
 	return ExitOK
@@ -397,7 +418,7 @@ func (a *app) cmdRead(args []string) int {
 	if err != nil {
 		return a.usageError("read", err)
 	}
-	ctx, cancel := signalContext()
+	ctx, cancel := a.signalContext()
 	defer cancel()
 	if *last {
 		s, r, err := query.LastReply(ctx, a.store(), pos[0])
@@ -471,7 +492,7 @@ func (a *app) cmdSend(args []string) int {
 	if *reply {
 		ask = query.AskReply
 	}
-	ctx, cancel := signalContext()
+	ctx, cancel := a.signalContext()
 	defer cancel()
 	d, err := query.Send(ctx, a.log, pos[0], text, ask)
 	if err != nil {
@@ -504,7 +525,7 @@ func (a *app) cmdReply(args []string) int {
 	if err != nil {
 		return a.fail("reply", err)
 	}
-	ctx, cancel := signalContext()
+	ctx, cancel := a.signalContext()
 	defer cancel()
 	ctx, cancelTimeout := context.WithTimeout(ctx, *timeout)
 	defer cancelTimeout()
@@ -564,7 +585,7 @@ func (a *app) cmdInterrupt(args []string) int {
 	if err != nil {
 		return a.usageError("interrupt", err)
 	}
-	ctx, cancel := signalContext()
+	ctx, cancel := a.signalContext()
 	defer cancel()
 	d, err := query.Interrupt(ctx, a.log, pos[0])
 	if err != nil {
@@ -593,7 +614,7 @@ func (a *app) cmdWait(args []string) int {
 	if err != nil {
 		return a.usageError("wait", err)
 	}
-	ctx, cancel := signalContext()
+	ctx, cancel := a.signalContext()
 	defer cancel()
 	// Read the cursor before the state: a transition landing in between is
 	// then replayed instead of missed.
@@ -622,7 +643,7 @@ func (a *app) cmdWait(args []string) int {
 }
 
 func (a *app) awaitAndReport(cmd string, s query.Session, o query.WaitOptions, timeout time.Duration) int {
-	ctx, cancel := signalContext()
+	ctx, cancel := a.signalContext()
 	defer cancel()
 	ctx, cancelTimeout := context.WithTimeout(ctx, timeout)
 	defer cancelTimeout()

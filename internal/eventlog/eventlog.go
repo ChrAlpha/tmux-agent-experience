@@ -86,9 +86,11 @@ type Event struct {
 	Evidence string `json:"evidence,omitempty"`
 	// From is the pane a Send, Halt or Answer came from, and By the agent,
 	// when an agent's tool ran it. Bytes is a prompt's size.
-	From  *PaneRef `json:"from,omitempty"`
-	By    *Actor   `json:"by,omitempty"`
-	Bytes int      `json:"bytes,omitempty"`
+	// Credential identifies an authenticated owner client, independently of By.
+	Credential string   `json:"credential,omitempty"`
+	From       *PaneRef `json:"from,omitempty"`
+	By         *Actor   `json:"by,omitempty"`
+	Bytes      int      `json:"bytes,omitempty"`
 	// Via is the channel tmag delivered by: pane, service or hook.
 	Via string `json:"via,omitempty"`
 	// Request is the request an Answer decided, and Decision how: allow or

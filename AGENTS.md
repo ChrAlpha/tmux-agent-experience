@@ -28,8 +28,10 @@ Every change must keep these. Tests guard most of them; treat a failing one as
 a design problem, not a test problem.
 
 - **tmux stays the entry point.** No daemon, no wrapper around agents, no
-  second session model. Anything resident is out of scope. A tmag command may
-  connect to an agent's own service for its duration and no longer.
+  second session model, and nothing resident outside tmux: `tmag serve`, the
+  one command that runs until stopped, runs in a tmux window the person opens
+  and ends with it. A tmag command may connect to an agent's own service for
+  its duration and no longer.
 - **Users only ever get released binaries.** The plugin downloads the archive
   for its own version and verifies its checksum; there is no build-from-source
   fallback. To try an unreleased checkout, a developer builds `bin/tmag`
@@ -60,7 +62,10 @@ a design problem, not a test problem.
   `tmag answer`, and on any failure, timeout, close or signal prints nothing,
   leaving the decision to the agent's own dialog, which is on screen
   meanwhile. A hook command that reaches the `tmag-peers` launcher on `PATH`
-  fails open the same way when no binary exists.
+  fails open the same way when no binary exists. A hook that alerts the
+  person starts `tmag notify` detached and does not wait for it; that process
+  runs `@tmag-notify` for at most `notify.Timeout` and records a failure in
+  `hook.log` too.
 - **No content is stored.** Hook payloads decode into `adapter.Payload`, which
   declares no prompt, message or tool-input fields. Never add one. Session
   files and event log records hold ids, states, paths and timestamps only.
@@ -68,7 +73,9 @@ a design problem, not a test problem.
   to show it to `tmag request` and to hand it back to the agent, and writes
   it nowhere. `tmag read --last` is the one reader of a transcript
   (`internal/transcript`): it prints the reply it asked for and keeps
-  nothing.
+  nothing. An alert's variables (`notify.Alert`) are ids, states, tool names,
+  paths, never content: a notification may leave the
+  machine.
 - **State belongs to one process table.** tmag proves everything from the
   processes it sees, so the default state directory is the realm's
   (`proc.Realm`: the PID namespace and boot on Linux, the boot on macOS)
@@ -116,6 +123,21 @@ a design problem, not a test problem.
   `attach.Env`, which mark a change (`@tmag_change` on a pane) before logging
   it, so a writer that dies leaves it for the next one to log rather than
   unreported.
+- **The HTTP API is local and owner-authorized.** `tmag serve` exposes one
+  instance through `tmag/http/v1`, with no UI, machine inventory or outbound
+  gateway. Each data request validates an independent bearer credential.
+  Only a validated `auth.Grant` establishes owner authority in the common
+  query path; CLI callers still derive their identity from process ancestry.
+  No public flag, environment variable or request field can claim an owner
+  or agent identity. Owner authority preserves every state and delivery gate.
+  `credential` in a control event identifies the admitted owner credential;
+  `by` continues to mean a proven agent.
+- **Authorization survives realms.** `TMAG_AUTH_DIR`, defaulting to
+  `$XDG_STATE_HOME/tmag/auth`, is a deployment's persistent authorization
+  store. Deployments sharing a home select separate stores. Credentials have
+  equal owner authority, can be individually revoked, and persist only as
+  digests plus metadata. Invitations expire and are redeemed once. A revoked
+  or expired credential loses its subscriptions; accepted actions finish.
 - **Nothing edits user configuration.** Install and uninstall go through each
   host's own mechanism (`claude plugin`, `codex plugin`, TPM).
 - **The contract is versioned.** Changing a JSON field's meaning or removing
@@ -130,7 +152,10 @@ a design problem, not a test problem.
 | `scripts/tmag` | Runs the plugin's binary, for key bindings and status jobs |
 | `cmd/tmag` | Entry point |
 | `internal/cli` | Commands, flags, output, exit codes |
-| `internal/hook` | One hook invocation: apply to the session, attach on proof, update panes, log |
+| `internal/hook` | One hook invocation: apply to the session, attach on proof, update panes, alert, log |
+| `internal/notify` | An alert's variables, and `@tmag-notify` run detached within a time limit |
+| `internal/auth` | Persistent owner credentials, one-use invitations and revocation |
+| `internal/serve` | Local HTTP/SSE contract, admission and allowlisted in-process CLI operations |
 | `internal/adapter` | Hook payload → state transition, per agent |
 | `internal/session` | Session records, the state machine, the per-session file store and lock |
 | `internal/attach` | Clients, attachments and their evidence, the `@tmag_*` pane projection, reconciliation |
@@ -206,6 +231,14 @@ claude plugin validate .      # marketplace and plugin manifests
   tool, so tmag sees an agent calling. The same binary answers `--version` and `plugin …` as
   a fake host CLI. Plugin tests lay out a TPM directory and serve a local
   release over `file://`.
+- Control scenarios also run a `follower`: it rebuilds sessions and panes
+  from `tmag watch` as the contract tells a client to, and `agrees` checks
+  them against `tmag list --json` at the test's checkpoints. A change that
+  makes a session differ without an event fails there, not on a phone.
+- `tmag serve` is tested as `prefix + M-r` runs it: `serve --open` starts it
+  in a window of the private server. Its tests exercise owner admission,
+  independent credential revocation and common control gates. Every test
+  that manages credentials sets `TMAG_AUTH_DIR` to its own temporary directory.
 - `#()` status jobs run only for attached clients; to see the status line,
   attach one in a pseudo-terminal (`script -qfc 'tmux attach' file`) and read
   what it drew.

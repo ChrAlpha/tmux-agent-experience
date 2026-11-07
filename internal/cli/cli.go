@@ -2,6 +2,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -46,6 +47,12 @@ Usage:
   tmag prune    [--server S]                   clear records of agents gone, and old state
   tmag jump     [--client C] [--server S] [--from %N] [--json]
                                                go to the agent waiting longest
+  tmag notify   [--json]                       send a test alert through @tmag-notify
+  tmag serve    [--addr ADDR] [--host HOST]... [--origin ORIGIN]...
+                                               local HTTP API, until stopped
+  tmag auth     issue|pair LABEL [--ttl D] [--json]
+                list [--json] | revoke ID|--all [--json]
+                                               manage owner client credentials
   tmag setup    [--yes] [--dry-run] [--agent claude|codex]
                                                install or update the agent plugins
   tmag doctor   [--json]                       check the installation
@@ -62,6 +69,7 @@ Exit codes: 0 ok, 1 error, 2 usage, 3 refused by the safety gate, 4 timeout.
 
 // app carries process-wide dependencies so commands stay testable.
 type app struct {
+	ctx    context.Context
 	stdin  io.Reader
 	stdout io.Writer
 	stderr io.Writer
@@ -112,6 +120,12 @@ func (a *app) run(args []string) int {
 		return a.cmdPrune(args)
 	case "jump":
 		return a.cmdJump(rest)
+	case "notify":
+		return a.cmdNotify(rest)
+	case "auth":
+		return a.cmdAuth(rest)
+	case "serve":
+		return a.cmdServe(rest)
 	case "setup":
 		return a.cmdSetup(rest)
 	case "doctor":

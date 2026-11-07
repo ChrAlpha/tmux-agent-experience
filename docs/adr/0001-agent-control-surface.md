@@ -1,6 +1,7 @@
 # ADR 0001: One control surface, a driver per agent and runtime
 
-- Status: accepted
+- Status: accepted; its "Remote access" section is superseded by
+  [ADR 0003](0003-remote-access.md)
 - Date: 2026-11-03
 - Evidence: [Claude Code control channels](../research/claude-control-channels.md)
   (2.1.317), [Codex control channels](../research/codex-control-channels.md)

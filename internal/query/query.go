@@ -167,7 +167,7 @@ func TakeSnapshot(ctx context.Context, log *eventlog.Log) (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, err
 	}
-	return Snapshot{Seq: seq, Caller: v.Caller(w), View: v}, nil
+	return Snapshot{Seq: seq, Caller: callerFor(ctx, v, w), View: v}, nil
 }
 
 // Errors returned by target resolution and waiting.

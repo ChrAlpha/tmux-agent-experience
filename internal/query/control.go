@@ -52,7 +52,7 @@ func prepare(ctx context.Context, log *eventlog.Log) (View, Caller, error) {
 	if err != nil {
 		return View{}, Caller{}, err
 	}
-	return v, v.Caller(w), nil
+	return v, callerFor(ctx, v, w), nil
 }
 
 // controlled resolves target to the session a verb acts on and the pane it
