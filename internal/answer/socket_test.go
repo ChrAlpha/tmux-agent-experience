@@ -73,13 +73,49 @@ func runListener(t *testing.T, root, id string, a Asked) (net.Listener, <-chan b
 	return ln, done
 }
 
+// Probe's own budget can expire even for a known fixture. Classification tests
+// retry only Unknown within a total budget; contrary definite evidence fails.
+func requirePresence(t *testing.T, ctx context.Context, root, id string, want Presence) {
+	t.Helper()
+	for {
+		got := Probe(ctx, root, id)
+		if got == want {
+			return
+		}
+		if got != Unknown || ctx.Err() != nil {
+			t.Fatalf("request %s presence = %v, want %v: %v", id, got, want, ctx.Err())
+		}
+	}
+}
+
+// A short probe is not an operation's readiness handshake. Unknown must still
+// permit the real identity-checked operation, while Dead is never accepted.
+func requireRequest(t *testing.T, ctx context.Context, root, id string, want Asked) {
+	t.Helper()
+	p := Probe(ctx, root, id)
+	if p == Dead {
+		t.Fatalf("request %s unexpectedly proved dead", id)
+	}
+	got, err := Show(ctx, root, id)
+	if err != nil || got.Tool != want.Tool || string(got.Input) != string(want.Input) {
+		t.Fatalf("request %s Show after probe %v = %+v, want %+v: %v", id, p, got, want, err)
+	}
+}
+
 func TestProbeIsIdentityOnlyAndClosedSocketIsNotWaiting(t *testing.T) {
 	root := answerDir(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 	id := "0123456789ab"
 	asked := Asked{Tool: "Bash", Input: json.RawMessage(`{"command":"secret-tool-input"}`)}
 	ln, _ := runListener(t, root, id, asked)
 	c, err := net.DialTimeout("unix", Path(root, id), time.Second)
 	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	deadline, _ := ctx.Deadline()
+	if err := c.SetDeadline(deadline); err != nil {
 		t.Fatal(err)
 	}
 	if err := json.NewEncoder(c).Encode(message{Op: "probe", Request: id}); err != nil {
@@ -93,16 +129,15 @@ func TestProbeIsIdentityOnlyAndClosedSocketIsNotWaiting(t *testing.T) {
 	if len(reply) != 2 || reply["ok"] != true || reply["request"] != id {
 		t.Fatalf("probe leaked nonidentity fields: %+v", reply)
 	}
-	if p := Probe(context.Background(), root, id); p != Alive {
-		t.Fatalf("live probe = %v", p)
-	}
+	requirePresence(t, ctx, root, id, Alive)
 	ln.Close()
 	if _, err := os.Stat(Path(root, id)); err != nil {
 		t.Fatalf("test did not retain an orphan: %v", err)
 	}
-	if Waiting(root, id) || Probe(context.Background(), root, id) != Dead {
+	if Waiting(root, id) {
 		t.Fatal("closed socket pathname was treated as live")
 	}
+	requirePresence(t, ctx, root, id, Dead)
 	if err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -254,7 +289,8 @@ func TestLegacyShowStillWorksWhenProbeIsUnsupported(t *testing.T) {
 
 func TestPoolAllocatesCollidingRequestsAndExcludesLiveCleanup(t *testing.T) {
 	root := answerDir(t)
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 	if err := coord.RetireLegacy(ctx, root); err != nil {
 		t.Fatal(err)
 	}
@@ -272,8 +308,9 @@ func TestPoolAllocatesCollidingRequestsAndExcludesLiveCleanup(t *testing.T) {
 	if second == "" {
 		t.Fatal("fixture did not find a collision")
 	}
-	a, _ := runListener(t, root, first, Asked{Tool: "Bash"})
-	b, _ := runListener(t, root, second, Asked{Tool: "Bash"})
+	firstAsked, secondAsked := Asked{Tool: "Bash"}, Asked{Tool: "Read"}
+	a, _ := runListener(t, root, first, firstAsked)
+	b, _ := runListener(t, root, second, secondAsked)
 	one, err := location(ctx, root, first)
 	if err != nil {
 		t.Fatal(err)
@@ -292,9 +329,8 @@ func TestPoolAllocatesCollidingRequestsAndExcludesLiveCleanup(t *testing.T) {
 	if r.Slots > 4 || r.Candidates > 8 {
 		t.Fatalf("cleanup exceeded budget: %+v", r)
 	}
-	if Probe(ctx, root, first) != Alive || Probe(ctx, root, second) != Alive {
-		t.Fatal("cleanup disrupted a live colliding listener")
-	}
+	requireRequest(t, ctx, root, first, firstAsked)
+	requireRequest(t, ctx, root, second, secondAsked)
 	a.Close()
 	b.Close()
 	// An ended request ID can safely reuse its own dead fixed position without
@@ -360,9 +396,7 @@ func TestForcedExitSocketOrphanReclaimedUnderSlotExclusion(t *testing.T) {
 	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("forced-exit orphan survived: %v", err)
 	}
-	if Probe(ctx, root, id) != Dead {
-		t.Fatal("reclaimed orphan claimed alive")
-	}
+	requirePresence(t, ctx, root, id, Dead)
 	if _, err := os.Stat(filepath.Join(root, "coord", fmt.Sprintf("r-%02x", key[0]))); err != nil {
 		t.Fatal("removed permanent request slot lock")
 	}
@@ -478,12 +512,35 @@ func TestRetiredFlatSocketsProgressPastUnknownEntries(t *testing.T) {
 
 func TestFixedSocketDecisionRequiresMatchingRequestIdentity(t *testing.T) {
 	root := answerDir(t)
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 	if err := coord.RetireLegacy(ctx, root); err != nil {
 		t.Fatal(err)
 	}
 	id := "request-identity"
-	_, done := runListener(t, root, id, Asked{Tool: "Bash"})
+	asked := Asked{Tool: "Bash"}
+	ln, err := ListenContext(ctx, root, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	emitted := make(chan []byte, 1)
+	done := make(chan bool, 1)
+	go func() {
+		defer close(done)
+		done <- Wait(ctx, ln, asked, func(b []byte) error {
+			emitted <- append([]byte(nil), b...)
+			return nil
+		})
+	}()
+	defer func() {
+		cancel()
+		ln.Close()
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Error("identity listener did not stop after close")
+		}
+	}()
 	path, err := location(ctx, root, id)
 	if err != nil {
 		t.Fatal(err)
@@ -493,20 +550,50 @@ func TestFixedSocketDecisionRequiresMatchingRequestIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer conn.Close()
+	deadline, _ := ctx.Deadline()
+	if err := conn.SetDeadline(deadline); err != nil {
+		t.Fatal(err)
+	}
 	if err := json.NewEncoder(conn).Encode(message{Op: "decide", Request: "another-request", Decision: &Decision{Behavior: Allow}}); err != nil {
 		t.Fatal(err)
 	}
 	var r reply
-	if err := json.NewDecoder(conn).Decode(&r); err != nil || r.OK {
+	if err := json.NewDecoder(conn).Decode(&r); err != nil || r.OK || r.Error != "request identity changed" {
 		t.Fatalf("mismatched decision succeeded: %+v %v", r, err)
 	}
 	select {
 	case <-done:
 		t.Fatal("mismatched decision ended the hook")
+	case b := <-emitted:
+		t.Fatalf("mismatched decision emitted %s", b)
 	default:
 	}
-	if Probe(ctx, root, id) != Alive {
-		t.Fatal("identity refusal disrupted the correct request")
+	// Unknown is uncertainty, not an ended request. Force that outcome without
+	// depending on helper startup timing, then complete the matching request.
+	probeCtx, cancelProbe := context.WithCancel(ctx)
+	cancelProbe()
+	if p := Probe(probeCtx, root, id); p != Unknown {
+		t.Fatalf("canceled probe = %v, want Unknown", p)
+	}
+	requireRequest(t, ctx, root, id, asked)
+	if err := Decide(ctx, root, id, Decision{Behavior: Allow}); err != nil {
+		t.Fatalf("correct identity could not decide: %v", err)
+	}
+	select {
+	case printed := <-done:
+		if !printed {
+			t.Fatal("correct identity ended without printing its decision")
+		}
+	case <-ctx.Done():
+		t.Fatalf("correct identity did not finish the hook: %v", ctx.Err())
+	}
+	select {
+	case b := <-emitted:
+		if string(b) != `{"hookSpecificOutput":{"decision":{"behavior":"allow"},"hookEventName":"PermissionRequest"}}` {
+			t.Fatalf("correct identity emitted %s", b)
+		}
+	default:
+		t.Fatal("correct identity acknowledged without emitting a decision")
 	}
 }
 
