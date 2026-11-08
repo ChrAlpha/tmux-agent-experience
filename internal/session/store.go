@@ -3,7 +3,6 @@ package session
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,8 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ChrAlpha/tmux-agent-experience/internal/coord"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
-	"github.com/ChrAlpha/tmux-agent-experience/internal/lockfile"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
 )
 
@@ -47,7 +46,7 @@ func (s Store) path(agent, id string) (string, error) {
 // happens under it, read and written in one go.
 func (s Store) Lock(ctx context.Context, agent, id string, fn func() error) error {
 	sum := sha256.Sum256([]byte("session\x00" + agent + "\x00" + id))
-	return lockfile.With(ctx, filepath.Join(s.Dir, "locks", "s-"+hex.EncodeToString(sum[:8])), fn)
+	return coord.With(ctx, s.Dir, coord.Session, sum, fn)
 }
 
 // Get reads a session; ok is false when there is none.

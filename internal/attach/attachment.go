@@ -3,15 +3,13 @@ package attach
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/hex"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/ChrAlpha/tmux-agent-experience/internal/coord"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
-	"github.com/ChrAlpha/tmux-agent-experience/internal/lockfile"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/tmux"
@@ -161,7 +159,7 @@ func writeProjection(ctx context.Context, srv tmux.Server, pane string, pr Proje
 // it, and a sender takes it before the session's lock.
 func Lock(ctx context.Context, stateDir, server, pane string, fn func() error) error {
 	sum := sha256.Sum256([]byte(server + "\x00" + pane))
-	return lockfile.With(ctx, filepath.Join(stateDir, "locks", "p-"+hex.EncodeToString(sum[:8])), fn)
+	return coord.With(ctx, stateDir, coord.Pane, sum, fn)
 }
 
 // titleIDLen is how many leading characters of a thread id the Codex 0.166

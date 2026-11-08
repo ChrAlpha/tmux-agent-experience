@@ -44,7 +44,8 @@ Usage:
   tmag wait     <target> [--for STATES] [--after SEQ] [--timeout D] [--json]
                                                wait for a state (default idle,blocked)
   tmag status   [--tmux] [--server S]          one-line summary for the status line
-  tmag prune    [--server S]                   clear records of agents gone, and old state
+  tmag prune    [--server S] [--retire-legacy-locks]
+                                               reconcile state; declare legacy lock retirement
   tmag jump     [--client C] [--server S] [--from %N] [--json]
                                                go to the agent waiting longest
   tmag notify   [--json]                       send a test alert through @tmag-notify
@@ -117,7 +118,7 @@ func (a *app) run(args []string) int {
 	case "status":
 		return a.cmdStatus(rest)
 	case "prune":
-		return a.cmdPrune(args)
+		return a.cmdPrune(rest)
 	case "jump":
 		return a.cmdJump(rest)
 	case "notify":

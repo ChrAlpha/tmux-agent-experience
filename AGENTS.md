@@ -168,6 +168,7 @@ a design problem, not a test problem.
 | `internal/tmux` | tmux CLI wrapper; sanitises every free-text field |
 | `internal/proc` | Process table, agent clients and services, hook hosts |
 | `internal/lockfile` | flock bounded by a context |
+| `internal/coord` | Fixed pane/session lock pools, dual legacy coordination and explicit retirement gate |
 | `internal/binpath` | Where hooks look for the binary; the hook command and the agents' launcher |
 | `internal/e2e` | End-to-end tests with real tmux and a fake agent |
 | `plugins/<host>/tmag` | Agent plugins for Claude Code and Codex: hooks only; Claude's `PermissionRequest` runs `tmag answer-hook` |

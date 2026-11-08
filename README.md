@@ -608,7 +608,38 @@ timeout. With `--json`, errors are also printed as
 | Pane state | `@tmag_*` pane options, gone with the pane | `tmag uninstall --purge` |
 | `tmag serve` | a tmux window, while you keep it open, and `@tmag_api_addr` while it runs | closing the window |
 | Owner credentials | `$XDG_STATE_HOME/tmag/auth/`, or `TMAG_AUTH_DIR`: metadata and verification digests | `tmag auth revoke`, or `tmag uninstall --purge` |
-| Sessions and event log | `$XDG_STATE_HOME/tmag/<realm>/` (default `~/.local/state/tmag/<realm>/`): one small file per live session, at most two 8 MB event files, `req/<id>.sock` while an answer hook waits. The realm names the process table tmag sees, one per container or machine and boot, so containers that share a home directory keep their sessions apart | `tmag uninstall --purge`; `tmag prune`, run by the picker key, removes other realms' state, and the state tmag 0.2.0 and earlier kept in `tmag/` itself, once unused for 30 days |
+| Sessions and event log | `$XDG_STATE_HOME/tmag/<realm>/` (default `~/.local/state/tmag/<realm>/`): one small file per live session, at most two 8 MB event files, `req/<id>.sock` while an answer hook waits. The realm names the process table tmag sees, one per container or machine and boot, so containers that share a home directory keep their sessions apart | `tmag uninstall --purge`; ordinary maintenance preserves foreign realms and legacy state trees whose retirement is unknown |
+| Coordination | `<state dir>/coord/`: permanent namespace gate and at most 256 pane plus 256 session lock files; compatibility mode also retains per-resource files under `locks/` | removing the state directory with `tmag uninstall --purge` |
+
+Resource locks default to compatibility mode in every directory, including an
+empty one. New tmag commands acquire a fixed pool stripe and the same legacy
+per-resource inode older binaries use. Existing holders and waiters that opened
+their descriptors earlier keep their mutual exclusion. Compatibility continues
+creating legacy files for new identifiers, so its legacy cost can keep growing.
+
+To declare a directory exclusive to binaries supporting the fixed pools:
+
+1. Finish every older tmag process, including `serve`, answer hooks, hooks,
+   commands and lock waiters. Stop their launch paths while upgrading.
+2. Verify every host's hook/launcher resolves the new released binary, and
+   ensure no older executable or rollback will write this state directory again.
+3. From your own terminal, run `tmag prune --retire-legacy-locks` with the same
+   `TMAG_STATE_DIR`/realm as the deployment. This command is the explicit
+   retirement declaration; it applies immediately, with no further prompt.
+
+The declaration waits for participating new commands before publishing the mode
+atomically. Older binaries do not know that gate: free lock files, absent
+processes, or missing legacy names do not establish the preconditions. Agents
+cannot make the declaration. Do not restart an older writer after it succeeds.
+Fresh deployments using only the new binary make the same declaration before
+starting their agents. After cutover, new identifiers create no legacy locks;
+new coordination files are bounded by the fixed pools. Existing legacy files
+remain as a finite historical cost. The gate and pool files remain permanently
+linked; ordinary operations never delete and recreate their lock identities.
+
+Automatic maintenance preserves other realms and older shared state trees. Age,
+local PID absence, or an unlocked file cannot prove a foreign realm retired.
+Idle agents elsewhere can legitimately leave their metadata untouched for weeks.
 
 `tmag uninstall` prints the exact removal steps.
 
