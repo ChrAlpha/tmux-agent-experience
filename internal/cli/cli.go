@@ -195,6 +195,10 @@ func (a *app) fail(cmd string, err error) int {
 		code = "ambiguous"
 	case errors.Is(err, query.ErrEnded):
 		code = "ended"
+	case errors.Is(err, eventlog.ErrHistoryUnavailable):
+		code = "history_unavailable"
+	case errors.Is(err, eventlog.ErrIntegrityLoss):
+		code = "integrity_loss"
 	}
 	if a.json {
 		a.emit(map[string]any{"error": map[string]string{"code": code, "message": err.Error()}})

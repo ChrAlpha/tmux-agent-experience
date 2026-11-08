@@ -543,10 +543,19 @@ killed, a title shows another thread) are found by whichever tmag process
 looks next, `watch` itself every two seconds, and recorded once as events.
 A change is logged even when the tmag process that made it dies before
 logging it: the next one to touch the session logs it. An event may therefore
-repeat, but none is lost. After a disconnect, `tmag watch --since <last seq>`
+repeat. After a disconnect, `tmag watch --since <last seq>`
 replays what was missed
 and sends the pane list, or starts over with a new snapshot if those events
 were already rotated away.
+
+A running watch that falls behind retained history ends with
+`history_unavailable` instead of silently skipping changes. Replace the local
+image with a fresh snapshot before continuing. An interrupted final log write
+is repaired before another append; existing cursors spanning that repair also
+require a fresh snapshot. A malformed complete record ends reading or appending
+with `integrity_loss`, preserving the damaged file for explicit maintenance.
+Historical waits propagate these errors: a current snapshot cannot establish
+which past transitions or delivery outcomes occurred.
 
 Over SSH, a remote client needs nothing else: `ssh host tmag watch`. A watch
 ends as soon as nobody reads it, even with nothing to send: when its reader
@@ -554,10 +563,11 @@ closes the pipe, or when the connection of a command ssh runs without a
 terminal drops.
 
 Sequence numbers increase across the life of the state directory and start from
-the current time when it is created, so a cursor kept from before
-`tmag uninstall --purge`, or from before a reboot, which starts a new realm's
-directory, is recognised as stale. Treat them as opaque, ordered
-integers.
+the current time when it is created. Unused reservations leave legitimate gaps;
+gaps alone do not mean events were lost. Treat numbers as opaque, ordered
+integers. Retention and recovery invalidate cursors explicitly. Numeric cursors
+from a different directory are rejected when outside its valid range; a running
+watch also checks log identity independently of the clock.
 
 Inside tmux, the same state is in pane options, read-only, for formats and
 scripts that do not run tmag: `@tmag_agent`, `@tmag_session`, `@tmag_state`,
@@ -571,7 +581,7 @@ timeout. With `--json`, errors are also printed as
 `not_found`, `ambiguous`, `refused:unbound`, `refused:busy`,
 `refused:background`, `refused:subagent`, `refused:changed`,
 `refused:idle`, `refused:unsupported`, `refused:self`, `refused:agent`,
-`ended`, `no_reply`, `timeout` and `error`.
+`ended`, `no_reply`, `history_unavailable`, `integrity_loss`, `timeout` and `error`.
 
 ## Footprint
 

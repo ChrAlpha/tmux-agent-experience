@@ -68,6 +68,11 @@ Pane-list frames do not advance the cursor. `event: ping` with data `1` is a
 keepalive, not state. Reconnect with the last snapshot/event cursor. The local
 watch contract replays missed events or starts a fresh snapshot after rotation.
 Clients should tolerate duplicate state events, as the CLI contract requires.
+If a running watch loses retained history, it sends the existing error document
+with code `history_unavailable` and ends the subscription. Start a fresh watch
+without a cursor and replace local state from its snapshot. `integrity_loss`
+reports a malformed complete log record and requires explicit maintenance.
+Neither error permits treating a retained suffix as a complete continuation.
 
 Disconnecting ends that subscription and its local watch. Every second, serve
 checks the persisted authorization store: revocation, expiry or a failed check
