@@ -84,7 +84,11 @@ func TestWait(t *testing.T) {
 
 	done, out = wait("r2")
 	Close(ctx, dir, "r2")
-	if <-done || out.Len() != 0 {
+	emitted := <-done
+	if ctx.Err() != nil {
+		t.Fatalf("explicit close not observed before parent cancellation: %v", ctx.Err())
+	}
+	if emitted || out.Len() != 0 {
 		t.Fatalf("a closed request printed %q", out.String())
 	}
 	path, err := location(ctx, dir, "r2")

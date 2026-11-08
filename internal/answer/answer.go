@@ -305,7 +305,7 @@ func Decide(ctx context.Context, stateDir, id string, d Decision) error {
 func Close(ctx context.Context, stateDir, id string) {
 	ctx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
 	defer cancel()
-	if Probe(ctx, stateDir, id) != Dead {
-		_, _ = call(ctx, stateDir, id, message{Op: "close"})
-	}
+	// The call looks up the endpoint and validates the request identity itself.
+	// A separate probe would repeat that work inside the same short budget.
+	_, _ = call(ctx, stateDir, id, message{Op: "close"})
 }
