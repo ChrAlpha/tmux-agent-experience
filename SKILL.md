@@ -48,7 +48,7 @@ A user typically hands you this document with a prompt such as:
 ```sh
 uname -sm                                  # Linux or Darwin; x86_64/amd64 or arm64/aarch64
 tmux -V                                    # 3.2 or newer
-command -v curl || command -v wget         # one of them
+command -v curl                            # required for bounded release downloads
 echo "$TMUX"                               # non-empty: you run inside tmux
 tmux show-environment -g TMUX_PLUGIN_MANAGER_PATH
 ```
@@ -88,18 +88,14 @@ tmux source-file CONF                                            # load it
 
 On load the plugin downloads the released binary for its version, checks its
 SHA-256 and puts it at `${PLUGINS}tmux-agent-experience/bin/tmag`. It runs in
-the background, with a total attempt budget of 60 seconds, including version
-checks, downloads and publication. `@tmag-install-timeout` accepts `1`–`600`
-seconds or `off`; off preserves the executable and starts no fetch. A one-second
-policy-lookup allowance is charged to that budget, so a one-second setting can
-expire before downloading.
-
-Candidates run from private scratch inside the plugin's `bin/`; executable
-`TMPDIR` is not required. A read-only capability check selects the verified
-binary's kernel-lock publisher, or the explicit owned-directory compatibility
-path for released 0.3.0. A publisher error never switches publication paths.
-
-Wait for it (up to a minute with the default budget):
+the background. Curl is required; each download has a 10-second connection
+limit and a 25-second total transfer limit, without retries. Local tools,
+filesystems and version probes have no whole-attempt deadline. Checksums and the
+candidate's version are verified before atomic replacement inside `bin/`. A busy
+or interrupted `bin/.install.lock` fails clearly: after all installers finish,
+the person must inspect and recover it. Never steal a lock because of age or
+remove a replacement owner's lock. Keep older installers stopped while upgrading.
+Poll for the binary under normal local-tool operation:
 
 ```sh
 TMAG="${PLUGINS}tmux-agent-experience/bin/tmag"
@@ -167,8 +163,6 @@ tmag when asked to, and that `set -g @tmag-peers off` followed by
 | Symptom | What to do |
 | --- | --- |
 | `bin/tmag` never appears | `tmux show-messages` names the cause, usually no network access to GitHub. Fix access and `tmux source-file CONF`; a mirror can be set with `@tmag-release-url`. Never build tmag from source as a workaround. |
-| Installer reports an unconfirmed release or unknown lock | Stop old installers before inspecting a legacy directory or unknown object at `bin/.install.lock`; never remove it by age. Old installers whose directory lock was already taken by another old process must also stop before migration. Released 0.3.0's compatibility directory lock can require quiescent owner recovery after a crash. Preserve the new permanent regular-file lock: compatibility publication cannot replace it, its kernel lock releases on exit, and a helper-capable invocation recovers its owned staging. Preserve ambiguous bootstrap scratch. |
-| Installer times out or is interrupted near publication | Inspect `bin/tmag` before retrying: atomic rename may finish before a success receipt. TPM/Git updates do not share the installer gate; an already obsolete version request is rejected, and the next load converges with a later checkout change. |
 | `doctor`: tmux plugin not loaded | `CONF` lacks the `@plugin` line, or it sits below TPM's `run` line. Fix the order and `tmux source-file CONF`. |
 | `doctor`: tmux plugin version differs from the binary | `tmux source-file CONF` to let the plugin fetch the matching binary. |
 | `doctor`: `tmux` needs 3.2 or newer | Stop; the user upgrades tmux. |

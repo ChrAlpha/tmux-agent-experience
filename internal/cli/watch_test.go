@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"strings"
 	"testing"
 	"time"
@@ -291,53 +290,5 @@ func TestWatchInterruptionAfterSnapshotDoesNotEmitCopiedBacklog(t *testing.T) {
 	}
 	if err := s.run(ctx, -1, false); !errors.Is(err, context.Canceled) || frames != 1 {
 		t.Fatalf("interrupted handoff = %d frames, %v", frames, err)
-	}
-}
-
-type canceledWatchOutput struct {
-	bytes.Buffer
-	cancel context.CancelCauseFunc
-	cause  error
-	fault  error
-	fired  bool
-}
-
-func (w *canceledWatchOutput) Write(p []byte) (int, error) {
-	n, err := w.Buffer.Write(p)
-	if !w.fired {
-		w.fired = true
-		w.cancel(w.cause)
-		if w.fault != nil {
-			return n, w.fault
-		}
-	}
-	return n, err
-}
-func TestWatchKeepsStreamResultWhenCancellationHasSignalCause(t *testing.T) {
-	t.Setenv("TMUX", "")
-	t.Setenv("TMUX_PANE", "")
-	t.Setenv("TMUX_TMPDIR", t.TempDir())
-	for _, fault := range []error{nil, io.ErrUnexpectedEOF} {
-		t.Run(fmt.Sprintf("output_fault=%t", fault != nil), func(t *testing.T) {
-			parent, stop := context.WithTimeout(context.Background(), 5*time.Second)
-			defer stop()
-			ctx, cancel := context.WithCancelCause(parent)
-			defer cancel(nil)
-			signalCause := errors.New("terminated signal received")
-			out := &canceledWatchOutput{cancel: cancel, cause: signalCause, fault: fault}
-			var stderr bytes.Buffer
-			a := app{ctx: ctx, log: eventlog.Open(t.TempDir()), stdout: out, stderr: &stderr}
-			code := a.cmdWatch(nil)
-			if !out.fired || !errors.Is(ctx.Err(), context.Canceled) || !errors.Is(context.Cause(ctx), signalCause) {
-				t.Fatal("fixture did not reach signal-cause cancellation")
-			}
-			if fault == nil {
-				if code != ExitOK || stderr.Len() != 0 || bytes.Contains(out.Bytes(), []byte(`"error":`)) {
-					t.Fatalf("normal signal became terminal error: code=%d stdout=%s stderr=%s", code, out.String(), stderr.String())
-				}
-			} else if code != ExitError || !strings.Contains(stderr.String(), fault.Error()) || strings.Contains(stderr.String(), signalCause.Error()) {
-				t.Fatalf("cancellation replaced independent output failure: code=%d stderr=%s", code, stderr.String())
-			}
-		})
 	}
 }

@@ -13,7 +13,7 @@ import (
 )
 
 // Presence never treats a directory entry as proof of a live listener. Unknown
-// includes timeout, unsupported legacy protocol, permission and identity errors;
+// includes timeout, unsupported protocol, permission and identity errors;
 // only definite absence/refusal authorizes stale cleanup.
 type Presence uint8
 
@@ -39,8 +39,8 @@ func Probe(ctx context.Context, root, id string) Presence {
 }
 
 // Waiting is the compatibility convenience helper, scoped to a bounded probe.
-// Production context-bearing callers use Probe, permitting Unknown old listeners
-// to continue through their existing request/state gates and real operation.
+// Production context-bearing callers use Probe; Unknown still permits an
+// identity-checked operation through the existing request/state gates.
 func Waiting(root, id string) bool { return Probe(context.Background(), root, id) == Alive }
 
 func probeAt(ctx context.Context, scope *ownedfs.Dir, name, id string) Presence {

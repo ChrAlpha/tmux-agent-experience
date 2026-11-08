@@ -12,13 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ChrAlpha/tmux-agent-experience/internal/admission"
-	"github.com/ChrAlpha/tmux-agent-experience/internal/attach"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/contextio"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/hook"
-	"github.com/ChrAlpha/tmux-agent-experience/internal/observe"
-	"github.com/ChrAlpha/tmux-agent-experience/internal/policy"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/query"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/version"
@@ -53,7 +49,7 @@ Usage:
                                                wait for a state (default idle,blocked)
   tmag status   [--tmux] [--server S]          one-line summary for the status line
   tmag prune    [--server S] [--retire-legacy-locks]
-                                               reconcile state; declare legacy lock retirement
+                                               reconcile state; declare quiescent state migration
   tmag jump     [--client C] [--server S] [--from %N] [--json]
                                                go to the agent waiting longest
   tmag notify   [--json]                       send a test alert through @tmag-notify
@@ -237,28 +233,11 @@ func (a *app) usageError(cmd string, err error) int {
 // fail reports err and returns the matching exit code.
 func (a *app) fail(cmd string, err error) int {
 	code, exit := "error", ExitError
-	var unavailable *session.RecordsUnavailable
-	var issue *session.RecordIssue
-	var world *attach.WorldUnavailable
-	var option *policy.Error
+	var record *session.RecordError
 	var refused *query.RefusedError
 	switch {
-	case errors.Is(err, observe.ErrBusy):
-		code = "observation_busy"
-	case errors.Is(err, observe.ErrCapacity):
-		code = "observation_capacity"
-	case errors.Is(err, observe.ErrUnavailable):
-		code = "observation_unavailable"
-	case errors.Is(err, admission.ErrLimit):
-		code = "resource_limit"
-	case errors.Is(err, admission.ErrUnavailable):
-		code = "admission_unavailable"
-	case errors.As(err, &option):
-		code = option.Category
-	case errors.As(err, &unavailable), errors.As(err, &issue):
+	case errors.As(err, &record):
 		code = "records_unavailable"
-	case errors.As(err, &world):
-		code = "world_unavailable"
 	case errors.As(err, &refused):
 		code, exit = "refused:"+refused.Reason, ExitRefused
 	case errors.Is(err, errTimeout), errors.Is(err, context.DeadlineExceeded):

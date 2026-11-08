@@ -5,53 +5,34 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/contextio"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/coord"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/ownedfs"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/statefile"
 )
 
-// RecordIssue contains only a validated metadata reference and fixed category.
-type RecordIssue struct {
-	Agent    string `json:"agent"`
-	ID       string `json:"id"`
-	Category string `json:"category"`
-}
+// RecordError identifies the first unreadable metadata location without decoder
+// output or file contents. Complete views must not treat it as absence.
+type RecordError struct{ Agent, ID, Category string }
 
-func (e *RecordIssue) Error() string {
-	return fmt.Sprintf("records_unavailable: %s/%s (%s)", e.Agent, e.ID, e.Category)
-}
-
-// Catalog preserves individually valid records without claiming a complete image.
-type Catalog struct {
-	Records    []Record
-	Issues     []RecordIssue
-	IssueCount uint64
-	Complete   bool
-}
-
-// RecordsUnavailable refuses a complete v1 image that could fabricate absence.
-type RecordsUnavailable struct{ Catalog Catalog }
-
-func (*RecordsUnavailable) Error() string {
-	return "records_unavailable: session metadata is incomplete or unreadable; run tmag doctor"
-}
-
-func (c *Catalog) issue(i RecordIssue) {
-	if c.IssueCount < math.MaxUint64 {
-		c.IssueCount++
+func (e *RecordError) Error() string {
+	location := e.Agent
+	if e.ID != "" {
+		location += "/" + e.ID
 	}
-	if len(c.Issues) < 16 {
-		c.Issues = append(c.Issues, i)
+	if location == "" {
+		location = "sessions"
 	}
+	return fmt.Sprintf("records_unavailable: %s (%s)", location, e.Category)
 }
 
-// GetContext returns false only on actual absence. Decoder text never escapes.
+// GetContext reads one bounded, owned regular record. Only definite absence is
+// false/nil; cancellation remains the caller's context error.
 func (s Store) GetContext(ctx context.Context, agent, id string) (Record, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return Record{}, false, err
@@ -60,162 +41,102 @@ func (s Store) GetContext(ctx context.Context, agent, id string) (Record, bool, 
 	if err != nil {
 		return Record{}, false, err
 	}
-	issue := func(category string) (Record, bool, error) { return Record{}, false, &RecordIssue{agent, id, category} }
-	// Open once. Ownership, type, size and bounded bytes refer to this exact
-	// descriptor, including when an atomic publication replaces the pathname.
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0)
+	fault := func(category string) (Record, bool, error) { return Record{}, false, &RecordError{agent, id, category} }
+	if _, err := coord.Current(ctx, s.Dir); err != nil {
+		return Record{}, false, err
+	}
+	rel, err := filepath.Rel(s.Dir, path)
+	if err != nil {
+		return Record{}, false, err
+	}
+	data, err := statefile.ReadSmallWithin(ctx, s.Dir, rel, 4<<20)
+	if ctx.Err() != nil {
+		return Record{}, false, ctx.Err()
+	}
 	if errors.Is(err, os.ErrNotExist) {
 		return Record{}, false, nil
 	}
-	if ctx.Err() != nil {
-		if f != nil {
-			_ = f.Close()
-		}
-		return Record{}, false, ctx.Err()
+	if errors.Is(err, ownedfs.ErrScope) {
+		return fault("unsafe_object")
+	}
+	if errors.Is(err, os.ErrPermission) {
+		return fault("permission")
 	}
 	if err != nil {
-		if errors.Is(err, os.ErrPermission) {
-			return issue("permission")
-		}
-		if errors.Is(err, syscall.ELOOP) {
-			return issue("unsafe_object")
-		}
-		return issue("io")
+		return fault("unreadable_or_oversized")
 	}
-	defer f.Close()
-	st, err := f.Stat()
-	if err != nil {
-		return issue("io")
-	}
-	if !st.Mode().IsRegular() || !ownedfs.Owner(st) {
-		return issue("unsafe_object")
-	}
-	if st.Size() > 4<<20 {
-		return issue("too_large")
-	}
-	data, err := contextio.ReadAll(ctx, f, 4<<20)
-	if ctx.Err() != nil {
-		return Record{}, false, ctx.Err()
-	}
-	if len(data) > 4<<20 {
-		return issue("too_large")
-	}
-	if err != nil {
-		return issue("io")
-	}
-
 	var rec Record
 	if json.Unmarshal(data, &rec) != nil {
-		return issue("decode")
+		return fault("decode")
 	}
-	if rec.Agent != agent || rec.ID != id || !ValidRecord(rec) {
-		return issue("identity")
+	if err := ctx.Err(); err != nil {
+		return Record{}, false, err
+	}
+	if rec.Agent != agent || rec.ID != id || rec.Host.PID < 0 {
+		return fault("identity")
+	}
+	if rec.Ended != "" && rec.Ended != "Exit" && rec.Ended != "SessionEnd" {
+		return fault("state")
+	}
+	switch rec.Main {
+	case "", "idle", "working", "unknown":
+	default:
+		return fault("state")
 	}
 	return rec, true, nil
 }
 
-// ValidRecord validates the metadata domain, including legacy optional fields.
-func ValidRecord(r Record) bool {
-	if !validAgent(r.Agent) || !ValidID(r.ID) || r.Host.PID < 0 {
-		return false
+// AllContext returns no partial view. The first exact fault stops enumeration;
+// repair never infers unique attachments or absence from damaged metadata.
+func (s Store) AllContext(ctx context.Context) ([]Record, error) {
+	if _, err := coord.Current(ctx, s.Dir); err != nil {
+		return nil, err
 	}
-	if r.Host.Role != "" && r.Host.Role != proc.Terminal && r.Host.Role != proc.Service {
-		return false
-	}
-	switch r.Main {
-	case "", "unknown", "idle", "working":
-	default:
-		return false
-	}
-	if r.Ended != "" && r.Ended != "Exit" && r.Ended != "SessionEnd" {
-		return false
-	}
-	if r.Observation != nil {
-		switch r.Observation.Host {
-		case "unknown", "verified", "unavailable":
-		default:
-			return false
+	var out []Record
+	for _, dir := range []string{s.Dir, s.root()} {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		st, err := os.Lstat(dir)
+		if errors.Is(err, os.ErrNotExist) {
+			return out, nil
+		}
+		if err != nil {
+			return nil, &RecordError{Category: "enumeration"}
+		}
+		if !st.IsDir() || !ownedfs.Owner(st) {
+			return nil, &RecordError{Category: "unsafe_object"}
 		}
 	}
-	return true
-}
-
-// ScanContext exposes faults while retaining valid records for non-destructive repair.
-func (s Store) ScanContext(ctx context.Context) (Catalog, error) { return s.ScanBoundedContext(ctx, 0) }
-
-// ErrCatalogCapacity is an explicit collection limit, never a partial image.
-var ErrCatalogCapacity = errors.New("session catalog capacity exceeded")
-
-// ScanBoundedContext also caps encoded metadata retained for a shared image.
-// Zero preserves ordinary complete collection semantics.
-func (s Store) ScanBoundedContext(ctx context.Context, limit int) (Catalog, error) {
-	return s.scanContext(ctx, limit, 0)
-}
-
-// ProbeContext limits physical directory entries as well as retained bytes.
-// It is read-only and returns explicit incomplete evidence at either bound.
-func (s Store) ProbeContext(ctx context.Context, entries, bytes int) (Catalog, error) {
-	if entries < 1 || bytes < 1 {
-		return Catalog{}, ErrCatalogCapacity
-	}
-	return s.scanContext(ctx, bytes, entries)
-}
-func (s Store) scanContext(ctx context.Context, limit, maxEntries int) (Catalog, error) {
-	examined := 0
-	used := 0
-	c := Catalog{Complete: true}
 	for _, agent := range []string{proc.Claude, proc.Codex} {
-		err := contextio.Entries(ctx, filepath.Join(s.root(), agent), func(e os.DirEntry) error {
-			examined++
-			if maxEntries > 0 && examined > maxEntries {
-				return ErrCatalogCapacity
-			}
+		dir := filepath.Join(s.root(), agent)
+		if st, err := os.Lstat(dir); err == nil && (!st.IsDir() || !ownedfs.Owner(st)) {
+			return nil, &RecordError{Agent: agent, Category: "unsafe_object"}
+		}
+		err := contextio.Entries(ctx, dir, func(e os.DirEntry) error {
 			id, ok := strings.CutSuffix(e.Name(), ".json")
 			if !ok || !ValidID(id) {
 				return nil
 			}
 			rec, found, err := s.GetContext(ctx, agent, id)
 			if err != nil {
-				var issue *RecordIssue
-				if errors.As(err, &issue) {
-					c.issue(*issue)
-				} else {
-					return err
-				}
-			} else if found {
-				if limit > 0 {
-					data, err := json.Marshal(rec)
-					if err != nil {
-						return err
-					}
-					used += len(data) + 1
-					if used > limit {
-						return ErrCatalogCapacity
-					}
-				}
-				c.Records = append(c.Records, rec)
+				return err
+			}
+			if found {
+				out = append(out, rec)
 			}
 			return ctx.Err()
 		})
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			c.Complete = false
-			if !errors.Is(err, ErrCatalogCapacity) && ctx.Err() == nil {
-				c.issue(RecordIssue{Agent: agent, Category: "scan_incomplete"})
+			var record *RecordError
+			if errors.As(err, &record) {
+				return nil, err
 			}
-			return c, err
+			return nil, &RecordError{Agent: agent, Category: "enumeration"}
 		}
 	}
-	return c, ctx.Err()
-}
-
-// AllContext returns a truthful complete collection or an explicit error.
-func (s Store) AllContext(ctx context.Context) ([]Record, error) {
-	c, err := s.ScanContext(ctx)
-	if ctx.Err() != nil {
-		return nil, ctx.Err()
-	}
-	if err != nil || !c.Complete || c.IssueCount != 0 {
-		return nil, &RecordsUnavailable{Catalog: c}
-	}
-	return c.Records, nil
+	return out, ctx.Err()
 }

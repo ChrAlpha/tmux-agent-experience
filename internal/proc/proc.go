@@ -511,29 +511,19 @@ func readPSContext(parent context.Context) ([]Process, error) {
 // where the platform exposes them (Linux). Nothing else is read out; ok is
 // false when the environment is unreadable.
 func Environ(pid int, names ...string) (vars map[string]string, ok bool) {
-	vars, err := EnvironContext(context.Background(), pid, names...)
-	return vars, err == nil
-}
-
-// EnvironContext bounds metadata allocation and follows the caller's deadline.
-// A platform without /proc reports unreadable rather than an empty environment.
-func EnvironContext(ctx context.Context, pid int, names ...string) (map[string]string, error) {
-	data, err := contextio.ReadFile(ctx, "/proc/"+strconv.Itoa(pid)+"/environ", 1<<20)
+	data, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/environ")
 	if err != nil {
-		return nil, err
+		return nil, false
 	}
-	vars := map[string]string{}
+	vars = map[string]string{}
 	for _, kv := range bytes.Split(data, []byte{0}) {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
 		for _, name := range names {
 			if v, found := bytes.CutPrefix(kv, []byte(name+"=")); found {
 				vars[name] = string(v)
 			}
 		}
 	}
-	return vars, ctx.Err()
+	return vars, true
 }
 
 // LookPathAll returns every executable with the given name on a PATH value,

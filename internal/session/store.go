@@ -55,7 +55,7 @@ func (s Store) temporary(agent string, slot byte) string {
 }
 
 // Get reads a session; ok is false when there is none.
-func (s Store) Get(agent, id string) (rec Record, ok bool, err error) {
+func (s Store) Get(agent, id string) (Record, bool, error) {
 	return s.GetContext(context.Background(), agent, id)
 }
 
@@ -67,13 +67,17 @@ func (s Store) Put(rec Record) error {
 
 // PutContext publishes a session under its lock. One fixed temp per agent and
 // stripe replaces per-invocation random files. The temp shares the target's
-// parent filesystem, and both publisher and cleaner hold the same stripe.
+// parent filesystem. The publisher holds its session stripe and reuses any
+// leftover at that reserved position.
 func (s Store) PutContext(ctx context.Context, rec Record) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	path, err := s.path(rec.Agent, rec.ID)
 	if err != nil {
+		return err
+	}
+	if _, err := coord.Current(ctx, s.Dir); err != nil {
 		return err
 	}
 	data, err := json.Marshal(rec)
@@ -88,7 +92,7 @@ func (s Store) PutContext(ctx context.Context, rec Record) error {
 	if err != nil {
 		return err
 	}
-	return statefile.WriteSlots(ctx, s.Dir, rel, tmp, ".tmag-tmp-s-", coord.Slots, data)
+	return statefile.WriteWithin(ctx, s.Dir, rel, tmp, data)
 }
 
 // Delete removes a session. The caller holds its lock.
@@ -96,7 +100,7 @@ func (s Store) Delete(agent, id string) error {
 	return s.DeleteContext(context.Background(), agent, id)
 }
 
-// DeleteContext removes only a record under the selected, inode-bound realm.
+// DeleteContext removes only a record under the selected, runtime-pinned realm.
 func (s Store) DeleteContext(ctx context.Context, agent, id string) error {
 	path, err := s.path(agent, id)
 	if err != nil {
@@ -219,5 +223,5 @@ func (s Store) Current(ctx context.Context, log *eventlog.Log, agent, id string)
 	return s.Settle(ctx, log, rec)
 }
 
-// All reads every session using the same strict validation as AllContext.
+// All returns a complete collection or the first explicit metadata fault.
 func (s Store) All() ([]Record, error) { return s.AllContext(context.Background()) }

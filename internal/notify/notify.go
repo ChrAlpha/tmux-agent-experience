@@ -7,16 +7,17 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
-	"github.com/ChrAlpha/tmux-agent-experience/internal/admission"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/coord"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/helper"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/lockfile"
 )
 
 // Option is the tmux option holding the person's command.
@@ -116,28 +117,14 @@ func (a Alert) Env() []string {
 // gives up after Timeout, and returns at once: a hook must not wait for the
 // network. The process leaves the hook's session, so an agent that ends its
 // hook's process group does not end it.
-const slotVar = "TMAG_NOTIFY_SLOT"
-const deadlineVar = "TMAG_NOTIFY_DEADLINE"
-
-func Start(ctx context.Context, root, bin, command string, a Alert) error {
-	deadline := time.Now().Add(Timeout)
-	lease, err := admission.Acquire(ctx, root, admission.Notify)
-	if err != nil {
-		return err
-	}
-	defer lease.Close()
-	if err := ctx.Err(); err != nil {
-		return err
-	}
+func Start(bin, command string, a Alert) error {
 	cmd := exec.Command(bin, "notify", "--alert")
-	cmd.Env = append(append(os.Environ(), a.Env()...), commandVar+"="+command,
-		slotVar+"="+strconv.Itoa(lease.Slot()), deadlineVar+"="+strconv.FormatInt(deadline.UnixNano(), 10), "TMAG_STATE_DIR="+root)
-	cmd.ExtraFiles = []*os.File{lease.File()}
+	cmd.Env = append(append(os.Environ(), a.Env()...), commandVar+"="+command)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
 		return err
 	}
-	go func() { _ = cmd.Wait() }()
+	go func() { _ = cmd.Wait() }() // reaped, should the hook outlive it
 	return nil
 }
 
@@ -150,9 +137,6 @@ func FromEnv(environ []string) (command string, env []string) {
 			command = v
 			continue
 		}
-		if strings.HasPrefix(kv, slotVar+"=") || strings.HasPrefix(kv, deadlineVar+"=") {
-			continue
-		}
 		env = append(env, kv)
 	}
 	return command, env
@@ -161,94 +145,63 @@ func FromEnv(environ []string) (command string, env []string) {
 // ErrTimeout is a command that did not finish in time; it was ended.
 var ErrTimeout = errors.New("@tmag-notify did not finish within " + Timeout.String())
 
-// Run runs command with sh in env until it exits or ctx ends, and returns
-// what it printed. The command runs in a process group of its own, which
-// ends with it, children included.
-func Run(ctx context.Context, command string, env []string) ([]byte, error) {
-	return run(ctx, command, env, nil)
-}
+// Executions bounds external commands, not detached launcher processes.
+const Executions = 4
 
-func run(ctx context.Context, command string, env []string, lease *admission.Lease) ([]byte, error) {
+var ErrLimit = errors.New("notification execution limit reached")
+
+// Run runs command with sh in env until it exits or the budget ends, returning
+// capped foreground output. Its process group and inherited slot end together.
+func Run(parent context.Context, root, command string, env []string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(parent, Timeout)
+	defer cancel()
+	if _, err := coord.Current(ctx, root); err != nil {
+		return nil, err
+	}
+	var lease *lockfile.Held
+	for i := range Executions {
+		held, err := lockfile.AcquireWithin(ctx, root, fmt.Sprintf("notify-%d.lock", i), false, false)
+		if errors.Is(err, lockfile.ErrBusy) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		lease = held
+		break
+	}
+	if lease == nil {
+		return nil, ErrLimit
+	}
+	defer lease.Close()
 	cmd, cleanup := helper.Command(ctx, "/bin/sh", "-c", command)
 	defer cleanup()
 	cmd.Env = env
-	if lease != nil {
-		cmd.ExtraFiles = []*os.File{lease.File()}
-	}
+	cmd.ExtraFiles = []*os.File{lease.File()}
 	out := &capped{}
 	cmd.Stdout, cmd.Stderr = out, out
 	err := cmd.Run()
 	if ctx.Err() != nil || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		err = ErrTimeout
+		if parent.Err() != nil {
+			err = errors.Join(err, parent.Err())
+		}
 	}
 	return out.Bytes(), err
 }
 
-// RunBounded admits a foreground command for its entire owned group lifetime.
-func RunBounded(ctx context.Context, root, command string, env []string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(ctx, Timeout)
-	defer cancel()
-	lease, err := admission.Acquire(ctx, root, admission.Notify)
-	if err != nil {
-		return nil, err
-	}
-	defer lease.Close()
-	return run(ctx, command, env, lease)
-}
-
-// RunAlert retains its inherited admission through owned command cleanup.
-func RunAlert(root string, environ []string) error { return runAlert(root, environ, 3) }
-
-func runAlert(root string, environ []string, candidateFD int) error {
-	started := time.Now()
+// RunAlert is `tmag notify --alert`: the process Start began. It runs the
+// command it was given and describes a failure for hook.log.
+func RunAlert(root string, environ []string) error {
 	command, env := FromEnv(environ)
 	if command == "" {
 		return errors.New("notify --alert: no command")
 	}
-	values := map[string]string{}
-	for _, kv := range environ {
-		if k, v, ok := strings.Cut(kv, "="); ok {
-			if k == slotVar || k == deadlineVar {
-				values[k] = v
-			}
-		}
-	}
-	deadline := started.Add(Timeout)
-	if raw := values[deadlineVar]; raw != "" {
-		n, err := strconv.ParseInt(raw, 10, 64)
-		if err != nil {
-			return errors.New("notify: invalid deadline")
-		}
-		if carried := time.Unix(0, n); carried.Before(deadline) {
-			deadline = carried
-		}
-	}
-	ctx, cancel := context.WithDeadline(context.Background(), deadline)
+	ctx, cancel := context.WithTimeout(context.Background(), Timeout)
 	defer cancel()
-	if ctx.Err() != nil {
-		return ErrTimeout
-	}
-	var lease *admission.Lease
-	if raw := values[slotVar]; raw != "" {
-		slot, err := strconv.Atoi(raw)
-		if err == nil {
-			lease, _ = admission.InheritFD(ctx, root, admission.Notify, slot, candidateFD)
-		}
-	}
-	if lease == nil {
-		var err error
-		lease, err = admission.Acquire(ctx, root, admission.Notify)
-		if err != nil {
-			return err
-		}
-	}
-	defer lease.Close()
-	_, err := run(ctx, command, env, lease)
+	_, err := Run(ctx, root, command, env)
 	if err != nil {
-		if errors.Is(err, ErrTimeout) {
-			return ErrTimeout
-		}
-		return errors.New("@tmag-notify: command failed")
+		return fmt.Errorf("%s: %w", Option, err)
 	}
 	return nil
 }

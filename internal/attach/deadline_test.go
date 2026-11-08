@@ -22,7 +22,9 @@ func TestCanceledDiscoveryCannotReconcileAbsence(t *testing.T) {
 	if err := store.Put(rec); err != nil {
 		t.Fatal(err)
 	}
-	Reconcile(ctx, Env{Log: log, Store: store}, &World{Proc: proc.NewTable(nil)})
+	if err := Reconcile(ctx, Env{Log: log, Store: store}, &World{Proc: proc.NewTable(nil)}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled reconciliation lost context error: %v", err)
+	}
 	if _, ok, err := store.Get(rec.Agent, rec.ID); !ok || err != nil {
 		t.Fatalf("canceled reconciliation removed session: ok=%v err=%v", ok, err)
 	}
@@ -45,7 +47,9 @@ func TestIncompleteProcessTableCannotAuthorizeAnyExit(t *testing.T) {
 		t.Fatal(err)
 	}
 	w := &World{Proc: proc.NewTable([]proc.Process{{PID: 123, Uncertain: true}})}
-	Reconcile(context.Background(), Env{Log: log, Store: store}, w)
+	if err := Reconcile(context.Background(), Env{Log: log, Store: store}, w); err == nil {
+		t.Fatal("incomplete process evidence accepted for reconciliation")
+	}
 	if _, ok, err := store.Get(rec.Agent, rec.ID); !ok || err != nil {
 		t.Fatalf("incomplete discovery authorized an exit: ok=%v err=%v", ok, err)
 	}

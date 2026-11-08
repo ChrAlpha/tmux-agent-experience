@@ -13,7 +13,6 @@ import (
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/attach"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
-	"github.com/ChrAlpha/tmux-agent-experience/internal/observe"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/tmux"
@@ -29,14 +28,14 @@ type Shown struct {
 
 // Session is one agent session, wherever it runs.
 type Session struct {
-	Observation *session.Observation `json:"observation,omitempty"`
-	ID          string               `json:"id"`
-	Agent       string               `json:"agent"`
-	State       string               `json:"state"`
-	Kind        string               `json:"kind,omitempty"`
-	Turn        string               `json:"turn,omitempty"`
-	Since       *time.Time           `json:"since,omitempty"`
-	Cwd         string               `json:"cwd,omitempty"`
+	LastHookAt time.Time  `json:"last_hook_at,omitzero"`
+	ID         string     `json:"id"`
+	Agent      string     `json:"agent"`
+	State      string     `json:"state"`
+	Kind       string     `json:"kind,omitempty"`
+	Turn       string     `json:"turn,omitempty"`
+	Since      *time.Time `json:"since,omitempty"`
+	Cwd        string     `json:"cwd,omitempty"`
 	// Runtime is how the session runs: in a terminal's own agent process, or
 	// in a background service; "" when its hooks did not say.
 	Runtime string `json:"runtime,omitempty"`
@@ -54,8 +53,20 @@ type Session struct {
 	Panes []Shown `json:"panes"`
 }
 
-// Pane is the metadata-only v1 pane view.
-type Pane = observe.Pane
+// Pane is an agent client in a tmux pane and the session it shows, if any.
+type Pane struct {
+	Server  string `json:"server"`
+	ID      string `json:"id"`
+	Target  string `json:"target"`
+	Cwd     string `json:"cwd"`
+	Command string `json:"command"`
+	Agent   string `json:"agent"`
+	// Session is the id of the session the pane shows; empty when tmag has
+	// no proof of one.
+	Session  string `json:"session,omitempty"`
+	Evidence string `json:"evidence,omitempty"`
+	View     string `json:"view,omitempty"`
+}
 
 // View is every session and every agent pane at one moment.
 type View struct {
@@ -70,25 +81,26 @@ type View struct {
 // nothing: it shows what reconciliation would make of the world.
 func Build(w *attach.World, recs []session.Record) View {
 	live, _ := attach.Live(w, recs)
-	v := buildRecords(live, observe.Panes(w, live))
+	v := View{Sessions: []Session{}, Panes: []Pane{}, records: live}
 	v.links = attach.Links(w, live)
-	return v
-}
-
-func buildRecords(records []session.Record, panes []Pane) View {
-	v := View{Sessions: []Session{}, Panes: panes, records: records}
-	if v.Panes == nil {
-		v.Panes = []Pane{}
-	}
 	shown := map[[2]string][]Shown{}
-	for _, p := range panes {
-		if p.Session != "" {
-			key := [2]string{p.Agent, p.Session}
-			shown[key] = append(shown[key], Shown{Server: p.Server, ID: p.ID, Evidence: p.Evidence, View: p.View})
+	for _, l := range v.links {
+		p := l.Client.Pane
+		pane := Pane{Server: p.Server, ID: p.ID, Target: p.Target(), Cwd: p.Path, Command: p.Command, Agent: l.Client.Agent}
+		if l.Session != nil {
+			pane.Session, pane.Evidence, pane.View = l.Session.ID, l.Evidence, l.View
+			key := [2]string{l.Session.Agent, l.Session.ID}
+			shown[key] = append(shown[key], Shown{Server: p.Server, ID: p.ID, Evidence: l.Evidence, View: l.View})
 		}
+		v.Panes = append(v.Panes, pane)
 	}
-	for _, r := range records {
-		s := Session{Observation: r.Observation, ID: r.ID, Agent: r.Agent, State: r.State(), Kind: r.Kind(), Turn: r.Turn, Cwd: r.Cwd, Runtime: string(r.Host.Role), Transcript: r.TranscriptRef(), Subagents: r.RunningSubagents(), Capabilities: r.Capabilities(), Requests: r.RequestRefs(), Panes: shown[[2]string{r.Agent, r.ID}]}
+	for _, r := range live {
+		s := Session{
+			LastHookAt: r.LastHookAt,
+			ID:         r.ID, Agent: r.Agent, State: r.State(), Kind: r.Kind(), Turn: r.Turn,
+			Cwd: r.Cwd, Runtime: string(r.Host.Role), Transcript: r.TranscriptRef(), Subagents: r.RunningSubagents(),
+			Capabilities: r.Capabilities(), Requests: r.RequestRefs(), Panes: shown[[2]string{r.Agent, r.ID}],
+		}
 		if s.Panes == nil {
 			s.Panes = []Shown{}
 		}
@@ -98,11 +110,19 @@ func buildRecords(records []session.Record, panes []Pane) View {
 		}
 		v.Sessions = append(v.Sessions, s)
 	}
-	sort.SliceStable(v.Sessions, func(i, j int) bool {
-		if v.Sessions[i].Agent != v.Sessions[j].Agent {
-			return v.Sessions[i].Agent < v.Sessions[j].Agent
+	sort.SliceStable(v.Panes, func(i, j int) bool {
+		a, b := v.Panes[i], v.Panes[j]
+		if a.Server != b.Server {
+			return a.Server < b.Server
 		}
-		return v.Sessions[i].ID < v.Sessions[j].ID
+		return a.Target < b.Target
+	})
+	sort.SliceStable(v.Sessions, func(i, j int) bool {
+		a, b := v.Sessions[i], v.Sessions[j]
+		if a.Agent != b.Agent {
+			return a.Agent < b.Agent
+		}
+		return a.ID < b.ID
 	})
 	return v
 }
@@ -151,18 +171,8 @@ type Snapshot struct {
 // Pending records and pane markers are repaired by normal reconciliation;
 // complete state events (including Since) converge even when replay overlaps.
 func TakeSnapshot(ctx context.Context, log *eventlog.Log) (Snapshot, error) {
-	ctx, cancel := context.WithTimeout(ctx, eventlog.ReadTimeout)
-	defer cancel()
-	store := session.Store{Dir: log.Dir}
-	// Ordinary observations participate in the same rate-limited repair trigger
-	// as hooks/status/watch. A missed one-shot trigger is picked up by a later
-	// invocation, without a resident worker or a scan per observer. Caller proof
-	// and the complete read below still come from a fresh world, never the cache.
-	if _, err := observe.Trigger(ctx, attach.Env{Log: log, Store: store}); err != nil {
-		return Snapshot{}, err
-	}
 	return takeSnapshot(ctx, log, func(ctx context.Context) (View, *attach.World, error) {
-		return Load(ctx, store)
+		return Load(ctx, session.Store{Dir: log.Dir})
 	})
 }
 

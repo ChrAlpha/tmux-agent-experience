@@ -11,7 +11,6 @@ import (
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/hook"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/notify"
-	"github.com/ChrAlpha/tmux-agent-experience/internal/policy"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/tmux"
 )
 
@@ -53,7 +52,7 @@ func (a *app) cmdNotify(args []string) int {
 	failed := false
 	for _, command := range commands {
 		run, cancel := context.WithTimeout(ctx, notify.Timeout)
-		out, err := notify.RunBounded(run, a.log.Dir, command, append(os.Environ(), alert.Env()...))
+		out, err := notify.Run(run, a.log.Dir, command, append(os.Environ(), alert.Env()...))
 		cancel()
 		r := ran{Command: command, Output: string(bytes.TrimSpace(out))}
 		if err != nil {
@@ -94,29 +93,22 @@ func notifyCommands(ctx context.Context) (commands []string) {
 	return commands
 }
 
-// checkNotify reports whether alerts reach the person away from the
-// terminal, and the latest failure of the command.
+// checkNotify reports configured delivery; tmag notify tests the command.
 func (a *app) checkNotify(ctx context.Context) check {
-	servers, err := tmux.ServersLimitContext(ctx, policy.MaxServers)
+	servers, err := doctorServers(ctx)
 	if err != nil {
 		return check{"notify", "warn", "server discovery incomplete"}
 	}
-	var commands []string
-	for _, srv := range servers {
-		command, err := srv.GlobalOptionContext(ctx, notify.Option)
+	configured := false
+	for _, s := range servers {
+		v, err := s.GlobalOptionContext(ctx, notify.Option)
 		if err != nil {
-			if absent, probeErr := srv.Absent(ctx); probeErr == nil && absent {
-				continue
-			}
-			return check{"notify", "warn", "notification option lookup unavailable"}
+			return check{"notify", "warn", "notification option unavailable"}
 		}
-		if command != "" {
-			commands = append(commands, "configured")
-		}
+		configured = configured || v != ""
 	}
-	if len(commands) == 0 {
+	if !configured {
 		return check{"notify", "skip", notify.Option + " is not set: alerts ring tmux's bell only"}
 	}
-
-	return check{"notify", "ok", fmt.Sprintf("%s is set; `tmag notify` sends a test alert", notify.Option)}
+	return check{"notify", "ok", fmt.Sprintf("%s configured; tmag notify tests delivery", notify.Option)}
 }

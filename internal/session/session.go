@@ -27,16 +27,14 @@ type Host struct {
 	Role  proc.Role `json:"role"`
 }
 
-// Observation is evidence of hook contact, independent of Since and state.
-type Observation = eventlog.Observation
-
 // Record is the state of one session.
 type Record struct {
-	Agent       string       `json:"agent"` // claude | codex
-	ID          string       `json:"id"`
-	Cwd         string       `json:"cwd,omitempty"`
-	Host        Host         `json:"host"`
-	Observation *Observation `json:"observation,omitempty"`
+	// LastHookAt is accepted hook contact, independent of state age or authority.
+	LastHookAt time.Time `json:"last_hook_at,omitzero"`
+	Agent      string    `json:"agent"` // claude | codex
+	ID         string    `json:"id"`
+	Cwd        string    `json:"cwd,omitempty"`
+	Host       Host      `json:"host"`
 	// Transcript is the path of the agent's transcript of the session, as its
 	// hooks report it. The file may not exist before the first turn.
 	Transcript string `json:"transcript,omitempty"`
@@ -135,18 +133,16 @@ func (r Record) RequestRefs() []eventlog.Request {
 // Report is what an event reports of a session. Lists are joined, so that
 // reports compare with ==.
 type Report struct {
-	State        string `json:"state,omitempty"`
-	HookAt       string `json:"hook_at,omitempty"`
-	Realm        string `json:"realm,omitempty"`
-	HostEvidence string `json:"host_evidence,omitempty"`
-	Kind         string `json:"kind,omitempty"`
-	Turn         string `json:"turn,omitempty"`
-	Cwd          string `json:"cwd,omitempty"`
-	Runtime      string `json:"runtime,omitempty"`
-	Transcript   string `json:"transcript,omitempty"`
-	Subagents    string `json:"subagents,omitempty"`
-	Requests     string `json:"requests,omitempty"`
-	Since        string `json:"since,omitempty"`
+	LastHookAt string `json:"last_hook_at,omitempty"`
+	State      string `json:"state,omitempty"`
+	Kind       string `json:"kind,omitempty"`
+	Turn       string `json:"turn,omitempty"`
+	Cwd        string `json:"cwd,omitempty"`
+	Runtime    string `json:"runtime,omitempty"`
+	Transcript string `json:"transcript,omitempty"`
+	Subagents  string `json:"subagents,omitempty"`
+	Requests   string `json:"requests,omitempty"`
+	Since      string `json:"since,omitempty"`
 }
 
 // Reports is what the session's next event would report.
@@ -155,42 +151,16 @@ func (r Record) Reports() Report {
 	if !r.Since.IsZero() {
 		since = r.Since.UTC().Format(time.RFC3339Nano)
 	}
-	report := Report{
-		State: r.State(), Kind: r.Kind(), Turn: r.Turn, Cwd: r.Cwd, Runtime: string(r.Host.Role),
+	contact := ""
+	if !r.LastHookAt.IsZero() {
+		contact = r.LastHookAt.UTC().Format(time.RFC3339Nano)
+	}
+	return Report{
+		LastHookAt: contact,
+		State:      r.State(), Kind: r.Kind(), Turn: r.Turn, Cwd: r.Cwd, Runtime: string(r.Host.Role),
 		Transcript: r.Transcript, Subagents: strings.Join(r.RunningSubagents(), "\n"),
 		Requests: strings.Join(r.requestIDs(), "\n"), Since: since,
 	}
-	if r.Observation != nil {
-		report.HookAt = r.Observation.HookAt.UTC().Format(time.RFC3339Nano)
-		report.Realm, report.HostEvidence = r.Observation.Realm, r.Observation.Host
-	}
-	return report
-}
-
-// Observe refreshes hook contact monotonically; it never changes Since.
-func (r *Record) Observe(at time.Time, realm string, verified bool) {
-	o := Observation{HookAt: at.UTC(), Realm: realm, Host: "unknown"}
-	if verified {
-		o.Host = "verified"
-	}
-	if r.Observation != nil && r.Observation.HookAt.After(o.HookAt) {
-		o.HookAt = r.Observation.HookAt
-	}
-	r.Observation = &o
-}
-
-// ObservationLabel classifies contact age only, never the freshness of state.
-func ObservationLabel(o *Observation, now time.Time, threshold time.Duration) string {
-	if threshold == 0 {
-		return ""
-	}
-	if o == nil || o.HookAt.IsZero() || o.HookAt.After(now.Add(time.Minute)) {
-		return "unknown"
-	}
-	if now.Sub(o.HookAt) > threshold {
-		return "quiet"
-	}
-	return "recent"
 }
 
 func (r Record) requestIDs() []string {
@@ -204,7 +174,7 @@ func (r Record) requestIDs() []string {
 // Report fills ev with everything an event reports of the session.
 func (r Record) Report(ev *eventlog.Event) {
 	ev.Agent, ev.Session = r.Agent, r.ID
-	ev.Observation = r.Observation
+	ev.LastHookAt = r.LastHookAt
 	ev.State, ev.Kind, ev.Turn, ev.Cwd = r.State(), r.Kind(), r.Turn, r.Cwd
 	ev.Since = nil
 	if !r.Since.IsZero() {

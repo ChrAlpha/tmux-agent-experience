@@ -195,7 +195,7 @@ func TestLiveDropsSessionsWhoseHostExited(t *testing.T) {
 	restarted := session.Record{Agent: proc.Codex, ID: "b", Host: session.Host{PID: 900, Start: "0"}}
 	unknown := session.Record{Agent: proc.Claude, ID: "c"}
 	live, exited := Live(w, []session.Record{running, restarted, unknown})
-	if len(live) != 3 || len(exited) != 0 {
+	if len(live) != 2 || len(exited) != 1 || exited[0].ID != "b" {
 		t.Fatalf("live %v, exited %v", live, exited)
 	}
 }
@@ -215,12 +215,16 @@ func TestReconcileFinishesWhatAWriterLeft(t *testing.T) {
 		}
 	}
 	w := &World{Proc: proc.NewTable(nil)}
-	env.Snapshot = func(context.Context) (*proc.Table, error) { return proc.NewTable(nil), nil }
-	if live, gone := Live(w, []session.Record{unlogged, ended, exited}); len(live) != 2 || len(gone) != 1 {
+	if live, gone := Live(w, []session.Record{unlogged, ended, exited}); len(live) != 1 || len(gone) != 2 {
 		t.Fatalf("live %v, gone %v", live, gone)
 	}
-	Reconcile(ctx, env, w)
-	Reconcile(ctx, env, w) // a second reconciliation finds nothing left to do
+	if err := Reconcile(ctx, env, w); err != nil {
+		t.Fatalf("initial reconciliation: %v", err)
+	}
+	// A second reconciliation finds nothing left to do.
+	if err := Reconcile(ctx, env, w); err != nil {
+		t.Fatalf("repeated reconciliation: %v", err)
+	}
 
 	all, _, err := env.Log.Since(ctx, 0)
 	if err != nil {

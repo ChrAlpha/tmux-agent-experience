@@ -44,7 +44,7 @@ func TryShared(ctx context.Context, path string, fn func() error) error {
 }
 
 // Within acquires a lock below an explicitly selected root using pinned,
-// identity-bound ancestry. Permanent gate/pool files must never be unlinked.
+// runtime-validated ancestry. Permanent gate/pool files must never be unlinked.
 func Within(ctx context.Context, root, path string, shared, wait bool, fn func() error) error {
 	held, err := AcquireWithin(ctx, root, path, shared, wait)
 	if err != nil {

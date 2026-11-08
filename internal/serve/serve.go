@@ -19,7 +19,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ChrAlpha/tmux-agent-experience/internal/admission"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/auth"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/query"
 )
@@ -32,14 +31,12 @@ const actTimeout = 2 * time.Minute
 type Runner func(context.Context, []string, io.Reader, io.Writer, io.Writer) int
 
 type Config struct {
-	StateDir string
-	Admit    func(context.Context, string, admission.Class) (*admission.Lease, error)
-	Auth     auth.Store
-	Run      Runner
-	Hosts    []string // additional HTTP Host values; loopback is accepted by default
-	Origins  []string // additional exact browser origins
-	Version  string
-	Log      *log.Logger
+	Auth    auth.Store
+	Run     Runner
+	Hosts   []string // additional HTTP Host values; loopback is accepted by default
+	Origins []string // additional exact browser origins
+	Version string
+	Log     *log.Logger
 }
 type Server struct {
 	cfg Config
@@ -47,7 +44,7 @@ type Server struct {
 }
 
 func New(cfg Config) (*Server, error) {
-	if cfg.Auth.Dir == "" || cfg.Run == nil || cfg.StateDir == "" {
+	if cfg.Auth.Dir == "" || cfg.Run == nil {
 		return nil, errors.New("serve needs an authorization store and a local runner")
 	}
 	for _, h := range cfg.Hosts {
@@ -133,28 +130,6 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/v1/pair" && r.Method == http.MethodPost {
 		s.pair(w, r)
 		return
-	}
-	if r.Method == http.MethodGet && r.URL.Path == "/v1/watch" {
-		if _, err := watchArgs(r); err != nil {
-			fail(w, 400, "usage", err.Error())
-			return
-		}
-		admit := s.cfg.Admit
-		if admit == nil {
-			admit = admission.Acquire
-		}
-		lease, err := admit(r.Context(), s.cfg.StateDir, admission.Watch)
-		if err != nil {
-			if errors.Is(err, admission.ErrLimit) {
-				w.Header().Set("Retry-After", "2")
-				fail(w, 429, "resource_limit", "watch capacity is exhausted")
-			} else {
-				fail(w, 503, "admission_unavailable", "watch admission is unavailable")
-			}
-			return
-		}
-		defer lease.Close()
-		r = r.WithContext(admission.WithLease(r.Context(), lease))
 	}
 	token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if !ok {
@@ -362,7 +337,7 @@ func (s *Server) act(w http.ResponseWriter, r *http.Request) {
 	code := s.relay(w, r, args, input)
 	s.cfg.Log.Printf("credential %s: %s %q: exit %d", query.OwnerGrant(r.Context()).ID(), a.Verb, a.Target, code)
 }
-func watchArgs(r *http.Request) ([]string, error) {
+func (s *Server) watch(w http.ResponseWriter, r *http.Request) {
 	cursor := r.URL.Query().Get("since")
 	if cursor == "" {
 		cursor = r.Header.Get("Last-Event-ID")
@@ -373,40 +348,24 @@ func watchArgs(r *http.Request) ([]string, error) {
 	case "1":
 		args = append(args, "--resync")
 	default:
-		return nil, errors.New("resync must be 0 or 1")
+		fail(w, 400, "usage", "resync must be 0 or 1")
+		return
 	}
 	if cursor != "" {
 		n, err := strconv.ParseInt(cursor, 10, 64)
 		if err != nil || n < 0 {
-			return nil, errors.New("since must be a nonnegative sequence number")
+			fail(w, 400, "usage", "since must be a nonnegative sequence number")
+			return
 		}
 		args = append(args, "--since", cursor)
-	}
-	return args, nil
-}
-
-func (s *Server) watch(w http.ResponseWriter, r *http.Request) {
-	args, err := watchArgs(r)
-	if err != nil {
-		fail(w, 400, "usage", err.Error())
-		return
 	}
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	reader, writer := io.Pipe()
-	runnerDone := make(chan struct{})
-	scannerDone := make(chan struct{})
-	defer func() {
-		cancel()
-		_ = reader.Close()
-		_ = writer.Close()
-		<-runnerDone
-		<-scannerDone
-	}()
+	defer reader.Close()
 	frames := make(chan []byte)
-	go func() { defer close(runnerDone); defer writer.Close(); s.cfg.Run(ctx, args, nil, writer, io.Discard) }()
+	go func() { defer writer.Close(); s.cfg.Run(ctx, args, nil, writer, io.Discard) }()
 	go func() {
-		defer close(scannerDone)
 		defer close(frames)
 		sc := bufio.NewScanner(reader)
 		sc.Buffer(make([]byte, 64<<10), 16<<20)

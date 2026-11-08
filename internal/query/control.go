@@ -8,7 +8,6 @@ import (
 	"github.com/ChrAlpha/tmux-agent-experience/internal/attach"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/driver"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
-	"github.com/ChrAlpha/tmux-agent-experience/internal/observe"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
 )
 
@@ -47,7 +46,13 @@ type Delivery struct {
 // runs the verb.
 func prepare(ctx context.Context, log *eventlog.Log) (View, Caller, error) {
 	store := session.Store{Dir: log.Dir}
-	_, _ = observe.Trigger(ctx, attach.Env{Log: log, Store: store})
+	w, err := attach.Load(ctx)
+	if err != nil {
+		return View{}, Caller{}, err
+	}
+	if err := attach.Reconcile(ctx, attach.Env{Log: log, Store: store}, w); err != nil {
+		return View{}, Caller{}, err
+	}
 	v, w, err := Load(ctx, store)
 	if err != nil {
 		return View{}, Caller{}, err

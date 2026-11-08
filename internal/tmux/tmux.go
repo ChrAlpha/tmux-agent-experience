@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -58,7 +57,7 @@ const OptionPrefix = "@tmag_"
 // prefix: the attachment (agent, session, pid, start, evidence, and the
 // change in progress: change, replaced) and the display projection (state,
 // kind, since, cmd).
-var OptionKeys = []string{"unavailable", "agent", "session", "pid", "start", "evidence", "change", "replaced", "state", "kind", "since", "cmd"}
+var OptionKeys = []string{"agent", "session", "pid", "start", "evidence", "change", "replaced", "state", "kind", "since", "cmd"}
 
 // sep separates the fields of a pane line. It must be a byte every tmux
 // prints as is: tmux 3.4 writes other control characters in -F output as
@@ -251,13 +250,15 @@ func SanitizePrompt(text string) string {
 	}, text)
 }
 
-// GlobalOption returns a global option's value, or "" when it is unset.
+// GlobalOption returns a global option's value, or "" when unset or unreadable.
+// Call GlobalOptionContext when an unavailable server must remain distinguishable.
 func (s Server) GlobalOption(ctx context.Context, name string) string {
 	value, _ := s.GlobalOptionContext(ctx, name)
 	return value
 }
 
-// GlobalOptionContext distinguishes an unset option from lookup uncertainty.
+// GlobalOptionContext returns an unset option as "", nil while preserving
+// command, cancellation and decoding errors. It performs no value expansion.
 func (s Server) GlobalOptionContext(ctx context.Context, name string) (string, error) {
 	// Read tmux's quoted representation so literal backslashes and control
 	// characters remain distinguishable. tmux 3.4 additionally escapes dollar
@@ -437,36 +438,26 @@ func Servers() []Server {
 }
 
 // ServersContext enumerates sockets in bounded batches within the caller budget.
-func ServersContext(ctx context.Context) ([]Server, error) { return ServersLimitContext(ctx, 0) }
-
-// ServersLimitContext stops enumeration at the explicit participant bound.
-// A zero limit retains complete world discovery for ordinary query paths.
-func ServersLimitContext(ctx context.Context, limit int) ([]Server, error) {
+func ServersContext(ctx context.Context) ([]Server, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	var out []Server
 	seen := map[string]bool{}
-	add := func(p string) error {
+	add := func(p string) {
 		if seen[p] {
-			return nil
-		}
-		if limit > 0 && len(out) >= limit {
-			return errors.New("tmux server capacity exceeded")
+			return
 		}
 		seen[p] = true
 		out = append(out, Server{Socket: p})
-		return nil
 	}
 	if env := os.Getenv("TMUX"); env != "" {
-		if err := add(SocketFromEnv(env)); err != nil {
-			return nil, err
-		}
+		add(SocketFromEnv(env))
 	}
 	dir := SocketDir()
 	err := contextio.Entries(ctx, dir, func(e os.DirEntry) error {
 		if e.Type()&os.ModeSocket != 0 {
-			return add(filepath.Join(dir, e.Name()))
+			add(filepath.Join(dir, e.Name()))
 		}
 		return nil
 	})
@@ -490,21 +481,4 @@ func VersionAtLeast(v string, major, minor int) bool {
 	ma, _ := strconv.Atoi(m[1])
 	mi, _ := strconv.Atoi(m[2])
 	return ma > major || (ma == major && mi >= minor)
-}
-
-// Absent proves a stale socket without parsing tmux stderr. Permission, timeout,
-// and other uncertain failures are errors, never proof of an absent server.
-func (s Server) Absent(ctx context.Context) (bool, error) {
-	d := net.Dialer{Timeout: 50 * time.Millisecond}
-	conn, err := d.DialContext(ctx, "unix", s.Socket)
-	if err == nil {
-		return false, conn.Close()
-	}
-	if ctx.Err() != nil {
-		return false, ctx.Err()
-	}
-	if errors.Is(err, syscall.ENOENT) || errors.Is(err, syscall.ECONNREFUSED) {
-		return true, nil
-	}
-	return false, err
 }

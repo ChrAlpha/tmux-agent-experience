@@ -71,7 +71,8 @@ a design problem, not a test problem.
   fails open the same way when no binary exists. A hook that alerts the
   person starts `tmag notify` detached and does not wait for it; that process
   runs `@tmag-notify` for at most `notify.Timeout` and records a failure in
-  `hook.log` too.
+  `hook.log` too. Failure logging is bounded and metadata-only. Notification
+  work is bounded while preserving hook and external-command deadlines.
 - **No content is stored.** Hook payloads decode into `adapter.Payload`, which
   declares no prompt, message or tool-input fields. Never add one. Session
   files and event log records hold ids, states, paths and timestamps only.
@@ -87,15 +88,12 @@ a design problem, not a test problem.
   (`proc.Realm`: the PID namespace and boot on Linux, the boot on macOS)
   under `$XDG_STATE_HOME/tmag`: containers sharing a home would otherwise end
   each other's sessions. `TMAG_STATE_DIR` names the directory itself.
-- **Hook contact is independent of state.** Optional observation metadata and
-  recent/quiet/unknown labels never establish turn freshness or authority. An
-  observation-only change is a complete event with unchanged Since. Legacy
-  records retain the existing runtime-host lifetime contract; terminal and
-  service host death is freshly rechecked under the session lock before Exit.
-- **Complete images never hide metadata faults.** Strict catalog reads refuse
-  corrupt records. Individually valid repair can continue. Pane diagnostic
-  suppression is ephemeral presentation that preserves attachments and event
-  markers; it never fabricates an end or acknowledges pending publication.
+- **Hook contact is separate from state age.** Optional `last_hook_at` is
+  published through complete session events. Contact-only updates preserve
+  `since`; actual state transitions still change it. Contact time never
+  grants state/control authority or cleanup permission. Complete record reads
+  return the first exact metadata fault; reconciliation preserves unknown
+  resources and pending markers rather than treating unreadable state as absent.
 - **A session's state never depends on a pane.** Hooks apply to the session
   (`internal/session`) wherever it runs: the Codex daemon and Claude's
   background supervisor run sessions no terminal owns.
@@ -155,28 +153,6 @@ a design problem, not a test problem.
   or expired credential loses its subscriptions; accepted actions finish.
 - **Nothing edits user configuration.** Install and uninstall go through each
   host's own mechanism (`claude plugin`, `codex plugin`, TPM).
-- **Shared observation never proves a caller or control.** Refresh exclusion
-  precedes global discovery; persisted images retain the full pre-scan log
-  checkpoint and watches copy replay before output. One-shot status applies its
-  copied complete reports/end events without altering that checkpoint or
-  inventing client views. Ordinary fresh reads join the rate-limited repair
-  trigger but do not require a cache when optional repair is skipped. Failures
-  preserve repair markers and resumable progress. Healthy records use the complete outer world;
-  only prospective host death needs a fresh process snapshot under its lock.
-- **Admission includes cleanup.** Permanent flock slots bound cooperating CLI
-  watches/SSE and notification executions. A subscription releases only after
-  its owned workers join; notification shells inherit their lease. Slots are
-  never unlinked or reclaimed by elapsed time. Gate contention is unavailable,
-  not capacity exhaustion; admission waits only within its fixed budget. Initial
-  watch publication can wait within the existing refresh deadline and shares one
-  discovery. Option uncertainty refuses work.
-- **Diagnosis preserves evidence.** Doctor shares a finite parent budget across
-  metadata, host helpers and daemon discovery. It reads only bounded samples,
-  never adopts or repairs metadata, and separates historical faults from current
-  evidence. Pending observation/maintenance markers do not prove a live worker;
-  missing, off, stale, contended or unreadable evidence remains explicit. Log
-  inspection preserves corrupt records and unfinished tails. Maintenance status
-  is fixed-size best effort, within the existing pass deadline and cursor order.
 - **The contract is versioned.** Changing a JSON field's meaning or removing
   one requires a new schema name; adding optional fields does not.
 
@@ -190,19 +166,13 @@ a design problem, not a test problem.
 | `cmd/tmag` | Entry point |
 | `internal/cli` | Commands, flags, output, exit codes |
 | `internal/hook` | One hook invocation: apply to the session, attach on proof, update panes, alert, log |
-| `internal/observe` | Shared complete metadata images, pre-scan replay checkpoints and bounded resumable repair; no control proof |
-| `internal/diagnostic` | Bounded category summaries and serialized metadata-only hook failures |
-| `internal/policy` | Bounded, error-returning conservative realm option resolution |
-| `internal/admission` | Permanent cross-process flock slots and inherited leases |
 | `internal/notify` | An alert's variables, and `@tmag-notify` run detached within a time limit |
 | `internal/auth` | Persistent owner credentials, one-use invitations and revocation |
 | `internal/serve` | Local HTTP/SSE contract, admission and allowlisted in-process CLI operations |
 | `internal/adapter` | Hook payload → state transition, per agent |
 | `internal/session` | Session records, the state machine, the per-session file store and lock |
 | `internal/statefile` | Owned atomic metadata publication through fixed, creator-excluded temporaries |
-| `internal/ownedfs` | Pinned directory scopes, persistent inode bindings and reserved fixed artifact names |
-| `internal/dirscan` | Bounded native directory pages and resumable filesystem cookies |
-| `internal/maintenance` | Fair, bounded housekeeping within the parent's remaining budget |
+| `internal/ownedfs` | Runtime pinned directory scopes, no-follow ownership checks and dedicated reserved names |
 | `internal/socketbind` | Short-lived executable helper: bind within an inherited directory FD, pass socket FD, reap |
 | `internal/attach` | Clients, attachments and their evidence, the `@tmag_*` pane projection, reconciliation |
 | `internal/query` | list / send / wait / snapshot over sessions and panes; the control verbs' gates |
@@ -214,7 +184,7 @@ a design problem, not a test problem.
 | `internal/tmux` | tmux CLI wrapper; sanitises every free-text field |
 | `internal/proc` | Process table, agent clients and services, hook hosts |
 | `internal/lockfile` | flock bounded by a context |
-| `internal/coord` | Fixed pane/session lock pools, dual legacy coordination and explicit retirement gate |
+| `internal/coord` | Fixed pane/session lock pools and explicit quiescent migration |
 | `internal/binpath` | Where hooks look for the binary; the hook command and the agents' launcher |
 | `internal/e2e` | End-to-end tests with real tmux and a fake agent |
 | `plugins/<host>/tmag` | Agent plugins for Claude Code and Codex: hooks only; Claude's `PermissionRequest` runs `tmag answer-hook` |
@@ -248,7 +218,7 @@ claude plugin validate .      # marketplace and plugin manifests
   `:`.
 - Every operation that may run on a hook path takes a `context.Context` and
   respects its deadline.
-- `coord` pool-v1 keeps 256 slots per class, selected by the first byte of the
+- `coord` pool-v2 keeps 256 slots per class, selected by the first byte of the
   existing resource SHA-256. Its pane/session class names, hash inputs and
   stable gate/pool pathnames must remain compatible across cooperating versions.
   Request endpoint positions use separate `r-XX` locks and fixed `req/` names;

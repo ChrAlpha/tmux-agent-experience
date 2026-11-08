@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -50,64 +49,42 @@ func peersWanted(ctx context.Context) bool {
 	return true
 }
 
-const hostOutputLimit = 1 << 20
-
-var errHostOutput = errors.New("host probe output exceeds diagnostic bound")
-
-// probeOutput caps retained stdout before allocation. Returning the input size
-// keeps draining under the owned helper's deadline without growing the buffer.
-type probeOutput struct {
-	data     []byte
-	limit    int
-	overflow bool
+// run retains setup's per-command limit and an earlier diagnostic parent.
+// The owned helper contains descendants and pipe drain on every exit.
+func run(parent context.Context, name string, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(parent, 20*time.Second)
+	defer cancel()
+	cmd, cleanup := helper.Command(ctx, name, args...)
+	defer cleanup()
+	out := &hostOutput{}
+	cmd.Stdout, cmd.Stderr = out, io.Discard
+	if err := cmd.Run(); err != nil {
+		return "", err
+	}
+	if out.truncated {
+		return "", errors.New("host output exceeds bound")
+	}
+	return strings.TrimSpace(out.String()), nil
 }
 
-func (w *probeOutput) Write(p []byte) (int, error) {
+type hostOutput struct {
+	bytes.Buffer
+	truncated bool
+}
+
+func (o *hostOutput) Write(p []byte) (int, error) {
 	n := len(p)
-	keep := min(n, w.limit-len(w.data))
-	w.data = append(w.data, p[:keep]...)
-	w.overflow = w.overflow || keep < n
+	keep := min(n, (1<<20)-o.Len())
+	o.Buffer.Write(p[:keep])
+	o.truncated = o.truncated || keep < n
 	return n, nil
 }
 
-// runContext retains setup's per-command 20s limit while respecting an earlier
-// diagnostic parent. The owned group and pipe drain are contained on every exit.
-func runContext(parent context.Context, name string, args ...string) (string, error) {
-	ctx, cancel := context.WithTimeout(parent, 20*time.Second)
-	defer cancel()
-	if err := ctx.Err(); err != nil {
-		return "", err
-	}
-	cmd, cleanup := helper.Command(ctx, name, args...)
-	defer cleanup()
-	out := &probeOutput{limit: hostOutputLimit}
-	cmd.Stdout, cmd.Stderr = out, io.Discard
-	err := cmd.Run()
-	if err != nil {
-		return "", err
-	}
-	if out.overflow {
-		return "", errHostOutput
-	}
-	return strings.TrimSpace(string(out.data)), nil
-}
-
-// displayMetadata prevents oversized or control-bearing CLI metadata from
-// becoming diagnostic output. The command's raw stderr is never retained.
-func displayMetadata(s string, limit int) string {
+func hostMetadata(s string, limit int) string {
 	if len(s) > limit || strings.ContainsFunc(s, unicode.IsControl) {
-		return "unavailable"
+		return "unknown"
 	}
 	return s
-}
-func probeFailure(err error) string {
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return "timeout_or_canceled"
-	}
-	if errors.Is(err, errHostOutput) {
-		return "output_capacity"
-	}
-	return "unavailable"
 }
 
 // plugin is one of tmag's plugins in a host.
@@ -135,7 +112,7 @@ type host struct {
 	// honours it only while it matches the hashes of the current hooks, which
 	// it does not expose, so this is no proof that the hooks run.
 	HookApproval    bool
-	ProbeFailure    string // fixed failure category; never raw CLI output
+	Unavailable     bool
 	ApprovalUnknown bool
 }
 
@@ -150,34 +127,30 @@ func (h *host) of(name string) *plugin {
 func claudeHost() host { return claudeHostContext(context.Background()) }
 func claudeHostContext(ctx context.Context) host {
 	h := host{Name: "Claude Code", CLI: "claude"}
-	h.Version, h.Present, h.ProbeFailure = probeContext(ctx, "claude")
-	if !h.Present || h.ProbeFailure != "" {
+	h.Version, h.Present, h.Unavailable = probe(ctx, "claude")
+	if !h.Present || h.Unavailable {
 		return h
 	}
-	out, err := runContext(ctx, "claude", "plugin", "list", "--json")
+	out, err := run(ctx, "claude", "plugin", "list", "--json")
 	var plugins []struct {
 		ID      string `json:"id"`
 		Version string `json:"version"`
 		Enabled bool   `json:"enabled"`
 	}
-	if err != nil {
-		h.ProbeFailure = probeFailure(err)
-		return h
-	}
-	if json.Unmarshal([]byte(out), &plugins) != nil {
-		h.ProbeFailure = "invalid_plugin_metadata"
+	if err != nil || json.Unmarshal([]byte(out), &plugins) != nil {
+		h.Unavailable = true
 		return h
 	}
 	h.Listed = true
 	for _, p := range plugins {
-		if err := ctx.Err(); err != nil {
+		if ctx.Err() != nil {
+			h.Unavailable = true
 			h.Listed = false
-			h.ProbeFailure = probeFailure(err)
 			return h
 		}
 		for _, name := range []string{pluginName, peersName} {
 			if p.ID == pluginID(name) {
-				*h.of(name) = plugin{Installed: true, Enabled: p.Enabled, Version: displayMetadata(p.Version, 64)}
+				*h.of(name) = plugin{Installed: true, Enabled: p.Enabled, Version: hostMetadata(p.Version, 64)}
 			}
 		}
 	}
@@ -187,22 +160,18 @@ func claudeHostContext(ctx context.Context) host {
 func codexHost() host { return codexHostContext(context.Background()) }
 func codexHostContext(ctx context.Context) host {
 	h := host{Name: "Codex", CLI: "codex"}
-	h.Version, h.Present, h.ProbeFailure = probeContext(ctx, "codex")
-	if !h.Present || h.ProbeFailure != "" {
+	h.Version, h.Present, h.Unavailable = probe(ctx, "codex")
+	if !h.Present || h.Unavailable {
 		return h
 	}
-	out, err := runContext(ctx, "codex", "plugin", "list", "--json")
+	out, err := run(ctx, "codex", "plugin", "list", "--json")
 	var doc any
-	if err != nil {
-		h.ProbeFailure = probeFailure(err)
-		return h
-	}
-	if json.Unmarshal([]byte(out), &doc) != nil {
-		h.ProbeFailure = "invalid_plugin_metadata"
+	if err != nil || json.Unmarshal([]byte(out), &doc) != nil {
+		h.Unavailable = true
 		return h
 	}
 	h.Listed = true
-	err = walkJSONContext(ctx, doc, func(m map[string]any) {
+	walkJSON(ctx, doc, func(m map[string]any) {
 		name, _ := m["name"].(string)
 		if (name != pluginName && name != peersName) || m["installed"] != true {
 			return
@@ -211,69 +180,58 @@ func codexHostContext(ctx context.Context) host {
 		p.Installed = true
 		p.Enabled = p.Enabled || m["enabled"] == true
 		if v, ok := m["version"].(string); ok {
-			p.Version = displayMetadata(v, 64)
+			p.Version = hostMetadata(v, 64)
 		}
 	})
-	if err != nil {
+	if ctx.Err() != nil {
+		h.Unavailable = true
 		h.Listed = false
-		h.ProbeFailure = probeFailure(err)
 		return h
 	}
-	h.HookApproval, err = codexHookApprovalContext(ctx)
+	h.HookApproval, err = codexHookApproval(ctx)
 	h.ApprovalUnknown = err != nil
 	return h
 }
 
-func probeContext(ctx context.Context, cli string) (versionLine string, present bool, failure string) {
-	if err := ctx.Err(); err != nil {
-		return "", false, probeFailure(err)
+func probe(ctx context.Context, cli string) (string, bool, bool) {
+	if ctx.Err() != nil {
+		return "", false, true
 	}
 	path, err := exec.LookPath(cli)
-	if ctx.Err() != nil {
-		return "", false, probeFailure(ctx.Err())
+	if errors.Is(err, exec.ErrNotFound) && ctx.Err() == nil {
+		return "", false, false
 	}
-	if errors.Is(err, exec.ErrNotFound) {
-		return "", false, ""
+	if err != nil || ctx.Err() != nil {
+		return "", false, true
 	}
-	if err != nil {
-		return "", false, "unavailable"
+	v, err := run(ctx, path, "--version")
+	if err != nil || v == "" || hostMetadata(v, 128) == "unknown" {
+		return "", true, true
 	}
-	v, err := runContext(ctx, path, "--version")
-	if err != nil {
-		return "", true, probeFailure(err)
-	}
-	if v == "" || displayMetadata(v, 128) == "unavailable" {
-		return "", true, "invalid_version_metadata"
-	}
-	return v, true, ""
+	return v, true, false
 }
 
-func walkJSONContext(ctx context.Context, v any, fn func(map[string]any)) error {
-	if err := ctx.Err(); err != nil {
-		return err
+func walkJSON(ctx context.Context, v any, fn func(map[string]any)) {
+	if ctx.Err() != nil {
+		return
 	}
 	switch t := v.(type) {
 	case map[string]any:
 		fn(t)
 		for _, c := range t {
-			if err := walkJSONContext(ctx, c, fn); err != nil {
-				return err
-			}
+			walkJSON(ctx, c, fn)
 		}
 	case []any:
 		for _, c := range t {
-			if err := walkJSONContext(ctx, c, fn); err != nil {
-				return err
-			}
+			walkJSON(ctx, c, fn)
 		}
 	}
-	return ctx.Err()
 }
 
 // codexHookApproval looks for approved hook-state entries of the plugin in
 // config.toml. Only the table headers and their trust lines are inspected.
-func codexHookApprovalContext(ctx context.Context) (bool, error) {
-	data, err := contextio.ReadFile(ctx, filepath.Join(codexHome(), "config.toml"), hostOutputLimit)
+func codexHookApproval(ctx context.Context) (bool, error) {
+	data, err := contextio.ReadFile(ctx, filepath.Join(codexHome(), "config.toml"), 1<<20)
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
 	}
@@ -325,8 +283,8 @@ func codexDaemonContext(ctx context.Context) (int, bool, error) {
 		return 0, false, err
 	}
 	for _, p := range pt.All() {
-		if err := ctx.Err(); err != nil {
-			return 0, false, err
+		if ctx.Err() != nil {
+			return 0, false, ctx.Err()
 		}
 		if proc.IsCodexService(p) && strings.Contains(p.Args, "--managed-daemon") {
 			return p.PID, true, nil
@@ -337,32 +295,14 @@ func codexDaemonContext(ctx context.Context) (int, bool, error) {
 
 // hookBinaries lists, in the order agent hooks try them, every tmag a process
 // with this environment would find: the tmux plugin's binary, then PATH.
-func hookBinariesContext(ctx context.Context, getenv binpath.Getenv) ([]string, error) {
+func hookBinaries(getenv binpath.Getenv) []string {
 	var found []string
-	paths := binpath.PluginCandidates(getenv)
-	dirs := filepath.SplitList(getenv("PATH"))
-	if len(dirs) > 128 {
-		return nil, fmt.Errorf("hook path probe capacity")
-	}
-	for _, dir := range dirs {
-		if dir != "" {
-			paths = append(paths, filepath.Join(dir, "tmag"))
-		}
-	}
-	seen := map[string]bool{}
-	for _, p := range paths {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		if seen[p] {
-			continue
-		}
-		seen[p] = true
+	for _, p := range binpath.PluginCandidates(getenv) {
 		if st, err := os.Stat(p); err == nil && st.Mode().IsRegular() && st.Mode()&0o111 != 0 {
 			found = append(found, p)
 		}
 	}
-	return found, ctx.Err()
+	return append(found, proc.LookPathAll(getenv("PATH"), "tmag")...)
 }
 
 // inPluginDir reports whether p is the tmux plugin's managed binary.

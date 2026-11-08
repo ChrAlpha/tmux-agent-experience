@@ -34,22 +34,13 @@ func Load(ctx context.Context) (*World, error) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		panes, err := s.Panes(ctx)
-		if err != nil {
-			absent, probeErr := s.Absent(ctx)
-			if probeErr != nil || !absent {
-				return nil, &WorldUnavailable{Category: "pane_listing"}
-			}
-			continue
+		if panes, err := s.Panes(ctx); err == nil {
+			w.Panes = append(w.Panes, panes...)
 		}
-		w.Panes = append(w.Panes, panes...)
 	}
 	pt, err := proc.SnapshotContext(ctx)
 	if err != nil {
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
-		return nil, &WorldUnavailable{Category: "process_table"}
+		return nil, err
 	}
 	w.Proc = pt
 	return w, nil
@@ -134,8 +125,3 @@ func (w *World) ClientOf(host proc.Host) (Client, bool) {
 	}
 	return c, true
 }
-
-// WorldUnavailable never represents failed discovery as an empty world.
-type WorldUnavailable struct{ Category string }
-
-func (e *WorldUnavailable) Error() string { return "world_unavailable: " + e.Category }

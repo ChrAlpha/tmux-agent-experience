@@ -122,10 +122,7 @@ func TestWatchCancelsOwnedBlockedOutput(t *testing.T) {
 			log := eventlog.Open(t.TempDir())
 			log.MaxBytes = 64 << 20
 			store := session.Store{Dir: log.Dir}
-			// Repair also persists Cwd in Logged. Leave room for that copy
-			// within the 4 MiB per-record bound while keeping every frame much
-			// larger than the pipe capacity, so this exercises blocked output.
-			large := strings.Repeat("x", 1<<20)
+			large := strings.Repeat("x", 2<<20)
 			for i := range 2 {
 				id := fmt.Sprintf("large-%d", i)
 				if err := store.Put(session.Record{Agent: "claude", ID: id, Main: "idle", Cwd: large}); err != nil {

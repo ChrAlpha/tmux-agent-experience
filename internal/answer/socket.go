@@ -42,8 +42,8 @@ type listener struct {
 }
 
 // Close owns no filesystem cleanup. It cannot unlink a rebound endpoint or
-// spend a fresh budget after cancellation; a fixed slot or retired-legacy sweep
-// reclaims its orphan later. Closing the liveness descriptor releases exclusion.
+// spend a fresh budget after cancellation. Allocation reclaims dead leftovers
+// on reuse. Closing the liveness descriptor releases exclusion.
 func (l *listener) Close() error {
 	l.once.Do(func() {
 		l.err = l.UnixListener.Close()
@@ -62,8 +62,7 @@ func Listen(root, id string) (net.Listener, error) {
 }
 
 // ListenContext bounds setup, separately from Wait's intentional lifetime.
-// Compatibility retains the old flat pathname, refusing every existing object.
-// After retirement a pool allocates at most 256 simultaneous listeners and
+// A pool allocates at most 256 simultaneous listeners and
 // bounded fixed metadata/socket positions. Exhaustion fails open to the dialog.
 func ListenContext(ctx context.Context, root, id string) (net.Listener, error) {
 	if !requestName.MatchString(id) {
@@ -71,6 +70,9 @@ func ListenContext(ctx context.Context, root, id string) (net.Listener, error) {
 	}
 	ctx, cancel := context.WithTimeout(ctx, setupBudget)
 	defer cancel()
+	if _, err := coord.Current(ctx, root); err != nil {
+		return nil, err
+	}
 	var result net.Listener
 	gate, err := lockfile.AcquireWithin(ctx, root, "coord/gate", true, true)
 	if err != nil {
@@ -83,100 +85,75 @@ func ListenContext(ctx context.Context, root, id string) (net.Listener, error) {
 	}
 	defer allocation.Close()
 	err = func() error {
-		// Current uses a shared gate too; lock order remains namespace before
-		// request-allocation before a request slot, never a pane/session/log lock.
-		mode, err := coord.Current(ctx, root)
+		if _, err := coord.Current(ctx, root); err != nil {
+			return err
+		}
+		d, err := ownedfs.Open(ctx, root, "req", true)
 		if err != nil {
 			return err
 		}
-		if mode == coord.Compatibility {
-			d, err := ownedfs.Open(ctx, root, "req", true)
-			if err != nil {
-				return err
-			}
-			ln, err := bind(ctx, d, id+".sock", id, nil, gate.File(), allocation.File())
-			if err != nil {
+		defer func() {
+			if d != nil {
 				d.Close()
+			}
+		}()
+
+		// Duplicate IDs never acquire another slot. Published metadata is only
+		// request identity; no tool name/input or decision reaches disk.
+		if previous, found, err := locate(ctx, d, id); err != nil {
+			return err
+		} else if found {
+			held, err := lockfile.AcquireWithin(ctx, root, fmt.Sprintf("coord/r-%02x", previous), false, false)
+			if err != nil {
 				return err
 			}
+			free, err := clearSlot(ctx, d, previous)
+			held.Close()
+			if err != nil {
+				return err
+			}
+			if !free {
+				return errors.New("request endpoint is live or uncertain")
+			}
+		}
+		start := sha256.Sum256([]byte(id))
+		for i := range socketSlots {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			slot := byte(int(start[0]) + i)
+			held, err := lockfile.AcquireWithin(ctx, root, fmt.Sprintf("coord/r-%02x", slot), false, false)
+			if errors.Is(err, lockfile.ErrBusy) {
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			free, err := clearSlot(ctx, d, slot)
+			if err != nil {
+				held.Close()
+				return err
+			}
+			if !free {
+				held.Close()
+				continue
+			}
+			data, _ := json.Marshal(endpoint{Request: id})
+			meta, tmp := fmt.Sprintf("req/meta-%02x", slot), fmt.Sprintf("req/temp-%02x", slot)
+			if err := statefile.WriteWithin(ctx, root, meta, tmp, data); err != nil {
+				held.Close()
+				return err
+			}
+			ln, err := bind(ctx, d, fmt.Sprintf("sock-%02x", slot), id, held, gate.File(), allocation.File(), held.File())
+			if err != nil {
+				held.Close()
+				return err
+			}
+			d = nil
 			result = ln
 			return nil
 		}
-		return func() error {
-			var d *ownedfs.Dir
-			defer func() {
-				if d != nil {
-					d.Close()
-				}
-			}()
-			for _, prefix := range []string{"meta-", "temp-", "sock-"} {
-				claim, err := ownedfs.OpenSlots(ctx, root, "req", prefix, socketSlots, true)
-				if err != nil {
-					return err
-				}
-				if d != nil {
-					d.Close()
-				}
-				d = claim
-			}
-
-			// Duplicate IDs never acquire another slot. Published metadata is only
-			// request identity; no tool name/input or decision reaches disk.
-			if previous, found, err := locate(ctx, d, id); err != nil {
-				return err
-			} else if found {
-				held, err := lockfile.AcquireWithin(ctx, root, fmt.Sprintf("coord/r-%02x", previous), false, false)
-				if err != nil {
-					return err
-				}
-				free, err := clearSlot(ctx, d, previous, nil)
-				held.Close()
-				if err != nil {
-					return err
-				}
-				if !free {
-					return errors.New("request endpoint is live or uncertain")
-				}
-			}
-			start := sha256.Sum256([]byte(id))
-			for i := range socketSlots {
-				if err := ctx.Err(); err != nil {
-					return err
-				}
-				slot := byte(int(start[0]) + i)
-				held, err := lockfile.AcquireWithin(ctx, root, fmt.Sprintf("coord/r-%02x", slot), false, false)
-				if errors.Is(err, lockfile.ErrBusy) {
-					continue
-				}
-				if err != nil {
-					return err
-				}
-				free, err := clearSlot(ctx, d, slot, nil)
-				if err != nil {
-					held.Close()
-					return err
-				}
-				if !free {
-					held.Close()
-					continue
-				}
-				data, _ := json.Marshal(endpoint{Request: id})
-				meta, tmp := fmt.Sprintf("req/meta-%02x", slot), fmt.Sprintf("req/temp-%02x", slot)
-				if err := statefile.WriteWithin(ctx, root, meta, tmp, data); err != nil {
-					held.Close()
-					return err
-				}
-				ln, err := bind(ctx, d, fmt.Sprintf("sock-%02x", slot), id, held, gate.File(), allocation.File(), held.File())
-				if err != nil {
-					held.Close()
-					return err
-				}
-				d = nil
-				result = ln
-				return nil
-			}
-			return errors.New("all answer socket positions are occupied or uncertain")
-		}()
+		return errors.New("all answer socket positions are occupied or uncertain")
 	}()
 	return result, err
 }
@@ -291,22 +268,18 @@ func lookup(ctx context.Context, root, id string) (*ownedfs.Dir, string, bool, e
 			d.Close()
 		}
 	}()
-	mode, err := coord.Current(ctx, root)
+	if _, err := coord.Current(ctx, root); err != nil {
+		return nil, "", false, err
+	}
+	slot, found, err := locate(ctx, d, id)
 	if err != nil {
 		return nil, "", false, err
 	}
-	name := id + ".sock"
-	pooled := false
-	if mode == coord.Pool {
-		slot, found, err := locate(ctx, d, id)
-		if err != nil {
-			return nil, "", false, err
-		}
-		if found {
-			name = fmt.Sprintf("sock-%02x", slot)
-			pooled = true
-		}
+	if !found {
+		return nil, "", false, os.ErrNotExist
 	}
+	name := fmt.Sprintf("sock-%02x", slot)
+
 	if _, err := d.Stat(ctx, name); err != nil {
 		return nil, "", false, err
 	}
@@ -314,7 +287,7 @@ func lookup(ctx context.Context, root, id string) (*ownedfs.Dir, string, bool, e
 		return nil, "", false, err
 	}
 	success = true
-	return d, name, pooled, nil
+	return d, name, true, nil
 }
 
 // location is a contextual path helper for fixtures/diagnostics. Production

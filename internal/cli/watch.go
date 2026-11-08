@@ -11,11 +11,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/ChrAlpha/tmux-agent-experience/internal/admission"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/attach"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/contextio"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
-	"github.com/ChrAlpha/tmux-agent-experience/internal/observe"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/query"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/version"
 )
@@ -41,13 +39,6 @@ func (a *app) cmdWatch(args []string) int {
 	a.json = true
 	ctx, cancel := a.signalContext()
 	defer cancel()
-	if !admission.Borrow(ctx, a.log.Dir, admission.Watch) {
-		lease, err := admission.Acquire(ctx, a.log.Dir, admission.Watch)
-		if err != nil {
-			return a.fail("watch", err)
-		}
-		defer lease.Close()
-	}
 	ctx, stop := context.WithCancelCause(ctx)
 	defer stop(nil)
 	if f, ok := a.stdout.(*os.File); ok {
@@ -81,11 +72,23 @@ func (a *app) cmdWatch(args []string) int {
 	s := watchStream{
 		log: a.log,
 		capture: func(ctx context.Context) (query.Snapshot, error) {
-			return query.TakeObservedSnapshot(ctx, a.log)
+			return query.TakeSnapshot(ctx, a.log)
 		},
 		rescan: func(ctx context.Context) ([]query.Pane, error) {
-			img, _, err := observe.Refresh(ctx, attach.Env{Log: a.log, Store: a.store()}, observe.Opportunistic)
-			return img.Panes, err
+			ctx, cancel := context.WithTimeout(ctx, eventlog.ReadTimeout)
+			defer cancel()
+			w, err := attach.Load(ctx)
+			if err != nil {
+				return nil, err
+			}
+			if err := attach.Reconcile(ctx, attach.Env{Log: a.log, Store: a.store()}, w); err != nil {
+				return nil, err
+			}
+			v, _, err := query.Load(ctx, a.store())
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			return v.Panes, err
 		},
 		emit: func(doc map[string]any) error {
 			if err := ctx.Err(); err != nil {
@@ -99,9 +102,6 @@ func (a *app) cmdWatch(args []string) int {
 		},
 	}
 	err = s.run(ctx, *since, *resync)
-	// NotifyContext can describe a handled signal in Cause while Err remains
-	// context.Canceled. Keep the stream's actual result: cancellation is normal,
-	// and an independent storage/output failure must not be replaced by a cause.
 	return a.watchEnd(err)
 }
 
@@ -202,7 +202,9 @@ func (s *watchStream) run(ctx context.Context, since int64, resync bool) error {
 				if err == nil {
 					return s.panes(ctx, list)
 				}
-				return err
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
 			}
 			return nil
 		})

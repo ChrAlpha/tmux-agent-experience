@@ -2,7 +2,7 @@
 // PermissionRequest hook that waits, while the agent's own dialog is on
 // screen, for a decision made elsewhere.
 //
-// Each waiting hook listens on a Unix socket named after its request under
+// Each waiting hook owns one fixed Unix socket position under
 // the state directory. A connection sends one JSON object and reads one:
 //
 //	{"op":"show"}                 → {"ok":true,"tool":…,"input":…}
@@ -20,7 +20,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -63,9 +62,6 @@ func Mode(ctx context.Context) string {
 	}
 	return mode
 }
-
-// Path is the socket of the hook waiting on request id.
-func Path(stateDir, id string) string { return filepath.Join(stateDir, "req", id+".sock") }
 
 // Asked is what a request asks: the tool and its input, as the agent gave
 // them.

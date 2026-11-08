@@ -118,7 +118,7 @@ func write(ctx context.Context, srv tmux.Server, pane, cmd string, a Attachment,
 		optAgent: a.Agent, optSession: a.Session, optPID: strconv.Itoa(a.PID),
 		optEvidence: a.Evidence, optState: pr.State, optCmd: cmd,
 	}
-	unset := []string{"unavailable"}
+	var unset []string
 	opt := func(k, v string) {
 		if v != "" {
 			set[k] = v
@@ -140,7 +140,7 @@ func write(ctx context.Context, srv tmux.Server, pane, cmd string, a Attachment,
 
 func writeProjection(ctx context.Context, srv tmux.Server, pane string, pr Projection) error {
 	set := map[string]string{optState: pr.State}
-	unset := []string{"unavailable"}
+	var unset []string
 	if pr.Kind != "" {
 		set[optKind] = pr.Kind
 	} else {
