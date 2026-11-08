@@ -218,7 +218,10 @@ func TestLegacyShowStillWorksWhenProbeIsUnsupported(t *testing.T) {
 				cancel()
 				ln.Close()
 				select {
-				case <-done:
+				case err := <-done:
+					if err != nil && !errors.Is(err, net.ErrClosed) {
+						t.Errorf("legacy listener cleanup: %v", err)
+					}
 				case <-time.After(time.Second):
 					t.Error("legacy listener did not stop after close")
 				}
