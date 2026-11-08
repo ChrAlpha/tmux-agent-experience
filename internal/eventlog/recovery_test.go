@@ -1,13 +1,16 @@
 package eventlog
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -347,27 +350,44 @@ func TestAppendShortWriteHelper(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	before, err := os.ReadFile(l.path(currentName))
+	if err != nil {
+		t.Fatal(err)
+	}
 	var original syscall.Rlimit
 	if err := syscall.Getrlimit(syscall.RLIMIT_FSIZE, &original); err != nil {
 		t.Fatal(err)
 	}
 	limited := original
 	limited.Cur = uint64(st.Size() + 17)
+	// XNU clips against the descriptor offset before the filesystem applies
+	// O_APPEND; a newly opened descriptor starts at zero. Make the record
+	// exceed the entire limit, not just the 17 bytes left after the old EOF.
+	// Linux instead checks the limit against the append position at EOF.
+	e := Event{Event: "Stop", State: "idle", Cwd: strings.Repeat("x", int(limited.Cur)+1)}
 	signal.Ignore(syscall.SIGXFSZ)
 	if err := syscall.Setrlimit(syscall.RLIMIT_FSIZE, &limited); err != nil {
 		t.Fatal(err)
 	}
-	e := Event{Event: "Stop", State: "idle"}
 	writeErr := l.Append(bg, &e)
 	if err := syscall.Setrlimit(syscall.RLIMIT_FSIZE, &original); err != nil {
 		t.Fatal(err)
 	}
-	if writeErr == nil {
-		t.Fatal("append accepted a short write")
+	if !errors.Is(writeErr, io.ErrShortWrite) && !errors.Is(writeErr, syscall.EFBIG) {
+		t.Fatalf("append did not report the file-size-limited write: %v", writeErr)
 	}
-	damaged, err := os.Stat(l.path(currentName))
-	if err != nil || damaged.Size() <= st.Size() || damaged.Size() >= st.Size()+100 {
-		t.Fatalf("did not produce a partial record: %v, %v", damaged, err)
+	line, err := json.Marshal(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	line = append(line, '\n')
+	damaged, err := os.ReadFile(l.path(currentName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	written := len(damaged) - len(before)
+	if written <= 0 || written >= len(line) || !bytes.HasPrefix(damaged, before) || !bytes.Equal(damaged[len(before):], line[:written]) {
+		t.Fatalf("did not append a strict record prefix: wrote %d of %d bytes, error %v", written, len(line), writeErr)
 	}
 	if _, err := l.Replay(bg, c); !errors.Is(err, ErrHistoryUnavailable) {
 		t.Fatalf("short write did not invalidate old continuation: %v", err)
