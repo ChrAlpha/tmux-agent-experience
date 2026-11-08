@@ -8,13 +8,12 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/lockfile"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/statefile"
 )
 
 // Class separates lock pools even when resource hashes collide. The acquisition
@@ -42,7 +41,27 @@ func root(dir string) string { return filepath.Join(dir, "coord") }
 func Gate(dir string) string { return filepath.Join(root(dir), "gate") }
 
 func poolPath(dir string, class Class, key [32]byte) string {
-	return filepath.Join(root(dir), fmt.Sprintf("%s-%02x", class, key[0]))
+	return filepath.Join(root(dir), fmt.Sprintf("%s-%02x", class, Slot(key)))
+}
+
+// Slot is the frozen pool-v1 mapping: 256 slots, selected by the first byte of
+// the resource's existing SHA-256 key. Future versions must retain this mapping
+// and the class namespaces while they can share a state directory.
+func Slot(key [32]byte) byte { return key[0] }
+
+// TrySlot excludes creators of new fixed artifacts without waiting. Those
+// creators always hold the pool, including in compatibility mode. This does
+// not acquire a legacy lock and must never be used to change session/pane state.
+func TrySlot(ctx context.Context, dir string, class Class, slot byte, fn func() error) error {
+	if class != Pane && class != Session {
+		return fmt.Errorf("invalid coordination class %q", class)
+	}
+	return lockfile.Within(ctx, dir, "coord/gate", true, false, func() error {
+		if _, err := readMode(ctx, dir); err != nil {
+			return err
+		}
+		return lockfile.Within(ctx, dir, filepath.Join("coord", fmt.Sprintf("%s-%02x", class, slot)), false, false, fn)
+	})
 }
 
 func legacyPath(dir string, class Class, key [32]byte) string {
@@ -58,14 +77,14 @@ func With(ctx context.Context, dir string, class Class, key [32]byte, fn func() 
 	if class != Pane && class != Session {
 		return fmt.Errorf("invalid coordination class %q", class)
 	}
-	return lockfile.Shared(ctx, Gate(dir), func() error {
-		mode, err := readMode(dir)
+	return lockfile.Within(ctx, dir, "coord/gate", true, true, func() error {
+		mode, err := readMode(ctx, dir)
 		if err != nil {
 			return err
 		}
-		return lockfile.With(ctx, poolPath(dir, class, key), func() error {
+		return lockfile.Within(ctx, dir, filepath.Join("coord", fmt.Sprintf("%s-%02x", class, Slot(key))), false, true, func() error {
 			if mode == Compatibility {
-				return lockfile.With(ctx, legacyPath(dir, class, key), fn)
+				return lockfile.Within(ctx, dir, filepath.Join("locks", string(class)+"-"+hex.EncodeToString(key[:8])), false, true, fn)
 			}
 			return fn()
 		})
@@ -75,33 +94,19 @@ func With(ctx context.Context, dir string, class Class, key [32]byte, fn func() 
 // Current reads the mode while participating in its namespace.
 func Current(ctx context.Context, dir string) (Mode, error) {
 	var mode Mode
-	err := lockfile.Shared(ctx, Gate(dir), func() error {
+	err := lockfile.Within(ctx, dir, "coord/gate", true, true, func() error {
 		var err error
-		mode, err = readMode(dir)
+		mode, err = readMode(ctx, dir)
 		return err
 	})
 	return mode, err
 }
 
-func readMode(dir string) (Mode, error) {
-	f, err := os.OpenFile(filepath.Join(root(dir), "mode"), os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0)
+func readMode(ctx context.Context, dir string) (Mode, error) {
+	b, err := statefile.ReadSmallWithin(ctx, dir, "coord/mode", 32)
 	if errors.Is(err, os.ErrNotExist) {
-		// Empty/new directories require the same explicit declaration as old
-		// ones: absence of legacy files does not exclude a future old writer.
 		return Compatibility, nil
 	}
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-	st, err := f.Stat()
-	if err != nil {
-		return "", err
-	}
-	if !st.Mode().IsRegular() || st.Size() > 32 {
-		return "", errors.New("invalid coordination mode file")
-	}
-	b, err := io.ReadAll(io.LimitReader(f, 33))
 	if err != nil {
 		return "", err
 	}
@@ -119,43 +124,11 @@ func readMode(dir string) (Mode, error) {
 // No further confirmation follows that command. The persistent marker is the
 // retirement evidence for future maintenance, which still takes the gate.
 func RetireLegacy(ctx context.Context, dir string) error {
-	return lockfile.With(ctx, Gate(dir), func() error {
-		mode, err := readMode(dir)
+	return lockfile.Within(ctx, dir, "coord/gate", false, true, func() error {
+		mode, err := readMode(ctx, dir)
 		if err != nil || mode == Pool {
 			return err
 		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		tmp := filepath.Join(root(dir), "mode.tmp")
-		f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0o600)
-		if err != nil {
-			return err
-		}
-		defer f.Close()
-		st, err := f.Stat()
-		if err != nil {
-			return err
-		}
-		sys, ok := st.Sys().(*syscall.Stat_t)
-		if !st.Mode().IsRegular() || !ok || sys.Nlink != 1 || sys.Uid != uint32(os.Geteuid()) {
-			return errors.New("invalid coordination temporary file")
-		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if err := f.Truncate(0); err != nil {
-			return err
-		}
-		if _, err := f.WriteString(string(Pool) + "\n"); err != nil {
-			return err
-		}
-		if err := f.Close(); err != nil {
-			return err
-		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		return os.Rename(tmp, filepath.Join(root(dir), "mode"))
+		return statefile.WriteWithin(ctx, dir, "coord/mode", "coord/mode.tmp", []byte(string(Pool)+"\n"))
 	})
 }

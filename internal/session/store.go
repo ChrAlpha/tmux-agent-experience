@@ -15,6 +15,7 @@ import (
 	"github.com/ChrAlpha/tmux-agent-experience/internal/coord"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/statefile"
 )
 
 // Store keeps one file per live session under <state dir>/sessions/<agent>/.
@@ -45,8 +46,15 @@ func (s Store) path(agent, id string) (string, error) {
 // Lock runs fn holding the session's lock. Every change to a session's file
 // happens under it, read and written in one go.
 func (s Store) Lock(ctx context.Context, agent, id string, fn func() error) error {
-	sum := sha256.Sum256([]byte("session\x00" + agent + "\x00" + id))
-	return coord.With(ctx, s.Dir, coord.Session, sum, fn)
+	return coord.With(ctx, s.Dir, coord.Session, sessionKey(agent, id), fn)
+}
+
+func sessionKey(agent, id string) [32]byte {
+	return sha256.Sum256([]byte("session\x00" + agent + "\x00" + id))
+}
+
+func (s Store) temporary(agent string, slot byte) string {
+	return filepath.Join(s.root(), agent, fmt.Sprintf(".tmag-tmp-s-%02x", slot))
 }
 
 // Get reads a session; ok is false when there is none.
@@ -68,44 +76,55 @@ func (s Store) Get(agent, id string) (rec Record, ok bool, err error) {
 	return rec, true, nil
 }
 
-// Put writes a session. The caller holds its lock.
+// Put is a compatibility helper for fixtures. The caller holds its lock.
+// Production mutations pass their operation context to PutContext.
 func (s Store) Put(rec Record) error {
-	path, err := s.path(rec.Agent, rec.ID)
-	if err != nil {
+	return s.PutContext(context.Background(), rec)
+}
+
+// PutContext publishes a session under its lock. One fixed temp per agent and
+// stripe replaces per-invocation random files. The temp shares the target's
+// parent filesystem, and both publisher and cleaner hold the same stripe.
+func (s Store) PutContext(ctx context.Context, rec Record) error {
+	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	path, err := s.path(rec.Agent, rec.ID)
+	if err != nil {
 		return err
 	}
 	data, err := json.Marshal(rec)
 	if err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".tmp-*")
+	rel, err := filepath.Rel(s.Dir, path)
 	if err != nil {
 		return err
 	}
-	defer os.Remove(tmp.Name())
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
+	tmp, err := filepath.Rel(s.Dir, s.temporary(rec.Agent, coord.Slot(sessionKey(rec.Agent, rec.ID))))
+	if err != nil {
 		return err
 	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmp.Name(), path)
+	return statefile.WriteSlots(ctx, s.Dir, rel, tmp, ".tmag-tmp-s-", coord.Slots, data)
 }
 
 // Delete removes a session. The caller holds its lock.
 func (s Store) Delete(agent, id string) error {
+	return s.DeleteContext(context.Background(), agent, id)
+}
+
+// DeleteContext removes only a record under the selected, inode-bound realm.
+func (s Store) DeleteContext(ctx context.Context, agent, id string) error {
 	path, err := s.path(agent, id)
 	if err != nil {
 		return err
 	}
-	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+	rel, err := filepath.Rel(s.Dir, path)
+	if err != nil {
 		return err
 	}
-	return nil
+	_, err = statefile.RemoveWithin(ctx, s.Dir, rel)
+	return err
 }
 
 // Save stores rec and, when its state is one the event log does not report
@@ -119,10 +138,10 @@ func (s Store) Save(ctx context.Context, log *eventlog.Log, rec Record, ev event
 	rec.Delivery = nil
 	if !rec.Unlogged() {
 		rec.Change = ""
-		return rec, s.Put(rec)
+		return rec, s.PutContext(ctx, rec)
 	}
 	rec.Change = ev.Event
-	if err := s.Put(rec); err != nil {
+	if err := s.PutContext(ctx, rec); err != nil {
 		return rec, err
 	}
 	return s.logged(ctx, log, rec, ev)
@@ -134,7 +153,7 @@ func (s Store) logged(ctx context.Context, log *eventlog.Log, rec Record, ev eve
 		return rec, err
 	}
 	rec.Logged, rec.Change, rec.Delivery = rec.Reports(), "", nil
-	return rec, s.Put(rec)
+	return rec, s.PutContext(ctx, rec)
 }
 
 // Report stores rec and logs ev reporting it, whether or not what it
@@ -146,7 +165,7 @@ func (s Store) logged(ctx context.Context, log *eventlog.Log, rec Record, ev eve
 func (s Store) Report(ctx context.Context, log *eventlog.Log, rec Record, ev *eventlog.Event) (Record, error) {
 	kept := *ev
 	rec.Change, rec.Delivery = ev.Event, &kept
-	if err := s.Put(rec); err != nil {
+	if err := s.PutContext(ctx, rec); err != nil {
 		return rec, err
 	}
 	rec.Report(ev)
@@ -154,7 +173,7 @@ func (s Store) Report(ctx context.Context, log *eventlog.Log, rec Record, ev *ev
 		return rec, err
 	}
 	rec.Logged, rec.Change, rec.Delivery = rec.Reports(), "", nil
-	return rec, s.Put(rec)
+	return rec, s.PutContext(ctx, rec)
 }
 
 // End ends the session with ev (SessionEnd or Exit): the record is marked
@@ -163,7 +182,7 @@ func (s Store) Report(ctx context.Context, log *eventlog.Log, rec Record, ev *ev
 // of the lock finishes (Settle). The caller holds the session's lock.
 func (s Store) End(ctx context.Context, log *eventlog.Log, rec Record, ev eventlog.Event) error {
 	rec.Ended = ev.Event
-	if err := s.Put(rec); err != nil {
+	if err := s.PutContext(ctx, rec); err != nil {
 		return err
 	}
 	return s.ended(ctx, log, rec, ev)
@@ -177,7 +196,7 @@ func (s Store) ended(ctx context.Context, log *eventlog.Log, rec Record, ev even
 	if err := log.Append(ctx, &ev); err != nil {
 		return err
 	}
-	return s.Delete(rec.Agent, rec.ID)
+	return s.DeleteContext(ctx, rec.Agent, rec.ID)
 }
 
 // Settle finishes what a writer of rec did not: it logs a change left

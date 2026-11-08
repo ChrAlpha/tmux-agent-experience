@@ -93,7 +93,7 @@ func throughService(outer context.Context, log *eventlog.Log, v View, s Session,
 			return &RefusedError{RefuseChanged, fmt.Sprintf("%s has ended", s.ID)}
 		}
 		ev := verb.mark(&rec)
-		if err := store.Put(rec); err != nil {
+		if err := store.PutContext(ctx, rec); err != nil {
 			return err
 		}
 		ev.Agent, ev.Session, ev.Via = fs.Agent, fs.ID, driver.Service

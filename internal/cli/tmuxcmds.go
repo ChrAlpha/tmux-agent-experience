@@ -86,6 +86,9 @@ func (a *app) cmdPrune(args []string) int {
 	if _, err := a.reconciled(ctx, *server); err != nil {
 		return a.fail("prune", err)
 	}
+	if _, err := a.store().CleanupTemps(ctx); err != nil {
+		return a.fail("prune", err)
+	}
 	return ExitOK
 }
 

@@ -78,6 +78,7 @@ func Run(in Input) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), Deadline)
 	defer cancel()
+	defer func() { _, _ = (session.Store{Dir: in.Log.Dir}).CleanupTemps(ctx) }()
 
 	w, err := attach.Load(ctx)
 	if err != nil {

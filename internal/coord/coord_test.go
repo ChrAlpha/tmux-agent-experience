@@ -280,3 +280,44 @@ func BenchmarkPoolCoordination(b *testing.B) {
 		})
 	}
 }
+
+func TestCoordinationRejectsAliasedOrReplacedDirectory(t *testing.T) {
+	for _, name := range []string{"coord", "locks"} {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			foreign := t.TempDir()
+			ctx := context.Background()
+			if err := os.Symlink(foreign, filepath.Join(root, name)); err != nil {
+				t.Fatal(err)
+			}
+			entered := false
+			err := With(ctx, root, Session, [32]byte{}, func() error { entered = true; return nil })
+			if err == nil || entered {
+				t.Fatalf("aliased %s admitted: %v", name, err)
+			}
+			entries, err := os.ReadDir(foreign)
+			if err != nil || len(entries) != 0 {
+				t.Fatalf("wrote foreign directory: %d %v", len(entries), err)
+			}
+		})
+	}
+	root := t.TempDir()
+	ctx := context.Background()
+	if _, err := Current(ctx, root); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "coord")
+	if err := os.Rename(path, path+"-original"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(path, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := RetireLegacy(ctx, root); err == nil {
+		t.Fatal("retired through replaced coordination directory")
+	}
+	entries, err := os.ReadDir(path)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("modified replaced coordination directory: %d %v", len(entries), err)
+	}
+}

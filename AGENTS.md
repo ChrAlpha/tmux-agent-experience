@@ -158,6 +158,8 @@ a design problem, not a test problem.
 | `internal/serve` | Local HTTP/SSE contract, admission and allowlisted in-process CLI operations |
 | `internal/adapter` | Hook payload → state transition, per agent |
 | `internal/session` | Session records, the state machine, the per-session file store and lock |
+| `internal/statefile` | Owned atomic metadata publication through fixed, creator-excluded temporaries |
+| `internal/ownedfs` | Pinned directory scopes, persistent inode bindings and reserved fixed artifact names |
 | `internal/attach` | Clients, attachments and their evidence, the `@tmag_*` pane projection, reconciliation |
 | `internal/query` | list / send / wait / snapshot over sessions and panes; the control verbs' gates |
 | `internal/driver` | Which channel (pane, service, hook) carries each verb for each agent and runtime |
@@ -190,6 +192,9 @@ claude plugin validate .      # marketplace and plugin manifests
 
 ## Conventions
 
+- Go 1.25 or later is required for descriptor-relative `os.Root.Rename`; CI
+  and releases select the latest stable patched toolchain, independently of
+  the module minimum.
 - Go standard library only. A dependency needs a reason that outweighs one more
   thing to audit in a binary every agent hook runs.
 - tmux baseline is 3.2; Linux and macOS. Read the process table through
@@ -199,6 +204,9 @@ claude plugin validate .      # marketplace and plugin manifests
   `:`.
 - Every operation that may run on a hook path takes a `context.Context` and
   respects its deadline.
+- `coord` pool-v1 keeps 256 slots per class, selected by the first byte of the
+  existing resource SHA-256. Its pane/session class names, hash inputs and
+  stable gate/pool pathnames must remain compatible across cooperating versions.
 - The version lives in `internal/version/version.go` and the four plugin
   manifests; `TestManifestVersions` keeps them equal.
 - The launchers are `binpath.Launcher()`, and the Codex copy of the skill is

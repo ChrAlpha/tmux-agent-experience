@@ -97,3 +97,35 @@ func TestPrunePreservesUnknownForeignRealmsEvenWithAgedHeldLocks(t *testing.T) {
 		}
 	}
 }
+
+// Regression for a production prune following .tmag-tmp into an unrelated
+// same-owner directory. Exercise both the retired draft layout and current
+// pinned ancestors through the installed test binary, not only a helper API.
+func TestPrunePreservesAliasedSessionTemporaryParents(t *testing.T) {
+	for _, level := range []string{"sessions/claude/.tmag-tmp", "sessions/claude"} {
+		t.Run(level, func(t *testing.T) {
+			h := start(t)
+			path := filepath.Join(h.state, level)
+			if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+				t.Fatal(err)
+			}
+			foreign := t.TempDir()
+			if err := os.Symlink(foreign, path); err != nil {
+				t.Fatal(err)
+			}
+			for _, name := range []string{"s-00", ".tmag-tmp-s-00"} {
+				if err := os.WriteFile(filepath.Join(foreign, name), []byte("preserve"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if r := h.tmag("", "prune"); r.code != 0 {
+				t.Fatalf("prune = %d %s", r.code, r.out)
+			}
+			for _, name := range []string{"s-00", ".tmag-tmp-s-00"} {
+				if b, err := os.ReadFile(filepath.Join(foreign, name)); err != nil || string(b) != "preserve" {
+					t.Fatalf("prune touched alias %s: %q %v", name, b, err)
+				}
+			}
+		})
+	}
+}

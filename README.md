@@ -610,6 +610,7 @@ timeout. With `--json`, errors are also printed as
 | Owner credentials | `$XDG_STATE_HOME/tmag/auth/`, or `TMAG_AUTH_DIR`: metadata and verification digests | `tmag auth revoke`, or `tmag uninstall --purge` |
 | Sessions and event log | `$XDG_STATE_HOME/tmag/<realm>/` (default `~/.local/state/tmag/<realm>/`): one small file per live session, at most two 8 MB event files, `req/<id>.sock` while an answer hook waits. The realm names the process table tmag sees, one per container or machine and boot, so containers that share a home directory keep their sessions apart | `tmag uninstall --purge`; ordinary maintenance preserves foreign realms and legacy state trees whose retirement is unknown |
 | Coordination | `<state dir>/coord/`: permanent namespace gate and at most 256 pane plus 256 session lock files; compatibility mode also retains per-resource files under `locks/` | removing the state directory with `tmag uninstall --purge` |
+| Session publication temporaries | `<state dir>/sessions/<agent>/.tmag-tmp-s-XX`: at most 256 fixed positions per agent, sharing its session stripes | the next successful publication at that position, or bounded maintenance |
 
 Resource locks default to compatibility mode in every directory, including an
 empty one. New tmag commands acquire a fixed pool stripe and the same legacy
@@ -636,6 +637,26 @@ starting their agents. After cutover, new identifiers create no legacy locks;
 new coordination files are bounded by the fixed pools. Existing legacy files
 remain as a finite historical cost. The gate and pool files remain permanently
 linked; ordinary operations never delete and recreate their lock identities.
+
+Session publication uses one fixed `.tmag-tmp-s-XX` temporary position per
+agent and stripe, directly beside its record. Publication renames two direct
+children of the same pinned directory. A bounded realm ownership manifest
+records directory inodes and admits the fixed prefix only when all 256 names
+are absent. Maintenance requires that prior reservation. Symlinks, replaced
+ancestors, unclaimed names and unknown child directories stay preserved; basename and user ownership alone do not establish scope. A killed
+publisher therefore leaves at most 512 new session temporaries, regardless of historical session count. Hooks and
+ordinary `prune` calls inspect up to eight stripes (sixteen fixed candidate
+names) after required work, within a fifty-millisecond cooperative budget and
+the earlier operation deadline. The saved starting stripe advances one position
+per admitted pass, so every stripe gets the first turn within 256 passes even
+when earlier batches run out of time. Active creators exclude their cleaner;
+contended stripes are skipped. Legacy random `.tmp-*` files lack that creator
+evidence and remain preserved. The realm's `.tmag-scope-lock` is permanent;
+`.tmag-scope.json` binds managed directories to their inodes. Copying or
+replacing directories does not transfer that ownership proof. If a restore
+invalidates it, stop all tmag writers and retain the old realm for inspection
+before starting with a fresh state directory; never erase the proof beneath
+active writers.
 
 Automatic maintenance preserves other realms and older shared state trees. Age,
 local PID absence, or an unlocked file cannot prove a foreign realm retired.

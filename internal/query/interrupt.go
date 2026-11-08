@@ -66,7 +66,7 @@ func Interrupt(ctx context.Context, log *eventlog.Log, target string) (Delivery,
 		return throughPane(ctx, log, v, s, named, runningGate, func(ctx context.Context, s Session, p Pane, rec session.Record) (eventlog.Event, *session.Record, error) {
 			now := time.Now()
 			rec.Halted = now.UTC().Truncate(time.Second)
-			if err := store.Put(rec); err != nil {
+			if err := store.PutContext(ctx, rec); err != nil {
 				return eventlog.Event{}, nil, err
 			}
 			if err := (tmux.Server{Socket: p.Server}).Interrupt(ctx, p.ID); err != nil {
