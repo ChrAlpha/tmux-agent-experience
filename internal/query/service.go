@@ -100,7 +100,7 @@ func throughService(outer context.Context, log *eventlog.Log, v View, s Session,
 		if err := log.Append(ctx, &ev); err != nil {
 			return err
 		}
-		d = Delivery{Session: fs, Via: driver.Service, Seq: ev.Seq}
+		d = Delivery{Session: fs, Via: driver.Service, Seq: ev.Seq, Cursor: ev.Cursor()}
 		return nil
 	})
 	if err != nil {

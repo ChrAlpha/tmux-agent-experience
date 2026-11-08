@@ -160,7 +160,7 @@ func answerHook(ctx context.Context, log *eventlog.Log, s Session, id string, d 
 		if _, err := store.Report(ctx, log, after, &ev); err != nil {
 			return fmt.Errorf("answer delivered but not logged: %w", err)
 		}
-		dl = Delivery{Session: s, Via: driver.Hook, Seq: ev.Seq}
+		dl = Delivery{Session: s, Via: driver.Hook, Seq: ev.Seq, Cursor: ev.Cursor()}
 		return nil
 	})
 	return dl, err
@@ -329,7 +329,7 @@ func answerService(ctx context.Context, log *eventlog.Log, v View, s Session, id
 		if _, err := store.Report(ctx, log, rec, &ev); err != nil {
 			return err
 		}
-		dl = Delivery{Session: s, Via: driver.Service, Seq: ev.Seq}
+		dl = Delivery{Session: s, Via: driver.Service, Seq: ev.Seq, Cursor: ev.Cursor()}
 		return nil
 	})
 	if err != nil {

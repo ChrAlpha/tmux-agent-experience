@@ -35,9 +35,10 @@ func (e *RefusedError) Error() string { return fmt.Sprintf("refused (%s): %s", e
 // Delivery is where a verb went.
 type Delivery struct {
 	Session Session
-	Pane    *Pane  // the pane typed into; nil for other channels
-	Via     string // the channel (see package driver)
-	Seq     int64  // the event logged for it
+	Pane    *Pane           // the pane typed into; nil for other channels
+	Via     string          // the channel (see package driver)
+	Seq     int64           // the event logged for it
+	Cursor  eventlog.Cursor // in-process continuation from this delivery
 }
 
 // prepare stores what the world proves, so that an attachment checked
@@ -164,7 +165,7 @@ func throughPane(ctx context.Context, log *eventlog.Log, v View, s Session, name
 			} else if err := log.Append(ctx, &ev); err != nil {
 				return fmt.Errorf("%s delivered to %s but not logged; do not repeat it: %w", ev.Event, fp.ID, err)
 			}
-			d = Delivery{Session: fs, Pane: &fp, Via: driver.Pane, Seq: ev.Seq}
+			d = Delivery{Session: fs, Pane: &fp, Via: driver.Pane, Seq: ev.Seq, Cursor: ev.Cursor()}
 			return nil
 		})
 	})

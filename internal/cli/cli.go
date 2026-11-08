@@ -30,7 +30,7 @@ const usage = `tmag — agent awareness for tmux
 Usage:
   tmag list     [--json]                       agents in all tmux panes
   tmag inspect  <target> [--json] [--events N] one agent and its recent events
-  tmag watch    [--since SEQ]                  JSON lines: snapshot, then events
+  tmag watch    [--since SEQ] [--resync]       JSON lines: snapshot, then events
   tmag read     <target> [--lines N | --last] [--json]
                                                recent pane output, or the agent's last reply
   tmag send     <target> [--wait | --reply] [--timeout D] [--json] [text | -]
@@ -183,7 +183,7 @@ func (a *app) fail(cmd string, err error) int {
 	switch {
 	case errors.As(err, &refused):
 		code, exit = "refused:"+refused.Reason, ExitRefused
-	case errors.Is(err, errTimeout):
+	case errors.Is(err, errTimeout), errors.Is(err, context.DeadlineExceeded):
 		code, exit = "timeout", ExitTimeout
 	case errors.Is(err, query.ErrMarker):
 		code, exit = "usage", ExitUsage

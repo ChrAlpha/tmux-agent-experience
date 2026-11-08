@@ -443,3 +443,39 @@ func TestRemovedRotatedSegmentInvalidatesOnlyLostHistory(t *testing.T) {
 		t.Fatalf("retained numeric continuation = %+v, %v", b, err)
 	}
 }
+
+func TestLegacyWriterFillingAnExposedReservationInvalidatesContinuation(t *testing.T) {
+	l := Open(t.TempDir())
+	appendN(t, l, 1)
+	committed, err := l.Head(bg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := l.writeSeq(committed.Seq + 10); err != nil {
+		t.Fatal(err)
+	}
+	exposed, err := l.Head(bg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A baseline writer sees a missing seq and reconstructs it from the
+	// last committed record, filling a number below the exposed checkpoint.
+	if err := os.Remove(l.path(seqName)); err != nil {
+		t.Fatal(err)
+	}
+	legacy := Event{Seq: committed.Seq + 1, Event: "Stop", State: "idle"}
+	line, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendRaw(t, l, append(line, '\n'))
+	if err := l.writeSeq(legacy.Seq); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.Replay(bg, exposed); !errors.Is(err, ErrHistoryUnavailable) {
+		t.Fatalf("filled reservation silently skipped: %v", err)
+	}
+	if _, complete, err := l.Since(bg, exposed.Seq); err != nil || complete {
+		t.Fatalf("numeric filled reservation accepted: %v, %v", complete, err)
+	}
+}

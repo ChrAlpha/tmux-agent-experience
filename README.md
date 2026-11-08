@@ -551,11 +551,27 @@ were already rotated away.
 A running watch that falls behind retained history ends with
 `history_unavailable` instead of silently skipping changes. Replace the local
 image with a fresh snapshot before continuing. An interrupted final log write
-is repaired before another append; existing cursors spanning that repair also
-require a fresh snapshot. A malformed complete record ends reading or appending
-with `integrity_loss`, preserving the damaged file for explicit maintenance.
+is repaired before another append; repair and ambiguous recovered publication
+invalidate prior cursors and require a fresh snapshot. A malformed complete
+record ends reading or appending with `integrity_loss`, preserving the damaged
+file for explicit maintenance.
 Historical waits propagate these errors: a current snapshot cannot establish
 which past transitions or delivery outcomes occurred.
+
+`tmag watch --resync` opts into replacement snapshots during a running stream.
+Replace both the session collection and the pane collection whenever a snapshot
+arrives; merging retains objects that disappeared. Resync allows at most three
+replacement attempts in thirty seconds, then ends with `history_unavailable` if
+the reader still cannot keep up. Each snapshot capture retries at most three
+times within five seconds. The default stream keeps its terminal-error behavior.
+
+Snapshots are current scans with replay overlap, rather than atomic images at
+`seq`. A scan may already include later state: apply the copied events after it
+and continue following, allowing temporary overlap until replay and pending-write
+repair catch up. A state event's optional `since` timestamp preserves when that
+state and kind actually began, even when the event is appended much later during
+repair. Older events can omit it; deriving `since` from their event time is an
+approximation.
 
 Over SSH, a remote client needs nothing else: `ssh host tmag watch`. A watch
 ends as soon as nobody reads it, even with nothing to send: when its reader

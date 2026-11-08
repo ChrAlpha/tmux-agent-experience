@@ -64,8 +64,11 @@ type Event struct {
 	Event   string    `json:"event"`
 	State   string    `json:"state,omitempty"`
 	Kind    string    `json:"kind,omitempty"`
-	Turn    string    `json:"turn,omitempty"`
-	Cwd     string    `json:"cwd,omitempty"`
+	// Since is when the reported state/kind last changed. Older records may
+	// omit it; Time remains when this event was appended, including repair.
+	Since *time.Time `json:"since,omitempty"`
+	Turn  string     `json:"turn,omitempty"`
+	Cwd   string     `json:"cwd,omitempty"`
 	// Runtime is how the session runs: terminal or service.
 	Runtime    string      `json:"runtime,omitempty"`
 	Transcript *Transcript `json:"transcript,omitempty"`
@@ -92,7 +95,12 @@ type Event struct {
 	// deny.
 	Request  string `json:"request,omitempty"`
 	Decision string `json:"decision,omitempty"`
+	cursor   Cursor
 }
+
+// Cursor is the exact checkpoint assigned by a successful Append. It is not
+// serialized and is unset for events read from disk or an unsuccessful append.
+func (e Event) Cursor() Cursor { return e.cursor }
 
 // Events tmag itself records, beside those named after agent hooks.
 const (
@@ -148,6 +156,7 @@ func (l *Log) WithLock(ctx context.Context, fn func() error) error {
 // Append reserves a sequence before writing a complete record. An interrupted
 // reservation leaves an unused number; recovery never reuses that number.
 func (l *Log) Append(ctx context.Context, e *Event) error {
+	e.cursor = Cursor{}
 	return l.WithLock(ctx, func() error {
 		h, err := l.history(ctx)
 		if err != nil {
@@ -224,7 +233,11 @@ func (l *Log) Append(ctx context.Context, e *Event) error {
 		h.Current = segmentOf(st)
 		h.Current.First, h.Current.Last = first, e.Seq
 		h.Committed = e.Seq
-		return l.saveHistory(ctx, h)
+		if err := l.saveHistory(ctx, h); err != nil {
+			return err
+		}
+		e.cursor = h.cursor()
+		return nil
 	})
 }
 
@@ -243,8 +256,9 @@ func (l *Log) writeSeq(seq int64) error {
 	return os.Rename(tmp, l.path(seqName))
 }
 
-// Seq returns the allocation high-water mark, including unused reservations.
-// Context-aware operations use Head instead.
+// Seq is a bounded compatibility helper for diagnostics and tests. It returns
+// the allocation high-water mark, including unused reservations. Production
+// operations pass their context to Head instead.
 func (l *Log) Seq() (int64, error) {
 	c, err := l.Head(context.Background())
 	return c.Seq, err

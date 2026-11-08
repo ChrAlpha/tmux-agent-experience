@@ -139,14 +139,19 @@ type Report struct {
 	Transcript string `json:"transcript,omitempty"`
 	Subagents  string `json:"subagents,omitempty"`
 	Requests   string `json:"requests,omitempty"`
+	Since      string `json:"since,omitempty"`
 }
 
 // Reports is what the session's next event would report.
 func (r Record) Reports() Report {
+	since := ""
+	if !r.Since.IsZero() {
+		since = r.Since.UTC().Format(time.RFC3339Nano)
+	}
 	return Report{
 		State: r.State(), Kind: r.Kind(), Turn: r.Turn, Cwd: r.Cwd, Runtime: string(r.Host.Role),
 		Transcript: r.Transcript, Subagents: strings.Join(r.RunningSubagents(), "\n"),
-		Requests: strings.Join(r.requestIDs(), "\n"),
+		Requests: strings.Join(r.requestIDs(), "\n"), Since: since,
 	}
 }
 
@@ -162,6 +167,11 @@ func (r Record) requestIDs() []string {
 func (r Record) Report(ev *eventlog.Event) {
 	ev.Agent, ev.Session = r.Agent, r.ID
 	ev.State, ev.Kind, ev.Turn, ev.Cwd = r.State(), r.Kind(), r.Turn, r.Cwd
+	ev.Since = nil
+	if !r.Since.IsZero() {
+		since := r.Since.UTC()
+		ev.Since = &since
+	}
 	ev.Runtime = string(r.Host.Role)
 	ev.Transcript = r.TranscriptRef()
 	ev.Subagents = r.RunningSubagents()

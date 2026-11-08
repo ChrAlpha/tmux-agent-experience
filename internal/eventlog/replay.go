@@ -11,6 +11,10 @@ import (
 // must replace its image from a snapshot; a historical predicate may be unknown.
 var ErrHistoryUnavailable = errors.New("event history unavailable")
 
+// ReadTimeout bounds each capture, rather than a stream's whole lifetime.
+// A canceled parent or an earlier deadline always takes precedence.
+const ReadTimeout = 5 * time.Second
+
 // HistoryUnavailable describes why a cursor cannot be continued. It carries no
 // events: later events must not be mistaken for a complete continuation.
 type HistoryUnavailable struct {
@@ -34,6 +38,9 @@ type Cursor struct {
 	current    segment
 }
 
+// IsSet reports whether this cursor carries an in-process log identity.
+func (c Cursor) IsSet() bool { return c.epoch != "" }
+
 func (h history) cursor() Cursor {
 	return Cursor{Seq: h.Allocated, epoch: h.Epoch, generation: h.Generation, current: h.Current}
 }
@@ -41,6 +48,8 @@ func (h history) cursor() Cursor {
 // Head captures a cursor under the writer lock, after recovery. A reservation
 // without a record is included: no future writer may fill that unused number.
 func (l *Log) Head(ctx context.Context) (Cursor, error) {
+	ctx, cancel := context.WithTimeout(ctx, ReadTimeout)
+	defer cancel()
 	var c Cursor
 	err := l.WithLock(ctx, func() error {
 		h, err := l.history(ctx)
@@ -84,6 +93,8 @@ func (h history) continuation(c Cursor) error {
 // Replay returns only a certified continuation. Numeric v1 cursors use the
 // persisted origin/retention/invalidation fences, without requiring new fields.
 func (l *Log) Replay(ctx context.Context, after Cursor) (Batch, error) {
+	ctx, cancel := context.WithTimeout(ctx, ReadTimeout)
+	defer cancel()
 	var batch Batch
 	err := l.WithLock(ctx, func() error {
 		h, err := l.history(ctx)
@@ -134,6 +145,8 @@ func (l *Log) events(ctx context.Context, h history, after Cursor) ([]Event, err
 // events are only a retained suffix, not a valid continuation. Follow/Replay
 // return ErrHistoryUnavailable instead of ever delivering that suffix as whole.
 func (l *Log) Since(ctx context.Context, after int64) (events []Event, complete bool, err error) {
+	ctx, cancel := context.WithTimeout(ctx, ReadTimeout)
+	defer cancel()
 	err = l.WithLock(ctx, func() error {
 		h, err := l.history(ctx)
 		if err != nil {
@@ -156,6 +169,23 @@ func (l *Log) Follow(ctx context.Context, after int64, interval time.Duration, f
 // Its position never retains a partial record or an open stale inode. A slow
 // callback can outlive retained history; the next capture then fails explicitly.
 func (l *Log) FollowCursor(ctx context.Context, after Cursor, interval time.Duration, fn func(Event) error) error {
+	return l.FollowBatches(ctx, after, interval, func(batch Batch) error {
+		for _, e := range batch.Events {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if err := fn(e); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// FollowBatches also calls fn for an empty certified batch. A stream can perform
+// its periodic reconciliation in that same output loop, with no stale pane
+// writer surviving a snapshot replacement. fn always runs outside the log lock.
+func (l *Log) FollowBatches(ctx context.Context, after Cursor, interval time.Duration, fn func(Batch) error) error {
 	if interval <= 0 {
 		return fmt.Errorf("follow interval must be positive")
 	}
@@ -166,13 +196,11 @@ func (l *Log) FollowCursor(ctx context.Context, after Cursor, interval time.Dura
 		if err != nil {
 			return err
 		}
-		for _, e := range batch.Events {
-			if err := ctx.Err(); err != nil {
-				return err
-			}
-			if err := fn(e); err != nil {
-				return err
-			}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := fn(batch); err != nil {
+			return err
 		}
 		after = batch.Cursor
 		select {

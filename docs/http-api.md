@@ -42,7 +42,7 @@ Successful commands and command failures preserve their `tmag/v1` documents.
 | GET /v1/inspect | target | `inspect --json` |
 | GET /v1/request | target, request | `request --json` |
 | GET /v1/read | target and either last=1 or lines=1..2000 | `read --json` |
-| GET /v1/watch | optional since cursor, otherwise Last-Event-ID | event stream |
+| GET /v1/watch | optional since cursor, otherwise Last-Event-ID; optional resync=1 | event stream |
 | POST /v1/act | JSON action | send, interrupt, or answer result |
 | POST /v1/pair | JSON `{code}`; no bearer needed | `{schema,credential:{id,label,created,expires?,token}}` |
 
@@ -73,6 +73,12 @@ with code `history_unavailable` and ends the subscription. Start a fresh watch
 without a cursor and replace local state from its snapshot. `integrity_loss`
 reports a malformed complete log record and requires explicit maintenance.
 Neither error permits treating a retained suffix as a complete continuation.
+`resync=1` opts into replacement snapshots during that subscription. Each
+snapshot replaces both sessions and panes, including when either is empty.
+At most three replacement attempts are allowed in thirty seconds; sustained
+churn ends with the same terminal error document. Without this parameter,
+midstream history loss remains terminal. SSE ids stay numeric, and snapshots
+retain the CLI's replay-overlap semantics rather than claiming an atomic view.
 
 Disconnecting ends that subscription and its local watch. Every second, serve
 checks the persisted authorization store: revocation, expiry or a failed check

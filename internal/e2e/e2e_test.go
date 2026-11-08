@@ -1015,6 +1015,9 @@ func (f *follower) apply(line []byte) {
 				at := e.Time
 				since = &at
 			}
+			if e.Since != nil {
+				since = e.Since
+			}
 			f.sessions[key] = query.Session{
 				ID: e.Session, Agent: e.Agent, State: e.State, Kind: e.Kind, Turn: e.Turn, Since: since,
 				Cwd: e.Cwd, Runtime: e.Runtime, Transcript: e.Transcript, Subagents: e.Subagents,
@@ -1706,6 +1709,48 @@ func TestAttachmentEventsSurviveACrash(t *testing.T) {
 	h.tmag("", "status")
 	if got := h.tmux("display-message", "-p", "-t", quiet, "#{@tmag_state}"); got != "" {
 		t.Fatalf("broken options left: %q", got)
+	}
+}
+
+func TestWatchSnapshotConvergesAcrossPendingSessionAndPaneRepair(t *testing.T) {
+	h := start(t)
+	pane := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_HOOKS": "1"}, filepath.Join(bin, "claude"))
+	h.waitPane(pane, "idle", "process")
+	store := session.Store{Dir: h.state}
+	since := time.Unix(123, 987654321).UTC()
+	ctx := context.Background()
+	err := store.Lock(ctx, "claude", sidA, func() error {
+		rec, ok, err := store.Get("claude", sidA)
+		if err != nil {
+			return fmt.Errorf("read session before pending write: %w", err)
+		}
+		if !ok {
+			return fmt.Errorf("session missing before pending write")
+		}
+		rec.Main, rec.Since, rec.Change = "working", since, "UserPromptSubmit"
+		return store.Put(rec)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.tmux("set-option", "-p", "-t", pane, "@tmag_change", "Attach")
+	f := h.follow()
+	select {
+	case first := <-f.lines:
+		f.apply(first)
+	case <-time.After(5 * time.Second):
+		t.Fatal("snapshot never published")
+	}
+	if s := f.sessions["claude/"+sidA]; s.State != "working" || s.Since == nil || !s.Since.Equal(since) {
+		t.Fatalf("pending snapshot state = %+v", s)
+	}
+	h.eventually("watch repairs both pending markers", func() bool {
+		rec, ok, err := store.Get("claude", sidA)
+		return err == nil && ok && !rec.Unsettled() && h.tmux("display-message", "-p", "-t", pane, "#{@tmag_change}") == ""
+	})
+	f.agrees(h)
+	if s := f.sessions["claude/"+sidA]; s.Since == nil || !s.Since.Equal(since) {
+		t.Fatalf("replayed repair replaced state since with append time: %+v", s)
 	}
 }
 

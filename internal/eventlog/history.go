@@ -140,6 +140,7 @@ func (l *Log) history(ctx context.Context) (history, error) {
 	var segments [2]segment
 	var partial [2]bool
 	rewritten := false
+	lateReservation := false
 	for i, name := range []string{rotatedName, currentName} {
 		if err := ctx.Err(); err != nil {
 			return h, err
@@ -179,6 +180,12 @@ func (l *Log) history(ctx context.Context) (history, error) {
 		verified, _, unfinished, err := l.scan(ctx, name, start, previous, -1, false)
 		if err != nil {
 			return h, err
+		}
+		if !fresh && verified.First > 0 && verified.First <= before.Allocated {
+			// A legacy writer can fill an already exposed reservation after
+			// seq is removed or rolled back. A completed write whose final
+			// checkpoint failed is indistinguishable, so invalidate conservatively.
+			lateReservation = true
 		}
 		if start > 0 && known.First != 0 {
 			verified.First = known.First
@@ -224,7 +231,7 @@ func (l *Log) history(ctx context.Context) (history, error) {
 		}
 	}
 	h.Rotated, h.Current = rotated, current
-	if rewritten {
+	if rewritten || lateReservation {
 		h.Generation++
 		h.Allocated++
 		h.Floor = h.Allocated

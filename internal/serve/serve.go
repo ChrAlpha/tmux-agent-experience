@@ -343,6 +343,14 @@ func (s *Server) watch(w http.ResponseWriter, r *http.Request) {
 		cursor = r.Header.Get("Last-Event-ID")
 	}
 	args := []string{"watch"}
+	switch r.URL.Query().Get("resync") {
+	case "", "0":
+	case "1":
+		args = append(args, "--resync")
+	default:
+		fail(w, 400, "usage", "resync must be 0 or 1")
+		return
+	}
 	if cursor != "" {
 		n, err := strconv.ParseInt(cursor, 10, 64)
 		if err != nil || n < 0 {

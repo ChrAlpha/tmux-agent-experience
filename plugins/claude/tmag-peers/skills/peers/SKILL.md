@@ -133,3 +133,9 @@ A refused verb exits 3 with `refused (CODE): reason` and delivers nothing.
 
 Exit 1 is an error (`ended`: the peer's session ended; `no_reply`: its last
 turn left no reply to read); exit 2 is a usage error.
+
+A wait error `history_unavailable` means required historical transitions are no
+longer available; current state cannot reconstruct them. If `send --wait` reports
+that the prompt was delivered, do not repeat the send. Read the peer's current
+state and reply before deciding the next action. `integrity_loss` means
+the event log needs explicit maintenance. Both errors exit 1.
