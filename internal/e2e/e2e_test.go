@@ -317,13 +317,27 @@ func TestClaudeInProcess(t *testing.T) {
 	f.agrees(h)
 
 	// A second prompt while the first is running is refused, not queued.
-	if r := h.tmag("first", "send", h.target(pane)); r.code != 0 {
+	r = h.tmag("first", "send", h.target(pane), "--json")
+	if r.code != 0 {
 		t.Fatalf("send: %d %s", r.code, r.out)
+	}
+	var sent struct {
+		Seq int64 `json:"seq"`
+	}
+	if err := json.Unmarshal([]byte(r.out), &sent); err != nil || sent.Seq == 0 {
+		t.Fatalf("send delivery: %v %s", err, r.out)
 	}
 	if r := h.tmag("", "send", h.target(pane), "second"); r.code != 3 || !strings.Contains(r.out, "busy") {
 		t.Fatalf("busy send: %d %s", r.code, r.out)
 	}
-	h.waitPane(pane, "idle", "process")
+	// The pane can still show the previous idle before this delivery starts.
+	// Replay from its Send event so even an already completed turn is observed.
+	if r := h.tmag("", "wait", h.target(pane), "--after", strconv.FormatInt(sent.Seq, 10), "--for", "idle", "--timeout", "10s", "--json"); r.code != 0 {
+		t.Fatalf("wait after delivery: %d %s", r.code, r.out)
+	}
+	if got := h.eventNames(sidA); !strings.HasSuffix(got, "Send: UserPromptSubmit:working Stop:idle") {
+		t.Fatalf("delivered prompt did not finish a turn: %s", got)
+	}
 	if r := h.tmag("", "wait", h.target(pane), "--json"); r.code != 0 || !strings.Contains(r.out, `"idle"`) {
 		t.Fatalf("wait on idle agent: %d %s", r.code, r.out)
 	}
