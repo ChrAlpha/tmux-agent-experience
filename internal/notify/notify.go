@@ -14,6 +14,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/ChrAlpha/tmux-agent-experience/internal/helper"
 )
 
 // Option is the tmux option holding the person's command.
@@ -145,15 +147,13 @@ var ErrTimeout = errors.New("@tmag-notify did not finish within " + Timeout.Stri
 // what it printed. The command runs in a process group of its own, which
 // ends with it, children included.
 func Run(ctx context.Context, command string, env []string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", command)
+	cmd, cleanup := helper.Command(ctx, "/bin/sh", "-c", command)
+	defer cleanup()
 	cmd.Env = env
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
-	cmd.WaitDelay = time.Second
 	out := &capped{}
 	cmd.Stdout, cmd.Stderr = out, out
 	err := cmd.Run()
-	if ctx.Err() != nil {
+	if ctx.Err() != nil || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		err = ErrTimeout
 	}
 	return out.Bytes(), err

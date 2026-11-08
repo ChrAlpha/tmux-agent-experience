@@ -144,7 +144,7 @@ func Load(ctx context.Context, store session.Store) (View, *attach.World, error)
 	if err := ctx.Err(); err != nil {
 		return View{}, nil, err
 	}
-	recs, err := store.All()
+	recs, err := store.AllContext(ctx)
 	if err != nil {
 		return View{}, nil, err
 	}

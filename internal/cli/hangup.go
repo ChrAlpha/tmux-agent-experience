@@ -19,3 +19,14 @@ func readByPeer(f *os.File) bool {
 	st, err := f.Stat()
 	return err == nil && st.Mode()&(os.ModeNamedPipe|os.ModeSocket) != 0
 }
+
+// controlFile observes the descriptor without Fd's switch to blocking mode.
+func controlFile(f *os.File, fn func(uintptr) error) error {
+	raw, err := f.SyscallConn()
+	if err != nil {
+		return err
+	}
+	var operation error
+	err = raw.Control(func(fd uintptr) { operation = fn(fd) })
+	return errors.Join(err, operation)
+}

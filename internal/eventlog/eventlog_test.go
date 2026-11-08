@@ -104,7 +104,7 @@ func TestHoleIsTolerated(t *testing.T) {
 	appendN(t, l, 2)
 	seq, _ := l.Seq()
 	// A writer died after committing seq+1 but before writing its line.
-	if err := l.writeSeq(seq + 1); err != nil {
+	if err := l.writeSeq(bg, seq+1); err != nil {
 		t.Fatal(err)
 	}
 	appendN(t, l, 1)

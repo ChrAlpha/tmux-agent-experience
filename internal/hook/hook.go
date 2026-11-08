@@ -12,11 +12,13 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/adapter"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/answer"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/attach"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/contextio"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/maintenance"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/notify"
@@ -49,10 +51,23 @@ type Input struct {
 // Run processes the hook within Deadline. It never writes to stdout: agents
 // inject hook stdout into the model context.
 func Run(in Input) error {
+	return RunContext(context.Background(), in)
+}
+
+// RunContext processes a hook using the earlier of the parent's budget and
+// Deadline, including input. Payload readers must cooperate with cancellation;
+// the CLI owns its inherited input with contextio.Own. No read worker is left
+// behind if an injected reader does not support cancellation.
+func RunContext(parent context.Context, in Input) error {
+	ctx, cancel := context.WithTimeout(parent, Deadline)
+	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if in.Agent != proc.Claude && in.Agent != proc.Codex {
 		return fmt.Errorf("unknown agent %q", in.Agent)
 	}
-	data, err := io.ReadAll(io.LimitReader(in.Payload, maxPayload))
+	data, err := contextio.ReadAll(ctx, in.Payload, maxPayload)
 	if err != nil {
 		return err
 	}
@@ -77,8 +92,6 @@ func Run(in Input) error {
 	if in.Now != nil {
 		now = in.Now
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), Deadline)
-	defer cancel()
 	defer func() { _ = maintenance.Run(ctx, in.Log.Dir) }()
 
 	w, err := attach.Load(ctx)
@@ -220,7 +233,10 @@ func tell(ctx context.Context, rec session.Record, shown []tmux.Pane, kind strin
 	if kind == "" {
 		return nil
 	}
-	servers := tmux.Servers()
+	servers, err := tmux.ServersContext(ctx)
+	if err != nil {
+		return err
+	}
 	var commands []string
 	for _, srv := range servers {
 		command := srv.GlobalOption(ctx, notify.Option)
@@ -249,6 +265,9 @@ func tell(ctx context.Context, rec session.Record, shown []tmux.Pane, kind strin
 		return fmt.Errorf("notify: %w", err)
 	}
 	for _, command := range commands {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if err := notify.Start(bin, command, a); err != nil {
 			return fmt.Errorf("notify: %w", err)
 		}
@@ -277,18 +296,34 @@ const maxErrLog = 256 << 10
 
 // RecordError appends a hook failure to <state dir>/hook.log for `tmag doctor`.
 func RecordError(dir, agent string, err error) {
+	RecordErrorContext(context.Background(), dir, agent, err)
+}
+
+// RecordErrorContext logs only while the invocation has budget remaining.
+// A replaced hook.log must not turn a diagnostic into a blocking FIFO open.
+func RecordErrorContext(ctx context.Context, dir, agent string, err error) {
+	if ctx.Err() != nil {
+		return
+	}
 	if os.MkdirAll(dir, 0o700) != nil {
 		return
 	}
 	path := filepath.Join(dir, "hook.log")
-	flags := os.O_CREATE | os.O_WRONLY | os.O_APPEND
+	flags := os.O_CREATE | os.O_WRONLY | os.O_APPEND | syscall.O_NONBLOCK | syscall.O_NOFOLLOW
 	if st, serr := os.Stat(path); serr == nil && st.Size() > maxErrLog {
-		flags = os.O_CREATE | os.O_WRONLY | os.O_TRUNC
+		flags = os.O_CREATE | os.O_WRONLY | os.O_TRUNC | syscall.O_NONBLOCK | syscall.O_NOFOLLOW
+	}
+	if ctx.Err() != nil {
+		return
 	}
 	f, ferr := os.OpenFile(path, flags, 0o600)
 	if ferr != nil {
 		return
 	}
 	defer f.Close()
+	st, serr := f.Stat()
+	if serr != nil || !st.Mode().IsRegular() || ctx.Err() != nil {
+		return
+	}
 	fmt.Fprintf(f, "%s %s %v\n", time.Now().UTC().Format(time.RFC3339), agent, err)
 }

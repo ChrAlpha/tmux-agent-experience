@@ -57,11 +57,17 @@ a design problem, not a test problem.
   a first line that does is tmag's. Never let a caller name the sender.
 - **Hooks fail open.** `tmag hook` always exits 0, never writes stdout (agents
   inject hook stdout into the model context), finishes within `hook.Deadline`,
-  and records failures only in `<state dir>/hook.log`. `tmag answer-hook`
+  and records failures only in `<state dir>/hook.log`. CLI entry starts the
+  whole budget before discovery/input, cancels cooperatively early and installs
+  a final fail-open cutoff. Reusable APIs and HTTP handlers never exit the
+  process; process suspension and uninterruptible kernel operations remain
+  outside a normal-scheduling deadline guarantee. `tmag answer-hook`
   also always exits 0, writes to stdout only a decision delivered by
   `tmag answer`, and on any failure, timeout, close or signal prints nothing,
   leaving the decision to the agent's own dialog, which is on screen
-  meanwhile. A hook command that reaches the `tmag-peers` launcher on `PATH`
+  meanwhile. Its short setup budget is separate from its intentional waiting
+  lifetime. Owned input/output and helper processes must actually cancel and
+  close; a reader goroutine abandoned behind a timeout is not containment. A hook command that reaches the `tmag-peers` launcher on `PATH`
   fails open the same way when no binary exists. A hook that alerts the
   person starts `tmag notify` detached and does not wait for it; that process
   runs `@tmag-notify` for at most `notify.Timeout` and records a failure in

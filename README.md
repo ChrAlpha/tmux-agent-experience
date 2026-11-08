@@ -31,7 +31,13 @@ prompt safely.
 - tmux stays the only terminal runtime: no daemon, no wrapper, no new entry
   point. The optional HTTP endpoint runs in a tmux window you open.
 - Agents report through their own plugin hooks, which fail open: a broken or
-  missing `tmag` never blocks a turn.
+  missing `tmag` never blocks a turn. An ordinary CLI hook shares one entry
+  budget across input, discovery, state changes and housekeeping. Cooperative
+  cancellation begins after 2.75 seconds, with a fail-open process cutoff at
+  three seconds under normal OS scheduling. Answer-hook setup has that short
+  budget separately from its intentional permission wait; cancellation closes
+  its owned streams and suppresses late decision output. Process suspension or
+  an uninterruptible kernel operation cannot provide a hard real-time bound.
 - Everything lives in the plugin's TPM directory; nothing edits your
   configuration. Prompts and agent output are never stored; `tmag read
   --last` reads an agent's reply from its own transcript when asked.
@@ -679,7 +685,10 @@ whose initial hashes collide use different free positions. A position stays
 locked for the listener's whole lifetime. At most 256 answer hooks can wait in
 one realm; exhaustion or uncertain ownership leaves the agent's original
 on-screen dialog in control. Request identity is checked by the socket protocol;
-a short probe returns only that identity, never tool input. A closed pathname
+a short probe returns only that identity, never tool input. Corrupt or aliased
+identity metadata stays unknown and prevents a second allocation from
+redirecting a request. Bind and connect use the pinned directory on both
+supported operating systems. A closed pathname
 is not proof of a waiting hook. Listener close performs no unsafe unlink; a
 later excluded sweep or allocation removes dead leftovers before reuse.
 

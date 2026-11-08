@@ -19,13 +19,14 @@ func hangup(f *os.File, done <-chan struct{}) <-chan struct{} {
 	if err != nil {
 		return nil
 	}
-	fd := int(f.Fd())
 	// No events are asked for: epoll always reports EPOLLERR, a pipe without
 	// readers, and EPOLLHUP, a socket shut down both ways. A socket shut down
 	// for reading alone is no hang-up: sshd runs a command without a terminal
 	// on one socket for its input and output, and passes the end of the
 	// client's input on as such a half-close.
-	if err := syscall.EpollCtl(ep, syscall.EPOLL_CTL_ADD, fd, &syscall.EpollEvent{Fd: int32(fd)}); err != nil {
+	if err := controlFile(f, func(fd uintptr) error {
+		return syscall.EpollCtl(ep, syscall.EPOLL_CTL_ADD, int(fd), &syscall.EpollEvent{Fd: int32(fd)})
+	}); err != nil {
 		_ = syscall.Close(ep)
 		return nil
 	}

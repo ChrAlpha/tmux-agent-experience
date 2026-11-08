@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/ChrAlpha/tmux-agent-experience/internal/contextio"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/lockfile"
 )
 
@@ -149,7 +150,10 @@ func (l *Log) WithLock(ctx context.Context, fn func() error) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		return fn()
+		if err := fn(); err != nil {
+			return err
+		}
+		return ctx.Err()
 	})
 }
 
@@ -157,7 +161,7 @@ func (l *Log) WithLock(ctx context.Context, fn func() error) error {
 // reservation leaves an unused number; recovery never reuses that number.
 func (l *Log) Append(ctx context.Context, e *Event) error {
 	e.cursor = Cursor{}
-	return l.WithLock(ctx, func() error {
+	err := l.WithLock(ctx, func() error {
 		h, err := l.history(ctx)
 		if err != nil {
 			return err
@@ -180,7 +184,7 @@ func (l *Log) Append(ctx context.Context, e *Event) error {
 		}
 		// Reserve through the legacy sequence file first, so an older writer
 		// cannot reuse a number if this process dies before checkpointing it.
-		if err := l.writeSeq(e.Seq); err != nil {
+		if err := l.writeSeq(ctx, e.Seq); err != nil {
 			return err
 		}
 		if err := l.saveHistory(ctx, h); err != nil {
@@ -209,11 +213,11 @@ func (l *Log) Append(ctx context.Context, e *Event) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		f, err := os.OpenFile(l.path(currentName), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+		f, err := contextio.OpenRegular(ctx, l.path(currentName), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 		if err != nil {
 			return err
 		}
-		if _, err := f.Write(line); err != nil {
+		if err := contextio.WriteAll(ctx, f, line); err != nil {
 			_ = f.Close()
 			return err
 		}
@@ -222,9 +226,15 @@ func (l *Log) Append(ctx context.Context, e *Event) error {
 		}
 		// If publication of the checkpoint fails, leave the caller's pending
 		// marker intact. The next reader verifies the complete record from disk.
-		st, err := os.Stat(l.path(currentName))
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		st, err := os.Lstat(l.path(currentName))
 		if err != nil {
 			return err
+		}
+		if !st.Mode().IsRegular() {
+			return &IntegrityError{File: currentName}
 		}
 		first := h.Current.First
 		if first == 0 {
@@ -239,6 +249,10 @@ func (l *Log) Append(ctx context.Context, e *Event) error {
 		e.cursor = h.cursor()
 		return nil
 	})
+	if err != nil {
+		e.cursor = Cursor{}
+	}
+	return err
 }
 
 // baseSeq starts numbering from microseconds, below JSON's exact integer limit.
@@ -248,12 +262,8 @@ func baseSeq(now time.Time) int64 { return now.UnixMicro() }
 
 // writeSeq is called only under the log lock. Its fixed temporary pathname is
 // owned by that lock, including after a writer dies.
-func (l *Log) writeSeq(seq int64) error {
-	tmp := l.path(seqName + ".tmp")
-	if err := os.WriteFile(tmp, []byte(strconv.FormatInt(seq, 10)), 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, l.path(seqName))
+func (l *Log) writeSeq(ctx context.Context, seq int64) error {
+	return l.publish(ctx, seqName, []byte(strconv.FormatInt(seq, 10)))
 }
 
 // Seq is a bounded compatibility helper for diagnostics and tests. It returns

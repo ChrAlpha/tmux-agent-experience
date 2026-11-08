@@ -96,12 +96,12 @@ func Wait(ctx context.Context, log *eventlog.Log, s Session, o WaitOptions) (eve
 		now := time.Now()
 		if !now.Before(nextLive) {
 			nextLive = now.Add(livenessInterval)
-			rec, ok, err := store.Get(s.Agent, s.ID)
+			rec, ok, err := store.GetContext(ctx, s.Agent, s.ID)
 			if err == nil {
 				if !ok || rec.Ended != "" {
 					return eventlog.Event{}, fmt.Errorf("%w: %s", ErrEnded, s.ID)
 				}
-				if rec.Host.PID > 0 && !proc.Running(rec.Host.PID, rec.Host.Start) {
+				if rec.Host.PID > 0 && !proc.RunningContext(ctx, rec.Host.PID, rec.Host.Start) {
 					return eventlog.Event{}, fmt.Errorf("%w: the process of %s exited", ErrEnded, s.ID)
 				}
 			}

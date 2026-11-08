@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+
+	"github.com/ChrAlpha/tmux-agent-experience/internal/contextio"
 )
 
 const (
@@ -93,15 +95,7 @@ func (l *Log) saveHistory(ctx context.Context, h history) error {
 	if err != nil {
 		return err
 	}
-	// A fixed temporary is safe here: every publisher and cleaner holds lock.
-	tmp := l.path(historyName + ".tmp")
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
-		return err
-	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	return os.Rename(tmp, l.path(historyName))
+	return l.publish(ctx, historyName, b)
 }
 
 // history verifies changes since the checkpoint and repairs unfinished final
@@ -109,7 +103,7 @@ func (l *Log) saveHistory(ctx context.Context, h history) error {
 // a changed file identity or modified prefix requires a full bounded scan.
 func (l *Log) history(ctx context.Context) (history, error) {
 	var h history
-	b, err := os.ReadFile(l.path(historyName))
+	b, err := contextio.ReadFile(ctx, l.path(historyName), 64<<10)
 	fresh := errors.Is(err, os.ErrNotExist)
 	switch {
 	case err != nil && !fresh:
@@ -129,7 +123,7 @@ func (l *Log) history(ctx context.Context) (history, error) {
 	// seq remains interoperable with older writers. A missing seq is harmless
 	// because the independent checkpoint and verified records preserve its max.
 	sequence := int64(0)
-	if b, err := os.ReadFile(l.path(seqName)); err == nil {
+	if b, err := contextio.ReadFile(ctx, l.path(seqName), 1024); err == nil {
 		if n, err := strconv.ParseInt(strings.TrimSpace(string(b)), 10, 64); err == nil {
 			sequence = n
 			h.Allocated = max(h.Allocated, n)
@@ -145,7 +139,7 @@ func (l *Log) history(ctx context.Context) (history, error) {
 		if err := ctx.Err(); err != nil {
 			return h, err
 		}
-		st, err := os.Stat(l.path(name))
+		st, err := os.Lstat(l.path(name))
 		if errors.Is(err, os.ErrNotExist) {
 			continue
 		}
@@ -245,7 +239,7 @@ func (l *Log) history(ctx context.Context) (history, error) {
 		if err := l.saveHistory(ctx, h); err != nil {
 			return h, err
 		}
-		if err := l.writeSeq(h.Allocated); err != nil {
+		if err := l.writeSeq(ctx, h.Allocated); err != nil {
 			return h, err
 		}
 		for i, name := range []string{rotatedName, currentName} {
@@ -269,7 +263,7 @@ func (l *Log) history(ctx context.Context) (history, error) {
 			return h, err
 		}
 		// Publish recovery fences to legacy writers before exposing a cursor.
-		if err := l.writeSeq(h.Allocated); err != nil {
+		if err := l.writeSeq(ctx, h.Allocated); err != nil {
 			return h, err
 		}
 	}
@@ -284,7 +278,7 @@ func (l *Log) history(ctx context.Context) (history, error) {
 // scan reads complete records starting at a known record boundary. Size in its
 // result is the last valid newline, so an unfinished tail can be replaced.
 func (l *Log) scan(ctx context.Context, name string, offset, previous, after int64, collect bool) (segment, []Event, bool, error) {
-	f, err := os.Open(l.path(name))
+	f, err := contextio.OpenRegular(ctx, l.path(name), os.O_RDONLY, 0)
 	if err != nil {
 		return segment{}, nil, false, err
 	}
@@ -305,7 +299,7 @@ func (l *Log) scan(ctx context.Context, name string, offset, previous, after int
 			return s, nil, false, err
 		}
 		line, err := readRecord(ctx, r)
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			return s, events, len(line) != 0, nil
 		}
 		if err != nil {
@@ -346,13 +340,13 @@ func readRecord(ctx context.Context, r *bufio.Reader) ([]byte, error) {
 }
 
 func (l *Log) replacePrefix(ctx context.Context, name string, s segment) (segment, error) {
-	in, err := os.Open(l.path(name))
+	in, err := contextio.OpenRegular(ctx, l.path(name), os.O_RDONLY, 0)
 	if err != nil {
 		return s, err
 	}
 	defer in.Close()
 	tmp := l.path(name + ".repair.tmp")
-	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	out, err := contextio.OpenRegular(ctx, tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
 		return s, err
 	}
@@ -369,7 +363,7 @@ func (l *Log) replacePrefix(ctx context.Context, name string, s segment) (segmen
 			_ = out.Close()
 			return s, err
 		}
-		if _, err := out.Write(buf[:n]); err != nil {
+		if err := contextio.WriteAll(ctx, out, buf[:n]); err != nil {
 			_ = out.Close()
 			return s, err
 		}
@@ -384,9 +378,15 @@ func (l *Log) replacePrefix(ctx context.Context, name string, s segment) (segmen
 	if err := os.Rename(tmp, l.path(name)); err != nil {
 		return s, err
 	}
-	st, err := os.Stat(l.path(name))
+	if err := ctx.Err(); err != nil {
+		return s, err
+	}
+	st, err := os.Lstat(l.path(name))
 	if err != nil {
 		return s, err
+	}
+	if !st.Mode().IsRegular() {
+		return s, &IntegrityError{File: name}
 	}
 	fixed := segmentOf(st)
 	fixed.First, fixed.Last = s.First, s.Last

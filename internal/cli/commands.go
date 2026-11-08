@@ -31,15 +31,17 @@ func (a *app) cmdHook(args []string) (code int) {
 		fmt.Fprintln(a.stderr, "usage: tmag hook <claude|codex>")
 		return ExitOK
 	}
+	ctx, cancel := a.hookContext()
+	defer cancel()
 	defer func() {
 		if r := recover(); r != nil {
-			hook.RecordError(a.log.Dir, args[0], fmt.Errorf("panic: %v", r))
+			hook.RecordErrorContext(ctx, a.log.Dir, args[0], fmt.Errorf("panic: %v", r))
 			code = ExitOK
 		}
 	}()
-	err := hook.Run(hook.Input{Agent: args[0], Payload: a.stdin, Log: a.log, PID: os.Getpid()})
+	err := hook.RunContext(ctx, hook.Input{Agent: args[0], Payload: a.stdin, Log: a.log, PID: os.Getpid()})
 	if err != nil {
-		hook.RecordError(a.log.Dir, args[0], err)
+		hook.RecordErrorContext(ctx, a.log.Dir, args[0], err)
 	}
 	return ExitOK
 }

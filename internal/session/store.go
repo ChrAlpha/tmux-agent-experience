@@ -229,7 +229,7 @@ func (s Store) Settle(ctx context.Context, log *eventlog.Log, rec Record) (Recor
 // unlogged is overwritten; ok is false when there is none. The caller holds
 // the session's lock.
 func (s Store) Current(ctx context.Context, log *eventlog.Log, agent, id string) (Record, bool, error) {
-	rec, ok, err := s.Get(agent, id)
+	rec, ok, err := s.GetContext(ctx, agent, id)
 	if err != nil || !ok {
 		return rec, false, err
 	}

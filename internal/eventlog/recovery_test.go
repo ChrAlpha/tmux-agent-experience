@@ -108,7 +108,7 @@ func TestAllocationGapsAtRetentionBoundaryRemainReplayable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := l.writeSeq(c.Seq + 100); err != nil {
+	if err := l.writeSeq(bg, c.Seq+100); err != nil {
 		t.Fatal(err)
 	}
 	appendN(t, l, 2)
@@ -140,7 +140,7 @@ func TestPartialTailRepairReplacesInodeAndFencesExistingCursors(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Emulate a writer dying after reservation and halfway through its line.
-	if err := l.writeSeq(c.Seq + 1); err != nil {
+	if err := l.writeSeq(bg, c.Seq+1); err != nil {
 		t.Fatal(err)
 	}
 	appendRaw(t, l, []byte(`{"seq":`))
@@ -237,7 +237,7 @@ func TestCheckpointPreservesHighWaterWithoutSequenceFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := l.writeSeq(c.Seq + 100); err != nil {
+	if err := l.writeSeq(bg, c.Seq+100); err != nil {
 		t.Fatal(err)
 	}
 	reserved, err := l.Head(bg)
@@ -277,7 +277,7 @@ func TestLegacyAppendAndRotationKeepValidNumericReplay(t *testing.T) {
 	if err := os.WriteFile(l.path(currentName), append(line, '\n'), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := l.writeSeq(legacy.Seq); err != nil {
+	if err := l.writeSeq(bg, legacy.Seq); err != nil {
 		t.Fatal(err)
 	}
 	events, complete, err := l.Since(bg, c.Seq)
@@ -451,7 +451,7 @@ func TestLegacyWriterFillingAnExposedReservationInvalidatesContinuation(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := l.writeSeq(committed.Seq + 10); err != nil {
+	if err := l.writeSeq(bg, committed.Seq+10); err != nil {
 		t.Fatal(err)
 	}
 	exposed, err := l.Head(bg)
@@ -469,7 +469,7 @@ func TestLegacyWriterFillingAnExposedReservationInvalidatesContinuation(t *testi
 		t.Fatal(err)
 	}
 	appendRaw(t, l, append(line, '\n'))
-	if err := l.writeSeq(legacy.Seq); err != nil {
+	if err := l.writeSeq(bg, legacy.Seq); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := l.Replay(bg, exposed); !errors.Is(err, ErrHistoryUnavailable) {

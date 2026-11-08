@@ -1,6 +1,7 @@
 package eventlog
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 
@@ -17,6 +18,21 @@ func DefaultDir() string {
 		return d
 	}
 	return filepath.Join(Base(), proc.Realm())
+}
+
+// DefaultDirContext includes realm discovery in the caller's operation budget.
+func DefaultDirContext(ctx context.Context) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if d := os.Getenv("TMAG_STATE_DIR"); d != "" {
+		return d, nil
+	}
+	realm, err := proc.RealmContext(ctx)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(Base(), realm), nil
 }
 
 // Base is where the realms' state directories are: $XDG_STATE_HOME/tmag,

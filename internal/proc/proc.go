@@ -5,19 +5,24 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/ChrAlpha/tmux-agent-experience/internal/contextio"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/helper"
 )
 
 // Process is one row of the process table.
 type Process struct {
-	PID  int
-	PPID int
+	// Uncertain preserves an unreadable PID without authorizing attachment or control.
+	Uncertain bool
+	PID       int
+	PPID      int
 	// PGID is the process group; TPGID the foreground process group of the
 	// process's controlling terminal, or <= 0 when it has none.
 	PGID  int
@@ -40,28 +45,53 @@ func (p Process) Foreground() bool { return p.PGID > 0 && p.PGID == p.TPGID }
 type Table struct {
 	byPID    map[int]Process
 	children map[int][]int
+	complete bool
 }
 
 // NewTable indexes the given processes.
 func NewTable(ps []Process) *Table {
-	t := &Table{byPID: make(map[int]Process, len(ps)), children: make(map[int][]int, len(ps))}
+	t := &Table{byPID: make(map[int]Process, len(ps)), children: make(map[int][]int, len(ps)), complete: true}
 	for _, p := range ps {
+		if p.Uncertain {
+			t.complete = false
+		}
 		t.byPID[p.PID] = p
 		t.children[p.PPID] = append(t.children[p.PPID], p.PID)
 	}
 	return t
 }
 
+// Complete reports whether every enumerated PID could be inspected. Missing
+// facts in an incomplete table cannot authorize destructive reconciliation.
+func (t *Table) Complete() bool { return t.complete }
+
 // Snapshot reads the current process table from /proc when available, otherwise from ps.
-func Snapshot() (*Table, error) {
-	if ps, err := readProcFS(); err == nil {
-		return NewTable(ps), nil
+func Snapshot() (*Table, error) { return SnapshotContext(context.Background()) }
+
+// SnapshotContext never returns a canceled or partially enumerated table.
+// Unreadable individual PIDs remain uncertain: absence is not death evidence.
+func SnapshotContext(ctx context.Context) (*Table, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
-	ps, err := readPS()
+	ps, err := readProcFSContext(ctx)
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		ps, err = readPSContext(ctx)
+	}
 	if err != nil {
 		return nil, err
 	}
-	return NewTable(ps), nil
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	table := NewTable(ps)
+	if !table.Complete() {
+		return nil, fmt.Errorf("process table incomplete")
+	}
+	return table, nil
 }
 
 // Get returns the process with the given pid.
@@ -125,6 +155,9 @@ const (
 // works in, or returns "". Background services of either agent are not
 // clients; see ServiceKind.
 func AgentKind(p Process) string {
+	if p.Uncertain {
+		return ""
+	}
 	switch {
 	case p.Comm == "claude":
 		if IsClaudeService(p) {
@@ -157,6 +190,9 @@ func AgentKind(p Process) string {
 // a shared Codex app-server, or Claude's supervisor and the per-session
 // hosts it runs background sessions in.
 func ServiceKind(p Process) string {
+	if p.Uncertain {
+		return ""
+	}
 	switch {
 	case IsClaudeService(p):
 		return Claude
@@ -228,19 +264,33 @@ func (t *Table) HostOf(pid int) (Host, bool) {
 // Running reports whether the process with this pid still runs and, when
 // start is set, is the one that started then. It reads one process where
 // the platform allows (Linux) and the whole table otherwise.
-func Running(pid int, start string) bool {
-	if _, err := os.Stat("/proc/self/stat"); err == nil {
-		p, ok := readProcEntry(pid)
-		return ok && (start == "" || p.Start == start)
+func Running(pid int, start string) bool { return RunningContext(context.Background(), pid, start) }
+
+// RunningContext conservatively preserves liveness on an unreadable process table.
+// It is not proof of a control channel.
+func RunningContext(ctx context.Context, pid int, start string) bool {
+	if ctx.Err() != nil {
+		return true
 	}
-	t, err := Snapshot()
+	if _, err := os.Stat("/proc/self/stat"); err == nil {
+		p, ok := readProcEntryContext(ctx, pid)
+		if ctx.Err() != nil {
+			return true
+		}
+		if !ok {
+			_, err := os.Stat("/proc/" + strconv.Itoa(pid))
+			return !os.IsNotExist(err)
+		}
+		return start == "" || p.Start == start
+	}
+	t, err := SnapshotContext(ctx)
 	return err != nil || t.Alive(pid, start)
 }
 
 // Alive reports whether the process with p's pid is still p.
 func (t *Table) Alive(pid int, start string) bool {
 	q, ok := t.Get(pid)
-	return ok && (start == "" || q.Start == start)
+	return ok && (q.Uncertain || start == "" || q.Start == start)
 }
 
 // claudeScriptRE matches the claude launcher script run by node, as in
@@ -331,31 +381,41 @@ func (t *Table) FindAgent(root int) (Process, string, bool) {
 	return Process{}, "", false
 }
 
-func readProcFS() ([]Process, error) {
-	entries, err := os.ReadDir("/proc")
-	if err != nil {
+func readProcFSContext(ctx context.Context) ([]Process, error) {
+	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	if _, err := os.Stat("/proc/self/stat"); err != nil {
 		return nil, err
 	}
-	ps := make([]Process, 0, len(entries))
-	for _, e := range entries {
+	var ps []Process
+	err := contextio.Entries(ctx, "/proc", func(e os.DirEntry) error {
 		pid, err := strconv.Atoi(e.Name())
 		if err != nil {
-			continue
+			return nil //nolint:nilerr // Non-PID names such as self are expected /proc entries, not an incomplete process view.
 		}
-		p, ok := readProcEntry(pid)
-		if ok {
-			ps = append(ps, p)
+		p, ok := readProcEntryContext(ctx, pid)
+		if !ok {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if _, err := os.Stat("/proc/" + strconv.Itoa(pid)); os.IsNotExist(err) {
+				return nil
+			}
+			p = Process{PID: pid, Uncertain: true}
 		}
+		ps = append(ps, p)
+		return ctx.Err()
+	})
+	if err != nil {
+		return nil, err
 	}
 	return ps, nil
 }
 
-func readProcEntry(pid int) (Process, bool) {
+func readProcEntryContext(ctx context.Context, pid int) (Process, bool) {
 	dir := "/proc/" + strconv.Itoa(pid)
-	stat, err := os.ReadFile(dir + "/stat")
+	stat, err := contextio.ReadFile(ctx, dir+"/stat", 64<<10)
 	if err != nil {
 		return Process{}, false
 	}
@@ -380,19 +440,23 @@ func readProcEntry(pid int) (Process, bool) {
 	if len(fields) > 19 {
 		p.Start = fields[19] // starttime, in clock ticks after boot
 	}
-	if cmdline, err := os.ReadFile(dir + "/cmdline"); err == nil {
+	if cmdline, err := contextio.ReadFile(ctx, dir+"/cmdline", 4<<20); err == nil {
 		p.Argv = strings.Split(strings.TrimRight(string(cmdline), "\x00"), "\x00")
 		p.Args = strings.TrimSpace(strings.Join(p.Argv, " "))
 	}
 	return p, true
 }
 
-func readPS() ([]Process, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+func readPS() ([]Process, error) { return readPSContext(context.Background()) }
+
+func readPSContext(parent context.Context) ([]Process, error) {
+	ctx, cancel := context.WithTimeout(parent, 2*time.Second)
 	defer cancel()
 	// lstart prints five words ("Tue Nov  3 09:12:22 2026"), before args so
 	// that the command line keeps its spaces.
-	out, err := exec.CommandContext(ctx, "ps", "-A", "-ww", "-o", "pid=", "-o", "ppid=", "-o", "pgid=", "-o", "tpgid=", "-o", "lstart=", "-o", "args=").Output()
+	cmd, cleanup := helper.Command(ctx, "ps", "-A", "-ww", "-o", "pid=", "-o", "ppid=", "-o", "pgid=", "-o", "tpgid=", "-o", "lstart=", "-o", "args=")
+	defer cleanup()
+	out, err := cmd.Output()
 	if err != nil {
 		return nil, err
 	}
@@ -401,9 +465,15 @@ func readPS() ([]Process, error) {
 	sc := bufio.NewScanner(bytes.NewReader(out))
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for sc.Scan() {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		f := strings.Fields(sc.Text())
-		if len(f) < 4+lstartWords+1 {
+		if len(f) == 0 {
 			continue
+		}
+		if len(f) < 4+lstartWords {
+			return nil, fmt.Errorf("incomplete ps row")
 		}
 		var n [4]int
 		var bad bool
@@ -412,16 +482,29 @@ func readPS() ([]Process, error) {
 			n[i], bad = v, bad || err != nil
 		}
 		if bad {
-			continue
+			return nil, fmt.Errorf("invalid ps process identity")
 		}
 		args := f[4+lstartWords:]
+		comm := ""
+		if len(args) > 0 {
+			comm = filepath.Base(args[0])
+		}
 		ps = append(ps, Process{
 			PID: n[0], PPID: n[1], PGID: n[2], TPGID: n[3],
 			Start: strings.Join(f[4:4+lstartWords], " "),
-			Comm:  filepath.Base(args[0]), Args: strings.Join(args, " "),
+			Comm:  comm, Args: strings.Join(args, " "),
 		})
 	}
-	return ps, sc.Err()
+	if err := sc.Err(); err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if len(ps) == 0 {
+		return nil, fmt.Errorf("empty ps process table")
+	}
+	return ps, nil
 }
 
 // Environ returns the named variables a running process was started with,

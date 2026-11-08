@@ -1,5 +1,5 @@
-// Package socketbind confines Unix bind to a pinned directory in a short-lived
-// child. The child alone changes cwd and passes the listener over an inherited
+// Package socketbind confines Unix bind/connect to a pinned directory in a short-lived
+// child. The child alone changes cwd and passes the socket over an inherited
 // Unix socket. It has no daemon lifetime and stores no content.
 package socketbind
 
@@ -49,6 +49,10 @@ func Listen(ctx context.Context, dir *os.File, name string, keep ...*os.File) (B
 		return Bound{}, errors.New("helper returned a non-Unix listener")
 	}
 	own.SetUnlinkOnClose(false)
+	if err := ctx.Err(); err != nil {
+		own.Close()
+		return Bound{}, err
+	}
 	return Bound{Listener: own, Device: int64(binary.LittleEndian.Uint64(frame[1:9])), Inode: binary.LittleEndian.Uint64(frame[9:17])}, nil
 }
 
@@ -70,6 +74,10 @@ func Dial(ctx context.Context, dir *os.File, name string) (Connected, error) {
 	}
 	conn, err := net.FileConn(file)
 	if err != nil {
+		return Connected{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		conn.Close()
 		return Connected{}, err
 	}
 	return Connected{Conn: conn, Device: int64(binary.LittleEndian.Uint64(frame[1:9])), Inode: binary.LittleEndian.Uint64(frame[9:17])}, nil

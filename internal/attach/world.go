@@ -21,20 +21,24 @@ type World struct {
 }
 
 // Load snapshots all reachable tmux servers and the process table. Sockets
-// with no live server are skipped; servers not reached before ctx ends are
-// left out. Panes are listed first, so the process table is at least as new
-// as every attachment they carry.
+// with no live server are skipped. A canceled scan returns no partial world.
+// Panes are listed first, so the process table is at least as new as every
+// attachment they carry.
 func Load(ctx context.Context) (*World, error) {
 	w := &World{}
-	for _, s := range tmux.Servers() {
-		if ctx.Err() != nil {
-			break // out of time: a partial view beats none on a hook path
+	servers, err := tmux.ServersContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, s := range servers {
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
 		if panes, err := s.Panes(ctx); err == nil {
 			w.Panes = append(w.Panes, panes...)
 		}
 	}
-	pt, err := proc.Snapshot()
+	pt, err := proc.SnapshotContext(ctx)
 	if err != nil {
 		return nil, err
 	}

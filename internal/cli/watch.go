@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/attach"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/contextio"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/query"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/version"
@@ -51,7 +52,21 @@ func (a *app) cmdWatch(args []string) int {
 			}()
 		}
 	}
-	out := bufio.NewWriter(a.stdout)
+	writer := a.stdout
+	if f, ok := writer.(*os.File); ok {
+		owned, err := contextio.Own(ctx, f)
+		if err != nil {
+			return a.watchEnd(err)
+		}
+		defer owned.Close()
+		writer = owned
+		// Terminal error frames use app.emit too; they share the same owned
+		// boundary instead of falling back to the inherited blocking stream.
+		original := a.stdout
+		a.stdout = owned
+		defer func() { a.stdout = original }()
+	}
+	out := bufio.NewWriter(writer)
 	enc := json.NewEncoder(out)
 	enc.SetEscapeHTML(false)
 	s := watchStream{

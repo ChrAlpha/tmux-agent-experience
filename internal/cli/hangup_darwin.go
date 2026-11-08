@@ -26,8 +26,11 @@ func hangup(f *os.File, done <-chan struct{}) <-chan struct{} {
 	// reports writability only when it changes, so the wait does not spin
 	// while the output can be written.
 	var change syscall.Kevent_t
-	syscall.SetKevent(&change, int(f.Fd()), syscall.EVFILT_WRITE, syscall.EV_ADD|syscall.EV_CLEAR)
-	if _, err := syscall.Kevent(kq, []syscall.Kevent_t{change}, nil, nil); err != nil {
+	if err := controlFile(f, func(fd uintptr) error {
+		syscall.SetKevent(&change, int(fd), syscall.EVFILT_WRITE, syscall.EV_ADD|syscall.EV_CLEAR)
+		_, err := syscall.Kevent(kq, []syscall.Kevent_t{change}, nil, nil)
+		return err
+	}); err != nil {
 		_ = syscall.Close(kq)
 		return nil
 	}

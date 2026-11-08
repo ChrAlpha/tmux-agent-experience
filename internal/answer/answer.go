@@ -42,7 +42,11 @@ const (
 // and for a server that does not say, it is People.
 func Mode(ctx context.Context) string {
 	mode := ""
-	for _, srv := range tmux.Servers() {
+	servers, err := tmux.ServersContext(ctx)
+	if err != nil {
+		return Off
+	}
+	for _, srv := range servers {
 		switch srv.GlobalOption(ctx, Option) {
 		case Off:
 			return Off
@@ -267,7 +271,7 @@ func call(ctx context.Context, stateDir, id string, m message) (reply, error) {
 		return reply{}, fmt.Errorf("%w: %w", ErrGone, err)
 	}
 	defer conn.Close()
-	stop := context.AfterFunc(ctx, func() { conn.Close() })
+	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
 	defer stop()
 	if dl, ok := ctx.Deadline(); ok {
 		_ = conn.SetDeadline(dl)
