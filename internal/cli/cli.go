@@ -10,8 +10,11 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
+	"github.com/ChrAlpha/tmux-agent-experience/internal/contextio"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/hook"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/query"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/version"
 )
@@ -30,7 +33,7 @@ const usage = `tmag — agent awareness for tmux
 Usage:
   tmag list     [--json]                       agents in all tmux panes
   tmag inspect  <target> [--json] [--events N] one agent and its recent events
-  tmag watch    [--since SEQ]                  JSON lines: snapshot, then events
+  tmag watch    [--since SEQ] [--resync]       JSON lines: snapshot, then events
   tmag read     <target> [--lines N | --last] [--json]
                                                recent pane output, or the agent's last reply
   tmag send     <target> [--wait | --reply] [--timeout D] [--json] [text | -]
@@ -44,7 +47,8 @@ Usage:
   tmag wait     <target> [--for STATES] [--after SEQ] [--timeout D] [--json]
                                                wait for a state (default idle,blocked)
   tmag status   [--tmux] [--server S]          one-line summary for the status line
-  tmag prune    [--server S]                   clear records of agents gone, and old state
+  tmag prune    [--server S] [--retire-legacy-locks]
+                                               reconcile state; declare legacy lock retirement
   tmag jump     [--client C] [--server S] [--from %N] [--json]
                                                go to the agent waiting longest
   tmag notify   [--json]                       send a test alert through @tmag-notify
@@ -69,17 +73,66 @@ Exit codes: 0 ok, 1 error, 2 usage, 3 refused by the safety gate, 4 timeout.
 
 // app carries process-wide dependencies so commands stay testable.
 type app struct {
-	ctx    context.Context
-	stdin  io.Reader
-	stdout io.Writer
-	stderr io.Writer
-	log    *eventlog.Log
-	json   bool
+	ctx       context.Context
+	stdin     io.Reader
+	stdout    io.Writer
+	stderr    io.Writer
+	log       *eventlog.Log
+	json      bool
+	setup     context.Context
+	setupDone func()
 }
 
 // Main runs tmag with the given arguments (without the program name).
 func Main(args []string) int {
-	a := &app{stdin: os.Stdin, stdout: os.Stdout, stderr: os.Stderr, log: eventlog.Open(eventlog.DefaultDir())}
+	ctx, stop := signalContext()
+	defer stop()
+	a := &app{ctx: ctx, stdin: os.Stdin, stdout: os.Stdout, stderr: os.Stderr}
+	if len(args) > 0 && (args[0] == "hook" || args[0] == "answer-hook") {
+		// Process containment belongs only to this CLI entry point. Cooperative
+		// work stops early enough to close pipes, reap helpers and release locks.
+		cutoff := time.AfterFunc(hook.Deadline, func() { os.Exit(ExitOK) })
+		defer cutoff.Stop()
+		setup, cancel := context.WithTimeout(ctx, hook.Deadline-250*time.Millisecond)
+		defer cancel()
+		a.setup = setup
+		a.setupDone = func() { cutoff.Reset(answerWindow); cancel() }
+		// A signal also has a final fail-open bound if a filesystem syscall
+		// cannot cooperate. No reusable function or HTTP handler exits a process.
+		returned := make(chan struct{})
+		defer close(returned)
+		endSignal := context.AfterFunc(ctx, func() {
+			timer := time.NewTimer(250 * time.Millisecond)
+			defer timer.Stop()
+			select {
+			case <-returned:
+			case <-timer.C:
+				os.Exit(ExitOK)
+			}
+		})
+		defer endSignal()
+		input, err := contextio.Own(setup, os.Stdin)
+		if err != nil {
+			return ExitOK
+		}
+		defer input.Close()
+		a.stdin = input
+	}
+	// In hook invocations the budget and final cutoff already cover realm
+	// discovery, including its filesystem accesses.
+	discovery := ctx
+	if a.setup != nil {
+		discovery = a.setup
+	}
+	dir, err := eventlog.DefaultDirContext(discovery)
+	if err != nil {
+		if a.setup != nil {
+			return ExitOK
+		}
+		fmt.Fprintf(a.stderr, "tmag: state directory: %v\n", err)
+		return ExitError
+	}
+	a.log = eventlog.Open(dir)
 	return a.run(args)
 }
 
@@ -117,7 +170,7 @@ func (a *app) run(args []string) int {
 	case "status":
 		return a.cmdStatus(rest)
 	case "prune":
-		return a.cmdPrune(args)
+		return a.cmdPrune(rest)
 	case "jump":
 		return a.cmdJump(rest)
 	case "notify":
@@ -183,7 +236,7 @@ func (a *app) fail(cmd string, err error) int {
 	switch {
 	case errors.As(err, &refused):
 		code, exit = "refused:"+refused.Reason, ExitRefused
-	case errors.Is(err, errTimeout):
+	case errors.Is(err, errTimeout), errors.Is(err, context.DeadlineExceeded):
 		code, exit = "timeout", ExitTimeout
 	case errors.Is(err, query.ErrMarker):
 		code, exit = "usage", ExitUsage
@@ -195,6 +248,10 @@ func (a *app) fail(cmd string, err error) int {
 		code = "ambiguous"
 	case errors.Is(err, query.ErrEnded):
 		code = "ended"
+	case errors.Is(err, eventlog.ErrHistoryUnavailable):
+		code = "history_unavailable"
+	case errors.Is(err, eventlog.ErrIntegrityLoss):
+		code = "integrity_loss"
 	}
 	if a.json {
 		a.emit(map[string]any{"error": map[string]string{"code": code, "message": err.Error()}})

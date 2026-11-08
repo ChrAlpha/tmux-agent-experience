@@ -32,7 +32,9 @@ func (a *app) cmdDoctor(args []string) int {
 	if _, err := parse(fs, args); err != nil {
 		return a.usageError("doctor", err)
 	}
-	checks := []check{checkTmux(), checkPlugin(), checkBinary(), a.checkState(), a.checkHookErrors(), a.checkNotify(), checkServe()}
+	ctx, cancel := a.signalContext()
+	defer cancel()
+	checks := []check{checkTmux(), checkPlugin(), checkBinary(), a.checkState(ctx), a.checkHookErrors(), a.checkNotify(), checkServe()}
 	peers := peersWanted(context.Background())
 	checks = append(checks, claudeCheck(claudeHost(), peers), codexCheck(codexHost(), peers), a.checkAgents())
 
@@ -157,19 +159,19 @@ func canonical(p string) string {
 	return p
 }
 
-func (a *app) checkState() check {
+func (a *app) checkState(ctx context.Context) check {
 	dir := a.log.Dir
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return check{"state", "fail", fmt.Sprintf("%s: %v", dir, err)}
 	}
-	seq, err := a.log.Seq()
+	cursor, err := a.log.Head(ctx)
 	if err != nil {
 		return check{"state", "fail", fmt.Sprintf("%s: %v", dir, err)}
 	}
-	if seq == 0 {
+	if cursor.Seq == 0 {
 		return check{"state", "warn", fmt.Sprintf("%s: no events yet; are the agent plugins installed and trusted?", dir)}
 	}
-	events, _, err := a.log.Since(context.Background(), seq-1)
+	events, _, err := a.log.Since(ctx, cursor.Seq-1)
 	if err != nil || len(events) == 0 {
 		return check{"state", "ok", dir}
 	}

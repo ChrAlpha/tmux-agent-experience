@@ -1,9 +1,7 @@
 package cli
 
 import (
-	"bufio"
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -12,7 +10,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
-	"sync"
 	"syscall"
 	"text/tabwriter"
 	"time"
@@ -25,7 +22,6 @@ import (
 	"github.com/ChrAlpha/tmux-agent-experience/internal/query"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/tmux"
-	"github.com/ChrAlpha/tmux-agent-experience/internal/version"
 )
 
 // cmdHook always exits 0 and never writes stdout: a broken tmag must not
@@ -35,15 +31,17 @@ func (a *app) cmdHook(args []string) (code int) {
 		fmt.Fprintln(a.stderr, "usage: tmag hook <claude|codex>")
 		return ExitOK
 	}
+	ctx, cancel := a.hookContext()
+	defer cancel()
 	defer func() {
 		if r := recover(); r != nil {
-			hook.RecordError(a.log.Dir, args[0], fmt.Errorf("panic: %v", r))
+			hook.RecordErrorContext(ctx, a.log.Dir, args[0], fmt.Errorf("panic: %v", r))
 			code = ExitOK
 		}
 	}()
-	err := hook.Run(hook.Input{Agent: args[0], Payload: a.stdin, Log: a.log, PID: os.Getpid()})
+	err := hook.RunContext(ctx, hook.Input{Agent: args[0], Payload: a.stdin, Log: a.log, PID: os.Getpid()})
 	if err != nil {
-		hook.RecordError(a.log.Dir, args[0], err)
+		hook.RecordErrorContext(ctx, a.log.Dir, args[0], err)
 	}
 	return ExitOK
 }
@@ -249,157 +247,6 @@ func signalContext() (context.Context, context.CancelFunc) {
 	return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 }
 
-func (a *app) cmdWatch(args []string) int {
-	fs := flag.NewFlagSet("watch", flag.ContinueOnError)
-	since := fs.Int64("since", -1, "")
-	pos, err := parse(fs, args)
-	if err == nil && len(pos) > 0 {
-		err = fmt.Errorf("unexpected argument %q", pos[0])
-	}
-	if err != nil {
-		return a.usageError("watch", err)
-	}
-	a.json = true
-	ctx, cancel := a.signalContext()
-	defer cancel()
-	ctx, stop := context.WithCancelCause(ctx)
-	defer stop(nil)
-	// A reader that goes away without a word, as a client over ssh does when
-	// its connection drops, would otherwise go unnoticed until the next
-	// write, which may not come for hours.
-	if f, ok := a.stdout.(*os.File); ok {
-		if gone := hangup(f, ctx.Done()); gone != nil {
-			go func() {
-				select {
-				case <-gone:
-					stop(errReaderGone)
-				case <-ctx.Done():
-				}
-			}()
-		}
-	}
-
-	out := bufio.NewWriter(a.stdout)
-	enc := json.NewEncoder(out)
-	enc.SetEscapeHTML(false)
-	// mu orders output: events, and pane lists written between them.
-	var mu sync.Mutex
-	write := func(doc map[string]any) error {
-		doc["schema"] = version.Schema
-		if err := enc.Encode(doc); err != nil {
-			return err
-		}
-		return out.Flush()
-	}
-	var shown string // the pane list last sent
-	panes := func(list []query.Pane) error {
-		if b, _ := json.Marshal(list); string(b) != shown {
-			shown = string(b)
-			return write(map[string]any{"type": "panes", "panes": list})
-		}
-		return nil
-	}
-
-	snapshot := func() (int64, error) {
-		snap, err := query.TakeSnapshot(ctx, a.log)
-		if err != nil {
-			return 0, err
-		}
-		b, _ := json.Marshal(snap.Panes)
-		shown = string(b)
-		return snap.Seq, write(map[string]any{"type": "snapshot", "seq": snap.Seq, "sessions": snap.Sessions, "panes": snap.Panes})
-	}
-	// A resumed watch replays what it missed and then sends the pane list;
-	// when the log no longer holds all of it, it starts over with a snapshot.
-	var last int64
-	resumed := false
-	if *since >= 0 {
-		events, complete, err := a.log.Since(ctx, *since)
-		if err != nil {
-			return a.fail("watch", err)
-		}
-		if resumed = complete; resumed {
-			last = *since
-			for _, e := range events {
-				if err := write(map[string]any{"type": "event", "event": e}); err != nil {
-					return a.watchEnd(err)
-				}
-				last = e.Seq
-			}
-			v, _, err := query.Load(ctx, a.store())
-			if err == nil {
-				err = panes(v.Panes)
-			}
-			if err != nil {
-				return a.watchEnd(err)
-			}
-		}
-	}
-	if !resumed {
-		if last, err = snapshot(); err != nil {
-			return a.fail("watch", err)
-		}
-	}
-
-	// Sessions change only through events. What changes without one is
-	// found by reconciling, which records it as an event (a pane stopped or
-	// started showing a session, a session's process exited), and by the
-	// pane list itself (an agent started in a pane, a pane moved), sent
-	// whenever it differs from the last one sent.
-	env := attach.Env{Log: a.log, Store: a.store()}
-	go func() {
-		tick := time.NewTicker(watchRescan)
-		defer tick.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-tick.C:
-			}
-			w, err := attach.Load(ctx)
-			if err != nil {
-				continue
-			}
-			attach.Reconcile(ctx, env, w)
-			v, _, err := query.Load(ctx, a.store())
-			if err != nil {
-				continue
-			}
-			mu.Lock()
-			err = panes(v.Panes)
-			mu.Unlock()
-			if err != nil {
-				stop(err)
-				return
-			}
-		}
-	}()
-
-	err = a.log.Follow(ctx, last, 200*time.Millisecond, func(e eventlog.Event) error {
-		mu.Lock()
-		defer mu.Unlock()
-		return write(map[string]any{"type": "event", "event": e})
-	})
-	if cause := context.Cause(ctx); cause != nil && !errors.Is(cause, context.Canceled) {
-		err = cause
-	}
-	return a.watchEnd(err)
-}
-
-func (a *app) watchEnd(err error) int {
-	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, errReaderGone) && !isClosedPipe(err) {
-		return a.fail("watch", err)
-	}
-	return ExitOK
-}
-
-// watchRescan is how often watch looks for changes that come without an event.
-const watchRescan = 2 * time.Second
-
-func isClosedPipe(err error) bool {
-	return errors.Is(err, syscall.EPIPE) || errors.Is(err, os.ErrClosed)
-}
-
 func (a *app) cmdRead(args []string) int {
 	fs := flag.NewFlagSet("read", flag.ContinueOnError)
 	fs.BoolVar(&a.json, "json", false, "")
@@ -503,7 +350,7 @@ func (a *app) cmdSend(args []string) int {
 		return ExitOK
 	}
 	return a.awaitAndReport("send", d.Session, query.WaitOptions{
-		States: []string{adapter.Idle, adapter.Blocked}, After: d.Seq, StartGrace: query.PendingWindow,
+		States: []string{adapter.Idle, adapter.Blocked}, After: d.Seq, Cursor: d.Cursor, StartGrace: query.PendingWindow,
 	}, *timeout)
 }
 
@@ -532,7 +379,7 @@ func (a *app) cmdReply(args []string) int {
 	for {
 		// Read the cursor before trying: the peer turning idle in between
 		// is then seen rather than waited for.
-		cursor, err := a.log.Seq()
+		cursor, err := a.log.Head(ctx)
 		if err != nil {
 			return a.fail("reply", err)
 		}
@@ -555,7 +402,7 @@ func (a *app) cmdReply(args []string) int {
 		// Wait for the peer's next idle, or a pending window at most: a
 		// prompt tmag just delivered may start no turn.
 		wait, stop := context.WithTimeout(ctx, query.PendingWindow)
-		_, err = query.Wait(wait, a.log, *t.Session, query.WaitOptions{States: []string{adapter.Idle}, After: cursor})
+		_, err = query.Wait(wait, a.log, *t.Session, query.WaitOptions{States: []string{adapter.Idle}, After: cursor.Seq, Cursor: cursor})
 		stop()
 		if ctx.Err() != nil {
 			return a.fail("reply", a.deadline(ctx, *timeout, refused))
@@ -616,9 +463,11 @@ func (a *app) cmdWait(args []string) int {
 	}
 	ctx, cancel := a.signalContext()
 	defer cancel()
+	ctx, cancelTimeout := context.WithTimeout(ctx, *timeout)
+	defer cancelTimeout()
 	// Read the cursor before the state: a transition landing in between is
 	// then replayed instead of missed.
-	cursor, err := a.log.Seq()
+	cursor, err := a.log.Head(ctx)
 	if err != nil {
 		return a.fail("wait", err)
 	}
@@ -633,18 +482,26 @@ func (a *app) cmdWait(args []string) int {
 	if *after < 0 {
 		for _, st := range want {
 			if s.State == st {
-				a.reportWait(s, eventlog.Event{Seq: cursor, State: s.State, Kind: s.Kind, Turn: s.Turn}, true)
+				a.reportWait(s, eventlog.Event{Seq: cursor.Seq, State: s.State, Kind: s.Kind, Turn: s.Turn}, true)
 				return ExitOK
 			}
 		}
-		*after = cursor
+		*after = cursor.Seq
 	}
-	return a.awaitAndReport("wait", s, query.WaitOptions{States: want, After: *after}, *timeout)
+	o := query.WaitOptions{States: want, After: *after}
+	if *after == cursor.Seq {
+		o.Cursor = cursor
+	}
+	return a.awaitAndReportContext(ctx, "wait", s, o, *timeout)
 }
 
 func (a *app) awaitAndReport(cmd string, s query.Session, o query.WaitOptions, timeout time.Duration) int {
 	ctx, cancel := a.signalContext()
 	defer cancel()
+	return a.awaitAndReportContext(ctx, cmd, s, o, timeout)
+}
+
+func (a *app) awaitAndReportContext(ctx context.Context, cmd string, s query.Session, o query.WaitOptions, timeout time.Duration) int {
 	ctx, cancelTimeout := context.WithTimeout(ctx, timeout)
 	defer cancelTimeout()
 	ev, err := query.Wait(ctx, a.log, s, o)
@@ -657,6 +514,9 @@ func (a *app) awaitAndReport(cmd string, s query.Session, o query.WaitOptions, t
 		err = fmt.Errorf("%w after %s waiting for %s", errTimeout, timeout, strings.Join(o.States, "|"))
 	}
 	if err != nil {
+		if cmd == "send" {
+			err = fmt.Errorf("prompt delivered at seq %d; subsequent outcome unknown, do not repeat delivery: %w", o.After, err)
+		}
 		return a.fail(cmd, err)
 	}
 	a.reportWait(s, ev, true)

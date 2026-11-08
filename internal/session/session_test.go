@@ -2,6 +2,8 @@ package session
 
 import (
 	"context"
+	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -13,6 +15,47 @@ import (
 )
 
 var t0 = time.Unix(100, 0).UTC()
+
+func TestFailedLogPublicationPreservesSessionRepair(t *testing.T) {
+	dir := t.TempDir()
+	s, log := Store{Dir: dir}, eventlog.Open(dir)
+	ctx := context.Background()
+	// A non-regular log is an integrity failure. The session must retain its
+	// pending change so explicit repair can later settle it through Current.
+	broken := filepath.Join(dir, "events.jsonl")
+	if err := os.Mkdir(broken, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	rec := play(t)
+	err := s.Lock(ctx, rec.Agent, rec.ID, func() error {
+		_, err := s.Save(ctx, log, rec, eventlog.Event{Event: "UserPromptSubmit"})
+		return err
+	})
+	if !errors.Is(err, eventlog.ErrIntegrityLoss) {
+		t.Fatalf("Save = %v", err)
+	}
+	stored, ok, err := s.Get(rec.Agent, rec.ID)
+	if err != nil || !ok || !stored.Unlogged() || stored.Change != "UserPromptSubmit" {
+		t.Fatalf("pending repair lost: %+v, %v, %v", stored, ok, err)
+	}
+	if err := os.Remove(broken); err != nil {
+		t.Fatal(err)
+	}
+	err = s.Lock(ctx, rec.Agent, rec.ID, func() error {
+		settled, ok, err := s.Current(ctx, log, rec.Agent, rec.ID)
+		if err == nil && (!ok || settled.Unlogged()) {
+			t.Fatalf("Current failed to settle: %+v, %v", settled, ok)
+		}
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, _, err := log.Since(ctx, 0)
+	if err != nil || len(events) != 1 || events[0].Event != "UserPromptSubmit" {
+		t.Fatalf("repair event = %+v, %v", events, err)
+	}
+}
 
 // play applies events in order, starting from a main-agent turn p1.
 func play(t *testing.T, trs ...adapter.Transition) Record {

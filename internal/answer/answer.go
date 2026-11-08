@@ -20,7 +20,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -43,7 +42,11 @@ const (
 // and for a server that does not say, it is People.
 func Mode(ctx context.Context) string {
 	mode := ""
-	for _, srv := range tmux.Servers() {
+	servers, err := tmux.ServersContext(ctx)
+	if err != nil {
+		return Off
+	}
+	for _, srv := range servers {
 		switch srv.GlobalOption(ctx, Option) {
 		case Off:
 			return Off
@@ -63,22 +66,6 @@ func Mode(ctx context.Context) string {
 
 // Path is the socket of the hook waiting on request id.
 func Path(stateDir, id string) string { return filepath.Join(stateDir, "req", id+".sock") }
-
-// Listen opens the socket for request id.
-func Listen(stateDir, id string) (net.Listener, error) {
-	path := Path(stateDir, id)
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return nil, err
-	}
-	_ = os.Remove(path)
-	return net.Listen("unix", path)
-}
-
-// Waiting reports whether a hook listens for request id.
-func Waiting(stateDir, id string) bool {
-	_, err := os.Stat(Path(stateDir, id))
-	return err == nil
-}
 
 // Asked is what a request asks: the tool and its input, as the agent gave
 // them.
@@ -182,12 +169,14 @@ func answersFit(input json.RawMessage, answers map[string]string) error {
 
 type message struct {
 	Op       string    `json:"op"`
+	Request  string    `json:"request,omitempty"`
 	Decision *Decision `json:"decision,omitempty"`
 }
 
 type reply struct {
-	OK    bool   `json:"ok"`
-	Error string `json:"error,omitempty"`
+	OK      bool   `json:"ok"`
+	Request string `json:"request,omitempty"`
+	Error   string `json:"error,omitempty"`
 	Asked
 }
 
@@ -202,7 +191,13 @@ func Wait(ctx context.Context, ln net.Listener, a Asked, emit func([]byte) error
 		if err != nil {
 			return false
 		}
-		done, emitted := serve(ctx, conn, a, emit)
+		id := ""
+		require := false
+		if own, ok := ln.(*listener); ok {
+			id = own.id
+			require = own.slot != nil
+		}
+		done, emitted := serve(ctx, conn, id, require, a, emit)
 		if done {
 			return emitted
 		}
@@ -210,7 +205,7 @@ func Wait(ctx context.Context, ln net.Listener, a Asked, emit func([]byte) error
 }
 
 // serve answers one connection; done says the wait is over.
-func serve(ctx context.Context, conn net.Conn, a Asked, emit func([]byte) error) (done, emitted bool) {
+func serve(ctx context.Context, conn net.Conn, id string, require bool, a Asked, emit func([]byte) error) (done, emitted bool) {
 	defer conn.Close()
 	stop := context.AfterFunc(ctx, func() { conn.Close() })
 	defer stop()
@@ -220,12 +215,22 @@ func serve(ctx context.Context, conn net.Conn, a Asked, emit func([]byte) error)
 		return false, false
 	}
 	enc := json.NewEncoder(conn)
+	if (require || m.Request != "") && m.Request != id {
+		_ = enc.Encode(reply{Error: "request identity changed"})
+		return false, false
+	}
 	switch m.Op {
+	case "probe":
+		_ = enc.Encode(struct {
+			OK      bool   `json:"ok"`
+			Request string `json:"request"`
+		}{true, id})
+		return false, false
 	case "show":
-		_ = enc.Encode(reply{OK: true, Asked: a})
+		_ = enc.Encode(reply{OK: true, Request: id, Asked: a})
 		return false, false
 	case "close":
-		_ = enc.Encode(reply{OK: true})
+		_ = enc.Encode(reply{OK: true, Request: id})
 		return true, false
 	case "decide":
 		if m.Decision == nil {
@@ -244,7 +249,7 @@ func serve(ctx context.Context, conn net.Conn, a Asked, emit func([]byte) error)
 			_ = enc.Encode(reply{Error: "printing the decision failed: " + err.Error()})
 			return true, false
 		}
-		_ = enc.Encode(reply{OK: true})
+		_ = enc.Encode(reply{OK: true, Request: id})
 		return true, true
 	}
 	_ = enc.Encode(reply{Error: "unknown op " + m.Op})
@@ -255,12 +260,19 @@ func serve(ctx context.Context, conn net.Conn, a Asked, emit func([]byte) error)
 var ErrGone = errors.New("no answer hook waits on the request")
 
 func call(ctx context.Context, stateDir, id string, m message) (reply, error) {
-	var d net.Dialer
-	conn, err := d.DialContext(ctx, "unix", Path(stateDir, id))
+	scope, name, pooled, err := lookup(ctx, stateDir, id)
+	if err != nil {
+		return reply{}, fmt.Errorf("%w: %w", ErrGone, err)
+	}
+	defer scope.Close()
+	m.Request = id
+	conn, err := dialAt(ctx, scope, name)
 	if err != nil {
 		return reply{}, fmt.Errorf("%w: %w", ErrGone, err)
 	}
 	defer conn.Close()
+	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	defer stop()
 	if dl, ok := ctx.Deadline(); ok {
 		_ = conn.SetDeadline(dl)
 	}
@@ -270,6 +282,9 @@ func call(ctx context.Context, stateDir, id string, m message) (reply, error) {
 	var r reply
 	if err := json.NewDecoder(conn).Decode(&r); err != nil {
 		return reply{}, fmt.Errorf("%w: it left without replying", ErrGone)
+	}
+	if r.OK && (pooled || r.Request != "") && r.Request != id {
+		return r, fmt.Errorf("%w: request identity changed", ErrGone)
 	}
 	if !r.OK {
 		return r, fmt.Errorf("%w: %s", ErrInvalid, r.Error)
@@ -292,7 +307,9 @@ func Decide(ctx context.Context, stateDir, id string, d Decision) error {
 // Close tells a hook still waiting that its prompt closed, so it leaves. A
 // request no hook waits on is left alone.
 func Close(ctx context.Context, stateDir, id string) {
-	if Waiting(stateDir, id) {
+	ctx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+	defer cancel()
+	if Probe(ctx, stateDir, id) != Dead {
 		_, _ = call(ctx, stateDir, id, message{Op: "close"})
 	}
 }

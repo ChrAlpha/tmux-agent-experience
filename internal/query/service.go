@@ -22,7 +22,7 @@ const serviceTimeout = 5 * time.Second
 // it, since hooks may run in a helper the daemon started.
 func reach(ctx context.Context, s Session, rec session.Record) (*codexsvc.Client, error) {
 	host := rec.Host
-	if host.PID == 0 || !proc.Running(host.PID, host.Start) {
+	if host.PID == 0 || !proc.RunningContext(ctx, host.PID, host.Start) {
 		return nil, &RefusedError{RefuseChanged, fmt.Sprintf("the service %s ran in has exited", s.ID)}
 	}
 	sock := codexsvc.Socket()
@@ -30,8 +30,15 @@ func reach(ctx context.Context, s Session, rec session.Record) (*codexsvc.Client
 	if err != nil {
 		return nil, fmt.Errorf("cannot reach the Codex daemon at %s: %w", sock, err)
 	}
-	if t, err := proc.Snapshot(); err == nil && slices.Contains(t.Ancestors(host.PID), c.PeerPID) {
-		return c, nil
+	t, err := proc.SnapshotContext(ctx)
+	if err != nil {
+		c.Close()
+		return nil, err
+	}
+	if p, ok := t.Get(host.PID); ok && !p.Uncertain && (host.Start == "" || p.Start == host.Start) {
+		if slices.Contains(t.Ancestors(host.PID), c.PeerPID) {
+			return c, nil
+		}
 	}
 	c.Close()
 	return nil, &RefusedError{RefuseUnbound, fmt.Sprintf("%s is served by process %d, which does not run %s", sock, c.PeerPID, s.ID)}
@@ -60,7 +67,7 @@ func throughService(outer context.Context, log *eventlog.Log, v View, s Session,
 		return Delivery{}, err
 	}
 	store := session.Store{Dir: log.Dir}
-	rec, ok, err := store.Get(s.Agent, s.ID)
+	rec, ok, err := store.GetContext(outer, s.Agent, s.ID)
 	if err != nil || !ok {
 		return Delivery{}, &RefusedError{RefuseChanged, fmt.Sprintf("%s has ended", s.ID)}
 	}
@@ -93,14 +100,14 @@ func throughService(outer context.Context, log *eventlog.Log, v View, s Session,
 			return &RefusedError{RefuseChanged, fmt.Sprintf("%s has ended", s.ID)}
 		}
 		ev := verb.mark(&rec)
-		if err := store.Put(rec); err != nil {
+		if err := store.PutContext(ctx, rec); err != nil {
 			return err
 		}
 		ev.Agent, ev.Session, ev.Via = fs.Agent, fs.ID, driver.Service
 		if err := log.Append(ctx, &ev); err != nil {
 			return err
 		}
-		d = Delivery{Session: fs, Via: driver.Service, Seq: ev.Seq}
+		d = Delivery{Session: fs, Via: driver.Service, Seq: ev.Seq, Cursor: ev.Cursor()}
 		return nil
 	})
 	if err != nil {

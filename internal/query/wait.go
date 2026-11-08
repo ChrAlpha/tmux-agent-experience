@@ -23,6 +23,9 @@ const livenessInterval = 2 * time.Second
 type WaitOptions struct {
 	States []string
 	After  int64
+	// Cursor anchors an in-process observation or delivery against recreation.
+	// An unset cursor preserves the numeric v1 After interface.
+	Cursor eventlog.Cursor
 	// StartGrace, when positive, waits for a turn that starts after o.After:
 	// states logged before the session starts working or blocks do not count,
 	// and Wait fails with ErrNoTurn if no turn starts within StartGrace.
@@ -33,81 +36,85 @@ type WaitOptions struct {
 // o.States, and returns it. It fails with ErrEnded when the session ends,
 // wherever it runs; a pane that stops showing it does not end the wait.
 func Wait(ctx context.Context, log *eventlog.Log, s Session, o WaitOptions) (eventlog.Event, error) {
-	ctx, cancel := context.WithCancelCause(ctx)
-	defer cancel(nil)
+	cursor := o.Cursor
+	if !cursor.IsSet() {
+		cursor = eventlog.Cursor{Seq: o.After}
+	} else if cursor.Seq != o.After {
+		return eventlog.Event{}, errors.New("wait cursor differs from After")
+	}
 	want := map[string]bool{}
-	for _, st := range o.States {
-		want[st] = true
+	for _, state := range o.States {
+		want[state] = true
 	}
-	seen := make(chan struct{})
-	go watchLiveness(ctx, cancel, session.Store{Dir: log.Dir}, s, seen, o.StartGrace)
-
-	var found eventlog.Event
-	errFound := errors.New("found")
 	started := o.StartGrace <= 0
-	err := log.Follow(ctx, o.After, 200*time.Millisecond, func(e eventlog.Event) error {
-		if e.Session != s.ID || e.Agent != s.Agent {
-			return nil
-		}
-		if e.Ended() {
-			return ErrEnded
-		}
-		if e.State == "" {
-			return nil // Send, Attach, Detach
-		}
-		if !started {
-			if e.State != adapter.Working && e.State != adapter.Blocked {
-				return nil
-			}
-			started = true
-			close(seen)
-		}
-		if want[e.State] {
-			found = e
-			return errFound
-		}
-		return nil
-	})
-	switch {
-	case errors.Is(err, errFound):
-		return found, nil
-	case context.Cause(ctx) != nil && !errors.Is(context.Cause(ctx), context.Canceled):
-		return eventlog.Event{}, context.Cause(ctx)
+	graceAt := time.Now().Add(o.StartGrace)
+	var grace <-chan time.Time
+	if !started {
+		timer := time.NewTimer(o.StartGrace)
+		defer timer.Stop()
+		grace = timer.C
 	}
-	return eventlog.Event{}, err
-}
-
-func watchLiveness(ctx context.Context, cancel context.CancelCauseFunc, store session.Store, s Session, seen <-chan struct{}, grace time.Duration) {
-	var graceC <-chan time.Time
-	if grace > 0 {
-		graceC = time.After(grace)
-	}
-	tick := time.NewTicker(livenessInterval)
+	tick := time.NewTicker(200 * time.Millisecond)
 	defer tick.Stop()
+	nextLive := time.Now().Add(livenessInterval)
+	store := session.Store{Dir: log.Dir}
 	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-seen:
-			seen, graceC = nil, nil
-		case <-graceC:
-			cancel(ErrNoTurn)
-			return
-		case <-tick.C:
-			rec, ok, err := store.Get(s.Agent, s.ID)
-			if err != nil {
+		// A grace expiry is only evidence after a certified replay captured at
+		// or after that deadline. Timer cancellation cannot hide history loss.
+		replayStarted := time.Now()
+		batch, err := log.Replay(ctx, cursor)
+		if err != nil {
+			return eventlog.Event{}, err
+		}
+		if err := ctx.Err(); err != nil {
+			return eventlog.Event{}, err
+		}
+		for _, e := range batch.Events {
+			if e.Session != s.ID || e.Agent != s.Agent {
 				continue
 			}
-			if !ok || rec.Ended != "" {
-				cancel(fmt.Errorf("%w: %s", ErrEnded, s.ID))
-				return
+			if e.Ended() {
+				return eventlog.Event{}, ErrEnded
 			}
-			if rec.Host.PID > 0 {
-				if !proc.Running(rec.Host.PID, rec.Host.Start) {
-					cancel(fmt.Errorf("%w: the process of %s exited", ErrEnded, s.ID))
-					return
+			if e.State == "" {
+				continue
+			}
+			if !started {
+				if e.State != adapter.Working && e.State != adapter.Blocked {
+					continue
+				}
+				started, grace = true, nil
+			}
+			if want[e.State] {
+				return e, nil
+			}
+		}
+		cursor = batch.Cursor
+		if !started && !replayStarted.Before(graceAt) {
+			return eventlog.Event{}, ErrNoTurn
+		}
+		now := time.Now()
+		if !now.Before(nextLive) {
+			nextLive = now.Add(livenessInterval)
+			rec, ok, err := store.GetContext(ctx, s.Agent, s.ID)
+			if err == nil {
+				if !ok || rec.Ended != "" {
+					return eventlog.Event{}, fmt.Errorf("%w: %s", ErrEnded, s.ID)
+				}
+				if rec.Host.PID > 0 && !proc.RunningContext(ctx, rec.Host.PID, rec.Host.Start) {
+					return eventlog.Event{}, fmt.Errorf("%w: the process of %s exited", ErrEnded, s.ID)
 				}
 			}
+		}
+		if !started && !time.Now().Before(graceAt) {
+			continue
+		}
+		select {
+		case <-ctx.Done():
+			return eventlog.Event{}, ctx.Err()
+		case <-tick.C:
+		case <-grace:
+			grace = nil
 		}
 	}
 }

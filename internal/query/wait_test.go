@@ -66,3 +66,41 @@ func TestWaitEndsWithTheSession(t *testing.T) {
 		t.Fatalf("Wait err = %v, want ErrEnded", err)
 	}
 }
+
+func TestHistoricalWaitRejectsLossEvenWhenCurrentStateMatches(t *testing.T) {
+	for _, grace := range []time.Duration{0, time.Nanosecond} {
+		log := eventlog.Open(t.TempDir())
+		log.MaxBytes = 1
+		sent := eventlog.Event{Agent: "claude", Session: "s1", Event: eventlog.Send}
+		if err := log.Append(context.Background(), &sent); err != nil {
+			t.Fatal(err)
+		}
+		for range 4 {
+			if err := log.Append(context.Background(), &eventlog.Event{Agent: "claude", Session: "s1", Event: "Stop", State: "idle"}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		ev, err := Wait(context.Background(), log, Session{Agent: "claude", ID: "s1", State: "idle"}, WaitOptions{
+			After: sent.Seq, States: []string{"idle"}, StartGrace: grace,
+		})
+		if !errors.Is(err, eventlog.ErrHistoryUnavailable) || ev.State != "" {
+			t.Fatalf("grace %s invented a historical result: %+v, %v", grace, ev, err)
+		}
+	}
+}
+
+func TestWaitAcceptsRetainedNumericCursorWithoutNewIdentity(t *testing.T) {
+	log := eventlog.Open(t.TempDir())
+	sent := eventlog.Event{Agent: "claude", Session: "s1", Event: eventlog.Send}
+	if err := log.Append(context.Background(), &sent); err != nil {
+		t.Fatal(err)
+	}
+	stopped := eventlog.Event{Agent: "claude", Session: "s1", Event: "Stop", State: "idle"}
+	if err := log.Append(context.Background(), &stopped); err != nil {
+		t.Fatal(err)
+	}
+	e, err := Wait(context.Background(), log, Session{Agent: "claude", ID: "s1"}, WaitOptions{After: sent.Seq, States: []string{"idle"}})
+	if err != nil || e.Seq != stopped.Seq {
+		t.Fatalf("numeric wait = %+v, %v", e, err)
+	}
+}

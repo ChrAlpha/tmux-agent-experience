@@ -27,12 +27,24 @@ import (
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/query"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/socketbind"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/tmux"
 )
 
 var bin string // directory holding tmag, claude and codex
 
 func TestMain(m *testing.M) {
+	if handled, err := socketbind.RunChild(os.Args[1:]); handled {
+		if err != nil {
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+	// Probe children must dispatch before tmux/build setup and must not spend
+	// their connection budget in the race runtime's artificial exit sleep.
+	if err := os.Setenv("GORACE", os.Getenv("GORACE")+" atexit_sleep_ms=0"); err != nil {
+		panic(err)
+	}
 	if _, err := exec.LookPath("tmux"); err != nil {
 		fmt.Println("tmux not installed; skipping e2e tests")
 		os.Exit(0)
@@ -305,13 +317,27 @@ func TestClaudeInProcess(t *testing.T) {
 	f.agrees(h)
 
 	// A second prompt while the first is running is refused, not queued.
-	if r := h.tmag("first", "send", h.target(pane)); r.code != 0 {
+	r = h.tmag("first", "send", h.target(pane), "--json")
+	if r.code != 0 {
 		t.Fatalf("send: %d %s", r.code, r.out)
+	}
+	var sent struct {
+		Seq int64 `json:"seq"`
+	}
+	if err := json.Unmarshal([]byte(r.out), &sent); err != nil || sent.Seq == 0 {
+		t.Fatalf("send delivery: %v %s", err, r.out)
 	}
 	if r := h.tmag("", "send", h.target(pane), "second"); r.code != 3 || !strings.Contains(r.out, "busy") {
 		t.Fatalf("busy send: %d %s", r.code, r.out)
 	}
-	h.waitPane(pane, "idle", "process")
+	// The pane can still show the previous idle before this delivery starts.
+	// Replay from its Send event so even an already completed turn is observed.
+	if r := h.tmag("", "wait", h.target(pane), "--after", strconv.FormatInt(sent.Seq, 10), "--for", "idle", "--timeout", "10s", "--json"); r.code != 0 {
+		t.Fatalf("wait after delivery: %d %s", r.code, r.out)
+	}
+	if got := h.eventNames(sidA); !strings.HasSuffix(got, "Send: UserPromptSubmit:working Stop:idle") {
+		t.Fatalf("delivered prompt did not finish a turn: %s", got)
+	}
 	if r := h.tmag("", "wait", h.target(pane), "--json"); r.code != 0 || !strings.Contains(r.out, `"idle"`) {
 		t.Fatalf("wait on idle agent: %d %s", r.code, r.out)
 	}
@@ -468,7 +494,7 @@ func TestClaudeAnswersThroughTheHook(t *testing.T) {
 	req = open("block")
 	h.tmux("send-keys", "-t", pane, "yes", "Enter")
 	received("terminal:yes")
-	h.eventually("the hook leaves", func() bool { return !answer.Waiting(h.state, req.ID) })
+	h.eventually("the hook leaves", func() bool { return answer.Probe(context.Background(), h.state, req.ID) == answer.Dead })
 	if r := h.tmag("", "answer", sidA[:8], req.ID, "allow"); r.code != 3 || !strings.Contains(r.out, "changed") {
 		t.Fatalf("answer after the terminal did: %d %s", r.code, r.out)
 	}
@@ -494,9 +520,12 @@ func TestClaudeAnswersThroughTheHook(t *testing.T) {
 	h.tmux("send-keys", "-t", pane, "block", "Enter")
 	h.waitSession(sidA, "blocked")
 	s, _ = h.sessionOf(sidA)
-	if len(s.Requests) != 1 || answer.Waiting(h.state, s.Requests[0].ID) {
+	if len(s.Requests) != 1 {
 		t.Fatalf("requests with answering off = %+v", s.Requests)
 	}
+	h.eventually("no hook waits while answering is off", func() bool {
+		return answer.Probe(context.Background(), h.state, s.Requests[0].ID) == answer.Dead
+	})
 	if r := h.tmag("", "answer", sidA[:8], s.Requests[0].ID, "allow"); r.code != 3 || !strings.Contains(r.out, "unsupported") {
 		t.Fatalf("answer with answering off: %d %s", r.code, r.out)
 	}
@@ -1014,6 +1043,9 @@ func (f *follower) apply(line []byte) {
 			if !known || s.State != e.State || s.Kind != e.Kind {
 				at := e.Time
 				since = &at
+			}
+			if e.Since != nil {
+				since = e.Since
 			}
 			f.sessions[key] = query.Session{
 				ID: e.Session, Agent: e.Agent, State: e.State, Kind: e.Kind, Turn: e.Turn, Since: since,
@@ -1706,6 +1738,48 @@ func TestAttachmentEventsSurviveACrash(t *testing.T) {
 	h.tmag("", "status")
 	if got := h.tmux("display-message", "-p", "-t", quiet, "#{@tmag_state}"); got != "" {
 		t.Fatalf("broken options left: %q", got)
+	}
+}
+
+func TestWatchSnapshotConvergesAcrossPendingSessionAndPaneRepair(t *testing.T) {
+	h := start(t)
+	pane := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_HOOKS": "1"}, filepath.Join(bin, "claude"))
+	h.waitPane(pane, "idle", "process")
+	store := session.Store{Dir: h.state}
+	since := time.Unix(123, 987654321).UTC()
+	ctx := context.Background()
+	err := store.Lock(ctx, "claude", sidA, func() error {
+		rec, ok, err := store.Get("claude", sidA)
+		if err != nil {
+			return fmt.Errorf("read session before pending write: %w", err)
+		}
+		if !ok {
+			return fmt.Errorf("session missing before pending write")
+		}
+		rec.Main, rec.Since, rec.Change = "working", since, "UserPromptSubmit"
+		return store.Put(rec)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.tmux("set-option", "-p", "-t", pane, "@tmag_change", "Attach")
+	f := h.follow()
+	select {
+	case first := <-f.lines:
+		f.apply(first)
+	case <-time.After(5 * time.Second):
+		t.Fatal("snapshot never published")
+	}
+	if s := f.sessions["claude/"+sidA]; s.State != "working" || s.Since == nil || !s.Since.Equal(since) {
+		t.Fatalf("pending snapshot state = %+v", s)
+	}
+	h.eventually("watch repairs both pending markers", func() bool {
+		rec, ok, err := store.Get("claude", sidA)
+		return err == nil && ok && !rec.Unsettled() && h.tmux("display-message", "-p", "-t", pane, "#{@tmag_change}") == ""
+	})
+	f.agrees(h)
+	if s := f.sessions["claude/"+sidA]; s.Since == nil || !s.Since.Equal(since) {
+		t.Fatalf("replayed repair replaced state since with append time: %+v", s)
 	}
 }
 

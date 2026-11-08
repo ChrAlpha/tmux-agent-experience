@@ -31,7 +31,13 @@ prompt safely.
 - tmux stays the only terminal runtime: no daemon, no wrapper, no new entry
   point. The optional HTTP endpoint runs in a tmux window you open.
 - Agents report through their own plugin hooks, which fail open: a broken or
-  missing `tmag` never blocks a turn.
+  missing `tmag` never blocks a turn. An ordinary CLI hook shares one entry
+  budget across input, discovery, state changes and housekeeping. Cooperative
+  cancellation begins after 2.75 seconds, with a fail-open process cutoff at
+  three seconds under normal OS scheduling. Answer-hook setup has that short
+  budget separately from its intentional permission wait; cancellation closes
+  its owned streams and suppresses late decision output. Process suspension or
+  an uninterruptible kernel operation cannot provide a hard real-time bound.
 - Everything lives in the plugin's TPM directory; nothing edits your
   configuration. Prompts and agent output are never stored; `tmag read
   --last` reads an agent's reply from its own transcript when asked.
@@ -543,10 +549,35 @@ killed, a title shows another thread) are found by whichever tmag process
 looks next, `watch` itself every two seconds, and recorded once as events.
 A change is logged even when the tmag process that made it dies before
 logging it: the next one to touch the session logs it. An event may therefore
-repeat, but none is lost. After a disconnect, `tmag watch --since <last seq>`
+repeat. After a disconnect, `tmag watch --since <last seq>`
 replays what was missed
 and sends the pane list, or starts over with a new snapshot if those events
 were already rotated away.
+
+A running watch that falls behind retained history ends with
+`history_unavailable` instead of silently skipping changes. Replace the local
+image with a fresh snapshot before continuing. An interrupted final log write
+is repaired before another append; repair and ambiguous recovered publication
+invalidate prior cursors and require a fresh snapshot. A malformed complete
+record ends reading or appending with `integrity_loss`, preserving the damaged
+file for explicit maintenance.
+Historical waits propagate these errors: a current snapshot cannot establish
+which past transitions or delivery outcomes occurred.
+
+`tmag watch --resync` opts into replacement snapshots during a running stream.
+Replace both the session collection and the pane collection whenever a snapshot
+arrives; merging retains objects that disappeared. Resync allows at most three
+replacement attempts in thirty seconds, then ends with `history_unavailable` if
+the reader still cannot keep up. Each snapshot capture retries at most three
+times within five seconds. The default stream keeps its terminal-error behavior.
+
+Snapshots are current scans with replay overlap, rather than atomic images at
+`seq`. A scan may already include later state: apply the copied events after it
+and continue following, allowing temporary overlap until replay and pending-write
+repair catch up. A state event's optional `since` timestamp preserves when that
+state and kind actually began, even when the event is appended much later during
+repair. Older events can omit it; deriving `since` from their event time is an
+approximation.
 
 Over SSH, a remote client needs nothing else: `ssh host tmag watch`. A watch
 ends as soon as nobody reads it, even with nothing to send: when its reader
@@ -554,10 +585,11 @@ closes the pipe, or when the connection of a command ssh runs without a
 terminal drops.
 
 Sequence numbers increase across the life of the state directory and start from
-the current time when it is created, so a cursor kept from before
-`tmag uninstall --purge`, or from before a reboot, which starts a new realm's
-directory, is recognised as stale. Treat them as opaque, ordered
-integers.
+the current time when it is created. Unused reservations leave legitimate gaps;
+gaps alone do not mean events were lost. Treat numbers as opaque, ordered
+integers. Retention and recovery invalidate cursors explicitly. Numeric cursors
+from a different directory are rejected when outside its valid range; a running
+watch also checks log identity independently of the clock.
 
 Inside tmux, the same state is in pane options, read-only, for formats and
 scripts that do not run tmag: `@tmag_agent`, `@tmag_session`, `@tmag_state`,
@@ -571,7 +603,7 @@ timeout. With `--json`, errors are also printed as
 `not_found`, `ambiguous`, `refused:unbound`, `refused:busy`,
 `refused:background`, `refused:subagent`, `refused:changed`,
 `refused:idle`, `refused:unsupported`, `refused:self`, `refused:agent`,
-`ended`, `no_reply`, `timeout` and `error`.
+`ended`, `no_reply`, `history_unavailable`, `integrity_loss`, `timeout` and `error`.
 
 ## Footprint
 
@@ -582,7 +614,100 @@ timeout. With `--json`, errors are also printed as
 | Pane state | `@tmag_*` pane options, gone with the pane | `tmag uninstall --purge` |
 | `tmag serve` | a tmux window, while you keep it open, and `@tmag_api_addr` while it runs | closing the window |
 | Owner credentials | `$XDG_STATE_HOME/tmag/auth/`, or `TMAG_AUTH_DIR`: metadata and verification digests | `tmag auth revoke`, or `tmag uninstall --purge` |
-| Sessions and event log | `$XDG_STATE_HOME/tmag/<realm>/` (default `~/.local/state/tmag/<realm>/`): one small file per live session, at most two 8 MB event files, `req/<id>.sock` while an answer hook waits. The realm names the process table tmag sees, one per container or machine and boot, so containers that share a home directory keep their sessions apart | `tmag uninstall --purge`; `tmag prune`, run by the picker key, removes other realms' state, and the state tmag 0.2.0 and earlier kept in `tmag/` itself, once unused for 30 days |
+| Sessions and event log | `$XDG_STATE_HOME/tmag/<realm>/` (default `~/.local/state/tmag/<realm>/`): one small file per live session, at most two 8 MB event files, answer sockets under `req/` while hooks wait. The realm names the process table tmag sees, one per container or machine and boot, so containers that share a home directory keep their sessions apart | `tmag uninstall --purge`; ordinary maintenance preserves foreign realms and legacy state trees whose retirement is unknown |
+| Coordination | `<state dir>/coord/`: permanent namespace gate, at most 256 pane, 256 session and 256 request-position locks, plus a fixed number of maintenance files; compatibility mode also retains per-resource files under `locks/` | removing the state directory with `tmag uninstall --purge` |
+| Answer endpoints after cutover | `<state dir>/req/`: at most 256 `sock-XX`, 256 identity-only `meta-XX` and 256 fixed `temp-XX` positions | bounded maintenance, or reuse after the previous listener closed |
+| Session publication temporaries | `<state dir>/sessions/<agent>/.tmag-tmp-s-XX`: at most 256 fixed positions per agent, sharing its session stripes | the next successful publication at that position, or bounded maintenance |
+
+Resource locks default to compatibility mode in every directory, including an
+empty one. New tmag commands acquire a fixed pool stripe and the same legacy
+per-resource inode older binaries use. Existing holders and waiters that opened
+their descriptors earlier keep their mutual exclusion. Compatibility continues
+creating legacy files for new identifiers, so its legacy cost can keep growing.
+Answer hooks also retain flat legacy socket pathnames in compatibility mode:
+older creators ignore new exclusion, so safe automatic unlink requires the
+explicit retirement declaration too.
+
+To declare a directory exclusive to binaries supporting the fixed pools:
+
+1. Finish every older tmag process, including `serve`, answer hooks, hooks,
+   commands and lock waiters. Stop their launch paths while upgrading.
+2. Verify every host's hook/launcher resolves the new released binary, and
+   ensure no older executable or rollback will write this state directory again.
+3. From your own terminal, run `tmag prune --retire-legacy-locks` with the same
+   `TMAG_STATE_DIR`/realm as the deployment. This command is the explicit
+   retirement declaration; it applies immediately, with no further prompt.
+
+The declaration waits for participating new commands before publishing the mode
+atomically. Older binaries do not know that gate: free lock files, absent
+processes, or missing legacy names do not establish the preconditions. Agents
+cannot make the declaration. Do not restart an older writer after it succeeds.
+Fresh deployments using only the new binary make the same declaration before
+starting their agents. After cutover, new identifiers create no legacy locks;
+new coordination files are bounded by the fixed pools. Cutover pins the
+`locks/` and `req/` directory inodes, creating empty anchors when necessary.
+Ordinary maintenance incrementally removes known empty legacy locks under the
+exclusive stable gate, with a nonblocking per-file lock and identity check. It
+also removes known legacy answer sockets only on definite connection refusal or
+absence; live, uncertain and contended objects stay intact. The gate, pool files
+and directory anchors remain permanent. Unknown names, nonempty lock files,
+aliases and foreign realms remain preserved.
+
+Session publication uses one fixed `.tmag-tmp-s-XX` temporary position per
+agent and stripe, directly beside its record. Publication renames two direct
+children of the same pinned directory. A bounded realm ownership manifest
+records directory inodes and admits the fixed prefix only when all 256 names
+are absent. Maintenance requires that prior reservation. Symlinks, replaced
+ancestors, unclaimed names and unknown child directories stay preserved;
+basename and user ownership alone do not establish scope. A killed publisher
+therefore leaves at most 512 new session temporaries, regardless of historical
+session count. Hooks and
+ordinary `prune` calls inspect up to eight stripes (sixteen fixed candidate
+names) after required work, within a fifty-millisecond cooperative budget and
+the earlier operation deadline. The saved starting stripe advances one position
+per admitted pass, so every stripe gets the first turn within 256 passes even
+when earlier batches run out of time. Active creators exclude their cleaner;
+contended stripes are skipped. Legacy random `.tmp-*` files lack that creator
+evidence and remain preserved. The realm's `.tmag-scope-lock` is permanent;
+`.tmag-scope.json` binds managed directories to their inodes. Copying or
+replacing directories does not transfer that ownership proof. If a restore
+invalidates it, stop all tmag writers and retain the old realm for inspection
+before starting with a fresh state directory; never erase the proof beneath
+active writers. Manifest publication reserves one of 256 fixed bootstrap names.
+Before the first committed reservation, existing names stay unknown and are
+skipped, including interrupted bootstrap files. A committed manifest records
+its own reusable temporary; subsequent interrupted publications recover only
+through that reserved name. Exhausting all bootstrap positions fails open and
+preserves them for owner inspection.
+
+After cutover, answer hooks allocate fixed positions; simultaneous requests
+whose initial hashes collide use different free positions. A position stays
+locked for the listener's whole lifetime. At most 256 answer hooks can wait in
+one realm; exhaustion or uncertain ownership leaves the agent's original
+on-screen dialog in control. Request identity is checked by the socket protocol;
+a short probe returns only that identity, never tool input. Corrupt or aliased
+identity metadata stays unknown and prevents a second allocation from
+redirecting a request. Bind and connect use the pinned directory on both
+supported operating systems. A closed pathname
+is not proof of a waiting hook. Listener close performs no unsafe unlink; a
+later excluded sweep or allocation removes dead leftovers before reuse.
+
+Housekeeping shares the earlier operation deadline, with a cooperative ceiling
+of 150 milliseconds: up to 50 milliseconds per artifact class. Its saved first
+class rotates between session temporaries, retired locks and answer sockets.
+A lock sweep reads at most one 4 KiB native directory page and processes 32
+saved names; a socket sweep checks four fixed positions and processes eight
+legacy names from at most one such page. Unknown entries count toward the
+examination budget. Persistent filesystem cookies and bounded pending names
+resume beyond unknown prefixes; EOF wraps the sweep. Fixed socket starting
+positions advance before cleanup, giving each position first turn within 256
+admitted passes, while the fixed/legacy socket class order alternates. These
+limits bound examined work; storage latency and OS scheduling still determine
+how much useful progress fits an invocation.
+
+Automatic maintenance preserves other realms and older shared state trees. Age,
+local PID absence, or an unlocked file cannot prove a foreign realm retired.
+Idle agents elsewhere can legitimately leave their metadata untouched for weeks.
 
 `tmag uninstall` prints the exact removal steps.
 

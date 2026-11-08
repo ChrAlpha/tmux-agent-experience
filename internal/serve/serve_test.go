@@ -165,6 +165,34 @@ func TestRevocationClosesAnExistingSubscription(t *testing.T) {
 		t.Fatal("local watch outlived subscription")
 	}
 }
+
+func TestWatchResyncNegotiationPreservesNumericSSEAndTerminalError(t *testing.T) {
+	s, _, c := fixture(t, func(ctx context.Context, args []string, in io.Reader, out, stderr io.Writer) int {
+		if strings.Join(args, " ") != "watch --resync --since 17" {
+			t.Errorf("negotiated runner args = %q", args)
+		}
+		_, _ = io.WriteString(out, "{\"schema\":\"tmag/v1\",\"type\":\"snapshot\",\"seq\":18,\"sessions\":[],\"panes\":[]}\n")
+		_, _ = io.WriteString(out, "{\"schema\":\"tmag/v1\",\"type\":\"snapshot\",\"seq\":29,\"sessions\":[],\"panes\":[]}\n")
+		_, _ = io.WriteString(out, "{\"schema\":\"tmag/v1\",\"error\":{\"code\":\"history_unavailable\",\"message\":\"resync limit\"}}\n")
+		return 1
+	})
+	res := call(s, "GET", "/v1/watch?since=17&resync=1", "", c.Token, "box.example", "")
+	data := res.Body.String()
+	if res.Code != 200 || !strings.Contains(data, "id: 18\nevent: doc") || !strings.Contains(data, "id: 29\nevent: doc") ||
+		strings.Count(data, "id:") != 2 || !strings.Contains(data, `"code":"history_unavailable"`) {
+		t.Fatalf("resync SSE changed the v1 envelope: %d %s", res.Code, data)
+	}
+}
+
+func TestWatchRejectsInvalidResyncBeforeStartingRunner(t *testing.T) {
+	s, _, c := fixture(t, func(context.Context, []string, io.Reader, io.Writer, io.Writer) int {
+		t.Fatal("invalid negotiation started a watch")
+		return 0
+	})
+	if res := call(s, "GET", "/v1/watch?resync=true", "", c.Token, "box.example", ""); res.Code != 400 {
+		t.Fatalf("invalid resync = %d %s", res.Code, res.Body.String())
+	}
+}
 func TestAcceptedActionOutlivesDisconnect(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})

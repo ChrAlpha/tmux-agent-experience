@@ -4,9 +4,9 @@ package tmux
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -14,6 +14,9 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/ChrAlpha/tmux-agent-experience/internal/contextio"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/helper"
 )
 
 // callTimeout bounds a single tmux invocation; callers add overall deadlines.
@@ -96,7 +99,8 @@ func (s Server) RunInput(ctx context.Context, stdin []byte, args ...string) ([]b
 	defer cancel()
 	// -u: without a UTF-8 locale (hooks often run without one) tmux would
 	// replace the field separator and any non-ASCII text with '_'.
-	cmd := exec.CommandContext(ctx, "tmux", append([]string{"-u", "-S", s.Socket}, args...)...)
+	cmd, cleanup := helper.Command(ctx, "tmux", append([]string{"-u", "-S", s.Socket}, args...)...)
+	defer cleanup()
 	if stdin != nil {
 		cmd.Stdin = bytes.NewReader(stdin)
 	}
@@ -104,6 +108,12 @@ func (s Server) RunInput(ctx context.Context, stdin []byte, args ...string) ([]b
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
+		if ctx.Err() != nil {
+			return out, ctx.Err()
+		}
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			return out, err
+		}
 		msg := strings.TrimSpace(stderr.String())
 		if msg == "" {
 			msg = err.Error()
@@ -415,6 +425,15 @@ func DefaultServer() Server {
 // Servers lists every tmux socket of the current user, the caller's server first.
 // Sockets are returned whether or not a server is listening on them.
 func Servers() []Server {
+	servers, _ := ServersContext(context.Background())
+	return servers
+}
+
+// ServersContext enumerates sockets in bounded batches within the caller budget.
+func ServersContext(ctx context.Context) ([]Server, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	var out []Server
 	seen := map[string]bool{}
 	add := func(p string) {
@@ -428,13 +447,19 @@ func Servers() []Server {
 		add(SocketFromEnv(env))
 	}
 	dir := SocketDir()
-	entries, _ := os.ReadDir(dir)
-	for _, e := range entries {
+	err := contextio.Entries(ctx, dir, func(e os.DirEntry) error {
 		if e.Type()&os.ModeSocket != 0 {
 			add(filepath.Join(dir, e.Name()))
 		}
+		return nil
+	})
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
 	}
-	return out
+	if err != nil && !os.IsNotExist(err) {
+		return nil, err
+	}
+	return out, nil
 }
 
 var versionRE = regexp.MustCompile(`(\d+)\.(\d+)`)

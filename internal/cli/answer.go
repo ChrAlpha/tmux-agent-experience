@@ -7,13 +7,11 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"os"
-	"os/signal"
-	"syscall"
 	"time"
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/answer"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/contextio"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/hook"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/query"
@@ -100,14 +98,16 @@ func (a *app) cmdAnswerHook(args []string) (code int) {
 		fmt.Fprintln(a.stderr, "usage: tmag answer-hook claude")
 		return ExitOK
 	}
+	ctx, cancel := a.hookContext()
+	defer cancel()
 	defer func() {
 		if r := recover(); r != nil {
-			hook.RecordError(a.log.Dir, args[0], fmt.Errorf("answer hook panic: %v", r))
+			hook.RecordErrorContext(ctx, a.log.Dir, args[0], fmt.Errorf("answer hook panic: %v", r))
 			code = ExitOK
 		}
 	}()
 	if err := a.answerHook(); err != nil {
-		hook.RecordError(a.log.Dir, args[0], err)
+		hook.RecordErrorContext(ctx, a.log.Dir, args[0], err)
 	}
 	return ExitOK
 }
@@ -115,18 +115,20 @@ func (a *app) cmdAnswerHook(args []string) (code int) {
 func (a *app) answerHook() error {
 	// A signal ends the wait from the start: whatever the hook has opened is
 	// closed on the way out, and nothing is printed.
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+	ctx, stop := a.signalContext()
 	defer stop()
-	data, err := io.ReadAll(io.LimitReader(a.stdin, 64<<20))
+	setup, finish := a.hookContext()
+	defer finish()
+	data, err := contextio.ReadAll(setup, a.stdin, 64<<20)
 	if err != nil {
 		return err
 	}
 	in := hook.Input{Agent: proc.Claude, Payload: bytes.NewReader(data), Log: a.log, PID: os.Getpid()}
-	quick, cancel := context.WithTimeout(ctx, time.Second)
+	quick, cancel := context.WithTimeout(setup, time.Second)
 	enabled := answer.Mode(quick) != answer.Off
 	cancel()
 	if !enabled {
-		return hook.Run(in)
+		return hook.RunContext(setup, in)
 	}
 	var p struct {
 		SessionID string          `json:"session_id"`
@@ -134,28 +136,46 @@ func (a *app) answerHook() error {
 		ToolInput json.RawMessage `json:"tool_input"`
 	}
 	if err := json.Unmarshal(data, &p); err != nil {
-		return hook.Run(in)
+		return hook.RunContext(setup, in)
 	}
 	in.Request = session.NewRequestID()
-	ln, err := answer.Listen(a.log.Dir, in.Request)
+	ln, err := answer.ListenContext(setup, a.log.Dir, in.Request)
 	if err != nil {
 		in.Request = ""
-		return errors.Join(err, hook.Run(in))
+		return errors.Join(err, hook.RunContext(setup, in))
 	}
 	defer ln.Close()
-	if err := hook.Run(in); err != nil || ctx.Err() != nil {
+	if err := hook.RunContext(setup, in); err != nil || ctx.Err() != nil {
 		return err
 	}
 	// Wait only for a prompt the session now names this way.
-	if rec, ok, err := (session.Store{Dir: a.log.Dir}).Get(proc.Claude, p.SessionID); err != nil || !ok {
+	if rec, ok, err := (session.Store{Dir: a.log.Dir}).GetContext(setup, proc.Claude, p.SessionID); err != nil || !ok {
 		return err
 	} else if _, open := rec.Request(in.Request); !open {
 		return nil
 	}
-	ctx, cancel = context.WithTimeout(ctx, answerWindow)
+	if err := setup.Err(); err != nil {
+		return err
+	}
+	if a.setupDone != nil {
+		a.setupDone()
+	}
+	ctx, cancel = context.WithTimeout(ctx, answerWindow-250*time.Millisecond)
 	defer cancel()
+	writer := a.stdout
+	if f, ok := writer.(*os.File); ok {
+		owned, err := contextio.Own(ctx, f)
+		if err != nil {
+			return err
+		}
+		defer owned.Close()
+		writer = owned
+	}
 	answer.Wait(ctx, ln, answer.Asked{Tool: p.ToolName, Input: p.ToolInput}, func(out []byte) error {
-		_, err := a.stdout.Write(out)
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		_, err := writer.Write(out)
 		return err
 	})
 	return nil

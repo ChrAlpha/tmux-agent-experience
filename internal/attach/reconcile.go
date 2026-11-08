@@ -118,20 +118,32 @@ func Links(w *World, live []session.Record) []Link {
 // change once, and nothing newer than w is undone. Errors are not reported:
 // the next reconciliation retries.
 func Reconcile(ctx context.Context, env Env, w *World) {
-	recs, err := env.Store.All()
+	if ctx.Err() != nil || w.Proc == nil || !w.Proc.Complete() {
+		return
+	}
+	recs, err := env.Store.AllContext(ctx)
 	if err != nil {
 		return
 	}
 	for _, p := range w.Panes {
+		if ctx.Err() != nil {
+			return
+		}
 		if a, ok := FromPane(p); ok && a.Change != "" {
 			_ = env.settlePane(ctx, p)
 		}
 	}
 	live, gone := Live(w, recs)
 	for _, r := range gone {
+		if ctx.Err() != nil {
+			return
+		}
 		env.exit(ctx, r)
 	}
 	for _, r := range live {
+		if ctx.Err() != nil {
+			return
+		}
 		if r.Unsettled() {
 			env.settle(ctx, r)
 		}
@@ -203,7 +215,7 @@ func (env Env) Attach(ctx context.Context, w *World, c Client, rec session.Recor
 				return nil
 			}
 		}
-		latest, ok, err := env.Store.Get(rec.Agent, rec.ID)
+		latest, ok, err := env.Store.GetContext(ctx, rec.Agent, rec.ID)
 		if err != nil || !ok || latest.Ended != "" {
 			return err
 		}
@@ -215,7 +227,7 @@ func (env Env) Attach(ctx context.Context, w *World, c Client, rec session.Recor
 			}
 			return writeProjection(ctx, srv, fresh.ID, ProjectionOf(latest))
 		}
-		pt, err := proc.Snapshot()
+		pt, err := proc.SnapshotContext(ctx)
 		if err != nil {
 			return err
 		}
@@ -259,7 +271,7 @@ func (env Env) finish(ctx context.Context, srv tmux.Server, fresh tmux.Pane, a A
 		// logs after it, never before with this event reporting less.
 		ev := eventlog.Event{Agent: a.Agent, Session: a.Session, Event: eventlog.Attach, Pane: ref(fresh), Evidence: a.Evidence}
 		if err := env.Store.Lock(ctx, a.Agent, a.Session, func() error {
-			if rec, ok, _ := env.Store.Get(a.Agent, a.Session); ok {
+			if rec, ok, _ := env.Store.GetContext(ctx, a.Agent, a.Session); ok {
 				rec.Report(&ev)
 			}
 			return env.append(ctx, ev)
@@ -317,7 +329,7 @@ func (env Env) Show(ctx context.Context, p tmux.Pane, a Attachment) error {
 		if cur, ok := FromPane(fresh); !ok || !cur.same(a) || !cur.holds() {
 			return nil
 		}
-		rec, ok, err := env.Store.Get(a.Agent, a.Session)
+		rec, ok, err := env.Store.GetContext(ctx, a.Agent, a.Session)
 		if err != nil || !ok {
 			return err
 		}

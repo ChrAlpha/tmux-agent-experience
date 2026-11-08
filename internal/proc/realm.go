@@ -1,6 +1,7 @@
 package proc
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 )
@@ -10,6 +11,21 @@ import (
 // containers that share a home directory each see their own, and every boot
 // starts a new one. It is "" when the platform does not say.
 func Realm() string { return realmID(realmSource()) }
+
+// RealmContext resolves the realm within the operation's discovery budget.
+func RealmContext(ctx context.Context) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	source, err := realmSourceContext(ctx)
+	if err != nil {
+		return "", err
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	return realmID(source), nil
+}
 
 // realmID shortens what identifies a realm to a name that fits in a socket
 // path, or "" for nothing.

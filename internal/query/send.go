@@ -134,7 +134,7 @@ func Send(ctx context.Context, log *eventlog.Log, target, text string, ask Ask) 
 			// but not recorded could be delivered twice. A failure while
 			// typing does not say whether tmux typed it, so the mark stays.
 			rec.Sent = time.Now().UTC().Truncate(time.Second)
-			if err := store.Put(rec); err != nil {
+			if err := store.PutContext(ctx, rec); err != nil {
 				return eventlog.Event{}, nil, err
 			}
 			if err := (tmux.Server{Socket: p.Server}).Submit(ctx, p.ID, text); err != nil {

@@ -57,11 +57,17 @@ a design problem, not a test problem.
   a first line that does is tmag's. Never let a caller name the sender.
 - **Hooks fail open.** `tmag hook` always exits 0, never writes stdout (agents
   inject hook stdout into the model context), finishes within `hook.Deadline`,
-  and records failures only in `<state dir>/hook.log`. `tmag answer-hook`
+  and records failures only in `<state dir>/hook.log`. CLI entry starts the
+  whole budget before discovery/input, cancels cooperatively early and installs
+  a final fail-open cutoff. Reusable APIs and HTTP handlers never exit the
+  process; process suspension and uninterruptible kernel operations remain
+  outside a normal-scheduling deadline guarantee. `tmag answer-hook`
   also always exits 0, writes to stdout only a decision delivered by
   `tmag answer`, and on any failure, timeout, close or signal prints nothing,
   leaving the decision to the agent's own dialog, which is on screen
-  meanwhile. A hook command that reaches the `tmag-peers` launcher on `PATH`
+  meanwhile. Its short setup budget is separate from its intentional waiting
+  lifetime. Owned input/output and helper processes must actually cancel and
+  close; a reader goroutine abandoned behind a timeout is not containment. A hook command that reaches the `tmag-peers` launcher on `PATH`
   fails open the same way when no binary exists. A hook that alerts the
   person starts `tmag notify` detached and does not wait for it; that process
   runs `@tmag-notify` for at most `notify.Timeout` and records a failure in
@@ -158,6 +164,11 @@ a design problem, not a test problem.
 | `internal/serve` | Local HTTP/SSE contract, admission and allowlisted in-process CLI operations |
 | `internal/adapter` | Hook payload → state transition, per agent |
 | `internal/session` | Session records, the state machine, the per-session file store and lock |
+| `internal/statefile` | Owned atomic metadata publication through fixed, creator-excluded temporaries |
+| `internal/ownedfs` | Pinned directory scopes, persistent inode bindings and reserved fixed artifact names |
+| `internal/dirscan` | Bounded native directory pages and resumable filesystem cookies |
+| `internal/maintenance` | Fair, bounded housekeeping within the parent's remaining budget |
+| `internal/socketbind` | Short-lived executable helper: bind within an inherited directory FD, pass socket FD, reap |
 | `internal/attach` | Clients, attachments and their evidence, the `@tmag_*` pane projection, reconciliation |
 | `internal/query` | list / send / wait / snapshot over sessions and panes; the control verbs' gates |
 | `internal/driver` | Which channel (pane, service, hook) carries each verb for each agent and runtime |
@@ -168,6 +179,7 @@ a design problem, not a test problem.
 | `internal/tmux` | tmux CLI wrapper; sanitises every free-text field |
 | `internal/proc` | Process table, agent clients and services, hook hosts |
 | `internal/lockfile` | flock bounded by a context |
+| `internal/coord` | Fixed pane/session lock pools, dual legacy coordination and explicit retirement gate |
 | `internal/binpath` | Where hooks look for the binary; the hook command and the agents' launcher |
 | `internal/e2e` | End-to-end tests with real tmux and a fake agent |
 | `plugins/<host>/tmag` | Agent plugins for Claude Code and Codex: hooks only; Claude's `PermissionRequest` runs `tmag answer-hook` |
@@ -189,6 +201,9 @@ claude plugin validate .      # marketplace and plugin manifests
 
 ## Conventions
 
+- Go 1.25 or later is required for descriptor-relative `os.Root.Rename`; CI
+  and releases select the latest stable patched toolchain, independently of
+  the module minimum.
 - Go standard library only. A dependency needs a reason that outweighs one more
   thing to audit in a binary every agent hook runs.
 - tmux baseline is 3.2; Linux and macOS. Read the process table through
@@ -198,6 +213,15 @@ claude plugin validate .      # marketplace and plugin manifests
   `:`.
 - Every operation that may run on a hook path takes a `context.Context` and
   respects its deadline.
+- `coord` pool-v1 keeps 256 slots per class, selected by the first byte of the
+  existing resource SHA-256. Its pane/session class names, hash inputs and
+  stable gate/pool pathnames must remain compatible across cooperating versions.
+  Request endpoint positions use separate `r-XX` locks and fixed `req/` names;
+  their metadata, rather than a hash assumption, binds each request to its slot.
+- Unix bind and connect must stay inside a pinned directory on Linux and macOS. The
+  executable dispatches `socketbind.RunChild` before CLI setup; only that
+  short-lived child changes cwd, inherits creator exclusion and passes an FD.
+  Library/HTTP paths never exit or change their parent's cwd.
 - The version lives in `internal/version/version.go` and the four plugin
   manifests; `TestManifestVersions` keeps them equal.
 - The launchers are `binpath.Launcher()`, and the Codex copy of the skill is
