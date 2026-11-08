@@ -160,6 +160,9 @@ a design problem, not a test problem.
 | `internal/session` | Session records, the state machine, the per-session file store and lock |
 | `internal/statefile` | Owned atomic metadata publication through fixed, creator-excluded temporaries |
 | `internal/ownedfs` | Pinned directory scopes, persistent inode bindings and reserved fixed artifact names |
+| `internal/dirscan` | Bounded native directory pages and resumable filesystem cookies |
+| `internal/maintenance` | Fair, bounded housekeeping within the parent's remaining budget |
+| `internal/socketbind` | Short-lived executable helper: bind within an inherited directory FD, pass socket FD, reap |
 | `internal/attach` | Clients, attachments and their evidence, the `@tmag_*` pane projection, reconciliation |
 | `internal/query` | list / send / wait / snapshot over sessions and panes; the control verbs' gates |
 | `internal/driver` | Which channel (pane, service, hook) carries each verb for each agent and runtime |
@@ -207,6 +210,12 @@ claude plugin validate .      # marketplace and plugin manifests
 - `coord` pool-v1 keeps 256 slots per class, selected by the first byte of the
   existing resource SHA-256. Its pane/session class names, hash inputs and
   stable gate/pool pathnames must remain compatible across cooperating versions.
+  Request endpoint positions use separate `r-XX` locks and fixed `req/` names;
+  their metadata, rather than a hash assumption, binds each request to its slot.
+- Unix bind and connect must stay inside a pinned directory on Linux and macOS. The
+  executable dispatches `socketbind.RunChild` before CLI setup; only that
+  short-lived child changes cwd, inherits creator exclusion and passes an FD.
+  Library/HTTP paths never exit or change their parent's cwd.
 - The version lives in `internal/version/version.go` and the four plugin
   manifests; `TestManifestVersions` keeps them equal.
 - The launchers are `binpath.Launcher()`, and the Codex copy of the skill is

@@ -221,8 +221,8 @@ func TestTempMaintenanceAndPublicationPreserveAliasedAncestors(t *testing.T) {
 			if level != "sessions/claude/.tmag-tmp" && err == nil {
 				t.Fatal("published through an aliased parent")
 			}
-			// The retired draft's .tmag-tmp directory is never traversed, even
-			// when its final file looks like one of the old fixed positions.
+			// An unknown .tmag-tmp directory never conveys ownership, even
+			// when its entries resemble known fixed positions.
 			for _, name := range []string{"s-00", ".tmag-tmp-s-00", "record.json"} {
 				if b, err := os.ReadFile(filepath.Join(foreign, name)); err != nil || string(b) != "preserve" {
 					t.Fatalf("aliased target changed %s: %q %v", name, b, err)

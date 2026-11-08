@@ -18,6 +18,7 @@ import (
 	"github.com/ChrAlpha/tmux-agent-experience/internal/answer"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/attach"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/maintenance"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/notify"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
@@ -78,7 +79,7 @@ func Run(in Input) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), Deadline)
 	defer cancel()
-	defer func() { _, _ = (session.Store{Dir: in.Log.Dir}).CleanupTemps(ctx) }()
+	defer func() { _ = maintenance.Run(ctx, in.Log.Dir) }()
 
 	w, err := attach.Load(ctx)
 	if err != nil {

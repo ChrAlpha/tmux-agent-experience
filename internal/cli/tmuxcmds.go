@@ -12,6 +12,7 @@ import (
 	"github.com/ChrAlpha/tmux-agent-experience/internal/adapter"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/attach"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/coord"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/maintenance"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/query"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/tmux"
 )
@@ -80,13 +81,13 @@ func (a *app) cmdPrune(args []string) int {
 		if err := coord.RetireLegacy(ctx, a.log.Dir); err != nil {
 			return a.fail("prune", err)
 		}
-		fmt.Fprintf(a.stdout, "Persistent lock pools active for %s; legacy lock files retained.\n", a.log.Dir)
+		fmt.Fprintf(a.stdout, "Persistent lock pools active for %s; bounded maintenance reclaims retired legacy artifacts.\n", a.log.Dir)
 		return ExitOK
 	}
 	if _, err := a.reconciled(ctx, *server); err != nil {
 		return a.fail("prune", err)
 	}
-	if _, err := a.store().CleanupTemps(ctx); err != nil {
+	if err := maintenance.Run(ctx, a.log.Dir); err != nil {
 		return a.fail("prune", err)
 	}
 	return ExitOK

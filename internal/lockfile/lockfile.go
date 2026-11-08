@@ -46,26 +46,50 @@ func TryShared(ctx context.Context, path string, fn func() error) error {
 // Within acquires a lock below an explicitly selected root using pinned,
 // identity-bound ancestry. Permanent gate/pool files must never be unlinked.
 func Within(ctx context.Context, root, path string, shared, wait bool, fn func() error) error {
+	held, err := AcquireWithin(ctx, root, path, shared, wait)
+	if err != nil {
+		return err
+	}
+	defer held.Close()
+	return fn()
+}
+
+// Held owns a descriptor and pinned scope until Close. This supports an answer
+// listener's intentional lifetime without a parked goroutine or a per-ID file.
+type Held struct {
+	file *os.File
+	dir  *ownedfs.Dir
+}
+
+// File borrows the lock descriptor for child inheritance. The caller must not
+// close it; Held retains ownership until Close.
+func (h *Held) File() *os.File { return h.file }
+
+func (h *Held) Close() error {
+	err := h.file.Close()
+	return errors.Join(err, h.dir.Close())
+}
+
+// AcquireWithin returns an already-validated permanent lock descriptor. The
+// caller must Close it on every path, including failed listener setup.
+func AcquireWithin(ctx context.Context, root, path string, shared, wait bool) (*Held, error) {
 	d, err := ownedfs.Open(ctx, root, filepath.Dir(path), true)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	defer d.Close()
 	f, err := d.OpenFile(ctx, filepath.Base(path), os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
-		return err
+		d.Close()
+		return nil, err
 	}
-	defer f.Close()
 	how := syscall.LOCK_EX
 	if shared {
 		how = syscall.LOCK_SH
 	}
-	return flock(ctx, f, path, how, wait, func() error {
+	err = flock(ctx, f, path, how, wait, func() error {
 		if err := d.Validate(ctx); err != nil {
 			return err
 		}
-		// A cooperating opener must still hold the current permanent inode after
-		// waiting; an externally replaced lock cannot establish exclusion.
 		current, err := d.Stat(ctx, filepath.Base(path))
 		if err != nil {
 			return err
@@ -77,8 +101,14 @@ func Within(ctx context.Context, root, path string, shared, wait bool, fn func()
 		if !os.SameFile(current, held) {
 			return ownedfs.ErrScope
 		}
-		return fn()
+		return nil
 	})
+	if err != nil {
+		f.Close()
+		d.Close()
+		return nil, err
+	}
+	return &Held{file: f, dir: d}, nil
 }
 
 func with(ctx context.Context, path string, how int, wait bool, fn func() error) error {

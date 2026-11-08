@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/lockfile"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/ownedfs"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/statefile"
 )
 
@@ -128,6 +129,16 @@ func RetireLegacy(ctx context.Context, dir string) error {
 		mode, err := readMode(ctx, dir)
 		if err != nil || mode == Pool {
 			return err
+		}
+		// Freeze legacy directory identity before publishing retirement evidence.
+		// Pin empty anchors too, so a later inserted real directory cannot become
+		// owned merely because it appears under a familiar legacy basename.
+		for _, name := range []string{"locks", "req"} {
+			scope, err := ownedfs.Open(ctx, dir, name, true)
+			if err != nil {
+				return err
+			}
+			scope.Close()
 		}
 		return statefile.WriteWithin(ctx, dir, "coord/mode", "coord/mode.tmp", []byte(string(Pool)+"\n"))
 	})

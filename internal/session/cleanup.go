@@ -32,6 +32,7 @@ type Cleanup struct {
 // expires partway through a batch. Unknown legacy random temps stay intact.
 // Call after mandatory work, with its remaining operation context.
 func (s Store) CleanupTemps(ctx context.Context) (Cleanup, error) {
+	parentCtx := ctx
 	ctx, cancel := context.WithTimeout(ctx, tempSweepBudget)
 	defer cancel()
 	var report Cleanup
@@ -85,6 +86,9 @@ func (s Store) CleanupTemps(ctx context.Context) (Cleanup, error) {
 	})
 	if errors.Is(err, lockfile.ErrBusy) {
 		return report, nil
+	}
+	if parentCtx.Err() == nil && errors.Is(ctx.Err(), context.DeadlineExceeded) && errors.Is(err, context.DeadlineExceeded) {
+		err = nil
 	}
 	return report, err
 }

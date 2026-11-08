@@ -62,7 +62,7 @@ func Show(ctx context.Context, log *eventlog.Log, target, id string) (Asked, err
 	}
 	switch driver.Channel(s.Agent, s.Runtime, driver.Answer) {
 	case driver.Hook:
-		if !answer.Waiting(log.Dir, id) {
+		if answer.Probe(ctx, log.Dir, id) == answer.Dead {
 			return Asked{}, noHook(s, id)
 		}
 		ctx, cancel := context.WithTimeout(ctx, answerTimeout)
@@ -134,7 +134,7 @@ func answerGate(ctx context.Context, s Session, c Caller) error {
 // closes, and what the agent then does reaches tmag through hooks that wait
 // for the same lock.
 func answerHook(ctx context.Context, log *eventlog.Log, s Session, id string, d answer.Decision, caller Caller) (Delivery, error) {
-	if !answer.Waiting(log.Dir, id) {
+	if answer.Probe(ctx, log.Dir, id) == answer.Dead {
 		return Delivery{}, noHook(s, id)
 	}
 	store := session.Store{Dir: log.Dir}

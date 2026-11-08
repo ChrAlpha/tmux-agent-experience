@@ -193,8 +193,8 @@ func TestPoolBoundAndStableInodesAfterExplicitCutover(t *testing.T) {
 	if err != nil || len(entries) != 2*Slots+2 {
 		t.Fatalf("coordination files = %d, %v; want %d", len(entries), err, 2*Slots+2)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "locks")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("pool-only mode created per-ID files: %v", err)
+	if files, err := os.ReadDir(filepath.Join(dir, "locks")); err != nil || len(files) != 0 {
+		t.Fatalf("pool-only mode created per-ID files: %d %v", len(files), err)
 	}
 	if err := RetireLegacy(ctx, dir); err != nil {
 		t.Fatal(err)

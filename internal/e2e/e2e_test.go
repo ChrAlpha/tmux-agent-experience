@@ -27,12 +27,24 @@ import (
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/query"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/socketbind"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/tmux"
 )
 
 var bin string // directory holding tmag, claude and codex
 
 func TestMain(m *testing.M) {
+	if handled, err := socketbind.RunChild(os.Args[1:]); handled {
+		if err != nil {
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+	// Probe children must dispatch before tmux/build setup and must not spend
+	// their connection budget in the race runtime's artificial exit sleep.
+	if err := os.Setenv("GORACE", os.Getenv("GORACE")+" atexit_sleep_ms=0"); err != nil {
+		panic(err)
+	}
 	if _, err := exec.LookPath("tmux"); err != nil {
 		fmt.Println("tmux not installed; skipping e2e tests")
 		os.Exit(0)

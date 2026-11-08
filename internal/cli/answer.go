@@ -137,7 +137,7 @@ func (a *app) answerHook() error {
 		return hook.Run(in)
 	}
 	in.Request = session.NewRequestID()
-	ln, err := answer.Listen(a.log.Dir, in.Request)
+	ln, err := answer.ListenContext(ctx, a.log.Dir, in.Request)
 	if err != nil {
 		in.Request = ""
 		return errors.Join(err, hook.Run(in))

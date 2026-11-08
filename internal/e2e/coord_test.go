@@ -2,7 +2,6 @@ package e2e
 
 import (
 	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -36,8 +35,8 @@ func TestExplicitLockCutoverFromOwnerTerminal(t *testing.T) {
 	if r := h.tmag("", "send", sidA[:8], "--wait", "--timeout", "10s", "pool control"); r.code != 0 {
 		t.Fatalf("pooled control = %d %s", r.code, r.out)
 	}
-	if _, err := os.Stat(filepath.Join(h.state, "locks")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("pool-only hooks/control created legacy files: %v", err)
+	if entries, err := os.ReadDir(filepath.Join(h.state, "locks")); err != nil || len(entries) != 0 {
+		t.Fatalf("pool-only hooks/control created legacy files: %d %v", len(entries), err)
 	}
 }
 
@@ -98,9 +97,9 @@ func TestPrunePreservesUnknownForeignRealmsEvenWithAgedHeldLocks(t *testing.T) {
 	}
 }
 
-// Regression for a production prune following .tmag-tmp into an unrelated
-// same-owner directory. Exercise both the retired draft layout and current
-// pinned ancestors through the installed test binary, not only a helper API.
+// Unknown child directories may alias unrelated same-owner metadata. Exercise
+// preservation of both child aliases and pinned ancestors through the real
+// command, including fixed-looking names that convey no ownership proof.
 func TestPrunePreservesAliasedSessionTemporaryParents(t *testing.T) {
 	for _, level := range []string{"sessions/claude/.tmag-tmp", "sessions/claude"} {
 		t.Run(level, func(t *testing.T) {
