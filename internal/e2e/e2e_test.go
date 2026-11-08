@@ -494,7 +494,7 @@ func TestClaudeAnswersThroughTheHook(t *testing.T) {
 	req = open("block")
 	h.tmux("send-keys", "-t", pane, "yes", "Enter")
 	received("terminal:yes")
-	h.eventually("the hook leaves", func() bool { return !answer.Waiting(h.state, req.ID) })
+	h.eventually("the hook leaves", func() bool { return answer.Probe(context.Background(), h.state, req.ID) == answer.Dead })
 	if r := h.tmag("", "answer", sidA[:8], req.ID, "allow"); r.code != 3 || !strings.Contains(r.out, "changed") {
 		t.Fatalf("answer after the terminal did: %d %s", r.code, r.out)
 	}
@@ -520,9 +520,12 @@ func TestClaudeAnswersThroughTheHook(t *testing.T) {
 	h.tmux("send-keys", "-t", pane, "block", "Enter")
 	h.waitSession(sidA, "blocked")
 	s, _ = h.sessionOf(sidA)
-	if len(s.Requests) != 1 || answer.Waiting(h.state, s.Requests[0].ID) {
+	if len(s.Requests) != 1 {
 		t.Fatalf("requests with answering off = %+v", s.Requests)
 	}
+	h.eventually("no hook waits while answering is off", func() bool {
+		return answer.Probe(context.Background(), h.state, s.Requests[0].ID) == answer.Dead
+	})
 	if r := h.tmag("", "answer", sidA[:8], s.Requests[0].ID, "allow"); r.code != 3 || !strings.Contains(r.out, "unsupported") {
 		t.Fatalf("answer with answering off: %d %s", r.code, r.out)
 	}
