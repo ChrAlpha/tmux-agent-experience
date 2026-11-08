@@ -50,6 +50,14 @@ type Request struct {
 	Since time.Time `json:"since"`
 }
 
+// Observation records hook contact independently of the reported state.
+// A verified host says nothing about whether its main turn is current.
+type Observation struct {
+	HookAt time.Time `json:"hook_at"`
+	Realm  string    `json:"realm,omitempty"`
+	Host   string    `json:"host"`
+}
+
 // Event is one line of the log: a session's state changed (Event names the
 // hook), tmag sent it a prompt, a pane started or stopped showing it, or it
 // ended.
@@ -58,13 +66,14 @@ type Request struct {
 // Cwd, Runtime, Transcript, Subagents, Capabilities and Requests are then what
 // the session is, and a field left out is empty.
 type Event struct {
-	Seq     int64     `json:"seq"`
-	Time    time.Time `json:"time"`
-	Agent   string    `json:"agent"`
-	Session string    `json:"session"`
-	Event   string    `json:"event"`
-	State   string    `json:"state,omitempty"`
-	Kind    string    `json:"kind,omitempty"`
+	Seq         int64        `json:"seq"`
+	Time        time.Time    `json:"time"`
+	Agent       string       `json:"agent"`
+	Session     string       `json:"session"`
+	Event       string       `json:"event"`
+	State       string       `json:"state,omitempty"`
+	Observation *Observation `json:"observation,omitempty"`
+	Kind        string       `json:"kind,omitempty"`
 	// Since is when the reported state/kind last changed. Older records may
 	// omit it; Time remains when this event was appended, including repair.
 	Since *time.Time `json:"since,omitempty"`

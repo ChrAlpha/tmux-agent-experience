@@ -1,0 +1,42 @@
+tmag: unknown command "__install-capabilities"
+
+tmag — agent awareness for tmux
+
+Usage:
+  tmag list     [--json]                       agents in all tmux panes
+  tmag inspect  <target> [--json] [--events N] one agent and its recent events
+  tmag watch    [--since SEQ]                  JSON lines: snapshot, then events
+  tmag read     <target> [--lines N | --last] [--json]
+                                               recent pane output, or the agent's last reply
+  tmag send     <target> [--wait | --reply] [--timeout D] [--json] [text | -]
+                                               submit a prompt to an idle agent
+  tmag reply    <target> [--timeout D] [--json] [text | -]
+                                               answer an agent that asked for a reply
+  tmag interrupt <target> [--json]             stop the agent's running turn
+  tmag request  <target> <request> [--json]    what an open request asks
+  tmag answer   <target> <request> allow|deny [--message M] [--answers JSON] [--json]
+                                               decide an open request
+  tmag wait     <target> [--for STATES] [--after SEQ] [--timeout D] [--json]
+                                               wait for a state (default idle,blocked)
+  tmag status   [--tmux] [--server S]          one-line summary for the status line
+  tmag prune    [--server S]                   clear records of agents gone, and old state
+  tmag jump     [--client C] [--server S] [--from %N] [--json]
+                                               go to the agent waiting longest
+  tmag notify   [--json]                       send a test alert through @tmag-notify
+  tmag serve    [--addr ADDR] [--host HOST]... [--origin ORIGIN]...
+                                               local HTTP API, until stopped
+  tmag auth     issue|pair LABEL [--ttl D] [--json]
+                list [--json] | revoke ID|--all [--json]
+                                               manage owner client credentials
+  tmag setup    [--yes] [--dry-run] [--agent claude|codex]
+                                               install or update the agent plugins
+  tmag doctor   [--json]                       check the installation
+  tmag uninstall [--purge]                     print removal steps; --purge clears tmag state
+  tmag hook     <claude|codex>                 agent hook entry point (reads stdin)
+  tmag answer-hook <claude>                    Claude's PermissionRequest hook: waits for answer
+  tmag version
+
+Targets: an agent id or unique prefix (>= 4 chars), a pane id %N on the current
+server, or SERVER:%N where SERVER is a tmux socket name or path.
+
+Exit codes: 0 ok, 1 error, 2 usage, 3 refused by the safety gate, 4 timeout.

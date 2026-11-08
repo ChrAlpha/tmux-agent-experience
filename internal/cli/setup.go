@@ -107,6 +107,8 @@ func (a *app) cmdSetup(args []string) int {
 	fmt.Fprintf(a.stdout, "tmag %s\n\n", version.Version)
 	for _, h := range hosts {
 		switch plan := setupPlan(h, peers); {
+		case h.ProbeFailure != "":
+			fmt.Fprintf(a.stdout, "%s: host probe incomplete (%s); installation status unknown\n", h.Name, h.ProbeFailure)
 		case !h.Present:
 			fmt.Fprintf(a.stdout, "%s: not installed, skipped\n", h.Name)
 		case !h.Listed:

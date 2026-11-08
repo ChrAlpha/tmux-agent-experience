@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ChrAlpha/tmux-agent-experience/internal/contextio"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/coord"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/lockfile"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
@@ -24,6 +25,7 @@ type Cleanup struct {
 	Slots    int
 	Examined int
 	Removed  int
+	Deferred int
 }
 
 // CleanupTemps examines fixed names only, never traversing a growing directory.
@@ -78,17 +80,21 @@ func (s Store) CleanupTemps(ctx context.Context) (Cleanup, error) {
 				}
 				return nil
 			})
-			if err != nil && !errors.Is(err, lockfile.ErrBusy) {
+			if errors.Is(err, lockfile.ErrBusy) {
+				report.Deferred++
+			} else if err != nil {
 				return err
 			}
 		}
 		return nil
 	})
 	if errors.Is(err, lockfile.ErrBusy) {
+		report.Deferred++
 		return report, nil
 	}
 	if parentCtx.Err() == nil && errors.Is(ctx.Err(), context.DeadlineExceeded) && errors.Is(err, context.DeadlineExceeded) {
-		err = nil
+		report.Deferred++
+		err = contextio.WithoutContextError(err, ctx.Err())
 	}
 	return report, err
 }

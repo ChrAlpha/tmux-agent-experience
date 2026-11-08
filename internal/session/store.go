@@ -4,12 +4,9 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"regexp"
-	"strings"
 	"time"
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/coord"
@@ -59,21 +56,7 @@ func (s Store) temporary(agent string, slot byte) string {
 
 // Get reads a session; ok is false when there is none.
 func (s Store) Get(agent, id string) (rec Record, ok bool, err error) {
-	path, err := s.path(agent, id)
-	if err != nil {
-		return Record{}, false, err
-	}
-	data, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return Record{}, false, nil
-	}
-	if err != nil {
-		return Record{}, false, err
-	}
-	if err := json.Unmarshal(data, &rec); err != nil {
-		return Record{}, false, fmt.Errorf("session %s/%s: %w", agent, id, err)
-	}
-	return rec, true, nil
+	return s.GetContext(context.Background(), agent, id)
 }
 
 // Put is a compatibility helper for fixtures. The caller holds its lock.
@@ -236,27 +219,5 @@ func (s Store) Current(ctx context.Context, log *eventlog.Log, agent, id string)
 	return s.Settle(ctx, log, rec)
 }
 
-// All reads every session. Unreadable files are skipped: one corrupt session
-// must not hide the others.
-func (s Store) All() ([]Record, error) {
-	var out []Record
-	for _, agent := range []string{proc.Claude, proc.Codex} {
-		entries, err := os.ReadDir(filepath.Join(s.root(), agent))
-		if errors.Is(err, os.ErrNotExist) {
-			continue
-		}
-		if err != nil {
-			return nil, err
-		}
-		for _, e := range entries {
-			id, ok := strings.CutSuffix(e.Name(), ".json")
-			if !ok || !ValidID(id) {
-				continue
-			}
-			if rec, found, err := s.Get(agent, id); err == nil && found {
-				out = append(out, rec)
-			}
-		}
-	}
-	return out, nil
-}
+// All reads every session using the same strict validation as AllContext.
+func (s Store) All() ([]Record, error) { return s.AllContext(context.Background()) }

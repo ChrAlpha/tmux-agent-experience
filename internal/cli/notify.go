@@ -1,20 +1,17 @@
 package cli
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"os"
-	"path/filepath"
 	"slices"
-	"strings"
-	"time"
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/hook"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/notify"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/policy"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/tmux"
 )
 
@@ -34,7 +31,7 @@ func (a *app) cmdNotify(args []string) int {
 		return a.usageError("notify", err)
 	}
 	if *fromHook {
-		if err := notify.RunAlert(os.Environ()); err != nil {
+		if err := notify.RunAlert(a.log.Dir, os.Environ()); err != nil {
 			hook.RecordError(a.log.Dir, "notify", err)
 		}
 		return ExitOK
@@ -56,7 +53,7 @@ func (a *app) cmdNotify(args []string) int {
 	failed := false
 	for _, command := range commands {
 		run, cancel := context.WithTimeout(ctx, notify.Timeout)
-		out, err := notify.Run(run, command, append(os.Environ(), alert.Env()...))
+		out, err := notify.RunBounded(run, a.log.Dir, command, append(os.Environ(), alert.Env()...))
 		cancel()
 		r := ran{Command: command, Output: string(bytes.TrimSpace(out))}
 		if err != nil {
@@ -99,27 +96,27 @@ func notifyCommands(ctx context.Context) (commands []string) {
 
 // checkNotify reports whether alerts reach the person away from the
 // terminal, and the latest failure of the command.
-func (a *app) checkNotify() check {
-	commands := notifyCommands(context.Background())
+func (a *app) checkNotify(ctx context.Context) check {
+	servers, err := tmux.ServersLimitContext(ctx, policy.MaxServers)
+	if err != nil {
+		return check{"notify", "warn", "server discovery incomplete"}
+	}
+	var commands []string
+	for _, srv := range servers {
+		command, err := srv.GlobalOptionContext(ctx, notify.Option)
+		if err != nil {
+			if absent, probeErr := srv.Absent(ctx); probeErr == nil && absent {
+				continue
+			}
+			return check{"notify", "warn", "notification option lookup unavailable"}
+		}
+		if command != "" {
+			commands = append(commands, "configured")
+		}
+	}
 	if len(commands) == 0 {
 		return check{"notify", "skip", notify.Option + " is not set: alerts ring tmux's bell only"}
 	}
-	f, err := os.Open(filepath.Join(a.log.Dir, "hook.log"))
-	if err == nil {
-		defer f.Close()
-		var latest string
-		cutoff := time.Now().Add(-24 * time.Hour)
-		sc := bufio.NewScanner(f)
-		for sc.Scan() {
-			ts, rest, _ := strings.Cut(sc.Text(), " ")
-			source, _, _ := strings.Cut(rest, " ")
-			if t, err := time.Parse(time.RFC3339, ts); err == nil && t.After(cutoff) && source == "notify" {
-				latest = sc.Text()
-			}
-		}
-		if latest != "" {
-			return check{"notify", "warn", "the command failed in the last 24h; latest: " + latest}
-		}
-	}
+
 	return check{"notify", "ok", fmt.Sprintf("%s is set; `tmag notify` sends a test alert", notify.Option)}
 }

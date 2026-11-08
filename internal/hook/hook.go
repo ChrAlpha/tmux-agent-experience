@@ -6,22 +6,25 @@ package hook
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"slices"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/adapter"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/admission"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/answer"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/attach"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/contextio"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/diagnostic"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/maintenance"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/notify"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/observe"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/policy"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/tmux"
@@ -88,19 +91,30 @@ func RunContext(parent context.Context, in Input) error {
 	if !session.ValidID(p.SessionID) {
 		return fmt.Errorf("unusable session id %q", p.SessionID)
 	}
+	observedAt := time.Now().UTC()
 	now := time.Now
 	if in.Now != nil {
 		now = in.Now
+		observedAt = now().UTC()
 	}
-	defer func() { _ = maintenance.Run(ctx, in.Log.Dir) }()
+	defer func() {
+		if err := maintenance.Run(ctx, in.Log.Dir); err != nil {
+			RecordErrorContext(ctx, in.Log.Dir, in.Agent, err)
+		}
+	}()
 
-	w, err := attach.Load(ctx)
+	w, err := contactWorld(ctx, in, p.SessionID)
 	if err != nil {
 		return err
 	}
 	env := attach.Env{Log: in.Log, Store: session.Store{Dir: in.Log.Dir}}
 	// Housekeeping on the world as loaded, once the hook's own work is done.
-	defer attach.Reconcile(ctx, env, w)
+	defer func() {
+		_, err := observe.Trigger(ctx, env)
+		if err != nil {
+			RecordErrorContext(ctx, in.Log.Dir, in.Agent, err)
+		}
+	}()
 
 	host, hostKnown := w.Proc.HostOf(in.PID)
 	ev := eventlog.Event{Agent: in.Agent, Session: p.SessionID, Event: p.HookEventName, Cwd: p.Cwd}
@@ -124,6 +138,10 @@ func RunContext(parent context.Context, in Input) error {
 		return env.DetachAll(ctx, w, in.Agent, p.SessionID)
 	}
 
+	realm, err := proc.RealmContext(ctx)
+	if err != nil {
+		return err
+	}
 	var prev, rec session.Record
 	err = env.Store.Lock(ctx, in.Agent, p.SessionID, func() error {
 		cur, found, err := get()
@@ -137,14 +155,15 @@ func RunContext(parent context.Context, in Input) error {
 		if p.Cwd != "" {
 			base.Cwd = p.Cwd
 		}
-		if hostKnown {
+		if hostKnown && host.Kind == in.Agent {
 			base.Host = session.Host{PID: host.Process.PID, Start: host.Process.Start, Role: host.Role}
 		}
 		if p.TranscriptPath != "" {
 			base.Transcript = p.TranscriptPath
 		}
 		next, changed := session.Apply(base, tr, now())
-		if found && !changed && base.Cwd == cur.Cwd && base.Host == cur.Host && base.Transcript == cur.Transcript {
+		next.Observe(observedAt, realm, hostKnown && host.Kind == in.Agent)
+		if found && !changed && next.Reports() == cur.Reports() && base.Host == cur.Host {
 			return nil
 		}
 		// Calls and other background work change without an event; whatever
@@ -188,7 +207,7 @@ func RunContext(parent context.Context, in Input) error {
 	for _, pane := range shown {
 		alert(ctx, tmux.Server{Socket: pane.Server}, pane, ring)
 	}
-	return tell(ctx, rec, shown, ring)
+	return tell(ctx, in.Log.Dir, rec, shown, ring)
 }
 
 // Alert names the change worth a bell, or "": "blocked" when an agent starts
@@ -229,7 +248,7 @@ func alerts(ctx context.Context, srv tmux.Server, kind string) bool {
 // its alerts always run the command. Each distinct command set on a server
 // whose @tmag-alert names the alert runs once, detached, so the hook does not
 // wait for the network.
-func tell(ctx context.Context, rec session.Record, shown []tmux.Pane, kind string) error {
+func tell(ctx context.Context, root string, rec session.Record, shown []tmux.Pane, kind string) error {
 	if kind == "" {
 		return nil
 	}
@@ -268,7 +287,7 @@ func tell(ctx context.Context, rec session.Record, shown []tmux.Pane, kind strin
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if err := notify.Start(bin, command, a); err != nil {
+		if err := notify.Start(ctx, root, bin, command, a); err != nil {
 			return fmt.Errorf("notify: %w", err)
 		}
 	}
@@ -291,39 +310,91 @@ func present(ctx context.Context, shown []tmux.Pane) bool {
 	return false
 }
 
-// maxErrLog bounds hook.log; it is truncated when exceeded.
-const maxErrLog = 256 << 10
-
-// RecordError appends a hook failure to <state dir>/hook.log for `tmag doctor`.
 func RecordError(dir, agent string, err error) {
 	RecordErrorContext(context.Background(), dir, agent, err)
 }
 
-// RecordErrorContext logs only while the invocation has budget remaining.
-// A replaced hook.log must not turn a diagnostic into a blocking FIFO open.
+// RecordErrorContext stores fixed categories only. No decoder text, command
+// output, or error paths enter persistent diagnostics.
 func RecordErrorContext(ctx context.Context, dir, agent string, err error) {
+	if err == nil || ctx.Err() != nil {
+		return
+	}
+	enabled, policyErr := policy.Resolve(ctx, policy.Diagnostics)
+	if policyErr != nil || enabled == 0 {
+		return
+	}
+	category := "failed"
+	if errors.Is(err, context.DeadlineExceeded) {
+		category = "timeout"
+	}
+	if errors.Is(err, context.Canceled) {
+		category = "deferred"
+	}
+	component := "hook"
+	if errors.Is(err, admission.ErrLimit) {
+		category = "resource_limit"
+		component = "notify"
+	}
+	if errors.Is(err, admission.ErrUnavailable) {
+		category = "unavailable"
+		component = "notify"
+	}
+	if errors.Is(err, notify.ErrTimeout) {
+		category = "timeout"
+		component = "notify"
+	}
+	if agent == "notify" {
+		component = "notify"
+	}
+	if agent != "claude" && agent != "codex" && agent != "notify" {
+		agent = ""
+	}
+	fault := diagnostic.Fault{Component: component, Operation: "run", Category: category, Agent: agent}
+	_ = diagnostic.Record(ctx, dir, fault)
+	_ = diagnostic.AppendLog(ctx, dir, fault)
+}
+
+// contactWorld discovers only the hook's direct pane and cached pane hints.
+// Each hint is reread and checked against a fresh process table; it provides
+// no attachment authority. The excluded shared refresh discovers all servers.
+func contactWorld(ctx context.Context, in Input, id string) (*attach.World, error) {
+	pt, err := proc.SnapshotContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	w := &attach.World{Proc: pt}
+	candidates := map[[2]string]bool{}
+	add := func(p tmux.Pane) {
+		key := [2]string{p.Server, p.ID}
+		if !candidates[key] {
+			candidates[key] = true
+			w.Panes = append(w.Panes, p)
+		}
+	}
+	if target := os.Getenv("TMUX_PANE"); target != "" && os.Getenv("TMUX") != "" {
+		srv := tmux.DefaultServer()
+		p, err := srv.Pane(ctx, target)
+		if err == nil {
+			add(p)
+		}
+	}
+	if img, err := observe.ReadImage(ctx, in.Log.Dir); err == nil {
+		for _, hint := range img.Panes {
+			if hint.Session != id || hint.Agent != in.Agent {
+				continue
+			}
+			if candidates[[2]string{hint.Server, hint.ID}] {
+				continue
+			}
+			p, err := (tmux.Server{Socket: hint.Server}).Pane(ctx, hint.ID)
+			if err == nil {
+				add(p)
+			}
+		}
+	}
 	if ctx.Err() != nil {
-		return
+		return nil, ctx.Err()
 	}
-	if os.MkdirAll(dir, 0o700) != nil {
-		return
-	}
-	path := filepath.Join(dir, "hook.log")
-	flags := os.O_CREATE | os.O_WRONLY | os.O_APPEND | syscall.O_NONBLOCK | syscall.O_NOFOLLOW
-	if st, serr := os.Stat(path); serr == nil && st.Size() > maxErrLog {
-		flags = os.O_CREATE | os.O_WRONLY | os.O_TRUNC | syscall.O_NONBLOCK | syscall.O_NOFOLLOW
-	}
-	if ctx.Err() != nil {
-		return
-	}
-	f, ferr := os.OpenFile(path, flags, 0o600)
-	if ferr != nil {
-		return
-	}
-	defer f.Close()
-	st, serr := f.Stat()
-	if serr != nil || !st.Mode().IsRegular() || ctx.Err() != nil {
-		return
-	}
-	fmt.Fprintf(f, "%s %s %v\n", time.Now().UTC().Format(time.RFC3339), agent, err)
+	return w, nil
 }

@@ -18,6 +18,7 @@ import (
 	"github.com/ChrAlpha/tmux-agent-experience/internal/attach"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/hook"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/policy"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/query"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
@@ -66,7 +67,11 @@ func (a *app) cmdList(args []string) int {
 		a.emit(map[string]any{"seq": snap.Seq, "caller": snap.Caller, "sessions": snap.Sessions, "panes": snap.Panes})
 		return ExitOK
 	}
-	a.printView(snap.View, snap.Caller)
+	threshold, err := policy.Resolve(ctx, policy.Observation)
+	if err != nil {
+		return a.fail("list", err)
+	}
+	a.printObservedView(snap.View, snap.Caller, time.Duration(threshold)*time.Second)
 	if hint := codexHint(snap.View); hint != "" {
 		fmt.Fprintln(a.stderr, "\n"+hint)
 	}
@@ -75,7 +80,7 @@ func (a *app) cmdList(args []string) int {
 
 // printView lists every agent pane, then every session no pane shows,
 // marking the caller's own session.
-func (a *app) printView(v query.View, caller query.Caller) {
+func (a *app) printObservedView(v query.View, caller query.Caller, threshold time.Duration) {
 	if len(v.Panes) == 0 && len(v.Sessions) == 0 {
 		fmt.Fprintln(a.stdout, "no agents")
 		return
@@ -98,24 +103,29 @@ func (a *app) printView(v query.View, caller query.Caller) {
 		return shortID(s.ID)
 	}
 	tw := tabwriter.NewWriter(a.stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "TARGET\tPANE\tAGENT\tSTATE\tFOR\tID\tCWD")
+	fmt.Fprintln(tw, "TARGET\tPANE\tAGENT\tSTATE\tFOR\tID\tCWD\tOBSERVATION")
 	for _, p := range v.Panes {
 		target := p.Target
 		if len(servers) > 1 {
 			target = filepath.Base(p.Server) + "/" + target
 		}
 		state, since, id := adapter.Unknown, (*time.Time)(nil), "-"
+		observation := ""
+		if threshold > 0 {
+			observation = "unknown"
+		}
 		if s, ok := v.Session(p.Agent, p.Session); ok {
 			state, since, id = describe(s.State, s.Kind), s.Since, own(s)
+			observation = session.ObservationLabel(s.Observation, time.Now(), threshold)
 			if p.View == attach.ViewSubagent {
 				state += " [subagent]"
 			}
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", target, p.ID, p.Agent, state, age(since), id, short(p.Cwd))
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", target, p.ID, p.Agent, state, age(since), id, short(p.Cwd), observation)
 	}
 	for _, s := range v.Sessions {
 		if len(s.Panes) == 0 {
-			fmt.Fprintf(tw, "-\t-\t%s\t%s\t%s\t%s\t%s\n", s.Agent, describe(s.State, s.Kind), age(s.Since), own(s), short(s.Cwd))
+			fmt.Fprintf(tw, "-\t-\t%s\t%s\t%s\t%s\t%s\t%s\n", s.Agent, describe(s.State, s.Kind), age(s.Since), own(s), short(s.Cwd), session.ObservationLabel(s.Observation, time.Now(), threshold))
 		}
 	}
 	tw.Flush()
@@ -223,7 +233,11 @@ func (a *app) cmdInspect(args []string) int {
 			v.Sessions[0].Panes = nil // list it on its own row
 		}
 	}
-	a.printView(v, query.Caller{})
+	threshold, err := policy.Resolve(ctx, policy.Observation)
+	if err != nil {
+		return a.fail("inspect", err)
+	}
+	a.printObservedView(v, query.Caller{}, time.Duration(threshold)*time.Second)
 	if s := t.Session; s != nil {
 		fmt.Fprintf(a.stdout, "\nid: %s\nruntime: %s\n", s.ID, s.Runtime)
 		for _, p := range s.Panes {

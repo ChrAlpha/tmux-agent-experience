@@ -113,6 +113,9 @@ func TestPluginInstallsBinaryAndSetsUp(t *testing.T) {
 	h.tmux("set-option", "-g", "status-right", "#{tmag_status} | %H:%M")
 	plugin := h.loadPlugin(false, nil)
 	h.waitBinary(plugin)
+	if st, err := os.Lstat(filepath.Join(plugin, "bin", ".install.lock")); err != nil || !st.Mode().IsRegular() {
+		t.Fatalf("installer did not retain its regular kernel gate: %v %v", st, err)
+	}
 
 	for key, want := range map[string]string{"a": "choose-tree", "A": "jump", "M-a": "setup"} {
 		if got := h.key(key); !strings.Contains(got, want) {

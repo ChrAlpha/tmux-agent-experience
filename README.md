@@ -73,6 +73,16 @@ the same procedure, readable by people. Use the same prompt to update.
    `$TMUX_PLUGIN_MANAGER_PATH/tmux-agent-experience/bin/` (usually
    `~/.tmux/plugins/tmux-agent-experience/bin/`).
 
+   Each install attempt has a total time limit, including version checks,
+   downloads and publication: `@tmag-install-timeout` defaults to `60` seconds
+   (allowed: `1`–`600`, or `off` to preserve the binary and disable fetching).
+   Failed downloads leave the prior executable intact. Verified releases with
+   the publisher helper use a permanent regular-file `bin/.install.lock`; its
+   kernel lock releases on exit and the next load recovers owned staging.
+   Released 0.3.0 uses an explicit compatibility path with an owned directory
+   lock. Both paths stage and execute verified candidates inside the plugin's
+   `bin/`, so `TMPDIR` need not allow execution.
+
 2. Press `prefix + M-a`. A popup shows the commands that connect Claude Code
    and Codex through their own plugin managers, runs them once you confirm, and
    checks the result. Each agent gets two plugins: `tmag`, whose hooks report
@@ -101,6 +111,18 @@ holds an approval of hooks to the plugin version it was given for, so after
 each update it asks again: approve tmag's hooks with `/hooks` in a new Codex
 session.
 
+An unknown or legacy directory at `bin/.install.lock` needs inspection after
+stopping old installers; it is never removed just because it is old. Before
+migrating from the old age-expiring directory lock, stop any still-running old
+installers, including ones whose lock was already taken by another old process.
+Preserve the new regular-file lock; the legacy compatibility path cannot replace
+it. A crashed legacy compatibility installer may leave a directory lock requiring
+quiescent owner recovery. Ambiguous bootstrap scratch is also preserved.
+If an attempt times out or is interrupted around publication, inspect the binary
+before retrying: rename may have completed before its success receipt. TPM/Git
+checkout changes do not share the publication lock; the installer rejects an
+already obsolete version request, and the next load converges with a later update.
+
 ### Options
 
 | Option | Default | |
@@ -113,13 +135,27 @@ session.
 | `@tmag-alert` | `blocked,finished` | which changes alert you: ring a pane's bell, and run `@tmag-notify` |
 | `@tmag-notify` | unset | a command that tells you of an alert away from the terminal (see [Notifications](#notifications)) |
 | `@tmag-answer` | `on` | who may decide an agent's permission prompts and questions with `tmag answer`, beside the agent's own dialog: `on` for people, `agents` for agents too, `off` for nobody |
+| `@tmag-watch-limit` | `32` | combined CLI and HTTP watch admissions per realm (1..256); `off` refuses new subscriptions |
+| `@tmag-notify-limit` | `4` | combined detached and foreground notification commands per realm (1..256); `off` skips external commands |
+| `@tmag-reconcile-interval` | `2` | minimum shared refresh interval in seconds (1..3600); `off` leaves direct hook work and explicit prune |
+| `@tmag-observation-age` | `900` | hook contact display threshold in seconds (1..86400); `off` hides the age label |
+| `@tmag-diagnostics` | `on` | best-effort bounded historical faults and maintenance progress; `off` leaves current errors visible and historical progress explicitly unknown |
 | `@tmag-peers` | `on` | whether `prefix + M-a` gives the agents the `tmag-peers` skill, for working with each other; `off` removes it |
 | `@tmag-release-url` | GitHub releases | where to download the binary, for mirrors |
+| `@tmag-install-timeout` | `60` | total install budget in seconds (`1`–`600`); `off` disables fetching |
 
 Set a key option to `off` to leave it unbound, `@tmag-alert` to `off` for
 no bells, `@tmag-answer` to `off` to answer prompts only in the agent, and
 `@tmag-peers` to `off`, then press `prefix + M-a`, to keep tmag out of the
 agents' context. Set options before TPM's `run` line.
+
+Operational options are resolved across all discovered tmux servers in the
+selected state realm: the smallest admission limit, longest refresh/contact
+interval, and any `off` take precedence. Unset options use their defaults.
+Resolution examines at most sixteen servers within 100 ms; lookup uncertainty,
+invalid values or excess participants return an explicit operational error.
+With no servers, compiled defaults apply. Bounds apply to cooperating versions;
+restart older invocations before relying on a total limit across an upgrade.
 
 ## The `tmag` command
 
@@ -133,11 +169,11 @@ Agent hooks find the plugin's binary on their own, and so do agents with the
 
 ```console
 $ tmag list
-TARGET     PANE  AGENT   STATE                FOR  ID        CWD
-work:1.0   %3    claude  blocked (permission) 12s  1787a44e  ~/src/api
-work:2.0   %7    codex   idle                 4m   01a19fda  ~/src/web
-work:3.0   %9    codex   unknown              -    -         ~/src/web
--          -     claude  working (background) 2m   5c2e90b1  ~/src/api
+TARGET    PANE  AGENT   STATE                 FOR  ID        CWD        OBSERVATION
+work:1.0  %3    claude  blocked (permission)  12s  1787a44e  ~/src/api  recent
+work:2.0  %7    codex   idle                  24m  01a19fda  ~/src/web  quiet
+work:3.0  %9    codex   unknown               -    -         ~/src/web  unknown
+-         -     claude  working (background)  2m   5c2e90b1  ~/src/api  recent
 
 $ tmag send 01a19fda --wait "Review the diff in HEAD and list risky changes"
 01a19fda idle
@@ -170,6 +206,13 @@ runs:
 
 A session ends with its agent's `SessionEnd`, or when the process it runs in
 exits without one.
+
+Hook contact is reported separately as optional `observation` metadata:
+`hook_at`, `realm`, and `host` evidence. Human output labels contact `recent`,
+`quiet`, or `unknown`; a recent background or late hook does not establish that
+the main state is current. Time never changes state, closes requests or permits
+cleanup. Every observation update has a complete session event with unchanged
+`since`. Legacy records without this metadata remain readable.
 
 ### Sessions and panes
 
@@ -438,8 +481,17 @@ client and command gateway; it consumes public contracts and releases separately
 
 `@tmag-notify` is an optional local command run for `blocked` and `finished`
 alerts enabled by `@tmag-alert`, including sessions without panes. It receives
-only metadata. It runs separately from the agent hook and has a 20-second bound.
-`tmag notify` sends a test alert; `tmag doctor` reports recent failures.
+only metadata. It runs separately from the agent hook with one 20-second
+budget beginning before detached setup. Invalid inherited-lease metadata leaves
+unrelated descriptors untouched and falls back to normal admission. Admission
+covers ordinary command shell descendants through an inherited descriptor,
+including after a notifier process dies. Timeout cleanup ends the owned process group before releasing its
+lease. Commands that deliberately close inherited descriptors, daemonize or
+escape that group are outside this containment contract. At capacity an alert
+is skipped without a queue; bells still follow `@tmag-alert`. Command output is
+bounded in memory for foreground results and never enters stored diagnostics.
+`tmag notify` sends a test alert; `tmag doctor` separates historical failures
+from current bounded diagnostic evidence.
 
 | Variable | Meaning |
 | --- | --- |
@@ -525,12 +577,13 @@ or exits in a pane, a pane moves or closes, a pane switches between a
 session's main agent and a subagent). Events carry `seq`, `time`, `agent`,
 `session` and `event`. An event with `state` reports the session in full:
 `state`, `kind`, `turn`, `cwd`, `runtime`, `transcript`, `subagents`,
-`capabilities` and `requests` are
+`capabilities`, `requests`, `since` and optional `observation` are
 then what the session is, and a field left out is empty. Every change to any
 of them is such an event. `event` is the hook's name, or one of:
 
 | Event | Meaning |
 | --- | --- |
+| `Observation` | Hook/host evidence changed without a state change; the complete session report preserves `since`. |
 | `Attach` | A pane (`pane`) started showing the session, by `evidence`. |
 | `Detach` | A pane (`pane`) stopped showing the session. |
 | `Send` | `tmag send` delivered a prompt `via` `pane` (then through `pane`) or `service`, `bytes` long. |
@@ -546,7 +599,19 @@ A session changes only through events, so a client that applies
 events to the snapshot and replaces its pane list with each `panes` document
 stays current. Changes that come without a hook (a pane closes, an agent is
 killed, a title shows another thread) are found by whichever tmag process
-looks next, `watch` itself every two seconds, and recorded once as events.
+looks next. Cooperating hook/list/status/watch invocations share one refresh lock
+and a default two-second cooldown. A one-shot invocation inside the cooldown
+can defer global repair; later ordinary list/status/watch or hook invocations
+make bounded progress when eligible. No resident worker runs after an invocation
+ends. Fresh list/caller reads remain usable when automatic repair is disabled,
+without requiring a shared image; actual metadata, ownership and cancellation
+errors remain explicit. A pass repairs at most 128 resources in a
+300 ms sub-budget, resuming native directory positions and rotating phases.
+Exhausting that repair budget defers work while complete capture uses the
+refresh's remaining time; actual parent cancellation and storage faults remain
+errors. Large stable sets need repeated invocations. Pending records and pane markers
+remain the repair queue, including after cancellation or failed publication.
+Discovered changes are recorded as events.
 A change is logged even when the tmag process that made it dies before
 logging it: the next one to touch the session logs it. An event may therefore
 repeat. After a disconnect, `tmag watch --since <last seq>`
@@ -571,7 +636,31 @@ replacement attempts in thirty seconds, then ends with `history_unavailable` if
 the reader still cannot keep up. Each snapshot capture retries at most three
 times within five seconds. The default stream keeps its terminal-error behavior.
 
-Snapshots are current scans with replay overlap, rather than atomic images at
+Ordinary list snapshots use fresh scans. One-shot status output applies the
+copied complete state/end events to its shared image before counting sessions;
+its replay view never supplies caller or control proof. Watches use complete shared metadata
+images capped at 16 MiB; each retains the full pre-scan replay checkpoint and
+validates/copies its backlog before output. Cache age is bounded to twice the
+refresh interval (four seconds when opportunistic refresh is off). Cache images
+contain no caller or control proof; control gates always load fresh evidence.
+A completed failed refresh ends an existing stream explicitly, preserving its
+last image. During a healthy active refresh, contenders can reuse the preceding
+successful image within its age bound. An incomplete attempt discovered after
+regaining the refresh lock is reported as unavailable; later refreshes can repair
+it without discarding pending resource markers.
+A busy refresh without an admissible image returns `observation_busy`; stale or
+failed evidence is `observation_unavailable`, and excess image size is
+`observation_capacity`. Explicit `tmag prune` can refresh with automatic
+reconciliation disabled. Complete image faults remain `records_unavailable`.
+
+Watch admission happens before discovery or stream workers. At capacity a CLI
+watch returns `resource_limit` (exit 1). HTTP returns 429 with `Retry-After: 2`
+before stream creation or authentication; admission storage/policy uncertainty
+returns 503 `admission_unavailable`. Accepted subscriptions retain their lease
+through cancellation and worker cleanup. Lowering a limit applies to new
+admissions while accepted work drains. No watch or notification queue is kept.
+
+Snapshots have replay overlap, rather than atomic images at
 `seq`. A scan may already include later state: apply the copied events after it
 and continue following, allowing temporary overlap until replay and pending-write
 repair catch up. A state event's optional `since` timestamp preserves when that
@@ -582,7 +671,8 @@ approximation.
 Over SSH, a remote client needs nothing else: `ssh host tmag watch`. A watch
 ends as soon as nobody reads it, even with nothing to send: when its reader
 closes the pipe, or when the connection of a command ssh runs without a
-terminal drops.
+terminal drops. Handled interruption signals also stop normally; a signal's
+cancellation cause never replaces an independent stream error.
 
 Sequence numbers increase across the life of the state directory and start from
 the current time when it is created. Unused reservations leave legitimate gaps;
@@ -605,6 +695,36 @@ timeout. With `--json`, errors are also printed as
 `refused:idle`, `refused:unsupported`, `refused:self`, `refused:agent`,
 `ended`, `no_reply`, `history_unavailable`, `integrity_loss`, `timeout` and `error`.
 
+Concurrent watch admission waits only within its 100 ms acquisition budget;
+incidental admission-gate contention reports unavailable, not full capacity.
+An admitted watch can share the initial unseeded observation publication within
+the existing 1.5-second refresh budget. It never starts a parallel discovery scan.
+
+Complete list, inspect and watch images fail with `records_unavailable` when
+session metadata is corrupt, oversized, unsafe or unreadable. `tmag doctor`
+and `tmag doctor --json` report individually readable records and bounded
+metadata fault references, historical component/operation/category counts and
+first/last times, overflow/truncation, and effective realm options. Historical
+counts alone do not indicate a current failure. The read-only diagnostic pass
+shares a two-second budget, including host/version/plugin and daemon probes;
+helper descendants are contained and retained output is capped. Session probing
+inspects at most 128 entries and 8 MiB, with 16 samples. Incomplete results are
+explicitly unknown, never proof of absence. A send awaiting a confirming host
+report is **unconfirmed**; contact time proves neither delivery nor state freshness.
+
+Doctor also shows the last successful shared observation generation/time, the
+last attempt and nonblocking refresh-lock evidence. A pending marker with a free
+lock is incomplete evidence; a held lock proves contention, not worker identity
+or health. Stale, unreadable or inconsistent images remain explicit. Log health
+uses a separate read-only check of at most 1 MiB/4096 retained records: corruption
+reports `integrity_loss`, incomplete tails are preserved, and capacity, unreadable
+ownership or contention never become a healthy-log assertion. This inspection
+does not certify replay continuity, adopt metadata, repair it, or refresh an image.
+Repair storage permissions or restore a known-good record; damaged originals
+are preserved. Reconciliation can settle valid records independently. Its pane
+diagnostic overlay hides an unreadable record's projection while preserving
+attachment and pending event markers until recovery.
+
 ## Footprint
 
 | Piece | Where | Removed by |
@@ -615,8 +735,11 @@ timeout. With `--json`, errors are also printed as
 | `tmag serve` | a tmux window, while you keep it open, and `@tmag_api_addr` while it runs | closing the window |
 | Owner credentials | `$XDG_STATE_HOME/tmag/auth/`, or `TMAG_AUTH_DIR`: metadata and verification digests | `tmag auth revoke`, or `tmag uninstall --purge` |
 | Sessions and event log | `$XDG_STATE_HOME/tmag/<realm>/` (default `~/.local/state/tmag/<realm>/`): one small file per live session, at most two 8 MB event files, answer sockets under `req/` while hooks wait. The realm names the process table tmag sees, one per container or machine and boot, so containers that share a home directory keep their sessions apart | `tmag uninstall --purge`; ordinary maintenance preserves foreign realms and legacy state trees whose retirement is unknown |
-| Coordination | `<state dir>/coord/`: permanent namespace gate, at most 256 pane, 256 session and 256 request-position locks, plus a fixed number of maintenance files; compatibility mode also retains per-resource files under `locks/` | removing the state directory with `tmag uninstall --purge` |
+| Shared observation | `<state dir>/observe/`: one permanent refresh lock, bounded image, cooldown and resumable progress, each with a reserved fixed temporary | reuse or full purge; failures preserve pending repair evidence |
+| Admission | `<state dir>/coord/`: permanent admission gate and at most 256 `w-XX` and 256 `n-XX` flock files; only used slots are created | process/descendant descriptor close releases occupancy; files stay until full purge |
+| Coordination | `<state dir>/coord/`: permanent namespace gate, at most 256 pane, 256 session and 256 request-position locks, plus fixed maintenance files including an 8 KiB progress record, permanent status lock and one reserved temporary; compatibility mode also retains per-resource files under `locks/` | removing the state directory with `tmag uninstall --purge` |
 | Answer endpoints after cutover | `<state dir>/req/`: at most 256 `sock-XX`, 256 identity-only `meta-XX` and 256 fixed `temp-XX` positions | bounded maintenance, or reuse after the previous listener closed |
+| Diagnostics | `<state dir>/diagnostics/`: fixed locks, summary and reserved temporary; at most 32 category buckets and 32 KiB; serialized `hook.log` at most 256 KiB | bounded rotation or full purge |
 | Session publication temporaries | `<state dir>/sessions/<agent>/.tmag-tmp-s-XX`: at most 256 fixed positions per agent, sharing its session stripes | the next successful publication at that position, or bounded maintenance |
 
 Resource locks default to compatibility mode in every directory, including an
@@ -651,7 +774,12 @@ exclusive stable gate, with a nonblocking per-file lock and identity check. It
 also removes known legacy answer sockets only on definite connection refusal or
 absence; live, uncertain and contended objects stay intact. The gate, pool files
 and directory anchors remain permanent. Unknown names, nonempty lock files,
-aliases and foreign realms remain preserved.
+aliases and foreign realms remain preserved. Doctor exposes best-effort admitted
+and completed pass counts, newest recorded completion, examined/removed work,
+deferrals and a fixed failure category. These describe bounded passes, not proof
+that all housekeeping finished. Missing completion cannot establish a live
+worker; missing, unreadable or recording-off evidence remains unknown. The
+existing maintenance cursor and fair class rotation remain compatible.
 
 Session publication uses one fixed `.tmag-tmp-s-XX` temporary position per
 agent and stripe, directly beside its record. Publication renames two direct

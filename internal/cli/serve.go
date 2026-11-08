@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/auth"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/policy"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/serve"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/tmux"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/version"
@@ -44,7 +45,7 @@ func parseServe(args []string) (serveFlags, error) {
 	return f, err
 }
 func (a *app) serveConfig(f serveFlags) serve.Config {
-	cfg := serve.Config{Auth: auth.Store{Dir: auth.DefaultDir()}, Hosts: f.hosts, Origins: f.origins, Version: version.Version, Log: log.New(a.stderr, "", log.Ltime)}
+	cfg := serve.Config{StateDir: a.log.Dir, Auth: auth.Store{Dir: auth.DefaultDir()}, Hosts: f.hosts, Origins: f.origins, Version: version.Version, Log: log.New(a.stderr, "", log.Ltime)}
 	cfg.Run = func(ctx context.Context, args []string, in io.Reader, out, stderr io.Writer) int {
 		if in == nil {
 			in = strings.NewReader("")
@@ -233,10 +234,21 @@ func splitArgs(s string) ([]string, error) {
 
 // checkServe reports whether tmag serve runs behind a tunnel.
 
-func checkServe() check {
-	for _, srv := range tmux.Servers() {
-		if addr := srv.GlobalOption(context.Background(), serveAddressOption); addr != "" {
-			return check{"serve", "ok", "local HTTP API at " + addr}
+func checkServe(ctx context.Context) check {
+	servers, err := tmux.ServersLimitContext(ctx, policy.MaxServers)
+	if err != nil {
+		return check{"serve", "warn", "server discovery incomplete"}
+	}
+	for _, srv := range servers {
+		addr, err := srv.GlobalOptionContext(ctx, serveAddressOption)
+		if err != nil {
+			if absent, probeErr := srv.Absent(ctx); probeErr == nil && absent {
+				continue
+			}
+			return check{"serve", "warn", "serve option lookup unavailable"}
+		}
+		if addr != "" {
+			return check{"serve", "ok", "local HTTP API configured; reachability not probed"}
 		}
 	}
 	return check{"serve", "skip", "optional local HTTP API is stopped (prefix + M-r opens it)"}

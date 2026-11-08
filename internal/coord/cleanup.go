@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ChrAlpha/tmux-agent-experience/internal/contextio"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/dirscan"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/lockfile"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/ownedfs"
@@ -23,6 +24,7 @@ type Reclaimed struct {
 	Examined   int
 	Candidates int
 	Removed    int
+	Deferred   int
 }
 
 // CleanupRetired removes known empty legacy lock files only after the explicit
@@ -100,6 +102,7 @@ func CleanupRetired(ctx context.Context, root string) (Reclaimed, error) {
 				defer f.Close()
 				if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 					if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EINTR) {
+						r.Deferred++
 						return false, nil
 					}
 					return false, err
@@ -127,10 +130,12 @@ func CleanupRetired(ctx context.Context, root string) (Reclaimed, error) {
 		return nil
 	})
 	if errors.Is(err, lockfile.ErrBusy) {
+		r.Deferred++
 		return r, nil
 	}
 	if parentCtx.Err() == nil && errors.Is(ctx.Err(), context.DeadlineExceeded) && errors.Is(err, context.DeadlineExceeded) {
-		err = nil
+		r.Deferred++
+		err = contextio.WithoutContextError(err, ctx.Err())
 	}
 	return r, err
 }

@@ -87,6 +87,15 @@ a design problem, not a test problem.
   (`proc.Realm`: the PID namespace and boot on Linux, the boot on macOS)
   under `$XDG_STATE_HOME/tmag`: containers sharing a home would otherwise end
   each other's sessions. `TMAG_STATE_DIR` names the directory itself.
+- **Hook contact is independent of state.** Optional observation metadata and
+  recent/quiet/unknown labels never establish turn freshness or authority. An
+  observation-only change is a complete event with unchanged Since. Legacy
+  records retain the existing runtime-host lifetime contract; terminal and
+  service host death is freshly rechecked under the session lock before Exit.
+- **Complete images never hide metadata faults.** Strict catalog reads refuse
+  corrupt records. Individually valid repair can continue. Pane diagnostic
+  suppression is ephemeral presentation that preserves attachments and event
+  markers; it never fabricates an end or acknowledges pending publication.
 - **A session's state never depends on a pane.** Hooks apply to the session
   (`internal/session`) wherever it runs: the Codex daemon and Claude's
   background supervisor run sessions no terminal owns.
@@ -146,6 +155,28 @@ a design problem, not a test problem.
   or expired credential loses its subscriptions; accepted actions finish.
 - **Nothing edits user configuration.** Install and uninstall go through each
   host's own mechanism (`claude plugin`, `codex plugin`, TPM).
+- **Shared observation never proves a caller or control.** Refresh exclusion
+  precedes global discovery; persisted images retain the full pre-scan log
+  checkpoint and watches copy replay before output. One-shot status applies its
+  copied complete reports/end events without altering that checkpoint or
+  inventing client views. Ordinary fresh reads join the rate-limited repair
+  trigger but do not require a cache when optional repair is skipped. Failures
+  preserve repair markers and resumable progress. Healthy records use the complete outer world;
+  only prospective host death needs a fresh process snapshot under its lock.
+- **Admission includes cleanup.** Permanent flock slots bound cooperating CLI
+  watches/SSE and notification executions. A subscription releases only after
+  its owned workers join; notification shells inherit their lease. Slots are
+  never unlinked or reclaimed by elapsed time. Gate contention is unavailable,
+  not capacity exhaustion; admission waits only within its fixed budget. Initial
+  watch publication can wait within the existing refresh deadline and shares one
+  discovery. Option uncertainty refuses work.
+- **Diagnosis preserves evidence.** Doctor shares a finite parent budget across
+  metadata, host helpers and daemon discovery. It reads only bounded samples,
+  never adopts or repairs metadata, and separates historical faults from current
+  evidence. Pending observation/maintenance markers do not prove a live worker;
+  missing, off, stale, contended or unreadable evidence remains explicit. Log
+  inspection preserves corrupt records and unfinished tails. Maintenance status
+  is fixed-size best effort, within the existing pass deadline and cursor order.
 - **The contract is versioned.** Changing a JSON field's meaning or removing
   one requires a new schema name; adding optional fields does not.
 
@@ -159,6 +190,10 @@ a design problem, not a test problem.
 | `cmd/tmag` | Entry point |
 | `internal/cli` | Commands, flags, output, exit codes |
 | `internal/hook` | One hook invocation: apply to the session, attach on proof, update panes, alert, log |
+| `internal/observe` | Shared complete metadata images, pre-scan replay checkpoints and bounded resumable repair; no control proof |
+| `internal/diagnostic` | Bounded category summaries and serialized metadata-only hook failures |
+| `internal/policy` | Bounded, error-returning conservative realm option resolution |
+| `internal/admission` | Permanent cross-process flock slots and inherited leases |
 | `internal/notify` | An alert's variables, and `@tmag-notify` run detached within a time limit |
 | `internal/auth` | Persistent owner credentials, one-use invitations and revocation |
 | `internal/serve` | Local HTTP/SSE contract, admission and allowlisted in-process CLI operations |

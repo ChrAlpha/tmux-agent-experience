@@ -80,7 +80,19 @@ churn ends with the same terminal error document. Without this parameter,
 midstream history loss remains terminal. SSE ids stay numeric, and snapshots
 retain the CLI's replay-overlap semantics rather than claiming an atomic view.
 
-Disconnecting ends that subscription and its local watch. Every second, serve
+Watch admission shares the selected realm's `@tmag-watch-limit` (default 32)
+with CLI watches and other serve processes. Host/origin and watch syntax are
+checked first; capacity is acquired before bearer authentication, pipes or
+workers. A full realm returns HTTP 429 `resource_limit` with `Retry-After: 2`;
+uncertain admission storage or option lookup returns 503
+`admission_unavailable`. Rejected authentication releases its slot. Internal
+typed borrowing prevents one SSE from consuming a second CLI slot. Lowered
+limits affect new admissions; accepted subscriptions finish normally.
+
+Disconnecting ends that subscription and its local watch. Cancellation closes
+both pipe ends and joins the runner and scanner before releasing capacity.
+The write deadline remains five seconds. General HTTP connections and non-watch
+requests are outside this subscription bound. Every second, serve
 checks the persisted authorization store: revocation, expiry or a failed check
 ends the subscription, including when another process revoked the credential.
 A store check is bounded to five seconds. Subsequent requests authenticate again.

@@ -24,6 +24,7 @@ import (
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/answer"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/attach"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/diagnostic"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/query"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
@@ -475,8 +476,21 @@ func TestClaudeAnswersThroughTheHook(t *testing.T) {
 	received("hook:allow")
 	h.waitSession(sidA, "idle")
 	// The answer closes the request at once; the call runs on.
-	if got := h.eventNames(sidA); !strings.HasSuffix(got, "PermissionRequest:blocked Answer:working Stop:idle") {
-		t.Fatalf("events = %s", got)
+	if got, want := h.eventNames(sidA), "SessionStart:idle Attach:idle UserPromptSubmit:working PreToolUse:working PermissionRequest:blocked Answer:working PostToolUse:working Stop:idle"; got != want {
+		t.Fatalf("events = %s; want %s", got, want)
+	}
+	events := h.events(sidA)
+	// Tool-contact reports are complete events without a state/kind change.
+	// Keep the answer before the tool result, the exact Since, and no content.
+	for _, pair := range [][2]int{{2, 3}, {5, 6}} {
+		before, after := events[pair[0]], events[pair[1]]
+		if before.Since == nil || after.Since == nil || !before.Since.Equal(*after.Since) || after.Observation == nil || after.Observation.HookAt.IsZero() || before.State != after.State || before.Kind != after.Kind {
+			t.Fatalf("contact changed Since/state or lost its report: %+v -> %+v", before, after)
+		}
+	}
+	encoded, err := json.Marshal(events)
+	if err != nil || bytes.Contains(encoded, []byte(`"command":"date"`)) || bytes.Contains(encoded, []byte("hook:allow")) {
+		t.Fatal("answer/tool content entered events", err)
 	}
 	f.agrees(h)
 	if r := h.tmag("", "answer", sidA[:8], req.ID, "allow"); r.code != 3 || !strings.Contains(r.out, "changed") {
@@ -738,10 +752,17 @@ func TestCodexDaemonSessions(t *testing.T) {
 	if r := h.tmag("", "send", h.target(byID), "--json", "hello"); r.code != 0 || !strings.Contains(r.out, `"via":"service"`) {
 		t.Fatalf("send while the pane shows a subagent: %d %s", r.code, r.out)
 	}
+	h.eventually("the daemon's turn while showing a subagent", func() bool {
+		return strings.HasSuffix(h.eventNames(sidB), "Send: UserPromptSubmit:working Stop:idle")
+	})
 
 	// Showing another thread moves the pane to it.
 	h.tmux("select-pane", "-t", byID, "-T", codexTitle("other", sidC))
-	h.tmag("", "status") // any reconciliation records the move
+	// Status is opportunistic and may be in its cooldown. Explicit pruning
+	// establishes the move before asserting its durable Attach/Detach events.
+	if r := h.tmag("", "prune"); r.code != 0 {
+		t.Fatalf("reconcile thread switch: %+v", r)
+	}
 	if _, s := h.waitPane(byID, "blocked", "title-id"); s.ID != sidC {
 		t.Fatalf("pane shows %s after switching threads", s.ID)
 	}
@@ -755,7 +776,9 @@ func TestCodexDaemonSessions(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = d.cmd.Wait()
-	h.tmag("", "status")
+	if r := h.tmag("", "prune"); r.code != 0 {
+		t.Fatalf("reconcile daemon death: %+v", r)
+	}
 	for _, id := range []string{sidB, sidC} {
 		if got := h.eventNames(id); !strings.Contains(got, "Exit:") {
 			t.Fatalf("%s events after the daemon exited: %s", id, got)
@@ -900,9 +923,11 @@ func TestDaemonInsidePaneDoesNotAttach(t *testing.T) {
 
 // watcher runs `tmag watch` and reads its JSON lines.
 type watcher struct {
-	t     *testing.T
-	cmd   *exec.Cmd
-	lines *bufio.Scanner
+	t      *testing.T
+	cmd    *exec.Cmd
+	lines  *bufio.Scanner
+	stderr *os.File
+	tail   []byte
 }
 
 func (h *harness) watch(args ...string) *watcher {
@@ -912,33 +937,70 @@ func (h *harness) watch(args ...string) *watcher {
 	if err != nil {
 		h.t.Fatal(err)
 	}
-	if err := cmd.Start(); err != nil {
+	stderr, err := os.CreateTemp(h.dir, "watch-stderr")
+	if err != nil {
 		h.t.Fatal(err)
 	}
-	h.t.Cleanup(func() {
-		_ = cmd.Process.Kill() // already stopped in the normal case
-		_ = cmd.Wait()
-	})
-	return &watcher{t: h.t, cmd: cmd, lines: bufio.NewScanner(out)}
+	cmd.Stderr = stderr
+	if err := cmd.Start(); err != nil {
+		_ = stderr.Close()
+		h.t.Fatal(err)
+	}
+	h.t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait(); _ = stderr.Close() })
+	scanner := bufio.NewScanner(out)
+	scanner.Buffer(make([]byte, 64<<10), 16<<20)
+	return &watcher{t: h.t, cmd: cmd, lines: scanner, stderr: stderr}
 }
 
+const watchEvidenceBytes = 16 << 10
+
+func (w *watcher) remember(line []byte) {
+	if len(line) > watchEvidenceBytes {
+		line = line[len(line)-watchEvidenceBytes:]
+	}
+	w.tail = append(w.tail, line...)
+	w.tail = append(w.tail, '\n')
+	if len(w.tail) > watchEvidenceBytes {
+		w.tail = slices.Clone(w.tail[len(w.tail)-watchEvidenceBytes:])
+	}
+}
+func (w *watcher) errorOutput() string {
+	st, err := w.stderr.Stat()
+	if err != nil {
+		return "stderr unavailable"
+	}
+	b := make([]byte, min(st.Size(), watchEvidenceBytes))
+	n, _ := w.stderr.ReadAt(b, max(int64(0), st.Size()-watchEvidenceBytes))
+	return string(b[:n])
+}
 func (w *watcher) next() map[string]any {
 	w.t.Helper()
-	ch := make(chan map[string]any, 1)
+	type frame struct {
+		doc map[string]any
+		raw []byte
+		err error
+	}
+	ch := make(chan frame, 1)
 	go func() {
-		var doc map[string]any
+		f := frame{}
 		if w.lines.Scan() {
-			if err := json.Unmarshal(w.lines.Bytes(), &doc); err != nil {
-				doc = map[string]any{"invalid": w.lines.Text()}
-			}
+			line := w.lines.Bytes()
+			f.err = json.Unmarshal(line, &f.doc)
+			f.raw = slices.Clone(line[max(0, len(line)-watchEvidenceBytes):])
+		} else {
+			f.err = w.lines.Err()
 		}
-		ch <- doc
+		ch <- f
 	}()
 	select {
-	case doc := <-ch:
-		return doc
+	case f := <-ch:
+		w.remember(f.raw)
+		if f.err != nil || f.doc == nil || f.doc["error"] != nil {
+			w.t.Fatalf("watch terminal/invalid frame (%v): %s; stderr: %s", f.err, w.tail, w.errorOutput())
+		}
+		return f.doc
 	case <-time.After(5 * time.Second):
-		w.t.Fatal("watch produced nothing")
+		w.t.Fatalf("watch produced nothing; last frames: %s; stderr: %s", w.tail, w.errorOutput())
 	}
 	return nil
 }
@@ -958,11 +1020,18 @@ func (w *watcher) until(what string, ok func(doc map[string]any) bool) map[strin
 // stop ends the watcher the way a disconnecting client would.
 func (w *watcher) stop() {
 	w.t.Helper()
-	if err := w.cmd.Process.Signal(syscall.SIGTERM); err != nil {
-		w.t.Fatal(err)
+	signalErr := w.cmd.Process.Signal(syscall.SIGTERM)
+	// Drain before Wait closes StdoutPipe. Preserve any already-buffered terminal
+	// frame, with a fixed tail bound and a private-child shutdown cutoff.
+	cutoff := time.AfterFunc(5*time.Second, func() { _ = w.cmd.Process.Kill() })
+	defer cutoff.Stop()
+	for w.lines.Scan() {
+		w.remember(w.lines.Bytes())
 	}
-	if err := w.cmd.Wait(); err != nil {
-		w.t.Fatalf("watch exited with %v", err)
+	scanErr := w.lines.Err()
+	waitErr := w.cmd.Wait()
+	if waitErr != nil || scanErr != nil || signalErr != nil && !errors.Is(signalErr, os.ErrProcessDone) && !errors.Is(signalErr, syscall.ESRCH) {
+		w.t.Fatalf("watch stop: signal=%v scan=%v exit=%v; last frames: %s; stderr: %s", signalErr, scanErr, waitErr, w.tail, w.errorOutput())
 	}
 }
 
@@ -1049,7 +1118,7 @@ func (f *follower) apply(line []byte) {
 			}
 			f.sessions[key] = query.Session{
 				ID: e.Session, Agent: e.Agent, State: e.State, Kind: e.Kind, Turn: e.Turn, Since: since,
-				Cwd: e.Cwd, Runtime: e.Runtime, Transcript: e.Transcript, Subagents: e.Subagents,
+				Observation: e.Observation, Cwd: e.Cwd, Runtime: e.Runtime, Transcript: e.Transcript, Subagents: e.Subagents,
 				Capabilities: e.Capabilities, Requests: e.Requests,
 			}
 		}
@@ -1313,6 +1382,7 @@ func exited(t *testing.T, cmd *exec.Cmd, when string) {
 // type at a terminal, where the bell reaches them.
 func TestAlertsRunTheNotifyCommand(t *testing.T) {
 	h := start(t)
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Cleanup(func() {
 		if t.Failed() {
 			b, _ := os.ReadFile(filepath.Join(h.state, "hook.log"))
@@ -1372,17 +1442,63 @@ func TestAlertsRunTheNotifyCommand(t *testing.T) {
 	// From a hook, the failure goes where hook failures go.
 	d.hook(map[string]any{"hook_event_name": "PostToolUse", "session_id": sidC, "turn_id": "t1", "tool_name": "Bash"})
 	d.hook(map[string]any{"hook_event_name": "PermissionRequest", "session_id": sidC, "turn_id": "t1", "tool_name": "Bash"})
-	h.eventually("the failure in doctor", func() bool {
-		r := h.tmag("", "doctor")
-		return strings.Contains(r.out, "notify") && strings.Contains(r.out, "unreachable")
+	var notifyCount uint64
+	h.eventually("the metadata-only failure in doctor", func() bool {
+		r := h.tmag("", "doctor", "--json")
+		var doc struct {
+			Operational struct {
+				History diagnostic.History `json:"historical_faults"`
+			} `json:"operational"`
+		}
+		if json.Unmarshal([]byte(r.out), &doc) != nil {
+			return false
+		}
+		if strings.Contains(r.out, "unreachable") {
+			t.Fatal("doctor exposed raw notification output")
+		}
+		for _, b := range doc.Operational.History.Buckets {
+			if b.Component == "notify" && b.Operation == "run" && b.Category == "failed" && b.Count > 0 && !b.First.IsZero() && !b.Last.IsZero() {
+				notifyCount = b.Count
+				return true
+			}
+		}
+		return false
 	})
+	// Foreground output remains useful, while only the intentional detached
+	// failure is persisted. Decode every line so unexpected failures still fail.
+	var recorded []byte
+	h.eventually("the intentional detached failure in hook.log", func() bool {
+		var err error
+		recorded, err = os.ReadFile(filepath.Join(h.state, "hook.log"))
+		return err == nil && len(bytes.TrimSpace(recorded)) > 0
+	})
+	count := uint64(0)
+	for _, line := range bytes.Split(bytes.TrimSpace(recorded), []byte{'\n'}) {
+		var entry struct {
+			diagnostic.Fault
+			Time time.Time
+		}
+		if json.Unmarshal(line, &entry) != nil || entry.Component != "notify" || entry.Operation != "run" || entry.Category != "failed" || entry.Agent != "notify" || entry.Time.IsZero() {
+			t.Fatalf("unexpected hook failure: %s", line)
+		}
+		count++
+	}
+	if count != notifyCount || count != 1 {
+		t.Fatalf("intentional failure accounting: log=%d summary=%d; want 1", count, notifyCount)
+	}
+	for _, name := range []string{"hook.log", "diagnostics/summary.json"} {
+		b, err := os.ReadFile(filepath.Join(h.state, name))
+		if err != nil || bytes.Contains(b, []byte("unreachable")) || bytes.Contains(b, []byte("the secret plan")) {
+			t.Fatalf("stored diagnostics retained command output/prompt: %s (%v)", name, err)
+		}
+	}
 
 	// Typing into a tmux client: the person is at the terminal.
 	if runtime.GOOS != "linux" {
 		t.Log("attaching a client needs util-linux script")
 		return
 	}
-	h.tmux("set-option", "-g", "@tmag-notify", `echo "$TMAG_ALERT|$TMAG_SESSION" >> `+sent)
+	h.tmux("set-option", "-g", "@tmag-notify", `echo "$TMAG_ALERT|$TMAG_AGENT|$TMAG_SESSION" >> `+sent)
 	client := exec.Command("script", "-qfc", "tmux -L "+h.name+" attach -t main", "/dev/null")
 	client.Env = append(os.Environ(), "TERM=xterm-256color")
 	keys, err := client.StdinPipe()
@@ -1400,18 +1516,19 @@ func TestAlertsRunTheNotifyCommand(t *testing.T) {
 	if _, err := io.WriteString(keys, " "); err != nil {
 		t.Fatal(err)
 	}
-	before := len(lines("finished|" + sidA))
+	before := len(lines("finished|claude|" + sidA))
 	if r := h.tmag("", "send", sidA[:8], "--wait", "more"); r.code != 0 {
 		t.Fatalf("send: %d %s", r.code, r.out)
 	}
 	time.Sleep(time.Second) // a notification would have been written by now
-	if got := len(lines("finished|" + sidA)); got != before {
+	if got := len(lines("finished|claude|" + sidA)); got != before {
 		t.Fatalf("notified while the person typed at the terminal: %d lines", got-before)
 	}
 	// A session no pane shows rings no bell anywhere: it notifies all the same.
+	blockedBefore := len(lines("blocked|codex|" + sidC))
 	d.hook(map[string]any{"hook_event_name": "PostToolUse", "session_id": sidC, "turn_id": "t1", "tool_name": "Bash"})
 	d.hook(map[string]any{"hook_event_name": "PermissionRequest", "session_id": sidC, "turn_id": "t1", "tool_name": "Bash"})
-	notified("blocked|" + sidC)
+	h.eventually("a new detached-session alert while the person types", func() bool { return len(lines("blocked|codex|"+sidC)) > blockedBefore })
 }
 
 func TestRestartedAgentDoesNotInheritTheSession(t *testing.T) {
@@ -1540,16 +1657,7 @@ func TestSendRefusesSuspendedAgent(t *testing.T) {
 func TestStaleAttachmentIsClearedForTmuxDisplays(t *testing.T) {
 	// Pane borders and the picker read @tmag_* options straight from tmux,
 	// checking only that the pane still runs a command of the recorded name.
-	for trigger, clear := range map[string]func(h *harness){
-		"status job": func(h *harness) {
-			if r := h.tmag("", "status", "--tmux"); r.code != 0 {
-				h.t.Fatalf("status: %d %s", r.code, r.out)
-			}
-		},
-		"another agent's hook": func(h *harness) {
-			h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidB, "FAKE_HOOKS": "1"}, filepath.Join(bin, "codex"))
-		},
-	} {
+	for _, trigger := range []string{"status job", "another agent's hook", "list observation"} {
 		t.Run(trigger, func(t *testing.T) {
 			h := start(t)
 			claude := filepath.Join(bin, "claude")
@@ -1562,15 +1670,47 @@ func TestStaleAttachmentIsClearedForTmuxDisplays(t *testing.T) {
 			if err := exec.Command("pkill", "-KILL", "-o", "-f", "^"+claude+"$").Run(); err != nil {
 				t.Fatalf("pkill: %v", err)
 			}
-			h.waitPane(pane, "", "")
+			// Check fresh attachment proof without invoking an observer that can
+			// legitimately repair the stale projection before this precondition.
+			h.eventually("the replacement has no proven attachment", func() bool {
+				v, _, err := query.Load(context.Background(), session.Store{Dir: h.state})
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, p := range v.Panes {
+					if p.ID == pane {
+						return p.Session == ""
+					}
+				}
+				return false
+			})
 			display := "#{?#{==:#{pane_current_command},#{@tmag_cmd}},#{@tmag_state},}"
 			if got := h.tmux("display-message", "-p", "-t", pane, display); got != "blocked" {
 				t.Fatalf("precondition: tmux shows %q", got)
 			}
-			clear(h)
-			h.eventually("the stale attachment to be cleared", func() bool {
+			var triggerRepair func()
+			switch trigger {
+			case "another agent's hook":
+				d := h.daemon()
+				triggerRepair = func() { d.hook(map[string]any{"hook_event_name": "Stop", "session_id": sidB}) }
+			default:
+				command := "status"
+				if trigger == "list observation" {
+					command = "list"
+				}
+				triggerRepair = func() {
+					if r := h.tmag("", command); r.code != 0 {
+						t.Fatalf("%s repair trigger: %+v", command, r)
+					}
+				}
+			}
+			h.eventually("natural triggers clear stale attachment within the cooldown bound", func() bool {
+				triggerRepair()
 				return h.tmux("display-message", "-p", "-t", pane, display) == ""
 			})
+			if got := h.eventNames(sidA); !strings.Contains(got, "Exit:") || !strings.Contains(got, "Detach:") {
+				t.Fatalf("projection cleanup lost lifecycle events: %s", got)
+			}
 		})
 	}
 }
@@ -1702,7 +1842,9 @@ func TestAttachmentEventsSurviveACrash(t *testing.T) {
 		return n
 	}
 	h.tmux("set-option", "-p", "-t", pane, "@tmag_change", "Attach")
-	h.tmag("", "status")
+	if r := h.tmag("", "prune"); r.code != 0 {
+		t.Fatalf("explicit crash repair: %+v", r)
+	}
 	if n := count("Attach"); n != 2 || h.tmux("display-message", "-p", "-t", pane, "#{@tmag_change}") != "" {
 		t.Fatalf("pending Attach: %d Attach events, marker %q", n, h.tmux("display-message", "-p", "-t", pane, "#{@tmag_change}"))
 	}
@@ -1710,7 +1852,9 @@ func TestAttachmentEventsSurviveACrash(t *testing.T) {
 	if p, _, _ := h.paneIn(pane); p.Session != "" {
 		t.Fatalf("a pane being detached still shows %s", p.Session)
 	}
-	h.tmag("", "status")
+	if r := h.tmag("", "prune"); r.code != 0 {
+		t.Fatalf("explicit crash repair: %+v", r)
+	}
 	if n := count("Detach"); n != 1 || h.tmux("display-message", "-p", "-t", pane, "#{@tmag_session}") != "" {
 		t.Fatalf("pending Detach: %d Detach events", n)
 	}
@@ -1724,7 +1868,9 @@ func TestAttachmentEventsSurviveACrash(t *testing.T) {
 	// Died while replacing another session's attachment: both events follow.
 	h.tmux("set-option", "-p", "-t", pane, "@tmag_change", "Attach")
 	h.tmux("set-option", "-p", "-t", pane, "@tmag_replaced", "claude "+sidB)
-	h.tmag("", "status")
+	if r := h.tmag("", "prune"); r.code != 0 {
+		t.Fatalf("explicit crash repair: %+v", r)
+	}
 	if got := h.eventNames(sidB); got != "Detach:" || count("Attach") != 4 {
 		t.Fatalf("replaced: %q, %d Attach events", got, count("Attach"))
 	}
@@ -1735,7 +1881,9 @@ func TestAttachmentEventsSurviveACrash(t *testing.T) {
 	// Options that hold no attachment are cleared rather than displayed.
 	quiet := h.spawn(h.dir, map[string]string{}, filepath.Join(bin, "codex"))
 	h.tmux("set-option", "-p", "-t", quiet, "@tmag_state", "blocked")
-	h.tmag("", "status")
+	if r := h.tmag("", "prune"); r.code != 0 {
+		t.Fatalf("explicit crash repair: %+v", r)
+	}
 	if got := h.tmux("display-message", "-p", "-t", quiet, "#{@tmag_state}"); got != "" {
 		t.Fatalf("broken options left: %q", got)
 	}
@@ -1770,15 +1918,15 @@ func TestWatchSnapshotConvergesAcrossPendingSessionAndPaneRepair(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("snapshot never published")
 	}
-	if s := f.sessions["claude/"+sidA]; s.State != "working" || s.Since == nil || !s.Since.Equal(since) {
-		t.Fatalf("pending snapshot state = %+v", s)
-	}
+	// A shared image can predate this pending write. Its saved replay
+	// checkpoint plus the eventual complete repair event must converge without
+	// replacing the authoritative Since with append time.
 	h.eventually("watch repairs both pending markers", func() bool {
 		rec, ok, err := store.Get("claude", sidA)
 		return err == nil && ok && !rec.Unsettled() && h.tmux("display-message", "-p", "-t", pane, "#{@tmag_change}") == ""
 	})
 	f.agrees(h)
-	if s := f.sessions["claude/"+sidA]; s.Since == nil || !s.Since.Equal(since) {
+	if s := f.sessions["claude/"+sidA]; s.State != "working" || s.Since == nil || !s.Since.Equal(since) {
 		t.Fatalf("replayed repair replaced state since with append time: %+v", s)
 	}
 }

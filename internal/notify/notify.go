@@ -7,14 +7,15 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/ChrAlpha/tmux-agent-experience/internal/admission"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/helper"
 )
 
@@ -115,14 +116,28 @@ func (a Alert) Env() []string {
 // gives up after Timeout, and returns at once: a hook must not wait for the
 // network. The process leaves the hook's session, so an agent that ends its
 // hook's process group does not end it.
-func Start(bin, command string, a Alert) error {
+const slotVar = "TMAG_NOTIFY_SLOT"
+const deadlineVar = "TMAG_NOTIFY_DEADLINE"
+
+func Start(ctx context.Context, root, bin, command string, a Alert) error {
+	deadline := time.Now().Add(Timeout)
+	lease, err := admission.Acquire(ctx, root, admission.Notify)
+	if err != nil {
+		return err
+	}
+	defer lease.Close()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	cmd := exec.Command(bin, "notify", "--alert")
-	cmd.Env = append(append(os.Environ(), a.Env()...), commandVar+"="+command)
+	cmd.Env = append(append(os.Environ(), a.Env()...), commandVar+"="+command,
+		slotVar+"="+strconv.Itoa(lease.Slot()), deadlineVar+"="+strconv.FormatInt(deadline.UnixNano(), 10), "TMAG_STATE_DIR="+root)
+	cmd.ExtraFiles = []*os.File{lease.File()}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
 		return err
 	}
-	go func() { _ = cmd.Wait() }() // reaped, should the hook outlive it
+	go func() { _ = cmd.Wait() }()
 	return nil
 }
 
@@ -133,6 +148,9 @@ func FromEnv(environ []string) (command string, env []string) {
 	for _, kv := range environ {
 		if v, ok := strings.CutPrefix(kv, commandVar+"="); ok {
 			command = v
+			continue
+		}
+		if strings.HasPrefix(kv, slotVar+"=") || strings.HasPrefix(kv, deadlineVar+"=") {
 			continue
 		}
 		env = append(env, kv)
@@ -147,9 +165,16 @@ var ErrTimeout = errors.New("@tmag-notify did not finish within " + Timeout.Stri
 // what it printed. The command runs in a process group of its own, which
 // ends with it, children included.
 func Run(ctx context.Context, command string, env []string) ([]byte, error) {
+	return run(ctx, command, env, nil)
+}
+
+func run(ctx context.Context, command string, env []string, lease *admission.Lease) ([]byte, error) {
 	cmd, cleanup := helper.Command(ctx, "/bin/sh", "-c", command)
 	defer cleanup()
 	cmd.Env = env
+	if lease != nil {
+		cmd.ExtraFiles = []*os.File{lease.File()}
+	}
 	out := &capped{}
 	cmd.Stdout, cmd.Stderr = out, out
 	err := cmd.Run()
@@ -159,31 +184,73 @@ func Run(ctx context.Context, command string, env []string) ([]byte, error) {
 	return out.Bytes(), err
 }
 
-// RunAlert is `tmag notify --alert`: the process Start began. It runs the
-// command it was given and describes a failure for hook.log.
-func RunAlert(environ []string) error {
+// RunBounded admits a foreground command for its entire owned group lifetime.
+func RunBounded(ctx context.Context, root, command string, env []string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, Timeout)
+	defer cancel()
+	lease, err := admission.Acquire(ctx, root, admission.Notify)
+	if err != nil {
+		return nil, err
+	}
+	defer lease.Close()
+	return run(ctx, command, env, lease)
+}
+
+// RunAlert retains its inherited admission through owned command cleanup.
+func RunAlert(root string, environ []string) error { return runAlert(root, environ, 3) }
+
+func runAlert(root string, environ []string, candidateFD int) error {
+	started := time.Now()
 	command, env := FromEnv(environ)
 	if command == "" {
 		return errors.New("notify --alert: no command")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), Timeout)
+	values := map[string]string{}
+	for _, kv := range environ {
+		if k, v, ok := strings.Cut(kv, "="); ok {
+			if k == slotVar || k == deadlineVar {
+				values[k] = v
+			}
+		}
+	}
+	deadline := started.Add(Timeout)
+	if raw := values[deadlineVar]; raw != "" {
+		n, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil {
+			return errors.New("notify: invalid deadline")
+		}
+		if carried := time.Unix(0, n); carried.Before(deadline) {
+			deadline = carried
+		}
+	}
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
 	defer cancel()
-	out, err := Run(ctx, command, env)
+	if ctx.Err() != nil {
+		return ErrTimeout
+	}
+	var lease *admission.Lease
+	if raw := values[slotVar]; raw != "" {
+		slot, err := strconv.Atoi(raw)
+		if err == nil {
+			lease, _ = admission.InheritFD(ctx, root, admission.Notify, slot, candidateFD)
+		}
+	}
+	if lease == nil {
+		var err error
+		lease, err = admission.Acquire(ctx, root, admission.Notify)
+		if err != nil {
+			return err
+		}
+	}
+	defer lease.Close()
+	_, err := run(ctx, command, env, lease)
 	if err != nil {
-		return fmt.Errorf("%s: %w%s", Option, err, quote(out))
+		if errors.Is(err, ErrTimeout) {
+			return ErrTimeout
+		}
+		return errors.New("@tmag-notify: command failed")
 	}
 	return nil
-}
-
-func quote(out []byte) string {
-	out = bytes.TrimSpace(out)
-	if len(out) == 0 {
-		return ""
-	}
-	if i := bytes.IndexByte(out, '\n'); i >= 0 {
-		out = out[:i]
-	}
-	return fmt.Sprintf(": %q", out)
 }
 
 // capped keeps the first maxOutput bytes written to it.

@@ -16,12 +16,15 @@ import (
 
 func fixture(t *testing.T, run Runner) (*Server, auth.Store, auth.Issued) {
 	t.Helper()
+	t.Setenv("TMUX", "")
+	t.Setenv("TMUX_PANE", "")
+	t.Setenv("TMUX_TMPDIR", t.TempDir())
 	store := auth.Store{Dir: t.TempDir()}
 	c, err := store.Issue(context.Background(), "test client", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	s, err := New(Config{Auth: store, Run: run, Hosts: []string{"box.example"}, Origins: []string{"https://client.example"}})
+	s, err := New(Config{StateDir: t.TempDir(), Auth: store, Run: run, Hosts: []string{"box.example"}, Origins: []string{"https://client.example"}})
 	if err != nil {
 		t.Fatal(err)
 	}

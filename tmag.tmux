@@ -13,6 +13,11 @@
 #   @tmag-alert       blocked,finished   alert on these changes: ring a pane's bell, run @tmag-notify
 #   @tmag-notify      (unset)     command that tells you of an alert away from the terminal
 #   @tmag-answer      on          who may decide prompts with `tmag answer`: on (people), agents, off
+#   @tmag-watch-limit 32          combined CLI/SSE subscriptions; 1..256 or off
+#   @tmag-notify-limit 4          external notification commands; 1..256 or off
+#   @tmag-reconcile-interval 2    minimum global refresh seconds; 1..3600 or off
+#   @tmag-observation-age 900     hook contact age label; seconds or off
+#   @tmag-diagnostics on          bounded historical category metadata
 #   @tmag-peers       on          tmag setup gives agents the tmag-peers skill, to work with each other
 #   #{tmag_status}               placeholder for status-left / status-right
 #
@@ -32,10 +37,10 @@ option() {
 version="$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "$dir/plugins/codex/tmag/.codex-plugin/plugin.json")"
 tmux set-option -g @tmag-plugin-version "$version"
 
-# The binary lives in bin/; install or replace it when the plugin changed.
-if [ "$("$dir/bin/tmag" version 2>/dev/null | awk '{print $2}')" != "$version" ]; then
-	tmux run-shell -b "'$dir/scripts/install.sh' '$version'"
-fi
+# The guarded installer bounds its version probe, policy lookup, fetch and
+# publication. Never execute a possibly stuck old binary on the plugin path.
+# @tmag-install-timeout is 60 seconds by default; off disables automatic fetch.
+tmux run-shell -b "'$dir/scripts/install.sh' '$version'"
 
 # Agent hooks read this to decide when to ring a pane's bell.
 tmux set-option -g @tmag-alert "$(option @tmag-alert blocked,finished)"
@@ -48,12 +53,18 @@ tmux set-option -g @tmag-answer "$(option @tmag-answer on)"
 # to remove it.
 tmux set-option -g @tmag-peers "$(option @tmag-peers on)"
 
+tmux set-option -g @tmag-watch-limit "$(option @tmag-watch-limit 32)"
+tmux set-option -g @tmag-notify-limit "$(option @tmag-notify-limit 4)"
+tmux set-option -g @tmag-reconcile-interval "$(option @tmag-reconcile-interval 2)"
+tmux set-option -g @tmag-observation-age "$(option @tmag-observation-age 900)"
+tmux set-option -g @tmag-diagnostics "$(option @tmag-diagnostics on)"
+
 # A pane's live state, for pane-border-format and friends. It is empty once the
 # agent that wrote it has exited: at once when another program takes the pane,
 # and at the next tmag hook, status refresh or picker when an agent of the same
 # name replaced it without the first reporting its exit.
 if [ -z "$(tmux show-option -gqv @tmag-pane-status)" ]; then
-	tmux set-option -g @tmag-pane-status '#{?#{&&:#{@tmag_state},#{==:#{pane_current_command},#{@tmag_cmd}}},#{@tmag_agent} #{@tmag_state}#{?#{@tmag_kind}, #{@tmag_kind},},}'
+	tmux set-option -g @tmag-pane-status '#{?#{&&:#{!=:#{@tmag_unavailable},on},#{&&:#{@tmag_state},#{==:#{pane_current_command},#{@tmag_cmd}}}},#{@tmag_agent} #{@tmag_state}#{?#{@tmag_kind}, #{@tmag_kind},},}'
 fi
 
 # Status-line placeholder, interpolated the way TPM plugins conventionally do.
@@ -66,7 +77,7 @@ for name in status-left status-right; do
 	esac
 done
 
-live='#{&&:#{@tmag_state},#{==:#{pane_current_command},#{@tmag_cmd}}}'
+live='#{&&:#{!=:#{@tmag_unavailable},on},#{&&:#{@tmag_state},#{==:#{pane_current_command},#{@tmag_cmd}}}}'
 
 # The picker filters on records alone, so it first clears those of agents that
 # left their pane without a word; run-shell finishes before choose-tree runs.

@@ -11,6 +11,7 @@ import (
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/coord"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/ownedfs"
 )
 
 func TestExplicitLockCutoverFromOwnerTerminal(t *testing.T) {
@@ -117,8 +118,25 @@ func TestPrunePreservesAliasedSessionTemporaryParents(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if r := h.tmag("", "prune"); r.code != 0 {
-				t.Fatalf("prune = %d %s", r.code, r.out)
+			before, err := os.Lstat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			r := h.tmag("", "prune")
+			if level == "sessions/claude" {
+				if r.code != 1 || strings.TrimSpace(r.out) != "tmag prune: "+ownedfs.ErrScope.Error() {
+					t.Fatalf("ambiguous parent claimed successful complete repair: %+v", r)
+				}
+			} else if r.code != 0 {
+				t.Fatalf("unknown child preservation: %+v", r)
+			}
+			after, err := os.Lstat(path)
+			target, readErr := os.Readlink(path)
+			if err != nil || readErr != nil || !os.SameFile(before, after) || target != foreign {
+				t.Fatalf("prune changed alias binding: %v %v", err, readErr)
+			}
+			if manifest, err := os.ReadFile(filepath.Join(h.state, ".tmag-scope.json")); err == nil && strings.Contains(string(manifest), `"sessions/claude"`) && level == "sessions/claude" {
+				t.Fatal("prune adopted an ambiguous directory binding")
 			}
 			for _, name := range []string{"s-00", ".tmag-tmp-s-00"} {
 				if b, err := os.ReadFile(filepath.Join(foreign, name)); err != nil || string(b) != "preserve" {

@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"time"
 
+	"github.com/ChrAlpha/tmux-agent-experience/internal/contextio"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
@@ -15,6 +17,10 @@ import (
 type Env struct {
 	Log   *eventlog.Log
 	Store session.Store
+	// Snapshot rechecks host evidence under the session lock; nil uses the OS.
+	Snapshot func(context.Context) (*proc.Table, error)
+	// PaneServer limits explicit pane repair; image capture remains realm-wide.
+	PaneServer string
 }
 
 // Shown is a pane whose client validly shows a session.
@@ -40,11 +46,11 @@ func (w *World) Attached(rec session.Record) []Shown {
 	return out
 }
 
-// Live splits sessions into those that run and those that are gone: ended,
-// or whose host process exited without SessionEnd.
+// Live excludes only settled end decisions. Host absence is reconciled under
+// the session lock and must not silently remove sessions from a read image.
 func Live(w *World, recs []session.Record) (live, gone []session.Record) {
 	for _, r := range recs {
-		if r.Ended != "" || (r.Host.PID > 0 && !w.Proc.Alive(r.Host.PID, r.Host.Start)) {
+		if r.Ended != "" {
 			gone = append(gone, r)
 		} else {
 			live = append(live, r)
@@ -104,80 +110,173 @@ func Links(w *World, live []session.Record) []Link {
 	return out
 }
 
-// Reconcile brings every pane in w in line with the sessions:
-//
-//   - a change, an end, an attachment or a detachment a writer did not get
-//     to log is logged;
-//   - a session whose host process is gone without SessionEnd ends (Exit);
-//   - a pane whose stored attachment Links no longer confirms loses it
-//     (Detach), and one Links attaches by title gains it (Attach);
-//   - a projection that lags its session is rewritten.
-//
-// Every change is decided again under the pane's or session's lock against
-// fresh state, so several tmag processes reconciling at once record each
-// change once, and nothing newer than w is undone. Errors are not reported:
-// the next reconciliation retries.
-func Reconcile(ctx context.Context, env Env, w *World) {
-	if ctx.Err() != nil || w.Proc == nil || !w.Proc.Complete() {
+// Fault is a bounded metadata-only repair failure.
+type Fault struct{ Operation, Category, Agent, ID string }
+type ReconcileReport struct {
+	Examined, Repaired, Deferred uint64
+	FaultCount                   uint64
+	Faults                       []Fault
+	Complete                     bool
+	// Err is an in-memory error tree for the repair caller, never persisted.
+	Err error `json:"-"`
+}
+
+func (r *ReconcileReport) add(ctx context.Context, operation string, err error, agent, id string) {
+	r.Examined++
+	if err == nil {
+		r.Repaired++
 		return
 	}
-	recs, err := env.Store.AllContext(ctx)
+	r.Complete = false
+	expired := ctx.Err()
+	remainder := contextio.WithoutContextError(err, expired)
+	if expired != nil && remainder == nil {
+		r.Deferred++
+		return
+	}
+	r.Err = errors.Join(r.Err, remainder)
+	r.FaultCount++
+	category := "io"
+	if contextio.WithoutContextError(remainder, context.DeadlineExceeded) == nil {
+		category = "timeout"
+	}
+	var issue *session.RecordIssue
+	if errors.As(err, &issue) {
+		category = issue.Category
+	}
+	if len(r.Faults) < 16 {
+		r.Faults = append(r.Faults, Fault{operation, category, agent, id})
+	}
+}
+
+// Reconcile repairs valid records even when a complete v1 image is unavailable.
+// No partial catalog can establish absence or unique title evidence.
+func Reconcile(ctx context.Context, env Env, w *World) ReconcileReport {
+	c, err := env.Store.ScanContext(ctx)
+	report := ReconcileReport{Complete: err == nil && c.Complete && c.IssueCount == 0}
 	if err != nil {
-		return
+		report.add(ctx, "scan", err, "", "")
 	}
-	for _, p := range w.Panes {
+	for _, i := range c.Issues {
+		report.add(ctx, "scan", &i, i.Agent, i.ID)
+	}
+	if w == nil || w.Proc == nil || !w.Proc.Complete() {
+		report.Complete = false
+		return report
+	}
+	for _, r := range c.Records {
 		if ctx.Err() != nil {
-			return
+			report.Complete = false
+			return report
 		}
-		if a, ok := FromPane(p); ok && a.Change != "" {
-			_ = env.settlePane(ctx, p)
+		report.add(ctx, "session", env.RepairRecord(ctx, w, r), r.Agent, r.ID)
+	}
+	// Record repair can end sessions: read again before attaching any pane.
+	c, err = env.Store.ScanContext(ctx)
+	if err != nil {
+		report.add(ctx, "scan", err, "", "")
+	}
+	pr := env.RepairPanes(ctx, w, c, w.Panes)
+	report.Examined += pr.Examined
+	report.Repaired += pr.Repaired
+	report.Deferred += pr.Deferred
+	report.FaultCount += pr.FaultCount
+	report.Err = errors.Join(report.Err, pr.Err)
+	report.Complete = report.Complete && pr.Complete
+	for _, f := range pr.Faults {
+		if len(report.Faults) < 16 {
+			report.Faults = append(report.Faults, f)
 		}
 	}
-	live, gone := Live(w, recs)
-	for _, r := range gone {
-		if ctx.Err() != nil {
-			return
-		}
-		env.exit(ctx, r)
-	}
-	for _, r := range live {
-		if ctx.Err() != nil {
-			return
-		}
-		if r.Unsettled() {
-			env.settle(ctx, r)
+	return report
+}
+
+// RepairRecord settles a pending publication, then freshly checks runtime death.
+func (env Env) RepairRecord(ctx context.Context, w *World, r session.Record) error {
+	proven := w != nil && w.Proc != nil && w.Proc.Complete() && r.Host.PID > 0 && r.Host.Start != ""
+	suspect := proven && !w.Proc.Alive(r.Host.PID, r.Host.Start)
+	verified := false
+	if proven {
+		if p, ok := w.Proc.Get(r.Host.PID); ok && !p.Uncertain && p.Start == r.Host.Start {
+			verified = true
 		}
 	}
-	linked := map[[2]string]bool{}
-	for _, l := range Links(w, live) {
-		if ctx.Err() != nil {
-			return
-		}
-		p := l.Client.Pane
-		linked[[2]string{p.Server, p.ID}] = true
-		switch {
-		case l.Stored:
-			if projectionFromPane(p) != ProjectionOf(*l.Session) {
-				a, _ := FromPane(p)
-				_ = env.Show(ctx, p, a)
+	return env.exit(ctx, r, suspect, verified)
+}
+
+// RepairPanes examines only selected panes; w and c remain the full proof set.
+func (env Env) RepairPanes(ctx context.Context, w *World, c session.Catalog, panes []tmux.Pane) ReconcileReport {
+	report := ReconcileReport{Complete: true}
+	if !c.Complete || c.IssueCount != 0 {
+		report.Complete = false
+		// Diagnostic presentation only: do not change attachment or event markers.
+		for _, p := range panes {
+			if ctx.Err() != nil {
+				return report
 			}
-		case l.Session != nil:
-			_ = env.Attach(ctx, w, l.Client, *l.Session, l.Evidence)
-		default:
 			if a, ok := FromPane(p); ok {
-				_ = env.detach(ctx, p, a)
+				_, found, err := env.Store.GetContext(ctx, a.Agent, a.Session)
+				if err != nil || !found {
+					report.add(ctx, "suppress", env.suppress(ctx, p, a), a.Agent, a.Session)
+				}
 			}
 		}
+		return report
 	}
-	// Panes whose agent is gone altogether, and options that are no
-	// attachment at all, which tmux would still display.
-	for _, p := range w.Panes {
-		if a, ok := FromPane(p); ok && !linked[[2]string{p.Server, p.ID}] {
-			_ = env.detach(ctx, p, a)
-		} else if !ok && len(p.Options) > 0 {
-			_ = env.clearBroken(ctx, p)
+	live, _ := Live(w, c.Records)
+	links := map[[2]string]Link{}
+	for _, l := range Links(w, live) {
+		links[[2]string{l.Client.Pane.Server, l.Client.Pane.ID}] = l
+	}
+	for _, p := range panes {
+		if ctx.Err() != nil {
+			report.Complete = false
+			report.Deferred++
+			return report
 		}
+		a, had := FromPane(p)
+		if had && a.Change != "" {
+			if err := env.settlePane(ctx, p); err != nil {
+				report.add(ctx, "settle_pane", err, a.Agent, a.Session)
+				continue
+			}
+		}
+		l, linked := links[[2]string{p.Server, p.ID}]
+		var err error
+		switch {
+		case linked && l.Stored:
+			if projectionFromPane(p) != ProjectionOf(*l.Session) || p.Options["unavailable"] != "" {
+				err = env.Show(ctx, p, a)
+			}
+		case linked && l.Session != nil:
+			err = env.Attach(ctx, w, l.Client, *l.Session, l.Evidence)
+		case had:
+			err = env.detach(ctx, p, a)
+		case len(p.Options) > 0:
+			err = env.clearBroken(ctx, p)
+		}
+		report.add(ctx, "pane", err, a.Agent, a.Session)
 	}
+	return report
+}
+
+// suppress is an ephemeral diagnostic overlay, not a projection/state change.
+// Restoring readable metadata lets Show remove it without consuming markers.
+func (env Env) suppress(ctx context.Context, p tmux.Pane, a Attachment) error {
+	return Lock(ctx, env.Log.Dir, p.Server, p.ID, func() error {
+		srv := tmux.Server{Socket: p.Server}
+		fresh, err := srv.Pane(ctx, p.ID)
+		if err != nil {
+			return err
+		}
+		if cur, ok := FromPane(fresh); !ok || !cur.same(a) {
+			return nil
+		}
+		if _, found, err := env.Store.GetContext(ctx, a.Agent, a.Session); err == nil && found {
+			return nil
+		}
+		return srv.SetPaneOptions(ctx, p.ID, map[string]string{"unavailable": "on"}, nil)
+	})
 }
 
 // clearBroken removes tmag options that hold no attachment, if they still
@@ -271,9 +370,14 @@ func (env Env) finish(ctx context.Context, srv tmux.Server, fresh tmux.Pane, a A
 		// logs after it, never before with this event reporting less.
 		ev := eventlog.Event{Agent: a.Agent, Session: a.Session, Event: eventlog.Attach, Pane: ref(fresh), Evidence: a.Evidence}
 		if err := env.Store.Lock(ctx, a.Agent, a.Session, func() error {
-			if rec, ok, _ := env.Store.GetContext(ctx, a.Agent, a.Session); ok {
-				rec.Report(&ev)
+			rec, ok, err := env.Store.GetContext(ctx, a.Agent, a.Session)
+			if err != nil {
+				return err
 			}
+			if !ok {
+				return errors.New("records_unavailable: pending attachment has no readable record")
+			}
+			rec.Report(&ev)
 			return env.append(ctx, ev)
 		}); err != nil {
 			return err
@@ -365,24 +469,55 @@ func (env Env) detach(ctx context.Context, p tmux.Pane, a Attachment) error {
 
 // exit ends a session that is gone: it finishes an end already decided, or
 // ends a session whose host process exited, if it still has.
-func (env Env) exit(ctx context.Context, r session.Record) {
-	_ = env.Store.Lock(ctx, r.Agent, r.ID, func() error {
+func (env Env) exit(ctx context.Context, r session.Record, suspect, verified bool) error {
+	return env.Store.Lock(ctx, r.Agent, r.ID, func() error {
 		cur, ok, err := env.Store.Current(ctx, env.Log, r.Agent, r.ID)
 		if err != nil || !ok {
-			return err // or an end already decided is now finished
+			return err
 		}
 		if cur.Host != r.Host {
-			return nil // reported from another process since
+			return nil
 		}
-		return env.Store.End(ctx, env.Log, cur, eventlog.Event{Event: eventlog.Exit})
-	})
-}
-
-// settle logs a change its writer did not get to log, if it still is not.
-func (env Env) settle(ctx context.Context, r session.Record) {
-	_ = env.Store.Lock(ctx, r.Agent, r.ID, func() error {
-		_, _, err := env.Store.Current(ctx, env.Log, r.Agent, r.ID)
-		return err
+		// Optional observation must not immortalize legacy records. The selected
+		// realm already owns their Host contract; explicit foreign evidence refuses.
+		realm, err := proc.RealmContext(ctx)
+		if err != nil {
+			return err
+		}
+		if cur.Observation != nil && cur.Observation.Realm != "" && cur.Observation.Realm != realm {
+			return nil
+		}
+		if cur.Host.PID <= 0 || cur.Host.Start == "" {
+			return nil
+		}
+		if suspect {
+			snapshot := env.Snapshot
+			if snapshot == nil {
+				snapshot = proc.SnapshotContext
+			}
+			pt, err := snapshot(ctx)
+			if err != nil {
+				return err
+			}
+			if !pt.Complete() {
+				return errors.New("world_unavailable: incomplete process table")
+			}
+			if !pt.Alive(cur.Host.PID, cur.Host.Start) {
+				return env.Store.End(ctx, env.Log, cur, eventlog.Event{Event: eventlog.Exit})
+			}
+			if p, ok := pt.Get(cur.Host.PID); ok && !p.Uncertain && p.Start == cur.Host.Start {
+				verified = true
+			}
+		}
+		// A live shared service proves process lifetime only, never thread activity.
+		if verified && cur.Observation != nil && cur.Observation.Host != "verified" {
+			o := *cur.Observation
+			o.Host = "verified"
+			cur.Observation = &o
+			_, err = env.Store.Save(ctx, env.Log, cur, eventlog.Event{Event: "Observation", Time: time.Now().UTC()})
+			return err
+		}
+		return nil
 	})
 }
 

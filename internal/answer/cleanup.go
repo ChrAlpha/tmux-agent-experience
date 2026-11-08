@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ChrAlpha/tmux-agent-experience/internal/contextio"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/coord"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/dirscan"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/lockfile"
@@ -90,6 +91,7 @@ type CleanupReport struct {
 	Candidates int
 	Removed    int
 	Slots      int
+	Deferred   int
 }
 
 // Cleanup runs only after explicit retirement. Fixed positions need no growing
@@ -154,7 +156,9 @@ func Cleanup(ctx context.Context, root string) (CleanupReport, error) {
 					}
 					return nil
 				})
-				if err != nil && !errors.Is(err, lockfile.ErrBusy) {
+				if errors.Is(err, lockfile.ErrBusy) {
+					r.Deferred++
+				} else if err != nil {
 					return err
 				}
 			}
@@ -173,10 +177,12 @@ func Cleanup(ctx context.Context, root string) (CleanupReport, error) {
 		return fixed()
 	})
 	if errors.Is(err, lockfile.ErrBusy) {
+		r.Deferred++
 		return r, nil
 	}
 	if parentCtx.Err() == nil && errors.Is(ctx.Err(), context.DeadlineExceeded) && errors.Is(err, context.DeadlineExceeded) {
-		err = nil
+		r.Deferred++
+		err = contextio.WithoutContextError(err, ctx.Err())
 	}
 	return r, err
 }

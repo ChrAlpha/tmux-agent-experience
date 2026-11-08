@@ -273,10 +273,16 @@ func open(ctx context.Context, base, rel string, create bool, prefix string, slo
 }
 
 func (d *Dir) readManifest(ctx context.Context) (manifest, error) {
+	return d.readManifestMode(ctx, true)
+}
+func (d *Dir) readManifestMode(ctx context.Context, allowMissing bool) (manifest, error) {
 	var m manifest
 	root := &Dir{base: d.base, info: d.info, roots: d.roots[:1]}
 	f, err := root.open(ctx, ".tmag-scope.json", os.O_RDONLY, 0)
 	if errors.Is(err, os.ErrNotExist) {
+		if !allowMissing {
+			return manifest{}, ErrScope
+		}
 		return manifest{Version: 1, Root: id(d.info), Dirs: map[string]identity{}, Slots: map[string]int{}}, nil
 	}
 	if err != nil {
