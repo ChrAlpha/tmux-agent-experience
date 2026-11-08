@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -158,44 +159,94 @@ func TestProbeUnknownPreservesUnsupportedAndBlockedListeners(t *testing.T) {
 }
 
 func TestLegacyShowStillWorksWhenProbeIsUnsupported(t *testing.T) {
-	root := answerDir(t)
-	id := "0123456789ab"
-	if err := os.MkdirAll(filepath.Join(root, "req"), 0700); err != nil {
-		t.Fatal(err)
-	}
-	ln, err := net.Listen("unix", Path(root, id))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer ln.Close()
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		for range 2 {
-			c, err := ln.Accept()
+	for _, canceledProbe := range []bool{false, true} {
+		t.Run(fmt.Sprintf("canceled-probe=%t", canceledProbe), func(t *testing.T) {
+			root := answerDir(t)
+			id := "0123456789ab"
+			if err := os.MkdirAll(filepath.Join(root, "req"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			ln, err := net.Listen("unix", Path(root, id))
 			if err != nil {
-				return
+				t.Fatal(err)
 			}
-			var m message
-			_ = json.NewDecoder(c).Decode(&m)
-			if m.Op == "probe" {
-				_ = json.NewEncoder(c).Encode(map[string]any{"ok": false, "error": "unknown op probe"})
-			} else {
-				_ = json.NewEncoder(c).Encode(map[string]any{"ok": true, "tool": "Bash", "input": map[string]string{"command": "date"}})
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			stop := context.AfterFunc(ctx, func() { ln.Close() })
+			defer stop()
+			done := make(chan error, 1)
+			go func() {
+				defer close(done)
+				// Unknown can mean the probe exhausted its budget before connecting.
+				// Serve until Show, rather than requiring exactly two connections.
+				for {
+					c, err := ln.Accept()
+					if err != nil {
+						done <- err
+						return
+					}
+					shown, err := func() (bool, error) {
+						defer c.Close()
+						stop := context.AfterFunc(ctx, func() { c.Close() })
+						defer stop()
+						var m message
+						if err := json.NewDecoder(c).Decode(&m); err != nil {
+							// A canceled probe may connect and leave before sending.
+							if errors.Is(err, io.EOF) {
+								return false, nil
+							}
+							return false, err
+						}
+						switch m.Op {
+						case "probe":
+							// The probe may already have given up; a failed reply
+							// must not prevent the following legacy Show.
+							_ = json.NewEncoder(c).Encode(map[string]any{"ok": false, "error": "unknown op probe"})
+							return false, nil
+						case "show":
+							return true, json.NewEncoder(c).Encode(map[string]any{"ok": true, "tool": "Bash", "input": map[string]string{"command": "date"}})
+						default:
+							return false, fmt.Errorf("unexpected legacy operation %q", m.Op)
+						}
+					}()
+					if shown || err != nil {
+						done <- err
+						return
+					}
+				}
+			}()
+			defer func() {
+				cancel()
+				ln.Close()
+				select {
+				case <-done:
+				case <-time.After(time.Second):
+					t.Error("legacy listener did not stop after close")
+				}
+			}()
+			probeCtx, cancelProbe := context.WithCancel(ctx)
+			if canceledProbe {
+				// Deterministically exercise Unknown without a probe connection.
+				cancelProbe()
 			}
-			c.Close()
-		}
-	}()
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	if Probe(ctx, root, id) != Unknown {
-		t.Fatal("legacy protocol was claimed proven alive")
+			presence := Probe(probeCtx, root, id)
+			cancelProbe()
+			if presence != Unknown {
+				t.Fatal("legacy protocol was claimed proven alive")
+			}
+			a, err := Show(ctx, root, id)
+			if err != nil || a.Tool != "Bash" || string(a.Input) != `{"command":"date"}` {
+				t.Fatalf("legacy Show = %+v %v", a, err)
+			}
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatalf("legacy listener: %v", err)
+				}
+			case <-ctx.Done():
+				t.Fatalf("legacy listener did not finish Show: %v", ctx.Err())
+			}
+		})
 	}
-	a, err := Show(ctx, root, id)
-	if err != nil || a.Tool != "Bash" {
-		t.Fatalf("legacy Show = %+v %v", a, err)
-	}
-	<-done
 }
 
 func TestPoolAllocatesCollidingRequestsAndExcludesLiveCleanup(t *testing.T) {
