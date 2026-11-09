@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"syscall"
+	"time"
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/ownedfs"
 )
@@ -41,7 +42,15 @@ func clearSlot(ctx context.Context, d *ownedfs.Dir, slot byte) (bool, error) {
 		if metaErr != nil || st.Mode()&os.ModeSocket == 0 || !ownedfs.Owner(st) || st.Sys().(*syscall.Stat_t).Nlink != 1 {
 			return false, nil //nolint:nilerr // Missing identity preserves an existing socket and forbids reuse.
 		}
-		if probeAt(ctx, d, sock, e.Request) != Dead {
+		// A dead socket refuses at once. The probe takes at most half of what
+		// remains of the setup, leaving the rest to the bind it makes room for.
+		probe, cancel := ctx, context.CancelFunc(func() {})
+		if deadline, ok := ctx.Deadline(); ok {
+			probe, cancel = context.WithDeadline(ctx, time.Now().Add(time.Until(deadline)/2))
+		}
+		dead := probeAt(probe, d, sock, e.Request) == Dead
+		cancel()
+		if !dead {
 			return false, nil
 		}
 		if err := d.Remove(ctx, sock, st); err != nil {

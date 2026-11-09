@@ -7,9 +7,9 @@ import (
 	"io"
 	"os"
 	"syscall"
-	"time"
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/ownedfs"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/socketbind"
 )
 
 // Presence never treats a directory entry as proof of a live listener. Unknown
@@ -22,10 +22,18 @@ const (
 	Alive
 	Dead
 )
-const probeBudget = 25 * time.Millisecond
+
+// exchangeBudget bounds an exchange that is not the operation itself: a
+// probe, or telling hooks their prompts closed. Its connection starts a
+// socketbind helper, a process start that a loaded machine stretches far past
+// the exchange; a shorter budget reports a live or departed hook as Unknown
+// and leaves the hook of a closed prompt waiting. It is the limit the helper
+// sets itself once running: an exchange unfinished by then waits on a hook
+// that does not answer, not on the machine.
+const exchangeBudget = socketbind.Timeout
 
 func Probe(ctx context.Context, root, id string) Presence {
-	ctx, cancel := context.WithTimeout(ctx, probeBudget)
+	ctx, cancel := context.WithTimeout(ctx, exchangeBudget)
 	defer cancel()
 	scope, name, _, err := lookup(ctx, root, id)
 	if err != nil {
@@ -44,7 +52,7 @@ func Probe(ctx context.Context, root, id string) Presence {
 func Waiting(root, id string) bool { return Probe(context.Background(), root, id) == Alive }
 
 func probeAt(ctx context.Context, scope *ownedfs.Dir, name, id string) Presence {
-	ctx, cancel := context.WithTimeout(ctx, probeBudget)
+	ctx, cancel := context.WithTimeout(ctx, exchangeBudget)
 	defer cancel()
 	c, err := dialAt(ctx, scope, name)
 	if err != nil {

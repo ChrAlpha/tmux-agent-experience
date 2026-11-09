@@ -170,11 +170,13 @@ func RunContext(parent context.Context, in Input) error {
 	// An answer hook whose prompt closed (answered in the terminal, the call
 	// ran, the turn ended) would otherwise wait on: the agent ignores what it
 	// prints now.
+	var closed []string
 	for _, q := range prev.Requests {
 		if _, open := rec.Request(q.ID); !open && q.Hook {
-			answer.Close(ctx, in.Log.Dir, q.ID)
+			closed = append(closed, q.ID)
 		}
 	}
+	answer.Close(ctx, in.Log.Dir, closed...)
 
 	ring := Alert(prev.State(), rec.State())
 	var shown []tmux.Pane
