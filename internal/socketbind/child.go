@@ -50,7 +50,7 @@ func RunChild(args []string) (bool, error) {
 	if !ok {
 		return true, errors.New("invalid bind control socket")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), Timeout)
 	defer cancel()
 	deadline, _ := ctx.Deadline()
 	_ = ipc.SetDeadline(deadline)

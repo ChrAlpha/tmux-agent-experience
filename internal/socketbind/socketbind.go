@@ -21,6 +21,11 @@ import (
 // Embedding executables that use Listen must dispatch RunChild at their entry.
 const ChildFlag = "--internal-socket-bind"
 
+// Timeout bounds a helper's own work once it runs: the bind or connect and
+// handing its descriptor over. Every Listen and Dial starts one, so a caller's
+// budget for a single connection has to cover a process start as well.
+const Timeout = time.Second
+
 type Bound struct {
 	Listener *net.UnixListener
 	Device   int64

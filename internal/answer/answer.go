@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/tmux"
@@ -300,12 +301,18 @@ func Decide(ctx context.Context, stateDir, id string, d Decision) error {
 	return err
 }
 
-// Close tells a hook still waiting that its prompt closed, so it leaves. A
-// request no hook waits on is left alone.
-func Close(ctx context.Context, stateDir, id string) {
-	ctx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+// Close tells the hooks still waiting on ids that their prompts closed, so
+// they leave. A request no hook waits on is left alone. Every hook is told at
+// once, within one exchange budget for all of them.
+func Close(ctx context.Context, stateDir string, ids ...string) {
+	ctx, cancel := context.WithTimeout(ctx, exchangeBudget)
 	defer cancel()
-	// The call looks up the endpoint and validates the request identity itself.
-	// A separate probe would repeat that work inside the same short budget.
-	_, _ = call(ctx, stateDir, id, message{Op: "close"})
+	var wg sync.WaitGroup
+	for _, id := range ids {
+		// The call looks up the endpoint and validates the request identity
+		// itself. A separate probe would repeat that work, and start a second
+		// helper.
+		wg.Go(func() { _, _ = call(ctx, stateDir, id, message{Op: "close"}) })
+	}
+	wg.Wait()
 }
