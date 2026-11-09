@@ -2019,7 +2019,9 @@ func TestDaemonThreadsActOnEachOther(t *testing.T) {
 func TestReplyWaitsForTheAsker(t *testing.T) {
 	h := start(t)
 	outA, outB := filepath.Join(h.dir, "a"), filepath.Join(h.dir, "b")
-	a := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_OUT": outA, "FAKE_HOOKS": "1", "FAKE_TURN_MS": "1500"}, filepath.Join(bin, "claude"))
+	// End A's turns explicitly, so process startup and CI load cannot make
+	// the first one finish before B exercises its timeout.
+	a := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_OUT": outA, "FAKE_HOOKS": "1", "FAKE_KEYS": "1", "FAKE_TURN_MS": "60000"}, filepath.Join(bin, "claude"))
 	b := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidB, "FAKE_OUT": outB, "FAKE_HOOKS": "1"}, filepath.Join(bin, "claude"))
 	h.waitPane(a, "idle", "process")
 	h.waitPane(b, "idle", "process")
@@ -2038,6 +2040,8 @@ func TestReplyWaitsForTheAsker(t *testing.T) {
 	})
 	h.waitSession(sidB, "idle")
 	h.tmux("send-keys", "-t", b, "tmag reply "+sidA+" all done", "Enter")
+	h.waitSession(sidB, "working")
+	h.tmux("send-keys", "-t", a, "Escape")
 	h.eventually("B's reply is delivered", func() bool {
 		got, _ := os.ReadFile(outB)
 		return strings.Contains(string(got), "tool 0 replied to "+sidA[:8])
@@ -2057,6 +2061,8 @@ func TestReplyWaitsForTheAsker(t *testing.T) {
 	if got, _ := os.ReadFile(outA); strings.Contains(string(got), "too soon") {
 		t.Fatalf("a reply that timed out was delivered: %q", got)
 	}
+	h.waitSession(sidA, "working")
+	h.tmux("send-keys", "-t", a, "Escape")
 	h.waitSession(sidA, "idle")
 	if r := h.tmag("", "read", sidA[:8], "--last"); r.code != 0 || r.out != "answered: all done\n" {
 		t.Fatalf("read --last: %d %q", r.code, r.out)
