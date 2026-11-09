@@ -1,7 +1,8 @@
 # AGENTS.md
 
-Guidance for coding agents working in this repository. README.md describes the
-product; this file describes how to change it without breaking its promises.
+Guidance for coding agents working in this repository. README.md introduces the
+product; the GitHub Wiki holds user guides and reference. This file describes
+how to change it without breaking its promises.
 
 ## What this is
 
@@ -239,10 +240,15 @@ claude plugin validate .      # marketplace and plugin manifests
   or the Claude copy and copy it over.
 - Plugins stay under `plugins/claude` and `plugins/codex`: marketplaces added
   by `tmag setup` check out only those paths.
-- Install and update steps live in two places, `SKILL.md` (for agents) and
-  the README (for people). Change them together, and run every command you
-  write there: both are executed verbatim by someone else.
-- Commits follow Conventional Commits. Code comments and docs are in English.
+- Install and update steps live in `SKILL.md` (for agents) and the GitHub Wiki's
+  Installation and Updates page (for people), with a quick start in README.md.
+  Keep them consistent, and run every command you write there: they are executed
+  verbatim by someone else. Wiki pages live in the separate
+  `tmux-agent-experience.wiki.git` repository.
+- Commits follow Conventional Commits. Code comments and canonical docs are in
+  English. Localized README and Wiki pages follow the English source; preserve
+  commands, flags, JSON fields and output examples, and keep language links and
+  translated instructions consistent when updating their source.
 
 ## Testing
 

@@ -10,6 +10,9 @@ description: Install, update or verify tmux-agent-experience, the tmux plugin th
 **Purpose**: install or update the tmux plugin, connect the agent you are
 running in, and verify. Every step is safe to repeat.
 
+For the human-readable guide, see
+[Installation and Updates](https://github.com/ChrAlpha/tmux-agent-experience/wiki/Installation-and-Updates).
+
 A user typically hands you this document with a prompt such as:
 
 > Read https://raw.githubusercontent.com/ChrAlpha/tmux-agent-experience/main/SKILL.md and follow it to install or update tmag for the AI tool I am using.
