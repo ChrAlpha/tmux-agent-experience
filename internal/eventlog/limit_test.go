@@ -88,7 +88,8 @@ func TestAppendAdmitsALineOfExactlyTheLimit(t *testing.T) {
 	// Exercise the actual line reader without the public capture's wall-clock
 	// budget: race instrumentation of a 64 MiB boundary is not a latency test.
 	_, all, partial, err := l.scan(bg, currentName, 0, 0, 0, true)
-	if err != nil || partial || len(all) != 2 || all[1].Seq != ok.Seq || len(all[1].Cwd) != len(e.Cwd) {
+	// Append rotated the preceding segment before writing the large line.
+	if err != nil || partial || len(all) != 1 || all[0].Seq != ok.Seq || len(all[0].Cwd) != len(e.Cwd) {
 		t.Fatalf("read back %d events, %v", len(all), err)
 	}
 	data, err := os.ReadFile(l.path(currentName))
