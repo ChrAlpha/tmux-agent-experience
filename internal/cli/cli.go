@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ChrAlpha/tmux-agent-experience/internal/attach"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/contextio"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/hook"
@@ -240,6 +241,10 @@ func (a *app) fail(cmd string, err error) int {
 		code = "records_unavailable"
 	case errors.As(err, &refused):
 		code, exit = "refused:"+refused.Reason, ExitRefused
+	case errors.As(err, new(*session.LimitError)), errors.As(err, new(*eventlog.LimitError)):
+		code = "limit_exceeded"
+	case errors.As(err, new(*attach.MarkerError)):
+		code = "attachment_unavailable"
 	case errors.Is(err, errTimeout), errors.Is(err, context.DeadlineExceeded):
 		code, exit = "timeout", ExitTimeout
 	case errors.Is(err, query.ErrMarker):

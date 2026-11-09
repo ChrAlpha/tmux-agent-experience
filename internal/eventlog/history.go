@@ -17,10 +17,7 @@ import (
 	"github.com/ChrAlpha/tmux-agent-experience/internal/contextio"
 )
 
-const (
-	historyName    = "history.json"
-	maxRecordBytes = 64 << 20
-)
+const historyName = "history.json"
 
 // ErrIntegrityLoss means a complete record or recovery checkpoint is invalid.
 // Repairing an incomplete final write does not hide this kind of corruption.
@@ -329,8 +326,8 @@ func readRecord(ctx context.Context, r *bufio.Reader) ([]byte, error) {
 			return nil, err
 		}
 		part, err := r.ReadSlice('\n')
-		if len(line)+len(part) > maxRecordBytes {
-			return nil, fmt.Errorf("%w: record exceeds %d bytes", ErrIntegrityLoss, maxRecordBytes)
+		if len(line)+len(part) > MaxRecordBytes {
+			return nil, fmt.Errorf("%w: record exceeds %d bytes", ErrIntegrityLoss, MaxRecordBytes)
 		}
 		line = append(line, part...)
 		if !errors.Is(err, bufio.ErrBufferFull) {

@@ -24,7 +24,7 @@ func snapshotView(t *testing.T, store session.Store) (View, *attach.World, error
 func saveSnapshotRecord(t *testing.T, ctx context.Context, store session.Store, log *eventlog.Log, rec session.Record) {
 	t.Helper()
 	err := store.Lock(ctx, rec.Agent, rec.ID, func() error {
-		_, err := store.Save(ctx, log, rec, eventlog.Event{Event: "Changed"})
+		_, err := store.Save(ctx, log, rec, "Changed")
 		return err
 	})
 	if err != nil {

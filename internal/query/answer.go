@@ -147,20 +147,29 @@ func answerHook(ctx context.Context, log *eventlog.Log, s Session, id string, d 
 		if _, open := rec.Request(id); !open {
 			return &RefusedError{RefuseChanged, fmt.Sprintf("request %s of %s was answered or withdrawn", id, s.ID)}
 		}
+		// Once the agent has the decision, and its next hooks wait for this
+		// lock, the request is answered. What records it is admitted before
+		// the decision goes out.
+		after, _ := session.Apply(rec, adapter.Transition{Action: adapter.Answer, Request: id}, time.Now())
+		ev := eventlog.Event{Event: eventlog.Answer, Via: driver.Hook, Request: id, Decision: d.Behavior}
+		caller.stamp(&ev)
+		report, err := session.PrepareReport(after, ev)
+		if err != nil {
+			return err
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		ctx, cancel := context.WithTimeout(ctx, answerTimeout)
 		defer cancel()
 		if err := answer.Decide(ctx, log.Dir, id, d); err != nil {
 			return hookError(s, id, err)
 		}
-		// The agent has the decision, and its next hooks wait for this lock;
-		// the request is answered.
-		after, _ := session.Apply(rec, adapter.Transition{Action: adapter.Answer, Request: id}, time.Now())
-		ev := eventlog.Event{Event: eventlog.Answer, Via: driver.Hook, Request: id, Decision: d.Behavior}
-		caller.stamp(&ev)
-		if _, err := store.Report(ctx, log, after, &ev); err != nil {
+		_, logged, err := store.Publish(ctx, log, report)
+		if err != nil {
 			return fmt.Errorf("answer delivered but not logged: %w", err)
 		}
-		dl = Delivery{Session: s, Via: driver.Hook, Seq: ev.Seq, Cursor: ev.Cursor()}
+		dl = Delivery{Session: s, Via: driver.Hook, Seq: logged.Seq, Cursor: logged.Cursor()}
 		return nil
 	})
 	return dl, err

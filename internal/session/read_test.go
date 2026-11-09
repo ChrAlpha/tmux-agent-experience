@@ -23,7 +23,7 @@ func TestContactOnlySavePublishesCompleteEventWithoutChangingSince(t *testing.T)
 	rec := Record{Agent: "claude", ID: "thread", Main: "working", Turn: "turn", Since: since}
 	if err := store.Lock(ctx, rec.Agent, rec.ID, func() error {
 		var err error
-		rec, err = store.Save(ctx, log, rec, eventlog.Event{Event: "UserPromptSubmit"})
+		rec, err = store.Save(ctx, log, rec, "UserPromptSubmit")
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -31,7 +31,7 @@ func TestContactOnlySavePublishesCompleteEventWithoutChangingSince(t *testing.T)
 	rec.LastHookAt = time.Unix(20, 456).UTC()
 	if err := store.Lock(ctx, rec.Agent, rec.ID, func() error {
 		var err error
-		rec, err = store.Save(ctx, log, rec, eventlog.Event{Event: "PreToolUse"})
+		rec, err = store.Save(ctx, log, rec, "PreToolUse")
 		return err
 	}); err != nil {
 		t.Fatal(err)

@@ -632,14 +632,27 @@ timeout. With `--json`, errors are also printed as
 `not_found`, `ambiguous`, `refused:unbound`, `refused:busy`,
 `refused:background`, `refused:subagent`, `refused:changed`,
 `refused:idle`, `refused:unsupported`, `refused:self`, `refused:agent`,
-`ended`, `no_reply`, `history_unavailable`, `integrity_loss`, `timeout` and `error`.
+`ended`, `no_reply`, `history_unavailable`, `integrity_loss`, `limit_exceeded`,
+`records_unavailable`, `attachment_unavailable`, `timeout` and `error`.
+
+Every change of a session is admitted whole before any of it is published:
+its records encode to at most 4 MiB and its event line to at most 64 MiB, or
+`limit_exceeded` refuses it with the session and the log as they were. A
+control verb is refused so before anything is typed, pressed or handed to an
+agent. A hook refused so prints nothing and records `limit_exceeded` in
+`hook.log`. Failures after a delivery are of another kind: tmag reports the
+prompt, interrupt or answer delivered but not logged, and does not claim it
+undone.
 
 Complete session views fail with `records_unavailable` on the first unreadable,
-corrupt, unsafe or oversized record. Reconciliation preserves unknown resources
-and pending event markers, returning the failure instead of inventing absence.
-Repair the reported metadata before global reconciliation can proceed. This is
-an explicit refusal, not a partial inventory or a claim that every other record
-was checked.
+corrupt, unsafe or oversized record (over 4 MiB), and so does a change an older
+tmag left half-written whose completion would exceed those limits.
+Reconciliation preserves unknown resources and pending event markers, returning
+the failure instead of inventing absence; a pane whose `@tmag_` options mark an
+attachment change tmag cannot read stops it the same way
+(`attachment_unavailable`), its options left as they are. Repair the reported
+metadata before global reconciliation can proceed. This is an explicit refusal,
+not a partial inventory or a claim that every other record was checked.
 
 ## Footprint
 
@@ -650,7 +663,7 @@ was checked.
 | Pane state | `@tmag_*` pane options, gone with the pane | `tmag uninstall --purge` |
 | `tmag serve` | a tmux window, while you keep it open, and `@tmag_api_addr` while it runs | closing the window |
 | Owner credentials | `$XDG_STATE_HOME/tmag/auth/`, or `TMAG_AUTH_DIR`: metadata and verification digests | `tmag auth revoke`, or `tmag uninstall --purge` |
-| Sessions and event log | `$XDG_STATE_HOME/tmag/<realm>/` (default `~/.local/state/tmag/<realm>/`): one small file per live session, at most two 8 MB event files, answer sockets under `req/` while hooks wait. The realm names the process table tmag sees, one per container or machine and boot, so containers that share a home directory keep their sessions apart | `tmag uninstall --purge`; ordinary reconciliation preserves foreign realms and legacy state trees |
+| Sessions and event log | `$XDG_STATE_HOME/tmag/<realm>/` (default `~/.local/state/tmag/<realm>/`): one file of at most 4 MiB per live session, the current event file, with an 8 MiB rotation threshold, and one rotated file, each line of at most 64 MiB, answer sockets under `req/` while hooks wait. The realm names the process table tmag sees, one per container or machine and boot, so containers that share a home directory keep their sessions apart | `tmag uninstall --purge`; ordinary reconciliation preserves foreign realms and legacy state trees |
 | Coordination | `<state dir>/coord/`: one format marker, a permanent namespace gate, at most 256 pane, 256 session and 256 request-position locks, and one allocation lock | removing the state directory with `tmag uninstall --purge` |
 | Answer endpoints | `<state dir>/req/`: at most 256 `sock-XX`, 256 identity-only `meta-XX` and 256 fixed `temp-XX` positions | safe reuse after the previous listener closed |
 | Session publication temporaries | `<state dir>/sessions/<agent>/.tmag-tmp-s-XX`: at most 256 fixed positions per agent, sharing its session stripes | the next publication at that position |

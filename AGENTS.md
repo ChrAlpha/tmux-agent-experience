@@ -112,9 +112,9 @@ a design problem, not a test problem.
   ancestor of it), or the answer hook waiting on the request. Each checks the
   state it needs (`send` idle, `interrupt` working or blocked, `answer` its
   request open), checks all of it again under the pane's lock and the
-  session's, and logs its event before releasing them. `internal/driver`
-  alone decides which channel carries a verb. `wait` refuses a pane that
-  shows no session.
+  session's, admits everything it will record before delivering anything,
+  and logs its event before releasing them. `internal/driver` alone decides
+  which channel carries a verb. `wait` refuses a pane that shows no session.
 - **Callers are proven too.** Who runs a verb comes from process ancestry
   (`query.Caller`), like an attachment: a command below an agent's process is
   that agent's, and its session is one that process hosts, told apart by the
@@ -132,10 +132,15 @@ a design problem, not a test problem.
   before the lock is released, so the log
   orders events as they happened. Sessions change only through
   `session.Store.Save`, `Report` (what a delivery of tmag's did, which the
-  agent does not report) and `End`, and attachments only through
+  agent does not report) and `End`, or a change prepared as they prepare it
+  (`session.Prepare*`) and made with `Publish`, and attachments only through
   `attach.Env`, which mark a change (`@tmag_change` on a pane) before logging
   it, so a writer that dies leaves it for the next one to log rather than
-  unreported.
+  unreported. Every record and event a change publishes is admitted within
+  its readers' limits (4 MiB per session record, 64 MiB per log line) before
+  the first is published, and derived as the repair of a writer that died
+  derives it, so a marked change always settles. A marker tmag cannot read,
+  on a pane or in a record, is left as it is and reported.
 - **The HTTP API is local and owner-authorized.** `tmag serve` exposes one
   instance through `tmag/http/v1`, with no UI, machine inventory or outbound
   gateway. Each data request validates an independent bearer credential.

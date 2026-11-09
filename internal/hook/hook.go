@@ -157,7 +157,7 @@ func RunContext(parent context.Context, in Input) error {
 		}
 		// Calls and other background work change without an event; whatever
 		// an event reports of the session (session.Report) is logged.
-		saved, err := env.Store.Save(ctx, in.Log, next, ev)
+		saved, err := env.Store.Save(ctx, in.Log, next, ev.Event)
 		if err != nil {
 			return err
 		}
@@ -335,6 +335,10 @@ func RecordErrorContext(parent context.Context, dir, agent string, err error) {
 		category = "limited"
 	case errors.As(err, &record):
 		category = "records_unavailable"
+	case errors.As(err, new(*session.LimitError)), errors.As(err, new(*eventlog.LimitError)):
+		category = "limit_exceeded"
+	case errors.As(err, new(*attach.MarkerError)):
+		category = "attachment_unavailable"
 	}
 	// The line contains fixed categories only, never err.Error(), command output
 	// or hook input. Exclusion covers the ceiling check, truncation and append.

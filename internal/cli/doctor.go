@@ -229,7 +229,7 @@ func (a *app) checkHookErrors(ctx context.Context) check {
 		latest = "legacy record (message redacted)"
 		if len(fields) == 3 && (fields[1] == "claude" || fields[1] == "codex" || fields[1] == "notify" || fields[1] == "hook") {
 			switch fields[2] {
-			case "failed", "timeout", "canceled", "records_unavailable", "limited":
+			case "failed", "timeout", "canceled", "records_unavailable", "limited", "limit_exceeded", "attachment_unavailable":
 				latest = fields[1] + " " + fields[2]
 			}
 		}
