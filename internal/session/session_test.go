@@ -32,7 +32,7 @@ func TestFailedLogPublicationPreservesSessionRepair(t *testing.T) {
 	}
 	rec := play(t)
 	err := s.Lock(ctx, rec.Agent, rec.ID, func() error {
-		_, err := s.Save(ctx, log, rec, eventlog.Event{Event: "UserPromptSubmit"})
+		_, err := s.Save(ctx, log, rec, "UserPromptSubmit")
 		return err
 	})
 	if !errors.Is(err, eventlog.ErrIntegrityLoss) {
@@ -376,13 +376,13 @@ func TestSaveLeavesNoChangeUnlogged(t *testing.T) {
 	if !rec.Unlogged() {
 		t.Fatal("a new session counts as logged")
 	}
-	rec, err := s.Save(ctx, log, rec, eventlog.Event{Event: "SessionStart"})
+	rec, err := s.Save(ctx, log, rec, "SessionStart")
 	if err != nil || rec.Unlogged() || events() != "SessionStart:idle" {
 		t.Fatalf("Save = %+v, %v; events %s", rec, err, events())
 	}
 	// Bookkeeping alone logs nothing.
 	busy, _ := Apply(rec, startOf("a1", "Read", "r1"), t0)
-	if _, err := s.Save(ctx, log, busy, eventlog.Event{Event: "PreToolUse"}); err != nil || events() != "SessionStart:idle" {
+	if _, err := s.Save(ctx, log, busy, "PreToolUse"); err != nil || events() != "SessionStart:idle" {
 		t.Fatalf("bookkeeping logged: %v %s", err, events())
 	}
 
@@ -429,7 +429,7 @@ func TestEventsReportTheWholeSession(t *testing.T) {
 
 	rec, _ := Apply(Record{Agent: proc.Codex, ID: "s1", Cwd: "/a", Host: Host{PID: 9, Role: proc.Service}, Transcript: "/t.jsonl"},
 		adapter.Transition{Action: adapter.Set, State: adapter.Idle}, t0)
-	rec, err := s.Save(ctx, log, rec, eventlog.Event{Event: "SessionStart"})
+	rec, err := s.Save(ctx, log, rec, "SessionStart")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -442,15 +442,15 @@ func TestEventsReportTheWholeSession(t *testing.T) {
 	// Each of these changes nothing but what an event reports, and is logged.
 	moved := rec
 	moved.Cwd = "/b"
-	if rec, err = s.Save(ctx, log, moved, eventlog.Event{Event: "PreToolUse"}); err != nil || last().Event != "PreToolUse" || last().Cwd != "/b" {
+	if rec, err = s.Save(ctx, log, moved, "PreToolUse"); err != nil || last().Event != "PreToolUse" || last().Cwd != "/b" {
 		t.Fatalf("cwd change: %v %+v", err, last())
 	}
 	spawned, _ := Apply(rec, spawnOf("a1"), t0)
-	if rec, err = s.Save(ctx, log, spawned, eventlog.Event{Event: "SubagentStart"}); err != nil || strings.Join(last().Subagents, ",") != "a1" {
+	if rec, err = s.Save(ctx, log, spawned, "SubagentStart"); err != nil || strings.Join(last().Subagents, ",") != "a1" {
 		t.Fatalf("subagent start: %v %+v", err, last())
 	}
 	reaped, _ := Apply(rec, reapOf("a1"), t0)
-	if _, err = s.Save(ctx, log, reaped, eventlog.Event{Event: "SubagentStop"}); err != nil || last().Event != "SubagentStop" || last().Subagents != nil {
+	if _, err = s.Save(ctx, log, reaped, "SubagentStop"); err != nil || last().Event != "SubagentStop" || last().Subagents != nil {
 		t.Fatalf("subagent stop: %v %+v", err, last())
 	}
 }

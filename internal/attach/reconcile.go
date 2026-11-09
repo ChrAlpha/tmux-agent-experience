@@ -116,7 +116,10 @@ func Links(w *World, live []session.Record) []Link {
 // Every change is decided again under the pane's or session's lock against
 // fresh state, so several tmag processes reconciling at once record each
 // change once, and nothing newer than w is undone. The first real error is
-// returned; unknown resources and pending markers remain intact for a later invocation.
+// returned; unknown resources and pending markers remain intact for a later
+// invocation. A pane marking a change that cannot be read stops it
+// (MarkerError) when reached: that pane's options are left as they are and
+// nothing is logged for it, though panes settled before it stay settled.
 func Reconcile(ctx context.Context, env Env, w *World) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -131,6 +134,9 @@ func Reconcile(ctx context.Context, env Env, w *World) error {
 	for _, p := range w.Panes {
 		if err := ctx.Err(); err != nil {
 			return err
+		}
+		if unreadable(p) {
+			return markerError(p)
 		}
 		if a, ok := FromPane(p); ok && a.Change != "" {
 			if err := env.settlePane(ctx, p); err != nil {
@@ -212,6 +218,9 @@ func (env Env) clearBroken(ctx context.Context, p tmux.Pane) error {
 		if _, ok := FromPane(fresh); ok || len(fresh.Options) == 0 {
 			return nil
 		}
+		if unreadable(fresh) {
+			return markerError(fresh)
+		}
 		return srv.ClearPaneOptions(ctx, fresh.ID)
 	})
 }
@@ -238,6 +247,9 @@ func (env Env) Attach(ctx context.Context, w *World, c Client, rec session.Recor
 		latest, ok, err := env.Store.GetContext(ctx, rec.Agent, rec.ID)
 		if err != nil || !ok || latest.Ended != "" {
 			return err
+		}
+		if unreadable(fresh) {
+			return markerError(fresh)
 		}
 		next := Attachment{Agent: rec.Agent, Session: rec.ID, PID: c.Process.PID, Start: c.Process.Start, Evidence: evidence}
 		cur, had := FromPane(fresh)
@@ -336,6 +348,9 @@ func (env Env) settlePane(ctx context.Context, p tmux.Pane) error {
 		}
 		if cur, ok := FromPane(fresh); ok && cur.Change != "" {
 			return env.finish(ctx, srv, fresh, cur)
+		}
+		if unreadable(fresh) {
+			return markerError(fresh)
 		}
 		return nil
 	})

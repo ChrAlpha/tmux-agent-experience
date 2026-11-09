@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -162,10 +163,53 @@ func (l *Log) WithLock(ctx context.Context, fn func() error) error {
 	})
 }
 
+// MaxRecordBytes bounds one line of the log, its newline included. Readers
+// refuse a longer one, so Append admits none.
+const MaxRecordBytes = 64 << 20
+
+// LimitError refuses an event whose line would exceed MaxRecordBytes. It
+// carries sizes only, never what the event holds.
+type LimitError struct{ Size, Limit int }
+
+func (e *LimitError) Error() string {
+	return fmt.Sprintf("limit_exceeded: event line encodes to %d bytes, over %d", e.Size, e.Limit)
+}
+
+// widestTime encodes to the longest UTC timestamp Append can assign.
+var widestTime = time.Date(9999, 12, 31, 23, 59, 59, 999999999, time.UTC)
+
+// Admit returns the length of the line Append would write for e, newline
+// included, with what Append assigns at its widest: the sequence number, and
+// the time when e has none. A time e has is counted as it encodes. Above
+// MaxRecordBytes it returns a *LimitError, and Append refuses exactly the
+// events Admit refuses, before reserving anything.
+func Admit(e Event) (int, error) {
+	e.Seq = math.MaxInt64
+	if e.Time.IsZero() {
+		e.Time = widestTime
+	}
+	line, err := json.Marshal(e)
+	if err != nil {
+		return 0, err
+	}
+	n := len(line) + 1
+	if n > MaxRecordBytes {
+		return n, &LimitError{Size: n, Limit: MaxRecordBytes}
+	}
+	return n, nil
+}
+
 // Append reserves a sequence before writing a complete record. An interrupted
-// reservation leaves an unused number; recovery never reuses that number.
+// reservation leaves an unused number; recovery never reuses that number. An
+// event Admit refuses is refused before the lock is taken.
 func (l *Log) Append(ctx context.Context, e *Event) error {
 	e.cursor = Cursor{}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if _, err := Admit(*e); err != nil {
+		return err
+	}
 	err := l.WithLock(ctx, func() error {
 		h, err := l.history(ctx)
 		if err != nil {
@@ -174,7 +218,11 @@ func (l *Log) Append(ctx context.Context, e *Event) error {
 		if h.Origin == 0 && h.Allocated == 0 {
 			h.Origin = baseSeq(time.Now())
 		}
-		h.Allocated = max(h.Allocated, h.Origin) + 1
+		last := max(h.Allocated, h.Origin)
+		if last == math.MaxInt64 {
+			return fmt.Errorf("%w: sequence numbers exhausted", ErrIntegrityLoss)
+		}
+		h.Allocated = last + 1
 		e.Seq = h.Allocated
 		if e.Time.IsZero() {
 			e.Time = time.Now().UTC()
@@ -184,9 +232,6 @@ func (l *Log) Append(ctx context.Context, e *Event) error {
 			return err
 		}
 		line = append(line, '\n')
-		if len(line) > maxRecordBytes {
-			return fmt.Errorf("event exceeds %d bytes", maxRecordBytes)
-		}
 		// Reserve through the legacy sequence file first, so an older writer
 		// cannot reuse a number if this process dies before checkpointing it.
 		if err := l.writeSeq(ctx, e.Seq); err != nil {

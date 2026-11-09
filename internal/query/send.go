@@ -127,23 +127,24 @@ func Send(ctx context.Context, log *eventlog.Log, target, text string, ask Ask) 
 			},
 		})
 	case driver.Pane:
-		store := session.Store{Dir: log.Dir}
-		return throughPane(ctx, log, v, s, named, idleGate, func(ctx context.Context, s Session, p Pane, rec session.Record) (eventlog.Event, *session.Record, error) {
+		return throughPane(ctx, log, v, s, named, idleGate, paneVerb{
 			// Hold off other senders before typing: a prompt recorded as sent
 			// but never delivered costs a pending window, a prompt delivered
 			// but not recorded could be delivered twice. A failure while
 			// typing does not say whether tmux typed it, so the mark stays.
-			rec.Sent = time.Now().UTC().Truncate(time.Second)
-			if err := store.PutContext(ctx, rec); err != nil {
-				return eventlog.Event{}, nil, err
-			}
-			if err := (tmux.Server{Socket: p.Server}).Submit(ctx, p.ID, text); err != nil {
-				return eventlog.Event{}, nil, fmt.Errorf("typing into %s failed, perhaps after the prompt was delivered; %s takes no other prompt for %s: %w",
-					p.ID, s.ID, PendingWindow, err)
-			}
-			ev := eventlog.Event{Event: eventlog.Send, Cwd: p.Cwd, Bytes: len(text)}
-			caller.stamp(&ev)
-			return ev, nil, nil
+			plan: func(_ Session, p Pane, rec session.Record) (session.Record, eventlog.Event, *session.Record) {
+				rec.Sent = time.Now().UTC().Truncate(time.Second)
+				ev := eventlog.Event{Event: eventlog.Send, Cwd: p.Cwd, Bytes: len(text)}
+				caller.stamp(&ev)
+				return rec, ev, nil
+			},
+			press: func(ctx context.Context, s Session, p Pane) error {
+				if err := (tmux.Server{Socket: p.Server}).Submit(ctx, p.ID, text); err != nil {
+					return fmt.Errorf("typing into %s failed, perhaps after the prompt was delivered; %s takes no other prompt for %s: %w",
+						p.ID, s.ID, PendingWindow, err)
+				}
+				return nil
+			},
 		})
 	}
 	return Delivery{}, unsupported(s, driver.Send)

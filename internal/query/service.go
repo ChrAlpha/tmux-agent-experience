@@ -100,10 +100,15 @@ func throughService(outer context.Context, log *eventlog.Log, v View, s Session,
 			return &RefusedError{RefuseChanged, fmt.Sprintf("%s has ended", s.ID)}
 		}
 		ev := verb.mark(&rec)
+		ev.Agent, ev.Session, ev.Via = fs.Agent, fs.ID, driver.Service
+		// Admitted before the mark is published: a verb too large to record
+		// leaves no mark, and is never delivered.
+		if err := session.AdmitEvent(ev); err != nil {
+			return err
+		}
 		if err := store.PutContext(ctx, rec); err != nil {
 			return err
 		}
-		ev.Agent, ev.Session, ev.Via = fs.Agent, fs.ID, driver.Service
 		if err := log.Append(ctx, &ev); err != nil {
 			return err
 		}

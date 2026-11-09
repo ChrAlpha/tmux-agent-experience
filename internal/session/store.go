@@ -3,7 +3,7 @@ package session
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"regexp"
@@ -65,30 +65,43 @@ func (s Store) Put(rec Record) error {
 	return s.PutContext(context.Background(), rec)
 }
 
-// PutContext publishes a session under its lock. One fixed temp per agent and
-// stripe replaces per-invocation random files. The temp shares the target's
-// parent filesystem. The publisher holds its session stripe and reuses any
-// leftover at that reserved position.
+// PutContext publishes a session under its lock, refused with a *LimitError
+// when it encodes to more than MaxRecordBytes. A change the event log reports
+// goes through Save, Report or End instead.
 func (s Store) PutContext(ctx context.Context, rec Record) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	path, err := s.path(rec.Agent, rec.ID)
+	if _, err := s.path(rec.Agent, rec.ID); err != nil {
+		return err
+	}
+	data, err := readers.marshal(partRecord, rec)
+	if err != nil {
+		return err
+	}
+	return s.write(ctx, rec.Agent, rec.ID, data)
+}
+
+// write publishes a session's encoded record. One fixed temp per agent and
+// stripe replaces per-invocation random files. The temp shares the target's
+// parent filesystem. The publisher holds its session stripe and reuses any
+// leftover at that reserved position.
+func (s Store) write(ctx context.Context, agent, id string, data []byte) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	path, err := s.path(agent, id)
 	if err != nil {
 		return err
 	}
 	if _, err := coord.Current(ctx, s.Dir); err != nil {
 		return err
 	}
-	data, err := json.Marshal(rec)
-	if err != nil {
-		return err
-	}
 	rel, err := filepath.Rel(s.Dir, path)
 	if err != nil {
 		return err
 	}
-	tmp, err := filepath.Rel(s.Dir, s.temporary(rec.Agent, coord.Slot(sessionKey(rec.Agent, rec.ID))))
+	tmp, err := filepath.Rel(s.Dir, s.temporary(agent, coord.Slot(sessionKey(agent, id))))
 	if err != nil {
 		return err
 	}
@@ -115,100 +128,136 @@ func (s Store) DeleteContext(ctx context.Context, agent, id string) error {
 }
 
 // Save stores rec and, when its state is one the event log does not report
-// yet, logs ev for it, in an order that leaves no change unreported: the
-// record first, marked with the change, then the event, then the record
-// with the mark cleared. A writer that dies in between leaves the mark, and
-// the next holder of the lock logs the change (Settle); at worst an event is
-// logged twice, never not at all. The caller holds the session's lock. It
-// returns the record as stored.
-func (s Store) Save(ctx context.Context, log *eventlog.Log, rec Record, ev eventlog.Event) (Record, error) {
-	rec.Delivery = nil
-	if !rec.Unlogged() {
-		rec.Change = ""
-		return rec, s.PutContext(ctx, rec)
-	}
-	rec.Change = ev.Event
-	if err := s.PutContext(ctx, rec); err != nil {
+// yet, logs change for it: an event of that name reporting the session, and
+// nothing more, as Settle logs it for a writer that died. A delivery of
+// tmag's, whose event carries more, is logged with Report. The order leaves
+// no change unreported: the record first, marked with the change, then the
+// event, then the record with the mark cleared. A writer that dies in
+// between leaves the mark, and the next holder of the lock logs the change
+// (Settle); at worst an event is logged twice, never not at all. Every
+// publication is admitted first (PrepareSave): a change too large to record
+// is refused with a *LimitError before any. The caller holds the session's
+// lock. It returns the record as stored.
+func (s Store) Save(ctx context.Context, log *eventlog.Log, rec Record, change string) (Record, error) {
+	if err := ctx.Err(); err != nil {
 		return rec, err
 	}
-	return s.logged(ctx, log, rec, ev)
-}
-
-func (s Store) logged(ctx context.Context, log *eventlog.Log, rec Record, ev eventlog.Event) (Record, error) {
-	rec.Report(&ev)
-	if err := log.Append(ctx, &ev); err != nil {
+	p, err := PrepareSave(rec, change)
+	if err != nil {
 		return rec, err
 	}
-	rec.Logged, rec.Change, rec.Delivery = rec.Reports(), "", nil
-	return rec, s.PutContext(ctx, rec)
+	rec, _, err = s.Publish(ctx, log, p)
+	return rec, err
 }
 
 // Report stores rec and logs ev reporting it, whether or not what it
 // reports changed: ev is a delivery of tmag's (an interrupt, an answer) and
 // rec what it did to the session, which the agent does not report itself.
 // Like Save, it marks the change before logging it, and keeps ev with the
-// mark, so that the next holder of the lock logs ev as it was (Settle). ev
-// receives its sequence number. The caller holds the session's lock.
+// mark, so that the next holder of the lock logs ev as it was (Settle), and
+// it admits every publication first (PrepareReport). ev receives the event
+// as logged, with its sequence number. The caller holds the session's lock.
 func (s Store) Report(ctx context.Context, log *eventlog.Log, rec Record, ev *eventlog.Event) (Record, error) {
-	kept := *ev
-	rec.Change, rec.Delivery = ev.Event, &kept
-	if err := s.PutContext(ctx, rec); err != nil {
+	if err := ctx.Err(); err != nil {
 		return rec, err
 	}
-	rec.Report(ev)
-	if err := log.Append(ctx, ev); err != nil {
+	p, err := PrepareReport(rec, *ev)
+	if err != nil {
 		return rec, err
 	}
-	rec.Logged, rec.Change, rec.Delivery = rec.Reports(), "", nil
-	return rec, s.PutContext(ctx, rec)
+	rec, logged, err := s.Publish(ctx, log, p)
+	if err == nil {
+		*ev = logged
+	}
+	return rec, err
 }
 
-// End ends the session with ev (SessionEnd or Exit): the record is marked
+// End ends the session with ev (SessionEnd or Exit): the session is marked
 // ended, the event logged, the record deleted. A writer that dies in between
-// leaves the marked record, which readers treat as gone and the next holder
-// of the lock finishes (Settle). The caller holds the session's lock.
+// leaves the ended record, which readers treat as gone and the next holder
+// of the lock finishes (Settle). The ended record keeps only what the event
+// reports (PrepareEnd), so a session ends whatever size its record reached.
+// The caller holds the session's lock.
 func (s Store) End(ctx context.Context, log *eventlog.Log, rec Record, ev eventlog.Event) error {
-	rec.Ended = ev.Event
-	if err := s.PutContext(ctx, rec); err != nil {
+	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return s.ended(ctx, log, rec, ev)
+	p, err := PrepareEnd(rec, ev)
+	if err != nil {
+		return err
+	}
+	_, _, err = s.Publish(ctx, log, p)
+	return err
 }
 
-func (s Store) ended(ctx context.Context, log *eventlog.Log, rec Record, ev eventlog.Event) error {
-	ev.Agent, ev.Session, ev.Event = rec.Agent, rec.ID, rec.Ended
-	if ev.Cwd == "" {
-		ev.Cwd = rec.Cwd
+// Publish makes a prepared change, in the order that leaves no change
+// unreported: the marked record, the event, then the final record, or the
+// deletion that ends the session. It writes exactly the bytes admitted. It
+// returns the record as stored and the event as logged. The caller holds
+// the session's lock, as it has since preparing the change.
+func (s Store) Publish(ctx context.Context, log *eventlog.Log, p Prepared) (Record, eventlog.Event, error) {
+	if p.agent == "" {
+		return Record{}, eventlog.Event{}, errors.New("publishing a change that was not prepared")
 	}
-	if err := log.Append(ctx, &ev); err != nil {
-		return err
+	if p.marked != nil {
+		if err := s.write(ctx, p.agent, p.id, p.marked); err != nil {
+			return Record{}, eventlog.Event{}, err
+		}
 	}
-	return s.DeleteContext(ctx, rec.Agent, rec.ID)
+	var ev eventlog.Event
+	if p.event != nil {
+		ev = *p.event
+		if err := log.Append(ctx, &ev); err != nil {
+			return Record{}, eventlog.Event{}, err
+		}
+	}
+	if p.end {
+		return Record{}, ev, s.DeleteContext(ctx, p.agent, p.id)
+	}
+	if err := s.write(ctx, p.agent, p.id, p.final); err != nil {
+		return Record{}, ev, err
+	}
+	return p.rec, ev, nil
 }
 
 // Settle finishes what a writer of rec did not: it logs a change left
 // unlogged, a delivery of tmag's whole, or completes an end. A prompt that
 // an older tmag left without a request gets one, and is logged with it. It
 // returns the record as it stands after, and false when the session is gone.
-// The caller holds the session's lock.
+// What it publishes derives from rec as a prepared change derives it, so a
+// change this tmag marked always settles; a record an older tmag left whose
+// repair would exceed a limit is unrepairable metadata (RecordError), left
+// as it is, and nothing is logged for it. The caller holds the session's lock.
 func (s Store) Settle(ctx context.Context, log *eventlog.Log, rec Record) (Record, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return Record{}, false, err
+	}
 	if rec.Ended != "" {
-		return Record{}, false, s.ended(ctx, log, rec, eventlog.Event{})
+		end := endEvent(rec)
+		if err := readers.admit(end); err != nil {
+			return Record{}, false, unrepairable(rec, err)
+		}
+		_, _, err := s.Publish(ctx, log, Prepared{agent: rec.Agent, id: rec.ID, event: &end, end: true})
+		return Record{}, false, err
 	}
 	rec.name(time.Now())
-	if rec.Delivery != nil && rec.Delivery.Event == rec.Change {
-		rec, err := s.logged(ctx, log, rec, *rec.Delivery)
-		return rec, true, err
+	if (rec.Delivery == nil || rec.Delivery.Event != rec.Change) && !rec.Unlogged() {
+		return rec, true, nil
 	}
-	if rec.Unlogged() {
-		change := rec.Change
-		if change == "" {
-			change = "Unlogged"
-		}
-		rec, err := s.logged(ctx, log, rec, eventlog.Event{Event: change})
-		return rec, true, err
+	p, err := readers.logged(rec)
+	if err != nil {
+		return rec, true, unrepairable(rec, err)
 	}
-	return rec, true, nil
+	rec, _, err = s.Publish(ctx, log, p)
+	return rec, true, err
+}
+
+func unrepairable(rec Record, err error) error {
+	var limit *LimitError
+	if errors.As(err, &limit) {
+		return &RecordError{Agent: rec.Agent, ID: rec.ID, Category: "repair_exceeds_limit"}
+	}
+	return err
 }
 
 // Current reads a session and settles it (Settle), so that a writer starts

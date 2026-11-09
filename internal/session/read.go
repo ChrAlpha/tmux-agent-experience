@@ -49,7 +49,7 @@ func (s Store) GetContext(ctx context.Context, agent, id string) (Record, bool, 
 	if err != nil {
 		return Record{}, false, err
 	}
-	data, err := statefile.ReadSmallWithin(ctx, s.Dir, rel, 4<<20)
+	data, err := statefile.ReadSmallWithin(ctx, s.Dir, rel, MaxRecordBytes)
 	if ctx.Err() != nil {
 		return Record{}, false, ctx.Err()
 	}

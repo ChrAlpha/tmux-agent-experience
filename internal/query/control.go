@@ -104,11 +104,17 @@ func paneOf(s Session, named *Pane, v View) (Pane, error) {
 // stateGate checks that a session is in a state a verb acts on.
 type stateGate func(s Session, v View, now time.Time) error
 
-// typing delivers a verb into a pane and returns its event, unlogged, and
-// what the delivery made of the session when the agent does not report it
-// (nil otherwise). It runs under the pane's lock and the session's, with the
-// session as stored.
-type typing func(ctx context.Context, s Session, p Pane, rec session.Record) (eventlog.Event, *session.Record, error)
+// paneVerb is a verb typed into a pane, under the pane's lock and the
+// session's, with the session as stored.
+type paneVerb struct {
+	// plan decides, publishing nothing, what the verb marks on the session
+	// before it is typed, the event reporting it, and what the delivery
+	// makes of the session when the agent does not report it (nil
+	// otherwise).
+	plan func(s Session, p Pane, rec session.Record) (mark session.Record, ev eventlog.Event, after *session.Record)
+	// press types the verb.
+	press func(ctx context.Context, s Session, p Pane) error
+}
 
 // throughPane delivers a verb through the one pane that shows s. The gate:
 // the pane proves it shows the session (process or title-id), shows its main
@@ -116,8 +122,10 @@ type typing func(ctx context.Context, s Session, p Pane, rec session.Record) (ev
 // the verb's own gate. All of it is checked again under the pane's lock and
 // then the session's, right before typing, and the event is logged before
 // the locks are released: the session's hooks wait for the same session lock,
-// so what the verb causes is logged after it.
-func throughPane(ctx context.Context, log *eventlog.Log, v View, s Session, named *Pane, gate stateGate, deliver typing) (Delivery, error) {
+// so what the verb causes is logged after it. Everything the verb publishes
+// is admitted before the mark is: a change too large to record is refused
+// before the pane is touched.
+func throughPane(ctx context.Context, log *eventlog.Log, v View, s Session, named *Pane, gate stateGate, verb paneVerb) (Delivery, error) {
 	p, err := paneOf(s, named, v)
 	if err != nil {
 		return Delivery{}, err
@@ -156,17 +164,32 @@ func throughPane(ctx context.Context, log *eventlog.Log, v View, s Session, name
 			if err != nil || !ok {
 				return &RefusedError{RefuseChanged, fmt.Sprintf("%s has ended", s.ID)}
 			}
-			ev, after, err := deliver(ctx, fs, fp, rec)
-			if err != nil {
-				return err
-			}
+			mark, ev, after := verb.plan(fs, fp, rec)
 			ev.Agent, ev.Session, ev.Via = fs.Agent, fs.ID, driver.Pane
 			ev.Pane = &eventlog.PaneRef{Server: fp.Server, ID: fp.ID}
+			var report session.Prepared
 			if after != nil {
-				if _, err := store.Report(ctx, log, *after, &ev); err != nil {
-					return fmt.Errorf("%s delivered to %s but not logged; do not repeat it: %w", ev.Event, fp.ID, err)
+				if report, err = session.PrepareReport(*after, ev); err != nil {
+					return err
 				}
-			} else if err := log.Append(ctx, &ev); err != nil {
+			} else if err := session.AdmitEvent(ev); err != nil {
+				return err
+			}
+			if err := store.PutContext(ctx, mark); err != nil {
+				return err
+			}
+			if err := verb.press(ctx, fs, fp); err != nil {
+				return err
+			}
+			if after != nil {
+				var logged eventlog.Event
+				if _, logged, err = store.Publish(ctx, log, report); err == nil {
+					ev = logged
+				}
+			} else {
+				err = log.Append(ctx, &ev)
+			}
+			if err != nil {
 				return fmt.Errorf("%s delivered to %s but not logged; do not repeat it: %w", ev.Event, fp.ID, err)
 			}
 			d = Delivery{Session: fs, Pane: &fp, Via: driver.Pane, Seq: ev.Seq, Cursor: ev.Cursor()}

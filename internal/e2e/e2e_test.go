@@ -267,11 +267,12 @@ func (h *harness) eventNames(session string) string {
 	return strings.Join(names, " ")
 }
 
-// externalHook runs a hook from outside any pane, as Codex's shared daemon does.
-func (h *harness) externalHook(agent string, payload map[string]any) {
+// externalHook runs a Claude Code hook from outside any pane, as a hook that
+// no pane's process runs (a background session's, a daemon's) reaches tmag.
+func (h *harness) externalHook(payload map[string]any) {
 	h.t.Helper()
 	b, _ := json.Marshal(payload)
-	if r := h.tmag(string(b), "hook", agent); r.code != 0 || r.out != "" {
+	if r := h.tmag(string(b), "hook", "claude"); r.code != 0 || r.out != "" {
 		h.t.Fatalf("hook: code %d output %q", r.code, r.out)
 	}
 }
@@ -1149,7 +1150,7 @@ func TestWatchResumes(t *testing.T) {
 	if doc := w.next(); doc["type"] != "snapshot" || doc["schema"] != "tmag/v1" {
 		t.Fatalf("first line = %v", doc)
 	}
-	h.externalHook("claude", map[string]any{"hook_event_name": "Stop", "session_id": sidA, "cwd": h.dir})
+	h.externalHook(map[string]any{"hook_event_name": "Stop", "session_id": sidA, "cwd": h.dir})
 	doc := w.next()
 	ev := eventOf(doc)
 	if doc["type"] != "event" || ev["session"] != sidA || ev["state"] != "idle" {
@@ -1158,7 +1159,7 @@ func TestWatchResumes(t *testing.T) {
 	w.stop()
 
 	seq := int64(ev["seq"].(float64))
-	h.externalHook("claude", map[string]any{"hook_event_name": "UserPromptSubmit", "session_id": sidA, "cwd": h.dir, "prompt_id": "p2"})
+	h.externalHook(map[string]any{"hook_event_name": "UserPromptSubmit", "session_id": sidA, "cwd": h.dir, "prompt_id": "p2"})
 	resumed := h.watch("--since", fmt.Sprint(seq))
 	doc = resumed.next()
 	ev = eventOf(doc)
@@ -1265,7 +1266,7 @@ func TestWatchEndsWhenItsReaderGoesAway(t *testing.T) {
 	if err := syscall.Shutdown(fds[1], syscall.SHUT_WR); err != nil {
 		t.Fatal(err)
 	}
-	h.externalHook("claude", map[string]any{"hook_event_name": "Stop", "session_id": sidA, "cwd": h.dir})
+	h.externalHook(map[string]any{"hook_event_name": "Stop", "session_id": sidA, "cwd": h.dir})
 	if line := readLine(t, lines); !strings.Contains(line, sidA) {
 		t.Fatalf("after the end of its input, watch sent %q", line)
 	}

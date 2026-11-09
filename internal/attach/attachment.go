@@ -3,6 +3,7 @@ package attach
 import (
 	"context"
 	"crypto/sha256"
+	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
@@ -78,16 +79,56 @@ const (
 	optReplaced = "replaced"
 )
 
-// FromPane reads the attachment stored on a pane.
+// FromPane reads the attachment stored on a pane: only one tmag could have
+// written, naming sessions as the session store does, so that every event an
+// attachment logs is about a session tmag can name. Anything else on the pane
+// is no attachment.
 func FromPane(p tmux.Pane) (Attachment, bool) {
 	o := p.Options
 	a := Attachment{Agent: o[optAgent], Session: o[optSession], Start: o[optStart], Evidence: o[optEvidence], Change: o[optChange], Replaced: o[optReplaced]}
 	a.PID, _ = strconv.Atoi(o[optPID])
-	if a.Agent == "" || a.Session == "" || a.PID <= 0 || (a.Evidence != Process && a.Evidence != TitleID) {
+	if !named(a.Agent, a.Session) || a.PID <= 0 || (a.Evidence != Process && a.Evidence != TitleID) {
 		return Attachment{}, false
+	}
+	switch a.Change {
+	case "", eventlog.Attach, eventlog.Detach:
+	default:
+		return Attachment{}, false
+	}
+	if a.Replaced != "" {
+		if agent, id, ok := strings.Cut(a.Replaced, " "); !ok || !named(agent, id) {
+			return Attachment{}, false
+		}
 	}
 	return a, true
 }
+
+// named reports whether agent and id name a session as the store does.
+func named(agent, id string) bool {
+	return (agent == proc.Claude || agent == proc.Codex) && session.ValidID(id)
+}
+
+// unreadable reports whether a pane's options mark an attachment change in
+// progress, an Attach or Detach a writer did not get to log, that FromPane
+// cannot read: what they mark is unknown, and must not be cleared as broken.
+func unreadable(p tmux.Pane) bool {
+	if _, ok := FromPane(p); ok {
+		return false
+	}
+	return p.Options[optChange] != "" || p.Options[optReplaced] != ""
+}
+
+// MarkerError reports a pane whose options mark an attachment change tmag
+// cannot read. The pane is left as it is and nothing is logged for it: the
+// first one stops reconciliation, as an unreadable session record does, until
+// its options are repaired or cleared. It names the pane, never the options.
+type MarkerError struct{ Server, Pane string }
+
+func (e *MarkerError) Error() string {
+	return fmt.Sprintf("attachment_unavailable: pane %s of %s marks an attachment change tmag cannot read; its @tmag_ options are left as they are", e.Pane, e.Server)
+}
+
+func markerError(p tmux.Pane) error { return &MarkerError{Server: p.Server, Pane: p.ID} }
 
 // Projection is what tmux displays for an attached pane.
 type Projection struct {
