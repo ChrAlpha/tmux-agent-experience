@@ -240,7 +240,10 @@ claude plugin validate .      # marketplace and plugin manifests
   Keep them consistent, and run every command you write there: they are executed
   verbatim by someone else. Wiki pages live in the separate
   `tmux-agent-experience.wiki.git` repository.
-- Commits follow Conventional Commits. Code comments and docs are in English.
+- Commits follow Conventional Commits. Code comments and canonical docs are in
+  English. Localized README and Wiki pages follow the English source; preserve
+  commands, flags, JSON fields and output examples, and keep language links and
+  translated instructions consistent when updating their source.
 
 ## Testing
 

@@ -1,9 +1,13 @@
+<div align="right"><strong>🇬🇧English</strong> | <strong><a href="./README.zh-CN.md">🇨🇳中文</a></strong></div>
+
 # tmux-agent-experience
 
 A tmux plugin that knows what your coding agents are doing.
 
-Keep Claude Code and Codex in your usual panes. See who is working, who needs
-an answer, and who has finished — without checking every terminal.
+Keep Claude Code and Codex in your usual panes. See who is working, waiting
+or done—and let agents discover each other, send work and read replies. A thin
+layer over the tmux workflow you already use, leaving agents to work out how
+to collaborate.
 
 ## Your agents, at a glance
 
@@ -14,8 +18,8 @@ an answer, and who has finished — without checking every terminal.
 - **See progress where you work.** Add `#{tmag_status}` to your status line
   for `2 blocked · 1 working`, or `#{E:@tmag-pane-status}` to pane borders
   for labels such as `codex blocked permission`.
-- **Let agents work together.** Ask one to involve another: tmag delivers the
-  prompt when the recipient is idle, lets the sender wait, and reads the reply.
+- **Let agents work together.** Agents can discover peers, check their state,
+  send prompts and read replies. Ask one to bring another into the task.
 - **Reach agents beyond the terminal.** Answer permission requests, send prompts
   and stop turns through an optional owner-authorized local HTTP API. Connect
   alerts to your own notification command.
