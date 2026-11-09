@@ -8,34 +8,151 @@ on:
 permissions:
   contents: read
 
+# A pull request keeps only its latest push running; every commit on main
+# runs to the end in a group of its own.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+
 jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.changes.outputs.code }}
+      go: ${{ steps.go.outputs.version }}
+      suites: ${{ steps.e2e.outputs.suites }}
+      timings: ${{ steps.e2e.outputs.timings }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+      # Documentation outside the plugins feeds no check, so a change to it
+      # alone skips every job but ci, which still reports.
+      - id: changes
+        name: Detect code changes
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          base=HEAD^1 # a pull request's merge commit has its base first
+          if [ "$GITHUB_EVENT_NAME" = push ]; then
+            base=$BEFORE
+            git fetch --quiet --depth=1 origin "$base" || base=
+          fi
+          if [ -n "$base" ] &&
+            git diff --quiet "$base" HEAD -- . ':!*.md' ':!docs/' ':!LICENSE' ':!.github/ISSUE_TEMPLATE/' &&
+            git diff --quiet "$base" HEAD -- plugins/; then
+            echo code=false >> "$GITHUB_OUTPUT"
+          else
+            echo code=true >> "$GITHUB_OUTPUT"
+          fi
+      # Every job of a run uses the same release, the latest one.
+      - id: go
+        name: Resolve the Go release
+        run: echo "version=$(curl -fsSL --retry 3 'https://go.dev/VERSION?m=text' | sed -n '1s/^go//p')" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@v6
+        with:
+          path: e2e-times
+          key: e2e-times-${{ github.run_id }}
+          restore-keys: e2e-times-
+      # The end-to-end tests run one after another, so they are split across
+      # machines: longest first, each onto the least loaded shard, by the
+      # durations main last recorded (the average for a test without one).
+      # The last shard runs every test the others do not, so a test always
+      # runs somewhere.
+      - id: e2e
+        name: Split the end-to-end tests
+        env:
+          SHARDS: 3
+        run: |
+          touch e2e-times
+          sed -n 's/^func \(Test[A-Za-z0-9_]*\)(.*/\1/p' internal/e2e/*_test.go | grep -vx TestMain | sort -u > tests
+          awk 'FILENAME == ARGV[1] { t[$1]; next } $1 in t' tests e2e-times > known
+          avg=$(awk '{ s += $2 } END { print NR ? s / NR : 1 }' known)
+          suites=$(awk -v avg="$avg" 'FILENAME == ARGV[1] { w[$1] = $2; next } { print ($1 in w ? w[$1] : avg), $1 }' known tests |
+            sort -k1,1gr -k2,2 |
+            awk -v n="$SHARDS" '
+              {
+                k = 1
+                for (i = 2; i <= n; i++) if (load[i] < load[k]) k = i
+                load[k] += $1
+                names[k] = names[k] (names[k] == "" ? "" : "|") $2
+              }
+              END {
+                printf "[{\"name\":\"unit\"}"
+                for (i = 1; i < n; i++) {
+                  printf ",{\"name\":\"e2e-%d/%d\",\"run\":\"^(%s)$\"}", i, n, names[i]
+                  others = others (others == "" ? "" : "|") names[i]
+                }
+                printf ",{\"name\":\"e2e-%d/%d\",\"skip\":\"^(%s)$\"}]\n", n, n, others
+              }')
+          echo "suites=$suites" >> "$GITHUB_OUTPUT"
+          echo "timings=$(tr '\n' ' ' < known)" >> "$GITHUB_OUTPUT"
+          jq . <<< "$suites"
+
   test:
+    needs: plan
+    if: needs.plan.outputs.code == 'true'
+    name: test (${{ matrix.os }}, ${{ matrix.suite.name }})
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
+        suite: ${{ fromJSON(needs.plan.outputs.suites) }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: ./.github/actions/setup-go
         with:
-          go-version: stable
-          check-latest: true
+          go-version: ${{ needs.plan.outputs.go }}
+          build-cache: race-${{ matrix.suite.name == 'unit' && 'unit' || 'e2e' }}
       - name: Install tmux
         run: |
-          if [ "$RUNNER_OS" = Linux ]; then sudo apt-get update && sudo apt-get install -y tmux; else brew install tmux; fi
+          if [ "$RUNNER_OS" = macOS ]; then
+            brew install tmux
+          elif ! command -v tmux > /dev/null; then
+            sudo apt-get update && sudo apt-get install -y tmux
+          fi
           tmux -V
       - name: Test
-        run: go test -race ./...
+        env:
+          SUITE: ${{ matrix.suite.name }}
+          RUN: ${{ matrix.suite.run }}
+          SKIP: ${{ matrix.suite.skip }}
+        run: |
+          if [ "$SUITE" = unit ]; then
+            mapfile -t packages < <(go list ./... | grep -v '/internal/e2e$')
+            go test -race "${packages[@]}"
+          else
+            go test -race -v -run "$RUN" -skip "$SKIP" ./internal/e2e | tee "$RUNNER_TEMP/e2e.log"
+          fi
+      # Main's Linux shards keep the durations the next split works from.
+      - name: Record end-to-end durations
+        if: github.ref == 'refs/heads/main' && runner.os == 'Linux' && matrix.suite.name != 'unit'
+        env:
+          TIMINGS: ${{ needs.plan.outputs.timings }}
+        run: |
+          xargs -r -n 2 <<< "$TIMINGS" > previous
+          awk '/^--- (PASS|FAIL): / { gsub(/[()s]/, "", $4); print $3, $4 }' "$RUNNER_TEMP/e2e.log" > measured
+          awk '{ w[$1] = $2 } END { for (t in w) print t, w[t] }' previous measured | sort > e2e-times
+      - if: github.ref == 'refs/heads/main' && runner.os == 'Linux' && matrix.suite.name != 'unit'
+        uses: actions/cache/save@v6
+        with:
+          path: e2e-times
+          key: e2e-times-${{ github.run_id }}-${{ github.run_attempt }}-${{ strategy.job-index }}
 
   lint:
+    needs: plan
+    if: needs.plan.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: ./.github/actions/setup-go
         with:
-          go-version: stable
-          check-latest: true
+          go-version: ${{ needs.plan.outputs.go }}
       - uses: golangci/golangci-lint-action@v9
         with:
           version: v2.15
@@ -43,14 +160,33 @@ jobs:
         run: shellcheck tmag.tmux scripts/install.sh scripts/tmag plugins/claude/tmag-peers/bin/tmag plugins/codex/tmag-peers/skills/peers/scripts/tmag
 
   vulncheck:
+    needs: plan
+    if: needs.plan.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: golang/govulncheck-action@v1
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-go
         with:
-          go-version-input: stable
-          check-latest: true
+          go-version: ${{ needs.plan.outputs.go }}
+      # govulncheck publishes no binaries: the latest is built once per
+      # version and Go release, then kept.
+      - id: govulncheck
+        name: Resolve govulncheck
+        run: echo "version=$(go list -m -f '{{.Version}}' golang.org/x/vuln@latest)" >> "$GITHUB_OUTPUT"
+      - id: govulncheck-cache
+        uses: actions/cache@v6
+        with:
+          path: ~/go/bin/govulncheck
+          key: govulncheck-${{ steps.govulncheck.outputs.version }}-${{ needs.plan.outputs.go }}-${{ runner.os }}-${{ runner.arch }}
+      - if: steps.govulncheck-cache.outputs.cache-hit != 'true'
+        name: Build govulncheck
+        run: go install "golang.org/x/vuln/cmd/govulncheck@${{ steps.govulncheck.outputs.version }}"
+      - name: Govulncheck
+        run: govulncheck ./...
 
   manifests:
+    needs: plan
+    if: needs.plan.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -60,4 +196,23 @@ jobs:
                    plugins/claude/*/.claude-plugin/plugin.json plugins/claude/tmag/hooks/hooks.json \
                    plugins/codex/*/.codex-plugin/plugin.json plugins/codex/tmag/hooks/hooks.json; do
             jq empty "$f" || { echo "invalid JSON: $f"; exit 1; }
+          done
+
+  # The one check to require: it passes when every job passed, or when only
+  # documentation changed and the plan skipped them, whatever the matrix.
+  ci:
+    if: ${{ !cancelled() }}
+    needs: [plan, test, lint, vulncheck, manifests]
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          CODE: ${{ needs.plan.outputs.code }}
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          for result in $RESULTS; do
+            case "$result" in
+              success) ;;
+              skipped) [ "$CODE" = false ] || { echo "::error::a job was skipped although code changed"; exit 1; } ;;
+              *) echo "::error::a job ended $result"; exit 1 ;;
+            esac
           done
