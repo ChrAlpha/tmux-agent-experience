@@ -1,0 +1,37 @@
+name: Set up Go
+description: Install one Go release through the toolchain cache, and restore the build cache a job names.
+
+inputs:
+  go-version:
+    description: The exact Go release, such as 1.27.3.
+    required: true
+  build-cache:
+    description: Name of the build cache this job keeps; empty keeps none.
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    # setup-go copies a downloaded release into the tool cache file by file,
+    # which takes longer than the download; a restored copy needs neither.
+    - uses: actions/cache@v6
+      with:
+        path: ${{ runner.tool_cache }}/go/${{ inputs.go-version }}
+        key: go-${{ inputs.go-version }}-${{ runner.os }}-${{ runner.arch }}
+    - uses: actions/setup-go@v7
+      with:
+        go-version: ${{ inputs.go-version }}
+        cache: false
+    - id: dirs
+      if: inputs.build-cache != ''
+      shell: bash
+      run: echo "gocache=$(go env GOCACHE)" >> "$GITHUB_OUTPUT"
+    # One build cache per kind of job and release: it holds what that job
+    # compiles, such as the race-instrumented standard library, and nothing
+    # another kind of job would save under the same key first.
+    - if: inputs.build-cache != ''
+      uses: actions/cache@v6
+      with:
+        path: ${{ steps.dirs.outputs.gocache }}
+        key: go-build-${{ inputs.build-cache }}-${{ inputs.go-version }}-${{ runner.os }}-${{ runner.arch }}
