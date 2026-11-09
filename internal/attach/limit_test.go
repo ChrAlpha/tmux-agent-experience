@@ -55,28 +55,24 @@ func TestFromPaneReadsOnlyAttachmentsTmagWrites(t *testing.T) {
 }
 
 // largest is the record of the given shape with the most n that still fits
-// the record limit, as stored and read back.
+// the record limit, as stored and read back. A shape grows by the same bytes
+// for each n, so two small records give that n, and the records at either
+// side of the limit prove it: each encoding near the limit is costly.
 func largest(t *testing.T, store session.Store, shape func(n int) session.Record) session.Record {
 	t.Helper()
-	fits := func(n int) bool {
+	size := func(n int) int {
 		b, err := json.Marshal(shape(n))
 		if err != nil {
 			t.Fatal(err)
 		}
-		return len(b) <= session.MaxRecordBytes
+		return len(b)
 	}
-	lo, hi := 0, 1
-	for fits(hi) {
-		lo, hi = hi, hi*2
+	one, two := size(1), size(2)
+	n := 1 + (session.MaxRecordBytes-one)/(two-one)
+	if size(n) > session.MaxRecordBytes || size(n+1) <= session.MaxRecordBytes {
+		t.Fatalf("the shape does not grow by the same bytes for each n: %d does not end at the limit", n)
 	}
-	for hi-lo > 1 {
-		if mid := (lo + hi) / 2; fits(mid) {
-			lo = mid
-		} else {
-			hi = mid
-		}
-	}
-	rec := shape(lo)
+	rec := shape(n)
 	if err := store.Put(rec); err != nil {
 		t.Fatal(err)
 	}
