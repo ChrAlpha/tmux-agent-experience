@@ -6,22 +6,23 @@ package hook
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"slices"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/adapter"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/answer"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/attach"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/contextio"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/coord"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
-	"github.com/ChrAlpha/tmux-agent-experience/internal/maintenance"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/lockfile"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/notify"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/ownedfs"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/tmux"
@@ -92,7 +93,6 @@ func RunContext(parent context.Context, in Input) error {
 	if in.Now != nil {
 		now = in.Now
 	}
-	defer func() { _ = maintenance.Run(ctx, in.Log.Dir) }()
 
 	w, err := attach.Load(ctx)
 	if err != nil {
@@ -100,10 +100,15 @@ func RunContext(parent context.Context, in Input) error {
 	}
 	env := attach.Env{Log: in.Log, Store: session.Store{Dir: in.Log.Dir}}
 	// Housekeeping on the world as loaded, once the hook's own work is done.
-	defer attach.Reconcile(ctx, env, w)
+	defer func() {
+		if err := attach.Reconcile(ctx, env, w); err != nil {
+			RecordErrorContext(ctx, in.Log.Dir, in.Agent, err)
+		}
+	}()
 
 	host, hostKnown := w.Proc.HostOf(in.PID)
-	ev := eventlog.Event{Agent: in.Agent, Session: p.SessionID, Event: p.HookEventName, Cwd: p.Cwd}
+	contact := now().UTC()
+	ev := eventlog.Event{Agent: in.Agent, Session: p.SessionID, Event: p.HookEventName, Cwd: p.Cwd, LastHookAt: contact}
 
 	get := func() (session.Record, bool, error) { return env.Store.Current(ctx, in.Log, in.Agent, p.SessionID) }
 
@@ -144,7 +149,10 @@ func RunContext(parent context.Context, in Input) error {
 			base.Transcript = p.TranscriptPath
 		}
 		next, changed := session.Apply(base, tr, now())
-		if found && !changed && base.Cwd == cur.Cwd && base.Host == cur.Host && base.Transcript == cur.Transcript {
+		if contact.After(next.LastHookAt) {
+			next.LastHookAt = contact
+		}
+		if found && !changed && base.Cwd == cur.Cwd && base.Host == cur.Host && base.Transcript == cur.Transcript && next.LastHookAt.Equal(cur.LastHookAt) {
 			return nil
 		}
 		// Calls and other background work change without an event; whatever
@@ -301,29 +309,59 @@ func RecordError(dir, agent string, err error) {
 
 // RecordErrorContext logs only while the invocation has budget remaining.
 // A replaced hook.log must not turn a diagnostic into a blocking FIFO open.
-func RecordErrorContext(ctx context.Context, dir, agent string, err error) {
-	if ctx.Err() != nil {
+func RecordErrorContext(parent context.Context, dir, agent string, err error) {
+	if err == nil || parent.Err() != nil {
 		return
 	}
-	if os.MkdirAll(dir, 0o700) != nil {
+	ctx, cancel := context.WithTimeout(parent, 100*time.Millisecond)
+	defer cancel()
+	// Diagnostics may be the first writer; admit the layout before any file.
+	if _, err := coord.Current(ctx, dir); err != nil {
 		return
 	}
-	path := filepath.Join(dir, "hook.log")
-	flags := os.O_CREATE | os.O_WRONLY | os.O_APPEND | syscall.O_NONBLOCK | syscall.O_NOFOLLOW
-	if st, serr := os.Stat(path); serr == nil && st.Size() > maxErrLog {
-		flags = os.O_CREATE | os.O_WRONLY | os.O_TRUNC | syscall.O_NONBLOCK | syscall.O_NOFOLLOW
+	switch agent {
+	case "claude", "codex", "notify":
+	default:
+		agent = "hook"
 	}
-	if ctx.Err() != nil {
-		return
+	category := "failed"
+	var record *session.RecordError
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		category = "timeout"
+	case errors.Is(err, context.Canceled):
+		category = "canceled"
+	case errors.Is(err, notify.ErrLimit):
+		category = "limited"
+	case errors.As(err, &record):
+		category = "records_unavailable"
 	}
-	f, ferr := os.OpenFile(path, flags, 0o600)
-	if ferr != nil {
-		return
-	}
-	defer f.Close()
-	st, serr := f.Stat()
-	if serr != nil || !st.Mode().IsRegular() || ctx.Err() != nil {
-		return
-	}
-	fmt.Fprintf(f, "%s %s %v\n", time.Now().UTC().Format(time.RFC3339), agent, err)
+	// The line contains fixed categories only, never err.Error(), command output
+	// or hook input. Exclusion covers the ceiling check, truncation and append.
+	line := []byte(fmt.Sprintf("%s %s %s\n", time.Now().UTC().Format(time.RFC3339), agent, category))
+	_ = lockfile.Within(ctx, dir, "hook-log.lock", false, false, func() error {
+		d, err := ownedfs.Open(ctx, dir, ".", false)
+		if err != nil {
+			return err
+		}
+		defer d.Close()
+		f, err := d.OpenFile(ctx, "hook.log", os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o600)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		st, err := f.Stat()
+		if err != nil {
+			return err
+		}
+		if st.Size()+int64(len(line)) > maxErrLog {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if err := f.Truncate(0); err != nil {
+				return err
+			}
+		}
+		return contextio.WriteAll(ctx, f, line)
+	})
 }

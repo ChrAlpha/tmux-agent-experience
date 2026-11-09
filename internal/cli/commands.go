@@ -226,6 +226,9 @@ func (a *app) cmdInspect(args []string) int {
 	a.printView(v, query.Caller{})
 	if s := t.Session; s != nil {
 		fmt.Fprintf(a.stdout, "\nid: %s\nruntime: %s\n", s.ID, s.Runtime)
+		if !s.LastHookAt.IsZero() {
+			fmt.Fprintf(a.stdout, "last hook: %s (contact only)\n", s.LastHookAt.UTC().Format(time.RFC3339Nano))
+		}
 		for _, p := range s.Panes {
 			fmt.Fprintf(a.stdout, "shown in: %s (%s, %s)\n", p.ID, p.Evidence, p.View)
 		}

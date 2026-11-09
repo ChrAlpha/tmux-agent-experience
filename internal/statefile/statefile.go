@@ -21,7 +21,7 @@ func owned(st os.FileInfo) bool {
 }
 
 // Write is a fixture compatibility helper. Production uses an explicit selected
-// root through WriteWithin or WriteSlots; the caller excludes the temporary.
+// root through WriteWithin; the caller excludes the temporary.
 func Write(ctx context.Context, path, tmp string, data []byte) error {
 	if filepath.Dir(path) != filepath.Dir(tmp) {
 		return ownedfs.ErrScope
@@ -35,20 +35,6 @@ func WriteWithin(ctx context.Context, root, path, tmp string, data []byte) error
 		return ownedfs.ErrScope
 	}
 	d, err := ownedfs.Open(ctx, root, filepath.Dir(path), true)
-	if err != nil {
-		return err
-	}
-	defer d.Close()
-	return write(ctx, d, filepath.Base(path), filepath.Base(tmp), data)
-}
-
-// WriteSlots reserves a fixed prefix once, before any publisher creates a slot.
-// The reservation and its ancestor bindings survive crashes and directory moves.
-func WriteSlots(ctx context.Context, root, path, tmp, prefix string, slots int, data []byte) error {
-	if filepath.Dir(path) != filepath.Dir(tmp) {
-		return ownedfs.ErrScope
-	}
-	d, err := ownedfs.OpenSlots(ctx, root, filepath.Dir(path), prefix, slots, true)
 	if err != nil {
 		return err
 	}
@@ -131,20 +117,6 @@ func Remove(ctx context.Context, path string) (bool, error) {
 func RemoveWithin(ctx context.Context, root, path string) (bool, error) {
 	d, err := ownedfs.Open(ctx, root, filepath.Dir(path), false)
 	if errors.Is(err, os.ErrNotExist) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	defer d.Close()
-	return remove(ctx, d, filepath.Base(path))
-}
-
-// RemoveSlot requires the prior writer's namespace reservation. Missing or
-// uncertain parent scope is preserved, never adopted by maintenance.
-func RemoveSlot(ctx context.Context, root, path, prefix string, slots int) (bool, error) {
-	d, err := ownedfs.OpenSlots(ctx, root, filepath.Dir(path), prefix, slots, false)
-	if errors.Is(err, os.ErrNotExist) || errors.Is(err, ownedfs.ErrScope) {
 		return false, nil
 	}
 	if err != nil {

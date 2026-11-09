@@ -115,43 +115,52 @@ func Links(w *World, live []session.Record) []Link {
 //
 // Every change is decided again under the pane's or session's lock against
 // fresh state, so several tmag processes reconciling at once record each
-// change once, and nothing newer than w is undone. Errors are not reported:
-// the next reconciliation retries.
-func Reconcile(ctx context.Context, env Env, w *World) {
-	if ctx.Err() != nil || w.Proc == nil || !w.Proc.Complete() {
-		return
+// change once, and nothing newer than w is undone. The first real error is
+// returned; unknown resources and pending markers remain intact for a later invocation.
+func Reconcile(ctx context.Context, env Env, w *World) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if w == nil || w.Proc == nil || !w.Proc.Complete() {
+		return errors.New("process table incomplete; reconciliation requires complete evidence")
 	}
 	recs, err := env.Store.AllContext(ctx)
 	if err != nil {
-		return
+		return err
 	}
 	for _, p := range w.Panes {
-		if ctx.Err() != nil {
-			return
+		if err := ctx.Err(); err != nil {
+			return err
 		}
 		if a, ok := FromPane(p); ok && a.Change != "" {
-			_ = env.settlePane(ctx, p)
+			if err := env.settlePane(ctx, p); err != nil {
+				return err
+			}
 		}
 	}
 	live, gone := Live(w, recs)
 	for _, r := range gone {
-		if ctx.Err() != nil {
-			return
+		if err := ctx.Err(); err != nil {
+			return err
 		}
-		env.exit(ctx, r)
+		if err := env.exit(ctx, r); err != nil {
+			return err
+		}
 	}
 	for _, r := range live {
-		if ctx.Err() != nil {
-			return
+		if err := ctx.Err(); err != nil {
+			return err
 		}
 		if r.Unsettled() {
-			env.settle(ctx, r)
+			if err := env.settle(ctx, r); err != nil {
+				return err
+			}
 		}
 	}
 	linked := map[[2]string]bool{}
 	for _, l := range Links(w, live) {
-		if ctx.Err() != nil {
-			return
+		if err := ctx.Err(); err != nil {
+			return err
 		}
 		p := l.Client.Pane
 		linked[[2]string{p.Server, p.ID}] = true
@@ -159,13 +168,19 @@ func Reconcile(ctx context.Context, env Env, w *World) {
 		case l.Stored:
 			if projectionFromPane(p) != ProjectionOf(*l.Session) {
 				a, _ := FromPane(p)
-				_ = env.Show(ctx, p, a)
+				if err := env.Show(ctx, p, a); err != nil {
+					return err
+				}
 			}
 		case l.Session != nil:
-			_ = env.Attach(ctx, w, l.Client, *l.Session, l.Evidence)
+			if err := env.Attach(ctx, w, l.Client, *l.Session, l.Evidence); err != nil {
+				return err
+			}
 		default:
 			if a, ok := FromPane(p); ok {
-				_ = env.detach(ctx, p, a)
+				if err := env.detach(ctx, p, a); err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -173,11 +188,16 @@ func Reconcile(ctx context.Context, env Env, w *World) {
 	// attachment at all, which tmux would still display.
 	for _, p := range w.Panes {
 		if a, ok := FromPane(p); ok && !linked[[2]string{p.Server, p.ID}] {
-			_ = env.detach(ctx, p, a)
+			if err := env.detach(ctx, p, a); err != nil {
+				return err
+			}
 		} else if !ok && len(p.Options) > 0 {
-			_ = env.clearBroken(ctx, p)
+			if err := env.clearBroken(ctx, p); err != nil {
+				return err
+			}
 		}
 	}
+	return ctx.Err()
 }
 
 // clearBroken removes tmag options that hold no attachment, if they still
@@ -271,7 +291,11 @@ func (env Env) finish(ctx context.Context, srv tmux.Server, fresh tmux.Pane, a A
 		// logs after it, never before with this event reporting less.
 		ev := eventlog.Event{Agent: a.Agent, Session: a.Session, Event: eventlog.Attach, Pane: ref(fresh), Evidence: a.Evidence}
 		if err := env.Store.Lock(ctx, a.Agent, a.Session, func() error {
-			if rec, ok, _ := env.Store.GetContext(ctx, a.Agent, a.Session); ok {
+			rec, ok, err := env.Store.GetContext(ctx, a.Agent, a.Session)
+			if err != nil {
+				return err
+			}
+			if ok {
 				rec.Report(&ev)
 			}
 			return env.append(ctx, ev)
@@ -365,8 +389,8 @@ func (env Env) detach(ctx context.Context, p tmux.Pane, a Attachment) error {
 
 // exit ends a session that is gone: it finishes an end already decided, or
 // ends a session whose host process exited, if it still has.
-func (env Env) exit(ctx context.Context, r session.Record) {
-	_ = env.Store.Lock(ctx, r.Agent, r.ID, func() error {
+func (env Env) exit(ctx context.Context, r session.Record) error {
+	return env.Store.Lock(ctx, r.Agent, r.ID, func() error {
 		cur, ok, err := env.Store.Current(ctx, env.Log, r.Agent, r.ID)
 		if err != nil || !ok {
 			return err // or an end already decided is now finished
@@ -374,13 +398,23 @@ func (env Env) exit(ctx context.Context, r session.Record) {
 		if cur.Host != r.Host {
 			return nil // reported from another process since
 		}
+		if cur.Host.PID <= 0 || cur.Host.Start == "" {
+			return nil
+		}
+		pt, err := proc.SnapshotContext(ctx)
+		if err != nil {
+			return err
+		}
+		if pt.Alive(cur.Host.PID, cur.Host.Start) {
+			return nil
+		}
 		return env.Store.End(ctx, env.Log, cur, eventlog.Event{Event: eventlog.Exit})
 	})
 }
 
 // settle logs a change its writer did not get to log, if it still is not.
-func (env Env) settle(ctx context.Context, r session.Record) {
-	_ = env.Store.Lock(ctx, r.Agent, r.ID, func() error {
+func (env Env) settle(ctx context.Context, r session.Record) error {
+	return env.Store.Lock(ctx, r.Agent, r.ID, func() error {
 		_, _, err := env.Store.Current(ctx, env.Log, r.Agent, r.ID)
 		return err
 	})

@@ -32,10 +32,9 @@ option() {
 version="$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "$dir/plugins/codex/tmag/.codex-plugin/plugin.json")"
 tmux set-option -g @tmag-plugin-version "$version"
 
-# The binary lives in bin/; install or replace it when the plugin changed.
-if [ "$("$dir/bin/tmag" version 2>/dev/null | awk '{print $2}')" != "$version" ]; then
-	tmux run-shell -b "'$dir/scripts/install.sh' '$version'"
-fi
+# The worker checks the installed version in the background, so an unresponsive
+# executable cannot block tmux's plugin entry point.
+tmux run-shell -b "'$dir/scripts/install.sh' '$version'"
 
 # Agent hooks read this to decide when to ring a pane's bell.
 tmux set-option -g @tmag-alert "$(option @tmag-alert blocked,finished)"

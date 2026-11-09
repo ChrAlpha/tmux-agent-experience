@@ -6,178 +6,27 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sync/atomic"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
-
-	"github.com/ChrAlpha/tmux-agent-experience/internal/lockfile"
 )
 
-func openLegacy(t *testing.T, dir string, class Class, key [32]byte) *os.File {
-	t.Helper()
-	path := legacyPath(dir, class, key)
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = f.Close() })
-	return f
-}
-
-func rawLock(t *testing.T, f *os.File, how int) {
-	t.Helper()
-	if err := syscall.Flock(int(f.Fd()), how|syscall.LOCK_NB); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestFreshDirectoryRequiresExplicitRetirement(t *testing.T) {
+func TestFreshDirectoryUsesFixedPools(t *testing.T) {
 	dir := t.TempDir()
 	ctx := context.Background()
-	mode, err := Current(ctx, dir)
-	if err != nil || mode != Compatibility {
-		t.Fatalf("fresh mode = %s, %v", mode, err)
-	}
-	var key [32]byte
-	if err := With(ctx, dir, Session, key, func() error { return nil }); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(legacyPath(dir, Session, key)); err != nil {
-		t.Fatalf("fresh compatibility skipped legacy coordination: %v", err)
-	}
-	// A free lock and an otherwise empty namespace are never a cutover signal.
-	if mode, err := Current(ctx, dir); err != nil || mode != Compatibility {
-		t.Fatalf("implicitly retired old binaries: %s, %v", mode, err)
-	}
-}
-
-func TestCompatibilityPreservesHolderAndPreopenedWaiterInode(t *testing.T) {
-	dir := t.TempDir()
-	var key [32]byte
-	holder := openLegacy(t, dir, Session, key)
-	waiter := openLegacy(t, dir, Session, key)
-	before, err := waiter.Stat()
-	if err != nil {
-		t.Fatal(err)
-	}
-	rawLock(t, holder, syscall.LOCK_EX)
-	tryNew := func() {
-		t.Helper()
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
-		defer cancel()
-		err := With(ctx, dir, Session, key, func() error {
-			t.Fatal("new writer bypassed a legacy holder")
-			return nil
-		})
-		if !errors.Is(err, context.DeadlineExceeded) {
-			t.Fatalf("mixed-version exclusion = %v", err)
-		}
-	}
-	tryNew()
-	rawLock(t, holder, syscall.LOCK_UN)
-	// This descriptor opened before either new attempt. Merely acquiring the
-	// old path between holders cannot justify rebinding its inode.
-	rawLock(t, waiter, syscall.LOCK_EX)
-	tryNew()
-	after, err := os.Stat(legacyPath(dir, Session, key))
-	if err != nil || !os.SameFile(before, after) {
-		t.Fatalf("compatibility rebound a pre-opened inode: %v", err)
-	}
-	rawLock(t, waiter, syscall.LOCK_UN)
-	if err := holder.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := waiter.Close(); err != nil {
-		t.Fatal(err)
-	}
-	// Only now do the test's operator preconditions hold.
-	if err := RetireLegacy(context.Background(), dir); err != nil {
-		t.Fatal(err)
-	}
-	if err := With(context.Background(), dir, Session, key, func() error { return nil }); err != nil {
-		t.Fatal(err)
-	}
-	after, err = os.Stat(legacyPath(dir, Session, key))
-	if err != nil || !os.SameFile(before, after) {
-		t.Fatalf("cutover unnecessarily removed legacy evidence: %v", err)
-	}
-}
-
-func TestCutoverExcludesNewWaitersAndHolders(t *testing.T) {
-	dir := t.TempDir()
-	var key [32]byte
-	old := openLegacy(t, dir, Pane, key)
-	rawLock(t, old, syscall.LOCK_EX)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	entered, release := make(chan struct{}), make(chan struct{})
-	defer close(release)
-	done := make(chan error, 1)
-	go func() {
-		done <- With(ctx, dir, Pane, key, func() error {
-			close(entered)
-			select {
-			case <-release:
-			case <-ctx.Done():
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if mode, err := Current(ctx, dir); err != nil || mode != Pool {
+				t.Errorf("initialize = %s %v", mode, err)
 			}
-			return nil
-		})
-	}()
-	// The stripe is held before the new participant opens/waits on legacy.
-	for {
-		err := lockfile.Try(ctx, poolPath(dir, Pane, key), func() error { return nil })
-		if errors.Is(err, lockfile.ErrBusy) {
-			break
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		select {
-		case <-ctx.Done():
-			t.Fatal("new participant never acquired its stripe")
-		case <-time.After(time.Millisecond):
-		}
+		}()
 	}
-	cutoverMustWait := func() {
-		t.Helper()
-		quick, stop := context.WithTimeout(ctx, 20*time.Millisecond)
-		defer stop()
-		if err := RetireLegacy(quick, dir); !errors.Is(err, context.DeadlineExceeded) {
-			t.Fatalf("cutover bypassed participant: %v", err)
-		}
-		if mode, err := Current(ctx, dir); err != nil || mode != Compatibility {
-			t.Fatalf("cutover published before participant drained: %s, %v", mode, err)
-		}
-	}
-	cutoverMustWait()
-	rawLock(t, old, syscall.LOCK_UN)
-	select {
-	case <-entered:
-	case <-ctx.Done():
-		t.Fatal("new participant never entered callback")
-	}
-	cutoverMustWait()
-	// Drain the callback without closing release twice in the cleanup.
-	cancel()
-	if err := <-done; err != nil {
-		t.Fatal(err)
-	}
-	if err := RetireLegacy(context.Background(), dir); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestPoolBoundAndStableInodesAfterExplicitCutover(t *testing.T) {
-	dir := t.TempDir()
-	ctx := context.Background()
-	if err := RetireLegacy(ctx, dir); err != nil {
-		t.Fatal(err)
-	}
-	gateBefore, err := os.Stat(Gate(dir))
+	wg.Wait()
+	before, err := os.Stat(Gate(dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,39 +40,88 @@ func TestPoolBoundAndStableInodesAfterExplicitCutover(t *testing.T) {
 	}
 	entries, err := os.ReadDir(root(dir))
 	if err != nil || len(entries) != 2*Slots+2 {
-		t.Fatalf("coordination files = %d, %v; want %d", len(entries), err, 2*Slots+2)
+		t.Fatalf("coordination objects = %d %v", len(entries), err)
 	}
-	if files, err := os.ReadDir(filepath.Join(dir, "locks")); err != nil || len(files) != 0 {
-		t.Fatalf("pool-only mode created per-ID files: %d %v", len(files), err)
+	if _, err := os.Stat(filepath.Join(dir, "locks")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("created legacy locks: %v", err)
 	}
 	if err := RetireLegacy(ctx, dir); err != nil {
 		t.Fatal(err)
 	}
-	gateAfter, err := os.Stat(Gate(dir))
-	if err != nil || !os.SameFile(gateBefore, gateAfter) {
-		t.Fatalf("idempotent cutover rebound gate: %v", err)
+	after, err := os.Stat(Gate(dir))
+	if err != nil || !os.SameFile(before, after) {
+		t.Fatalf("rebound gate: %v", err)
+	}
+}
+
+func TestLegacyStateRequiresExplicitMigrationAndPreservesLockInodes(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "locks", "s-0000000000000000")
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+	holder, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Close()
+	waiter, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer waiter.Close()
+	before, err := holder.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Flock(int(holder.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		t.Fatal(err)
+	}
+	err = With(context.Background(), dir, Session, [32]byte{}, func() error { t.Fatal("legacy state entered callback"); return nil })
+	if !errors.Is(err, ErrMigration) {
+		t.Fatalf("legacy admission = %v", err)
+	}
+	if err := syscall.Flock(int(holder.Fd()), syscall.LOCK_UN); err != nil {
+		t.Fatal(err)
+	}
+	// Closing/quiescing is the operator's responsibility. No automatic migration
+	// is inferred from the now-free inode, even with a pre-opened waiter.
+	if _, err := Current(context.Background(), dir); !errors.Is(err, ErrMigration) {
+		t.Fatalf("free lock triggered migration: %v", err)
+	}
+	if err := RetireLegacy(context.Background(), dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := With(context.Background(), dir, Session, [32]byte{}, func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Stat(path)
+	if err != nil || !os.SameFile(before, after) {
+		t.Fatalf("migration removed a legacy inode: %v", err)
+	}
+	if err := syscall.Flock(int(waiter.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		t.Fatalf("pre-opened descriptor changed: %v", err)
 	}
 }
 
 func TestClassesRemainSeparateAndPoolCollisionsSerialize(t *testing.T) {
 	dir := t.TempDir()
-	ctx, stop := context.WithTimeout(context.Background(), 5*time.Second)
-	defer stop()
-	if err := RetireLegacy(ctx, dir); err != nil {
-		t.Fatal(err)
-	}
+	ctx := context.Background()
 	a, b := [32]byte{7, 1}, [32]byte{7, 2}
 	err := With(ctx, dir, Pane, a, func() error {
-		// Identical stripe number in another class must remain usable while
-		// preserving the pane-before-session order.
 		if err := With(ctx, dir, Session, a, func() error { return nil }); err != nil {
 			return err
 		}
-		short, cancel := context.WithTimeout(ctx, 20*time.Millisecond)
+		quick, cancel := context.WithTimeout(ctx, 20*time.Millisecond)
 		defer cancel()
-		err := With(short, dir, Pane, b, func() error { return errors.New("collision bypassed stripe") })
+		err := With(quick, dir, Pane, b, func() error { return errors.New("collision bypassed stripe") })
 		if !errors.Is(err, context.DeadlineExceeded) {
-			return fmt.Errorf("same-class collision: %w", err)
+			return fmt.Errorf("collision: %w", err)
+		}
+		migration, stop := context.WithTimeout(ctx, 20*time.Millisecond)
+		defer stop()
+		if err := RetireLegacy(migration, dir); !errors.Is(err, context.DeadlineExceeded) {
+			return fmt.Errorf("migration bypassed participant: %w", err)
 		}
 		return nil
 	})
@@ -232,92 +130,49 @@ func TestClassesRemainSeparateAndPoolCollisionsSerialize(t *testing.T) {
 	}
 }
 
-func TestUnknownModeCannotSelectAnotherCriticalSection(t *testing.T) {
-	dir := t.TempDir()
-	if _, err := Current(context.Background(), dir); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root(dir), "mode"), []byte("unknown-v2\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	err := With(context.Background(), dir, Session, [32]byte{}, func() error {
-		t.Fatal("unknown mode entered a critical section")
-		return nil
-	})
-	if err == nil {
-		t.Fatal("unknown mode silently selected compatibility")
-	}
-}
-
-// QA can compare the fixed pool's contention/overhead with dual coordination
-// using the same bounded working set; the benchmark never touches live state.
-func BenchmarkPoolCoordination(b *testing.B) {
-	for _, pooled := range []bool{false, true} {
-		name := "compatibility"
-		if pooled {
-			name = "pool"
-		}
-		b.Run(name, func(b *testing.B) {
-			dir := b.TempDir()
-			ctx := context.Background()
-			if pooled {
-				if err := RetireLegacy(ctx, dir); err != nil {
-					b.Fatal(err)
-				}
-			}
-			var next atomic.Uint64
-			b.ResetTimer()
-			b.RunParallel(func(pb *testing.PB) {
-				for pb.Next() {
-					i := next.Add(1) % 4096
-					key := [32]byte{byte(i), byte(i >> 8)}
-					if err := With(ctx, dir, Session, key, func() error { return nil }); err != nil {
-						b.Error(err)
-						return
-					}
-				}
-			})
-		})
-	}
-}
-
-func TestCoordinationRejectsAliasedOrReplacedDirectory(t *testing.T) {
-	for _, name := range []string{"coord", "locks"} {
-		t.Run(name, func(t *testing.T) {
-			root := t.TempDir()
+func TestUnknownStateAndAliasesRefuse(t *testing.T) {
+	for _, kind := range []string{"legacy-mode", "unknown-mode", "unknown-root", "symlink"} {
+		t.Run(kind, func(t *testing.T) {
+			dir := t.TempDir()
 			foreign := t.TempDir()
-			ctx := context.Background()
-			if err := os.Symlink(foreign, filepath.Join(root, name)); err != nil {
-				t.Fatal(err)
+			switch kind {
+			case "legacy-mode", "unknown-mode":
+				if _, err := Current(context.Background(), dir); err != nil {
+					t.Fatal(err)
+				}
+				mode := "pool-v1\n"
+				if kind == "unknown-mode" {
+					mode = "unknown\n"
+				}
+				if err := os.WriteFile(filepath.Join(root(dir), "mode"), []byte(mode), 0600); err != nil {
+					t.Fatal(err)
+				}
+			case "unknown-root":
+				if err := os.WriteFile(filepath.Join(dir, "unrelated"), []byte("preserve"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			case "symlink":
+				if err := os.Symlink(foreign, root(dir)); err != nil {
+					t.Fatal(err)
+				}
 			}
 			entered := false
-			err := With(ctx, root, Session, [32]byte{}, func() error { entered = true; return nil })
-			if err == nil || entered {
-				t.Fatalf("aliased %s admitted: %v", name, err)
+			if err := With(context.Background(), dir, Session, [32]byte{}, func() error { entered = true; return nil }); err == nil || entered {
+				t.Fatalf("unsupported state admitted: %v", err)
 			}
-			entries, err := os.ReadDir(foreign)
-			if err != nil || len(entries) != 0 {
-				t.Fatalf("wrote foreign directory: %d %v", len(entries), err)
+			if kind == "legacy-mode" {
+				if err := RetireLegacy(context.Background(), dir); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if kind == "unknown-mode" {
+				if err := RetireLegacy(context.Background(), dir); err == nil {
+					t.Fatal("unknown format migrated")
+				}
+			}
+			if entries, err := os.ReadDir(foreign); err != nil || len(entries) != 0 {
+				t.Fatalf("alias target changed: %v", err)
 			}
 		})
-	}
-	root := t.TempDir()
-	ctx := context.Background()
-	if _, err := Current(ctx, root); err != nil {
-		t.Fatal(err)
-	}
-	path := filepath.Join(root, "coord")
-	if err := os.Rename(path, path+"-original"); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Mkdir(path, 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err := RetireLegacy(ctx, root); err == nil {
-		t.Fatal("retired through replaced coordination directory")
-	}
-	entries, err := os.ReadDir(path)
-	if err != nil || len(entries) != 0 {
-		t.Fatalf("modified replaced coordination directory: %d %v", len(entries), err)
 	}
 }

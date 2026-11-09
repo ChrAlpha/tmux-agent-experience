@@ -28,13 +28,14 @@ type Shown struct {
 
 // Session is one agent session, wherever it runs.
 type Session struct {
-	ID    string     `json:"id"`
-	Agent string     `json:"agent"`
-	State string     `json:"state"`
-	Kind  string     `json:"kind,omitempty"`
-	Turn  string     `json:"turn,omitempty"`
-	Since *time.Time `json:"since,omitempty"`
-	Cwd   string     `json:"cwd,omitempty"`
+	LastHookAt time.Time  `json:"last_hook_at,omitzero"`
+	ID         string     `json:"id"`
+	Agent      string     `json:"agent"`
+	State      string     `json:"state"`
+	Kind       string     `json:"kind,omitempty"`
+	Turn       string     `json:"turn,omitempty"`
+	Since      *time.Time `json:"since,omitempty"`
+	Cwd        string     `json:"cwd,omitempty"`
 	// Runtime is how the session runs: in a terminal's own agent process, or
 	// in a background service; "" when its hooks did not say.
 	Runtime string `json:"runtime,omitempty"`
@@ -95,7 +96,8 @@ func Build(w *attach.World, recs []session.Record) View {
 	}
 	for _, r := range live {
 		s := Session{
-			ID: r.ID, Agent: r.Agent, State: r.State(), Kind: r.Kind(), Turn: r.Turn,
+			LastHookAt: r.LastHookAt,
+			ID:         r.ID, Agent: r.Agent, State: r.State(), Kind: r.Kind(), Turn: r.Turn,
 			Cwd: r.Cwd, Runtime: string(r.Host.Role), Transcript: r.TranscriptRef(), Subagents: r.RunningSubagents(),
 			Capabilities: r.Capabilities(), Requests: r.RequestRefs(), Panes: shown[[2]string{r.Agent, r.ID}],
 		}

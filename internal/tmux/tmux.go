@@ -250,29 +250,37 @@ func SanitizePrompt(text string) string {
 	}, text)
 }
 
-// GlobalOption returns a global option's value, or "" when it is unset.
+// GlobalOption returns a global option's value, or "" when unset or unreadable.
+// Call GlobalOptionContext when an unavailable server must remain distinguishable.
 func (s Server) GlobalOption(ctx context.Context, name string) string {
+	value, _ := s.GlobalOptionContext(ctx, name)
+	return value
+}
+
+// GlobalOptionContext returns an unset option as "", nil while preserving
+// command, cancellation and decoding errors. It performs no value expansion.
+func (s Server) GlobalOptionContext(ctx context.Context, name string) (string, error) {
 	// Read tmux's quoted representation so literal backslashes and control
 	// characters remain distinguishable. tmux 3.4 additionally escapes dollar
 	// variables when printing; probe that layer in the same command invocation.
 	const probe = "$TMAG_OPTION_PRINT"
 	out, err := s.Run(ctx, "show-option", "-gq", name, ";", "display-message", "-p", probe)
 	if err != nil {
-		return ""
+		return "", err
 	}
 	line, printed, _ := strings.Cut(string(out), "\n")
 	value, ok := strings.CutPrefix(line, name+" ")
 	if !ok {
-		return ""
+		return "", nil
 	}
 	if strings.TrimSpace(printed) == `\`+probe {
 		value = unescapePrintedDollars(value)
 	}
 	value, err = unquoteOption(value)
 	if err != nil {
-		return ""
+		return "", err
 	}
-	return strings.TrimSpace(value)
+	return strings.TrimSpace(value), nil
 }
 
 // unescapePrintedDollars reverses just the extra printing layer of tmux 3.4.

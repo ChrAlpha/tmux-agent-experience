@@ -15,28 +15,41 @@ import (
 
 func TestExplicitLockCutoverFromOwnerTerminal(t *testing.T) {
 	h := start(t)
-	ctx := context.Background()
-	if mode, err := coord.Current(ctx, h.state); err != nil || mode != coord.Compatibility {
-		t.Fatalf("fresh realm mode = %s, %v", mode, err)
+	// This fixture is old state: no writers run until the person migrates it.
+	legacy := filepath.Join(h.state, "locks", "s-0000000000000000")
+	if err := os.MkdirAll(filepath.Dir(legacy), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacy, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := h.tmag("", "list"); r.code == 0 || !strings.Contains(r.out, "retire-legacy-locks") {
+		t.Fatalf("legacy ordinary invocation = %d %s", r.code, r.out)
 	}
 	if r := h.tmag("", "prune", "--retire-legacy-locks", "--server", h.name); r.code != 2 {
-		t.Fatalf("realm cutover accepted server subset: %d %s", r.code, r.out)
+		t.Fatalf("migration accepted server subset: %d %s", r.code, r.out)
 	}
 	if r := h.tmag("", "prune", "--retire-legacy-locks"); r.code != 0 || !strings.Contains(r.out, "Persistent lock pools active") {
-		t.Fatalf("owner cutover = %d %s", r.code, r.out)
+		t.Fatalf("owner migration = %d %s", r.code, r.out)
 	}
-	if mode, err := coord.Current(ctx, h.state); err != nil || mode != coord.Pool {
-		t.Fatalf("cutover mode = %s, %v", mode, err)
+	if mode, err := coord.Current(context.Background(), h.state); err != nil || mode != coord.Pool {
+		t.Fatalf("migration mode = %s %v", mode, err)
 	}
-	// The fresh test realm has no legacy writers or launch paths. Its new
-	// agent's hooks and ordinary control verbs operate through the pools.
 	pane := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_HOOKS": "1"}, filepath.Join(bin, "claude"))
 	h.waitPane(pane, "idle", "process")
 	if r := h.tmag("", "send", sidA[:8], "--wait", "--timeout", "10s", "pool control"); r.code != 0 {
 		t.Fatalf("pooled control = %d %s", r.code, r.out)
 	}
-	if entries, err := os.ReadDir(filepath.Join(h.state, "locks")); err != nil || len(entries) != 0 {
-		t.Fatalf("pool-only hooks/control created legacy files: %d %v", len(entries), err)
+	after, err := os.Stat(legacy)
+	if err != nil || !os.SameFile(before, after) {
+		t.Fatalf("migration rebound legacy lock: %v", err)
+	}
+	if entries, err := os.ReadDir(filepath.Dir(legacy)); err != nil || len(entries) != 1 {
+		t.Fatalf("new identifiers created legacy locks: %d %v", len(entries), err)
 	}
 }
 
@@ -49,7 +62,7 @@ func TestAgentCannotDeclareLegacyRetirement(t *testing.T) {
 	if r.code != 3 || !strings.Contains(r.out, "refused (agent)") {
 		t.Fatalf("agent declared retirement: %d %s", r.code, r.out)
 	}
-	if mode, err := coord.Current(context.Background(), h.state); err != nil || mode != coord.Compatibility {
+	if mode, err := coord.Current(context.Background(), h.state); err != nil || mode != coord.Pool {
 		t.Fatalf("refused declaration changed mode: %s, %v", mode, err)
 	}
 }
@@ -104,6 +117,9 @@ func TestPrunePreservesAliasedSessionTemporaryParents(t *testing.T) {
 	for _, level := range []string{"sessions/claude/.tmag-tmp", "sessions/claude"} {
 		t.Run(level, func(t *testing.T) {
 			h := start(t)
+			if _, err := coord.Current(context.Background(), h.state); err != nil {
+				t.Fatal(err)
+			}
 			path := filepath.Join(h.state, level)
 			if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 				t.Fatal(err)
@@ -117,9 +133,7 @@ func TestPrunePreservesAliasedSessionTemporaryParents(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if r := h.tmag("", "prune"); r.code != 0 {
-				t.Fatalf("prune = %d %s", r.code, r.out)
-			}
+			_ = h.tmag("", "prune") // A refused alias must remain untouched.
 			for _, name := range []string{"s-00", ".tmag-tmp-s-00"} {
 				if b, err := os.ReadFile(filepath.Join(foreign, name)); err != nil || string(b) != "preserve" {
 					t.Fatalf("prune touched alias %s: %q %v", name, b, err)

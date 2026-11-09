@@ -71,7 +71,8 @@ a design problem, not a test problem.
   fails open the same way when no binary exists. A hook that alerts the
   person starts `tmag notify` detached and does not wait for it; that process
   runs `@tmag-notify` for at most `notify.Timeout` and records a failure in
-  `hook.log` too.
+  `hook.log` too. Failure logging is bounded and metadata-only. Notification
+  work is bounded while preserving hook and external-command deadlines.
 - **No content is stored.** Hook payloads decode into `adapter.Payload`, which
   declares no prompt, message or tool-input fields. Never add one. Session
   files and event log records hold ids, states, paths and timestamps only.
@@ -87,6 +88,12 @@ a design problem, not a test problem.
   (`proc.Realm`: the PID namespace and boot on Linux, the boot on macOS)
   under `$XDG_STATE_HOME/tmag`: containers sharing a home would otherwise end
   each other's sessions. `TMAG_STATE_DIR` names the directory itself.
+- **Hook contact is separate from state age.** Optional `last_hook_at` is
+  published through complete session events. Contact-only updates preserve
+  `since`; actual state transitions still change it. Contact time never
+  grants state/control authority or cleanup permission. Complete record reads
+  return the first exact metadata fault; reconciliation preserves unknown
+  resources and pending markers rather than treating unreadable state as absent.
 - **A session's state never depends on a pane.** Hooks apply to the session
   (`internal/session`) wherever it runs: the Codex daemon and Claude's
   background supervisor run sessions no terminal owns.
@@ -165,9 +172,7 @@ a design problem, not a test problem.
 | `internal/adapter` | Hook payload → state transition, per agent |
 | `internal/session` | Session records, the state machine, the per-session file store and lock |
 | `internal/statefile` | Owned atomic metadata publication through fixed, creator-excluded temporaries |
-| `internal/ownedfs` | Pinned directory scopes, persistent inode bindings and reserved fixed artifact names |
-| `internal/dirscan` | Bounded native directory pages and resumable filesystem cookies |
-| `internal/maintenance` | Fair, bounded housekeeping within the parent's remaining budget |
+| `internal/ownedfs` | Runtime pinned directory scopes, no-follow ownership checks and dedicated reserved names |
 | `internal/socketbind` | Short-lived executable helper: bind within an inherited directory FD, pass socket FD, reap |
 | `internal/attach` | Clients, attachments and their evidence, the `@tmag_*` pane projection, reconciliation |
 | `internal/query` | list / send / wait / snapshot over sessions and panes; the control verbs' gates |
@@ -179,7 +184,7 @@ a design problem, not a test problem.
 | `internal/tmux` | tmux CLI wrapper; sanitises every free-text field |
 | `internal/proc` | Process table, agent clients and services, hook hosts |
 | `internal/lockfile` | flock bounded by a context |
-| `internal/coord` | Fixed pane/session lock pools, dual legacy coordination and explicit retirement gate |
+| `internal/coord` | Fixed pane/session lock pools and explicit quiescent migration |
 | `internal/binpath` | Where hooks look for the binary; the hook command and the agents' launcher |
 | `internal/e2e` | End-to-end tests with real tmux and a fake agent |
 | `plugins/<host>/tmag` | Agent plugins for Claude Code and Codex: hooks only; Claude's `PermissionRequest` runs `tmag answer-hook` |
@@ -213,7 +218,7 @@ claude plugin validate .      # marketplace and plugin manifests
   `:`.
 - Every operation that may run on a hook path takes a `context.Context` and
   respects its deadline.
-- `coord` pool-v1 keeps 256 slots per class, selected by the first byte of the
+- `coord` pool-v2 keeps 256 slots per class, selected by the first byte of the
   existing resource SHA-256. Its pane/session class names, hash inputs and
   stable gate/pool pathnames must remain compatible across cooperating versions.
   Request endpoint positions use separate `r-XX` locks and fixed `req/` names;

@@ -218,8 +218,13 @@ func TestReconcileFinishesWhatAWriterLeft(t *testing.T) {
 	if live, gone := Live(w, []session.Record{unlogged, ended, exited}); len(live) != 1 || len(gone) != 2 {
 		t.Fatalf("live %v, gone %v", live, gone)
 	}
-	Reconcile(ctx, env, w)
-	Reconcile(ctx, env, w) // a second reconciliation finds nothing left to do
+	if err := Reconcile(ctx, env, w); err != nil {
+		t.Fatalf("initial reconciliation: %v", err)
+	}
+	// A second reconciliation finds nothing left to do.
+	if err := Reconcile(ctx, env, w); err != nil {
+		t.Fatalf("repeated reconciliation: %v", err)
+	}
 
 	all, _, err := env.Log.Since(ctx, 0)
 	if err != nil {

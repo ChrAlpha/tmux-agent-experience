@@ -1,61 +1,84 @@
 #!/usr/bin/env bash
-# Puts the released tmag binary matching this plugin checkout into bin/.
-#
-# Usage: install.sh VERSION
-#
-# Downloads the release archive and installs it only if its SHA-256 matches the
-# release's checksums.txt. Several tmux servers may load the plugin at once, so
-# one installer runs at a time.
+# Install only the checksum-verified release matching this checkout.
+# Downloads have curl deadlines. Local tools/filesystems have no total cutoff.
 set -u
-
-dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+set -o pipefail
+[ "$#" -eq 1 ] || exit 2
+valid_version='^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'
+[[ "$1" =~ $valid_version ]] || exit 2
 want="$1"
+dir="$(cd -P "${BASH_SOURCE[0]%/*}/.." && pwd -P)" || exit 1
 bin="$dir/bin/tmag"
 lock="$dir/bin/.install.lock"
-# Messages go to attached clients only; output from a background run-shell could
-# otherwise open in a pane. Without clients, tmag doctor reports the outcome.
-say() { tmux display-message -d 5000 "tmag: $*" >/dev/null 2>&1 || true; }
+# Keep failure reporting independent of tmux/client availability.
+fail() { printf 'tmag installer: %s\n' "$*" >&2; exit 1; }
+installed() { [ "$("$bin" version 2>/dev/null)" = "tmag $want (tmag/v1)" ]; }
 
-installed() { [ "$("$bin" version 2>/dev/null | awk '{print $2}')" = "$want" ]; }
-installed && exit 0
-
-mkdir -p "$dir/bin"
-# A lock left by a killed installer expires after ten minutes.
-find "$lock" -maxdepth 0 -mmin +10 -exec rmdir {} \; 2>/dev/null
-mkdir "$lock" 2>/dev/null || exit 0
-tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"; rmdir "$lock"' EXIT
-
-fetch() {
-	if command -v curl >/dev/null; then
-		curl -fsSL "$1" -o "$2"
-	else
-		wget -qO "$2" "$1"
-	fi
-}
-
-download() {
-	local os arch asset base sum
-	os="$(uname -s | tr '[:upper:]' '[:lower:]')"
-	case "$(uname -m)" in
-	x86_64 | amd64) arch=amd64 ;;
-	aarch64 | arm64) arch=arm64 ;;
-	*) return 1 ;;
-	esac
-	asset="tmag_${want}_${os}_${arch}.tar.gz"
-	base="$(tmux show-option -gqv @tmag-release-url 2>/dev/null)"
-	base="${base:-https://github.com/ChrAlpha/tmux-agent-experience/releases/download}"
-	if command -v sha256sum >/dev/null; then sum="sha256sum"; else sum="shasum -a 256"; fi
-	fetch "$base/v$want/$asset" "$tmp/$asset" 2>/dev/null &&
-		fetch "$base/v$want/checksums.txt" "$tmp/checksums.txt" 2>/dev/null &&
-		(cd "$tmp" && grep "  $asset\$" checksums.txt | $sum -c - >/dev/null 2>&1) &&
-		tar -xzf "$tmp/$asset" -C "$tmp" tmag
-}
-
-if ! download; then
-	say "could not download a verified release $want; see https://github.com/ChrAlpha/tmux-agent-experience/releases"
-	exit 1
+# This script is always scheduled in the background by tmag.tmux. Even a stuck
+# installed-version probe therefore cannot block tmux's plugin entry path.
+[ ! -L "$dir/bin" ] || fail 'bin is a symlink; preserve it for owner inspection'
+if [ -e "$bin" ] || [ -L "$bin" ]; then
+ [[ -f "$bin" && ! -L "$bin" && -O "$bin" ]] || fail 'bin/tmag is not an owned regular file'
+ installed && exit 0
 fi
-install -m 755 "$tmp/tmag" "$bin.new" && mv -f "$bin.new" "$bin"
-installed || { say "installed binary does not report version $want"; exit 1; }
-say "installed $want. Connect your agents with prefix + $(tmux show-option -gqv @tmag-key-setup 2>/dev/null || echo M-a)"
+command -v curl >/dev/null 2>&1 || fail 'curl is required to download released binaries'
+umask 077
+mkdir -p "$dir/bin" || fail 'cannot create bin'
+[[ -d "$dir/bin" && -O "$dir/bin" && ! -L "$dir/bin" ]] || fail 'bin ownership is uncertain'
+mkdir "$lock" 2>/dev/null || fail 'install lock exists; after all installers finish, inspect bin/.install.lock and recover it from your own terminal'
+# Cwd pins our exclusive directory without depending on /dev/fd stat semantics.
+# Cooperating installers never remove an existing lock, regardless of its age.
+cd -P "$lock" || fail 'cannot enter install lock; owner recovery is required'
+[[ . -ef "$lock" && -O . ]] || fail 'install lock was replaced'
+created_archive=0
+created_checksums=0
+created_candidate=0
+cleanup_depth="$BASH_SUBSHELL"
+cleanup() {
+ # An inherited EXIT trap in a substitution does not own this workspace.
+ [ "$BASH_SUBSHELL" = "$cleanup_depth" ] || return 0
+ if [ ! -L "$lock" ] && [ . -ef "$lock" ]; then
+  [ "$created_archive" = 0 ] || rm -f archive
+  [ "$created_checksums" = 0 ] || rm -f checksums
+  [ "$created_candidate" = 0 ] || rm -f candidate
+  rmdir "$lock" 2>/dev/null || printf 'tmag installer: lock contains unknown residue; preserve it for owner inspection\n' >&2
+ fi
+}
+trap cleanup EXIT
+trap 'exit 1' HUP INT TERM
+for name in archive checksums candidate; do
+ (set -C; : >"$name") || fail 'unexpected object in install workspace'
+ case "$name" in archive) created_archive=1 ;; checksums) created_checksums=1 ;; candidate) created_candidate=1 ;; esac
+done
+# Recheck after exclusion: a preceding installer may have completed already.
+installed && exit 0
+os="$(uname -s)" || fail 'cannot identify platform'
+case "$os" in Linux) os=linux ;; Darwin) os=darwin ;; *) fail 'unsupported platform' ;; esac
+case "$(uname -m)" in x86_64 | amd64) arch=amd64 ;; aarch64 | arm64) arch=arm64 ;; *) fail 'unsupported architecture' ;; esac
+asset="tmag_${want}_${os}_${arch}.tar.gz"
+base="$(tmux show-option -gqv @tmag-release-url 2>/dev/null)"
+base="${base:-https://github.com/ChrAlpha/tmux-agent-experience/releases/download}"
+fetch() {
+ curl -q -fsSL --connect-timeout 10 --max-time 25 --retry 0 --max-redirs 5 -o "$2" -- "$1"
+}
+fetch "$base/v$want/$asset" archive || fail "could not download release $want"
+fetch "$base/v$want/checksums.txt" checksums || fail 'could not download release checksums'
+expected="$(awk -v name="$asset" '
+ NF == 2 && $2 == name { n++; if (length($1) != 64 || $1 !~ /^[[:xdigit:]]+$/) bad=1; hash=tolower($1) }
+ END { if (n != 1 || bad) exit 1; print hash }
+' checksums)" || fail 'missing or ambiguous release checksum'
+if command -v sha256sum >/dev/null 2>&1; then actual="$(sha256sum archive)"; else actual="$(shasum -a 256 archive)"; fi
+[ "${actual%% *}" = "$expected" ] || fail 'release checksum mismatch'
+# Never extract archive pathnames: only one regular root member can be executed.
+tar -tzf archive | awk '$0 == "tmag" { n++; next } $0 == "LICENSE" || $0 == "README.md" { next } { bad=1 } END { if (bad || n != 1) exit 1 }' || fail 'unexpected archive members'
+tar -tvzf archive tmag | awk 'substr($0,1,1) != "-" { bad=1 } END { if (NR != 1 || bad) exit 1 }' || fail 'release binary is not regular'
+tar -xOzf archive tmag >candidate || fail 'could not read released binary'
+chmod 755 candidate || fail 'cannot mark released binary executable'
+[ "$(./candidate version 2>/dev/null)" = "tmag $want (tmag/v1)" ] || fail 'release binary reports a different version'
+# The lock/workspace and destination share bin's filesystem. Refuse a rebound
+# namespace; never delete another owner's lock or use a cross-filesystem copy.
+[[ ! -L "$lock" && . -ef "$lock" && .. -ef "$dir/bin" && ! -L "$dir/bin" ]] || fail 'installation namespace changed'
+[ ! -L "$bin" ] || fail 'binary destination became a symlink'
+if [ -e "$bin" ]; then [[ -f "$bin" && -O "$bin" ]] || fail 'binary destination ownership changed'; fi
+mv -f candidate ../tmag || fail 'could not publish released binary'
+printf 'tmag installer: installed %s\n' "$want"

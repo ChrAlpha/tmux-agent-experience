@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/adapter"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/coord"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
 )
@@ -20,6 +21,9 @@ func TestFailedLogPublicationPreservesSessionRepair(t *testing.T) {
 	dir := t.TempDir()
 	s, log := Store{Dir: dir}, eventlog.Open(dir)
 	ctx := context.Background()
+	if _, err := coord.Current(ctx, dir); err != nil {
+		t.Fatal(err)
+	}
 	// A non-regular log is an integrity failure. The session must retain its
 	// pending change so explicit repair can later settle it through Current.
 	broken := filepath.Join(dir, "events.jsonl")

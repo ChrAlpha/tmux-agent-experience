@@ -40,44 +40,23 @@ func TestPinnedScopeRefusesParentAliasAndReplacement(t *testing.T) {
 			if _, err := d.OpenFile(ctx, "slot", os.O_CREATE|os.O_WRONLY, 0600); !errors.Is(err, ErrScope) {
 				t.Fatalf("pinned replaced scope = %v", err)
 			}
-			if next, err := Open(ctx, root, "sessions/claude", true); !errors.Is(err, ErrScope) {
-				if next != nil {
-					next.Close()
-				}
-				t.Fatalf("reopened replaced scope = %v", err)
+			// A new invocation trusts a dedicated real directory chosen by the
+			// owner; a symlink still cannot become a managed directory.
+			next, err := Open(ctx, root, "sessions/claude", true)
+			if alias && !errors.Is(err, ErrScope) {
+				t.Fatalf("reopened alias = %v", err)
 			}
+			if !alias && err != nil {
+				t.Fatalf("dedicated replacement = %v", err)
+			}
+			if next != nil {
+				next.Close()
+			}
+
 			if b, err := os.ReadFile(marker); err != nil || string(b) != "preserve" {
 				t.Fatalf("replacement changed: %q %v", b, err)
 			}
 		})
-	}
-}
-
-func TestSlotReservationCannotAdoptExistingUnknownObjects(t *testing.T) {
-	ctx := context.Background()
-	root := t.TempDir()
-	path := filepath.Join(root, "sessions", "claude")
-	if err := os.MkdirAll(path, 0700); err != nil {
-		t.Fatal(err)
-	}
-	slot := filepath.Join(path, ".tmag-tmp-s-00")
-	if err := os.WriteFile(slot, []byte("unknown"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if d, err := OpenSlots(ctx, root, "sessions/claude", ".tmag-tmp-s-", 256, true); !errors.Is(err, ErrScope) {
-		if d != nil {
-			d.Close()
-		}
-		t.Fatalf("claimed unknown slot: %v", err)
-	}
-	if d, err := OpenSlots(ctx, root, "sessions/claude", ".tmag-tmp-s-", 256, false); !errors.Is(err, ErrScope) {
-		if d != nil {
-			d.Close()
-		}
-		t.Fatalf("cleanup manufactured ownership: %v", err)
-	}
-	if b, err := os.ReadFile(slot); err != nil || string(b) != "unknown" {
-		t.Fatalf("unknown changed: %q %v", b, err)
 	}
 }
 

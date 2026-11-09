@@ -16,6 +16,7 @@ import (
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/hook"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/query"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/version"
 )
 
@@ -48,7 +49,7 @@ Usage:
                                                wait for a state (default idle,blocked)
   tmag status   [--tmux] [--server S]          one-line summary for the status line
   tmag prune    [--server S] [--retire-legacy-locks]
-                                               reconcile state; declare legacy lock retirement
+                                               reconcile state; declare quiescent state migration
   tmag jump     [--client C] [--server S] [--from %N] [--json]
                                                go to the agent waiting longest
   tmag notify   [--json]                       send a test alert through @tmag-notify
@@ -232,8 +233,11 @@ func (a *app) usageError(cmd string, err error) int {
 // fail reports err and returns the matching exit code.
 func (a *app) fail(cmd string, err error) int {
 	code, exit := "error", ExitError
+	var record *session.RecordError
 	var refused *query.RefusedError
 	switch {
+	case errors.As(err, &record):
+		code = "records_unavailable"
 	case errors.As(err, &refused):
 		code, exit = "refused:"+refused.Reason, ExitRefused
 	case errors.Is(err, errTimeout), errors.Is(err, context.DeadlineExceeded):

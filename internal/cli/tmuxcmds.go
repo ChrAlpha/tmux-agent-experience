@@ -12,7 +12,6 @@ import (
 	"github.com/ChrAlpha/tmux-agent-experience/internal/adapter"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/attach"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/coord"
-	"github.com/ChrAlpha/tmux-agent-experience/internal/maintenance"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/query"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/tmux"
 )
@@ -31,7 +30,9 @@ func (a *app) reconciled(ctx context.Context, server string) (query.View, error)
 		socket = tmux.ServerByName(server).Socket
 		w.Panes = slices.DeleteFunc(w.Panes, func(p tmux.Pane) bool { return p.Server != socket })
 	}
-	attach.Reconcile(ctx, attach.Env{Log: a.log, Store: a.store()}, w)
+	if err := attach.Reconcile(ctx, attach.Env{Log: a.log, Store: a.store()}, w); err != nil {
+		return query.View{}, err
+	}
 	v, _, err := query.Load(ctx, a.store())
 	if err != nil || socket == "" {
 		return v, err
@@ -48,6 +49,7 @@ func (a *app) reconciled(ctx context.Context, server string) (query.View, error)
 // so the tree it filters on pane options is
 // current. Ordinary pruning prints nothing. Explicit lock retirement declares
 // operator preconditions and reports its result without another confirmation.
+// Caller ancestry is checked without reading an unsupported state format.
 func (a *app) cmdPrune(args []string) int {
 	fs := flag.NewFlagSet("prune", flag.ContinueOnError)
 	server := fs.String("server", "", "")
@@ -71,23 +73,20 @@ func (a *app) cmdPrune(args []string) int {
 	ctx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 	if *retire {
-		v, w, err := query.Load(ctx, a.store())
+		w, err := attach.Load(ctx)
 		if err != nil {
 			return a.fail("prune", err)
 		}
-		if v.Caller(w).By != nil {
+		if (query.View{}).Caller(w).By != nil {
 			return a.fail("prune", &query.RefusedError{Reason: query.RefuseAgent, Detail: "declare legacy tmag retirement from the person's terminal"})
 		}
 		if err := coord.RetireLegacy(ctx, a.log.Dir); err != nil {
 			return a.fail("prune", err)
 		}
-		fmt.Fprintf(a.stdout, "Persistent lock pools active for %s; bounded maintenance reclaims retired legacy artifacts.\n", a.log.Dir)
+		fmt.Fprintf(a.stdout, "Persistent lock pools active for %s; legacy files remain preserved.\n", a.log.Dir)
 		return ExitOK
 	}
 	if _, err := a.reconciled(ctx, *server); err != nil {
-		return a.fail("prune", err)
-	}
-	if err := maintenance.Run(ctx, a.log.Dir); err != nil {
 		return a.fail("prune", err)
 	}
 	return ExitOK

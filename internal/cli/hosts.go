@@ -5,13 +5,18 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/binpath"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/contextio"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/helper"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/tmux"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/version"
@@ -44,12 +49,42 @@ func peersWanted(ctx context.Context) bool {
 	return true
 }
 
-// run executes a command and returns its trimmed stdout.
-func run(name string, args ...string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+// run retains setup's per-command limit and an earlier diagnostic parent.
+// The owned helper contains descendants and pipe drain on every exit.
+func run(parent context.Context, name string, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(parent, 20*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, name, args...).Output()
-	return strings.TrimSpace(string(out)), err
+	cmd, cleanup := helper.Command(ctx, name, args...)
+	defer cleanup()
+	out := &hostOutput{}
+	cmd.Stdout, cmd.Stderr = out, io.Discard
+	if err := cmd.Run(); err != nil {
+		return "", err
+	}
+	if out.truncated {
+		return "", errors.New("host output exceeds bound")
+	}
+	return strings.TrimSpace(out.String()), nil
+}
+
+type hostOutput struct {
+	bytes.Buffer
+	truncated bool
+}
+
+func (o *hostOutput) Write(p []byte) (int, error) {
+	n := len(p)
+	keep := min(n, (1<<20)-o.Len())
+	o.Buffer.Write(p[:keep])
+	o.truncated = o.truncated || keep < n
+	return n, nil
+}
+
+func hostMetadata(s string, limit int) string {
+	if len(s) > limit || strings.ContainsFunc(s, unicode.IsControl) {
+		return "unknown"
+	}
+	return s
 }
 
 // plugin is one of tmag's plugins in a host.
@@ -76,7 +111,9 @@ type host struct {
 	// Codex: config.toml records an approval of the plugin's hooks. Codex
 	// honours it only while it matches the hashes of the current hooks, which
 	// it does not expose, so this is no proof that the hooks run.
-	HookApproval bool
+	HookApproval    bool
+	Unavailable     bool
+	ApprovalUnknown bool
 }
 
 // of returns the host's record of the named plugin.
@@ -87,43 +124,54 @@ func (h *host) of(name string) *plugin {
 	return &h.Tmag
 }
 
-func claudeHost() host {
+func claudeHost() host { return claudeHostContext(context.Background()) }
+func claudeHostContext(ctx context.Context) host {
 	h := host{Name: "Claude Code", CLI: "claude"}
-	if h.Version, h.Present = probe("claude"); !h.Present {
+	h.Version, h.Present, h.Unavailable = probe(ctx, "claude")
+	if !h.Present || h.Unavailable {
 		return h
 	}
-	out, err := run("claude", "plugin", "list", "--json")
+	out, err := run(ctx, "claude", "plugin", "list", "--json")
 	var plugins []struct {
 		ID      string `json:"id"`
 		Version string `json:"version"`
 		Enabled bool   `json:"enabled"`
 	}
 	if err != nil || json.Unmarshal([]byte(out), &plugins) != nil {
+		h.Unavailable = true
 		return h
 	}
 	h.Listed = true
 	for _, p := range plugins {
+		if ctx.Err() != nil {
+			h.Unavailable = true
+			h.Listed = false
+			return h
+		}
 		for _, name := range []string{pluginName, peersName} {
 			if p.ID == pluginID(name) {
-				*h.of(name) = plugin{Installed: true, Enabled: p.Enabled, Version: p.Version}
+				*h.of(name) = plugin{Installed: true, Enabled: p.Enabled, Version: hostMetadata(p.Version, 64)}
 			}
 		}
 	}
 	return h
 }
 
-func codexHost() host {
+func codexHost() host { return codexHostContext(context.Background()) }
+func codexHostContext(ctx context.Context) host {
 	h := host{Name: "Codex", CLI: "codex"}
-	if h.Version, h.Present = probe("codex"); !h.Present {
+	h.Version, h.Present, h.Unavailable = probe(ctx, "codex")
+	if !h.Present || h.Unavailable {
 		return h
 	}
-	out, err := run("codex", "plugin", "list", "--json")
+	out, err := run(ctx, "codex", "plugin", "list", "--json")
 	var doc any
 	if err != nil || json.Unmarshal([]byte(out), &doc) != nil {
+		h.Unavailable = true
 		return h
 	}
 	h.Listed = true
-	walkJSON(doc, func(m map[string]any) {
+	walkJSON(ctx, doc, func(m map[string]any) {
 		name, _ := m["name"].(string)
 		if (name != pluginName && name != peersName) || m["installed"] != true {
 			return
@@ -132,46 +180,71 @@ func codexHost() host {
 		p.Installed = true
 		p.Enabled = p.Enabled || m["enabled"] == true
 		if v, ok := m["version"].(string); ok {
-			p.Version = v
+			p.Version = hostMetadata(v, 64)
 		}
 	})
-	h.HookApproval = codexHookApproval()
+	if ctx.Err() != nil {
+		h.Unavailable = true
+		h.Listed = false
+		return h
+	}
+	h.HookApproval, err = codexHookApproval(ctx)
+	h.ApprovalUnknown = err != nil
 	return h
 }
 
-func probe(cli string) (string, bool) {
-	if _, err := exec.LookPath(cli); err != nil {
-		return "", false
+func probe(ctx context.Context, cli string) (string, bool, bool) {
+	if ctx.Err() != nil {
+		return "", false, true
 	}
-	v, err := run(cli, "--version")
-	return v, err == nil
+	path, err := exec.LookPath(cli)
+	if errors.Is(err, exec.ErrNotFound) && ctx.Err() == nil {
+		return "", false, false
+	}
+	if err != nil || ctx.Err() != nil {
+		return "", false, true
+	}
+	v, err := run(ctx, path, "--version")
+	if err != nil || v == "" || hostMetadata(v, 128) == "unknown" {
+		return "", true, true
+	}
+	return v, true, false
 }
 
-func walkJSON(v any, fn func(map[string]any)) {
+func walkJSON(ctx context.Context, v any, fn func(map[string]any)) {
+	if ctx.Err() != nil {
+		return
+	}
 	switch t := v.(type) {
 	case map[string]any:
 		fn(t)
 		for _, c := range t {
-			walkJSON(c, fn)
+			walkJSON(ctx, c, fn)
 		}
 	case []any:
 		for _, c := range t {
-			walkJSON(c, fn)
+			walkJSON(ctx, c, fn)
 		}
 	}
 }
 
 // codexHookApproval looks for approved hook-state entries of the plugin in
 // config.toml. Only the table headers and their trust lines are inspected.
-func codexHookApproval() bool {
-	data, err := os.ReadFile(filepath.Join(codexHome(), "config.toml"))
+func codexHookApproval(ctx context.Context) (bool, error) {
+	data, err := contextio.ReadFile(ctx, filepath.Join(codexHome(), "config.toml"), 1<<20)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
 	if err != nil {
-		return false
+		return false, err
 	}
 	header := []byte(`[hooks.state."` + pluginID(pluginName) + `:`)
 	inTable, trusted := false, false
 	sc := bufio.NewScanner(bytes.NewReader(data))
 	for sc.Scan() {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
 		line := bytes.TrimSpace(sc.Bytes())
 		if bytes.HasPrefix(line, []byte("[")) {
 			inTable = bytes.HasPrefix(line, header)
@@ -181,10 +254,10 @@ func codexHookApproval() bool {
 			trusted = true
 		}
 		if inTable && bytes.Equal(bytes.ReplaceAll(line, []byte(" "), nil), []byte("enabled=false")) {
-			return false
+			return false, nil
 		}
 	}
-	return trusted
+	return trusted, errors.Join(sc.Err(), ctx.Err())
 }
 
 // codexDaemon finds Codex's managed app-server daemon.
@@ -201,16 +274,23 @@ func codexHome() string {
 }
 
 func codexDaemon() (int, bool) {
-	pt, err := proc.Snapshot()
+	pid, found, _ := codexDaemonContext(context.Background())
+	return pid, found
+}
+func codexDaemonContext(ctx context.Context) (int, bool, error) {
+	pt, err := proc.SnapshotContext(ctx)
 	if err != nil {
-		return 0, false
+		return 0, false, err
 	}
 	for _, p := range pt.All() {
+		if ctx.Err() != nil {
+			return 0, false, ctx.Err()
+		}
 		if proc.IsCodexService(p) && strings.Contains(p.Args, "--managed-daemon") {
-			return p.PID, true
+			return p.PID, true, nil
 		}
 	}
-	return 0, false
+	return 0, false, ctx.Err()
 }
 
 // hookBinaries lists, in the order agent hooks try them, every tmag a process

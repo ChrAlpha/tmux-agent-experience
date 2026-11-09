@@ -475,7 +475,7 @@ func TestClaudeAnswersThroughTheHook(t *testing.T) {
 	received("hook:allow")
 	h.waitSession(sidA, "idle")
 	// The answer closes the request at once; the call runs on.
-	if got := h.eventNames(sidA); !strings.HasSuffix(got, "PermissionRequest:blocked Answer:working Stop:idle") {
+	if got := h.eventNames(sidA); !strings.HasSuffix(got, "PreToolUse:working PermissionRequest:blocked Answer:working PostToolUse:working Stop:idle") {
 		t.Fatalf("events = %s", got)
 	}
 	f.agrees(h)
@@ -1048,7 +1048,7 @@ func (f *follower) apply(line []byte) {
 				since = e.Since
 			}
 			f.sessions[key] = query.Session{
-				ID: e.Session, Agent: e.Agent, State: e.State, Kind: e.Kind, Turn: e.Turn, Since: since,
+				LastHookAt: e.LastHookAt, ID: e.Session, Agent: e.Agent, State: e.State, Kind: e.Kind, Turn: e.Turn, Since: since,
 				Cwd: e.Cwd, Runtime: e.Runtime, Transcript: e.Transcript, Subagents: e.Subagents,
 				Capabilities: e.Capabilities, Requests: e.Requests,
 			}
@@ -1374,8 +1374,12 @@ func TestAlertsRunTheNotifyCommand(t *testing.T) {
 	d.hook(map[string]any{"hook_event_name": "PermissionRequest", "session_id": sidC, "turn_id": "t1", "tool_name": "Bash"})
 	h.eventually("the failure in doctor", func() bool {
 		r := h.tmag("", "doctor")
-		return strings.Contains(r.out, "notify") && strings.Contains(r.out, "unreachable")
+		return strings.Contains(r.out, "notify failed") && !strings.Contains(r.out, "unreachable")
 	})
+
+	if data, err := os.ReadFile(filepath.Join(h.state, "hook.log")); err != nil || bytes.Contains(data, []byte("unreachable")) || bytes.Contains(data, []byte("the secret plan")) {
+		t.Fatal("stored raw notifier output/prompt", err)
+	}
 
 	// Typing into a tmux client: the person is at the terminal.
 	if runtime.GOOS != "linux" {
@@ -1692,6 +1696,18 @@ func TestAttachmentEventsSurviveACrash(t *testing.T) {
 	h := start(t)
 	pane := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_HOOKS": "1"}, filepath.Join(bin, "claude"))
 	h.waitPane(pane, "idle", "process")
+	srv := tmux.ServerByName(h.name)
+	// Crash markers represent one completed pane write before event logging.
+	// Publish the whole marker set under the same exclusion as the real writer.
+	mark := func(options map[string]string) {
+		t.Helper()
+		ctx := context.Background()
+		if err := attach.Lock(ctx, h.state, srv.Socket, pane, func() error {
+			return srv.SetPaneOptions(ctx, pane, options, nil)
+		}); err != nil {
+			t.Fatalf("inject pending attachment write: %v", err)
+		}
+	}
 	count := func(event string) int {
 		n := 0
 		for _, e := range h.events(sidA) {
@@ -1701,12 +1717,12 @@ func TestAttachmentEventsSurviveACrash(t *testing.T) {
 		}
 		return n
 	}
-	h.tmux("set-option", "-p", "-t", pane, "@tmag_change", "Attach")
+	mark(map[string]string{"change": "Attach"})
 	h.tmag("", "status")
 	if n := count("Attach"); n != 2 || h.tmux("display-message", "-p", "-t", pane, "#{@tmag_change}") != "" {
 		t.Fatalf("pending Attach: %d Attach events, marker %q", n, h.tmux("display-message", "-p", "-t", pane, "#{@tmag_change}"))
 	}
-	h.tmux("set-option", "-p", "-t", pane, "@tmag_change", "Detach")
+	mark(map[string]string{"change": "Detach"})
 	if p, _, _ := h.paneIn(pane); p.Session != "" {
 		t.Fatalf("a pane being detached still shows %s", p.Session)
 	}
@@ -1714,18 +1730,35 @@ func TestAttachmentEventsSurviveACrash(t *testing.T) {
 	if n := count("Detach"); n != 1 || h.tmux("display-message", "-p", "-t", pane, "#{@tmag_session}") != "" {
 		t.Fatalf("pending Detach: %d Detach events", n)
 	}
-	// The agent's next hook proves the pane again.
+	// The agent's next turn proves the pane again. Wait for that turn's Stop,
+	// since the idle state from before input does not prove it has completed.
+	previous, _ := h.sessionOf(sidA)
 	h.tmux("send-keys", "-t", pane, "hello", "Enter")
+	h.eventually("new turn stopped", func() bool {
+		current, ok := h.sessionOf(sidA)
+		if !ok || current.Turn == "" || current.Turn == previous.Turn || current.State != "idle" {
+			return false
+		}
+		for _, event := range h.events(sidA) {
+			if event.Event == "Stop" && event.Turn == current.Turn {
+				return true
+			}
+		}
+		return false
+	})
 	h.waitPane(pane, "idle", "process")
 	if n := count("Attach"); n != 3 {
 		t.Fatalf("reattached with %d Attach events", n)
 	}
 
 	// Died while replacing another session's attachment: both events follow.
-	h.tmux("set-option", "-p", "-t", pane, "@tmag_change", "Attach")
-	h.tmux("set-option", "-p", "-t", pane, "@tmag_replaced", "claude "+sidB)
-	h.tmag("", "status")
+	mark(map[string]string{"change": "Attach", "replaced": "claude " + sidB})
+	result := h.tmag("", "status")
+	if result.code != 0 {
+		t.Fatalf("replacement reconciliation exited %d", result.code)
+	}
 	if got := h.eventNames(sidB); got != "Detach:" || count("Attach") != 4 {
+		t.Logf("replacement status: code=%d; A events=%s; markers=%q", result.code, h.eventNames(sidA), h.tmux("display-message", "-p", "-t", pane, "#{@tmag_change}|#{@tmag_replaced}"))
 		t.Fatalf("replaced: %q, %d Attach events", got, count("Attach"))
 	}
 	if got := h.tmux("display-message", "-p", "-t", pane, "#{@tmag_change}#{@tmag_replaced}"); got != "" {
@@ -2032,11 +2065,29 @@ func TestGlobalOptionPreservesShellCommands(t *testing.T) {
 		"~", "", "on",
 	} {
 		h.tmux("set-option", "-g", "@tmag-test-option", value)
+		if got, err := srv.GlobalOptionContext(context.Background(), "@tmag-test-option"); err != nil || got != value {
+			t.Fatalf("error-aware global option = %q, %v; want %q", got, err, value)
+		}
 		if got := srv.GlobalOption(context.Background(), "@tmag-test-option"); got != value {
 			t.Fatalf("global option = %q, want %q", got, value)
 		}
 	}
+	if got, err := srv.GlobalOptionContext(context.Background(), "@tmag-option-unset"); err != nil || got != "" {
+		t.Fatalf("unset option became unavailable: %q, %v", got, err)
+	}
 	if got := srv.GlobalOption(context.Background(), "@tmag-option-unset"); got != "" {
 		t.Fatalf("unset option = %q", got)
+	}
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if got, err := srv.GlobalOptionContext(canceled, "@tmag-test-option"); got != "" || !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancellation became an unset option: %q, %v", got, err)
+	}
+	unavailable := tmux.Server{Socket: filepath.Join(h.dir, "missing.sock")}
+	if got, err := unavailable.GlobalOptionContext(context.Background(), "@tmag-option-unset"); got != "" || err == nil {
+		t.Fatalf("unavailable server became an unset option: %q, %v", got, err)
+	}
+	if got := unavailable.GlobalOption(context.Background(), "@tmag-option-unset"); got != "" {
+		t.Fatalf("convenience wrapper changed on unavailable server: %q", got)
 	}
 }

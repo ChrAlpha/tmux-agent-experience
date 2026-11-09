@@ -81,7 +81,9 @@ func (a *app) cmdWatch(args []string) int {
 			if err != nil {
 				return nil, err
 			}
-			attach.Reconcile(ctx, attach.Env{Log: a.log, Store: a.store()}, w)
+			if err := attach.Reconcile(ctx, attach.Env{Log: a.log, Store: a.store()}, w); err != nil {
+				return nil, err
+			}
 			v, _, err := query.Load(ctx, a.store())
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
@@ -100,9 +102,6 @@ func (a *app) cmdWatch(args []string) int {
 		},
 	}
 	err = s.run(ctx, *since, *resync)
-	if cause := context.Cause(ctx); cause != nil && !errors.Is(cause, context.Canceled) {
-		err = cause
-	}
 	return a.watchEnd(err)
 }
 

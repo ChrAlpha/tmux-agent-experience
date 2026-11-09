@@ -3,6 +3,7 @@ package notify
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -11,6 +12,10 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/ChrAlpha/tmux-agent-experience/internal/coord"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/lockfile"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
 )
 
 func TestAlertText(t *testing.T) {
@@ -50,7 +55,7 @@ func TestFromEnvTakesTheCommandOut(t *testing.T) {
 }
 
 func TestRunGivesTheVariablesAndTheOutput(t *testing.T) {
-	out, err := Run(context.Background(), `printf '%s|%s' "$TMAG_ALERT" "$TMAG_TOOL"; exit 3`, append(os.Environ(), Alert{Kind: "blocked", Tool: "Bash"}.Env()...))
+	out, err := Run(context.Background(), t.TempDir(), `printf '%s|%s' "$TMAG_ALERT" "$TMAG_TOOL"; exit 3`, append(os.Environ(), Alert{Kind: "blocked", Tool: "Bash"}.Env()...))
 	var exit interface{ ExitCode() int }
 	if string(out) != "blocked|Bash" || !errors.As(err, &exit) || exit.ExitCode() != 3 {
 		t.Fatalf("out %q, err %v", out, err)
@@ -64,7 +69,7 @@ func TestRunEndsTheWholeCommandInTime(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
 	start := time.Now()
-	_, err := Run(ctx, `sleep 60 & echo $! > `+pidFile+`; wait`, os.Environ())
+	_, err := Run(ctx, t.TempDir(), `sleep 60 & echo $! > `+pidFile+`; wait`, os.Environ())
 	if !errors.Is(err, ErrTimeout) || time.Since(start) > 5*time.Second {
 		t.Fatalf("err %v after %s", err, time.Since(start))
 	}
@@ -82,11 +87,62 @@ func TestRunEndsTheWholeCommandInTime(t *testing.T) {
 
 func TestRunAlertDescribesAFailure(t *testing.T) {
 	environ := append(os.Environ(), commandVar+"=echo unreachable >&2; exit 7")
-	err := RunAlert(environ)
-	if err == nil || !strings.Contains(err.Error(), "@tmag-notify") || !strings.Contains(err.Error(), `"unreachable"`) {
+	err := RunAlert(t.TempDir(), environ)
+	if err == nil || !strings.Contains(err.Error(), "@tmag-notify") || strings.Contains(err.Error(), "unreachable") {
 		t.Fatalf("err = %v", err)
 	}
-	if err := RunAlert(os.Environ()); err == nil {
+	if err := RunAlert(t.TempDir(), os.Environ()); err == nil {
 		t.Fatal("no command, no error")
+	}
+}
+
+func TestExternalExecutionLimitIsLocalAndDoesNotQueue(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	if _, err := coord.Current(ctx, root); err != nil {
+		t.Fatal(err)
+	}
+	var held []*lockfile.Held
+	defer func() {
+		for _, l := range held {
+			_ = l.Close()
+		}
+	}()
+	for i := range Executions {
+		l, err := lockfile.AcquireWithin(ctx, root, fmt.Sprintf("notify-%d.lock", i), false, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		held = append(held, l)
+	}
+	marker := filepath.Join(root, "should-not-run")
+	if _, err := Run(ctx, root, `printf bad > "$MARKER"`, append(os.Environ(), "MARKER="+marker)); !errors.Is(err, ErrLimit) {
+		t.Fatalf("full execution slots did not refuse: %v", err)
+	}
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("capacity refusal ran the command", err)
+	}
+	if err := held[0].Close(); err != nil {
+		t.Fatal(err)
+	}
+	held = held[1:]
+	out, err := Run(ctx, root, "printf ready", os.Environ())
+	if err != nil || string(out) != "ready" {
+		t.Fatalf("released slot not reusable: %q %v", out, err)
+	}
+}
+
+func TestNotifierFirstKeepsOrdinarySessionUseAvailable(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "fresh")
+	out, err := Run(context.Background(), root, "printf ready", os.Environ())
+	if err != nil || string(out) != "ready" {
+		t.Fatalf("first notifier: %q %v", out, err)
+	}
+	store := session.Store{Dir: root}
+	if err := store.Put(session.Record{Agent: "claude", ID: "thread", Main: "idle"}); err != nil {
+		t.Fatal("notifier poisoned fresh state admission", err)
+	}
+	if records, err := store.All(); err != nil || len(records) != 1 {
+		t.Fatalf("session use after notification: %+v %v", records, err)
 	}
 }

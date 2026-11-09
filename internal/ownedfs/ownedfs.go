@@ -1,46 +1,23 @@
-// Package ownedfs binds tmag-owned directories to their inodes and performs
-// operations relative to pinned directory handles. Symlinks, replaced ancestry
-// and unreserved fixed artifact names preserve their objects.
+// Package ownedfs operates within a dedicated tmag directory using pinned
+// handles. Literal ancestry, effective ownership and inode identity are checked
+// for each operation. Reserved names belong to tmag; symlinks are never adopted.
 package ownedfs
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
-	"time"
 )
 
 var ErrScope = errors.New("metadata directory ownership is uncertain")
 
-type identity struct {
-	Device uint64 `json:"device"`
-	Inode  uint64 `json:"inode"`
-}
-
-func id(st os.FileInfo) identity {
-	if s, ok := st.Sys().(*syscall.Stat_t); ok {
-		return identity{uint64(s.Dev), s.Ino} //nolint:unconvert // Darwin Dev is int32; Linux uses uint64.
-	}
-	return identity{}
-}
-
 func Owner(st os.FileInfo) bool {
 	s, ok := st.Sys().(*syscall.Stat_t)
 	return ok && s.Uid == uint32(os.Geteuid())
-}
-
-type manifest struct {
-	Version   int                 `json:"version"`
-	Root      identity            `json:"root"`
-	Dirs      map[string]identity `json:"directories"`
-	Slots     map[string]int      `json:"slot_namespaces,omitempty"`
-	Temporary string              `json:"manifest_temporary,omitempty"`
 }
 
 type link struct {
@@ -100,24 +77,10 @@ func (d *Dir) Validate(ctx context.Context) error {
 	return nil
 }
 
-// Open pins rel beneath base. New children are made one component at a time.
-// Existing bindings never silently rebind to a replacement inode.
-func Open(ctx context.Context, base, rel string, create bool) (*Dir, error) {
-	return open(ctx, base, rel, create, "", 0)
-}
-
-// OpenSlots reserves a fixed basename prefix in a pinned directory. A new
-// reservation is admitted only when every position is absent; existing unknown
-// objects never become owned merely because their basename resembles a slot.
-// Cleanup passes create=false and cannot manufacture ownership evidence.
-func OpenSlots(ctx context.Context, base, rel, prefix string, slots int, create bool) (*Dir, error) {
-	if !component(prefix) || slots < 1 || slots > 256 {
-		return nil, ErrScope
-	}
-	return open(ctx, base, rel, create, prefix, slots)
-}
-
-func open(ctx context.Context, base, rel string, create bool, prefix string, slots int) (_ *Dir, err error) {
+// Open pins rel beneath the dedicated base directory. New children are made
+// one literal component at a time. Runtime replacement refuses further work;
+// a later invocation uses the operator-selected tree without a durable registry.
+func Open(ctx context.Context, base, rel string, create bool) (_ *Dir, err error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -151,47 +114,8 @@ func open(ctx context.Context, base, rel string, create bool, prefix string, slo
 	if err != nil || !os.SameFile(st, opened) {
 		return nil, ErrScope
 	}
-	gate, err := d.open(ctx, ".tmag-scope-lock", os.O_CREATE|os.O_RDWR, 0o600)
-	if err != nil {
-		return nil, err
-	}
-	defer gate.Close()
-	for {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		err := syscall.Flock(int(gate.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
-		if err == nil {
-			break
-		}
-		if !errors.Is(err, syscall.EWOULDBLOCK) && !errors.Is(err, syscall.EINTR) {
-			return nil, err
-		}
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(time.Millisecond):
-		}
-	}
-	current, err := d.Stat(ctx, ".tmag-scope-lock")
-	if err != nil {
-		return nil, err
-	}
-	held, err := gate.Stat()
-	if err != nil {
-		return nil, err
-	}
-	if !os.SameFile(current, held) {
-		return nil, ErrScope
-	}
-	m, err := d.readManifest(ctx)
-	if err != nil {
-		return nil, err
-	}
-	changed := false
 	if rel != "." && rel != "" {
 		parts := strings.Split(filepath.ToSlash(rel), "/")
-		prefix := ""
 		for _, name := range parts {
 			if !component(name) {
 				return nil, ErrScope
@@ -224,110 +148,12 @@ func open(ctx context.Context, base, rel string, create bool, prefix string, slo
 			if err != nil || !os.SameFile(info, opened) {
 				return nil, ErrScope
 			}
-			if prefix != "" {
-				prefix += "/"
-			}
-			prefix += name
-			if expected, ok := m.Dirs[prefix]; ok {
-				if expected != id(info) {
-					return nil, ErrScope
-				}
-			} else {
-				m.Dirs[prefix] = id(info)
-				changed = true
-			}
 		}
 	}
 	if err := d.Validate(ctx); err != nil {
 		return nil, err
 	}
-	if prefix != "" {
-		key := filepath.ToSlash(filepath.Join(rel, prefix))
-		if n, ok := m.Slots[key]; ok {
-			if n != slots {
-				return nil, ErrScope
-			}
-		} else {
-			if !create {
-				return nil, ErrScope
-			}
-			for slot := range slots {
-				if err := d.Validate(ctx); err != nil {
-					return nil, err
-				}
-				_, err := d.current().Lstat(fmt.Sprintf("%s%02x", prefix, slot))
-				if !errors.Is(err, os.ErrNotExist) {
-					return nil, ErrScope
-				}
-			}
-			m.Slots[key] = slots
-			changed = true
-		}
-	}
-	if changed {
-		if err := d.saveManifest(ctx, m); err != nil {
-			return nil, err
-		}
-	}
 	return d, nil
-}
-
-func (d *Dir) readManifest(ctx context.Context) (manifest, error) {
-	var m manifest
-	root := &Dir{base: d.base, info: d.info, roots: d.roots[:1]}
-	f, err := root.open(ctx, ".tmag-scope.json", os.O_RDONLY, 0)
-	if errors.Is(err, os.ErrNotExist) {
-		return manifest{Version: 1, Root: id(d.info), Dirs: map[string]identity{}, Slots: map[string]int{}}, nil
-	}
-	if err != nil {
-		return m, err
-	}
-	defer f.Close()
-	b, err := io.ReadAll(io.LimitReader(f, (64<<10)+1))
-	if err != nil {
-		return m, err
-	}
-	if len(b) > 64<<10 || json.Unmarshal(b, &m) != nil || m.Version != 1 || m.Root != id(d.info) || m.Dirs == nil || len(m.Dirs) > 1024 {
-		return m, ErrScope
-	}
-	if m.Temporary != "" && !validManifestTemporary(m.Temporary) {
-		return m, ErrScope
-	}
-	if m.Slots == nil {
-		m.Slots = map[string]int{}
-	}
-	return m, ctx.Err()
-}
-
-func (d *Dir) saveManifest(ctx context.Context, m manifest) error {
-	r := &Dir{base: d.base, info: d.info, roots: d.roots[:1]}
-	f, tmp, err := r.manifestTemporary(ctx, m.Temporary)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	m.Temporary = tmp
-	b, err := json.Marshal(m)
-	if err != nil {
-		return err
-	}
-	if len(b) > 64<<10 {
-		return ErrScope
-	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if _, err := f.Write(b); err != nil {
-		return err
-	}
-	st, err := f.Stat()
-	if err != nil {
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	return r.Rename(ctx, tmp, r, ".tmag-scope.json", st)
 }
 
 func (d *Dir) open(ctx context.Context, name string, flags int, perm os.FileMode) (*os.File, error) {

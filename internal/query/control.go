@@ -46,8 +46,12 @@ type Delivery struct {
 // runs the verb.
 func prepare(ctx context.Context, log *eventlog.Log) (View, Caller, error) {
 	store := session.Store{Dir: log.Dir}
-	if w, err := attach.Load(ctx); err == nil {
-		attach.Reconcile(ctx, attach.Env{Log: log, Store: store}, w)
+	w, err := attach.Load(ctx)
+	if err != nil {
+		return View{}, Caller{}, err
+	}
+	if err := attach.Reconcile(ctx, attach.Env{Log: log, Store: store}, w); err != nil {
+		return View{}, Caller{}, err
 	}
 	v, w, err := Load(ctx, store)
 	if err != nil {

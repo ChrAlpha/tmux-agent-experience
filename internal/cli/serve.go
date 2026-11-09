@@ -233,10 +233,18 @@ func splitArgs(s string) ([]string, error) {
 
 // checkServe reports whether tmag serve runs behind a tunnel.
 
-func checkServe() check {
-	for _, srv := range tmux.Servers() {
-		if addr := srv.GlobalOption(context.Background(), serveAddressOption); addr != "" {
-			return check{"serve", "ok", "local HTTP API at " + addr}
+func checkServe(ctx context.Context) check {
+	servers, err := doctorServers(ctx)
+	if err != nil {
+		return check{"serve", "warn", "server discovery incomplete"}
+	}
+	for _, srv := range servers {
+		addr, err := srv.GlobalOptionContext(ctx, serveAddressOption)
+		if err != nil {
+			return check{"serve", "warn", "serve option unavailable"}
+		}
+		if addr != "" {
+			return check{"serve", "ok", "local HTTP API configured; reachability not probed"}
 		}
 	}
 	return check{"serve", "skip", "optional local HTTP API is stopped (prefix + M-r opens it)"}

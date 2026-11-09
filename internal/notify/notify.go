@@ -15,7 +15,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ChrAlpha/tmux-agent-experience/internal/coord"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/helper"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/lockfile"
 )
 
 // Option is the tmux option holding the person's command.
@@ -143,47 +145,65 @@ func FromEnv(environ []string) (command string, env []string) {
 // ErrTimeout is a command that did not finish in time; it was ended.
 var ErrTimeout = errors.New("@tmag-notify did not finish within " + Timeout.String())
 
-// Run runs command with sh in env until it exits or ctx ends, and returns
-// what it printed. The command runs in a process group of its own, which
-// ends with it, children included.
-func Run(ctx context.Context, command string, env []string) ([]byte, error) {
+// Executions bounds external commands, not detached launcher processes.
+const Executions = 4
+
+var ErrLimit = errors.New("notification execution limit reached")
+
+// Run runs command with sh in env until it exits or the budget ends, returning
+// capped foreground output. Its process group and inherited slot end together.
+func Run(parent context.Context, root, command string, env []string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(parent, Timeout)
+	defer cancel()
+	if _, err := coord.Current(ctx, root); err != nil {
+		return nil, err
+	}
+	var lease *lockfile.Held
+	for i := range Executions {
+		held, err := lockfile.AcquireWithin(ctx, root, fmt.Sprintf("notify-%d.lock", i), false, false)
+		if errors.Is(err, lockfile.ErrBusy) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		lease = held
+		break
+	}
+	if lease == nil {
+		return nil, ErrLimit
+	}
+	defer lease.Close()
 	cmd, cleanup := helper.Command(ctx, "/bin/sh", "-c", command)
 	defer cleanup()
 	cmd.Env = env
+	cmd.ExtraFiles = []*os.File{lease.File()}
 	out := &capped{}
 	cmd.Stdout, cmd.Stderr = out, out
 	err := cmd.Run()
 	if ctx.Err() != nil || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		err = ErrTimeout
+		if parent.Err() != nil {
+			err = errors.Join(err, parent.Err())
+		}
 	}
 	return out.Bytes(), err
 }
 
 // RunAlert is `tmag notify --alert`: the process Start began. It runs the
 // command it was given and describes a failure for hook.log.
-func RunAlert(environ []string) error {
+func RunAlert(root string, environ []string) error {
 	command, env := FromEnv(environ)
 	if command == "" {
 		return errors.New("notify --alert: no command")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), Timeout)
 	defer cancel()
-	out, err := Run(ctx, command, env)
+	_, err := Run(ctx, root, command, env)
 	if err != nil {
-		return fmt.Errorf("%s: %w%s", Option, err, quote(out))
+		return fmt.Errorf("%s: %w", Option, err)
 	}
 	return nil
-}
-
-func quote(out []byte) string {
-	out = bytes.TrimSpace(out)
-	if len(out) == 0 {
-		return ""
-	}
-	if i := bytes.IndexByte(out, '\n'); i >= 0 {
-		out = out[:i]
-	}
-	return fmt.Sprintf(": %q", out)
 }
 
 // capped keeps the first maxOutput bytes written to it.

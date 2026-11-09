@@ -45,7 +45,7 @@ prompt safely.
 ## Requirements
 
 tmux 3.2 or newer on Linux or macOS (amd64 or arm64),
-[TPM](https://github.com/tmux-plugins/tpm), `curl` or `wget`, and Claude Code
+[TPM](https://github.com/tmux-plugins/tpm), `curl`, and Claude Code
 and/or Codex.
 
 ## Install
@@ -72,6 +72,15 @@ the same procedure, readable by people. Use the same prompt to update.
    checks its SHA-256, and keeps it in its own directory,
    `$TMUX_PLUGIN_MANAGER_PATH/tmux-agent-experience/bin/` (usually
    `~/.tmux/plugins/tmux-agent-experience/bin/`).
+   Version checks run in that background worker. Each of its two curl downloads
+   has a 10-second connection limit and a 25-second total transfer limit, with
+   no retries. These are network limits; local tools, filesystems and an existing
+   executable have no whole-attempt deadline. Installation stages inside `bin/`
+   and atomically replaces the executable only after checksum and version checks.
+   A busy or interrupted `bin/.install.lock` causes a visible failure. After all
+   installers have finished, inspect and recover that lock from your own terminal;
+   its age never authorizes stealing it. Keep old installers stopped while
+   upgrading. Missing curl is reported; installation never builds from source.
 
 2. Press `prefix + M-a`. A popup shows the commands that connect Claude Code
    and Codex through their own plugin managers, runs them once you confirm, and
@@ -169,7 +178,11 @@ runs:
 | `unknown` | Reported by nothing yet. A pane shows `unknown` while its agent has not reported (startup, trust dialogs, plugin not installed) or tmag has no proof of the session it shows. |
 
 A session ends with its agent's `SessionEnd`, or when the process it runs in
-exits without one.
+exits without one. Optional `last_hook_at` records accepted hook contact in JSON
+and `inspect`, independently of the state's `since`. A contact-only update is a
+complete session event with unchanged `since`; contact time never establishes
+state freshness, control authority or eligibility for cleanup. Records without
+this optional timestamp remain readable in the supported state layout.
 
 ### Sessions and panes
 
@@ -439,7 +452,23 @@ client and command gateway; it consumes public contracts and releases separately
 `@tmag-notify` is an optional local command run for `blocked` and `finished`
 alerts enabled by `@tmag-alert`, including sessions without panes. It receives
 only metadata. It runs separately from the agent hook and has a 20-second bound.
-`tmag notify` sends a test alert; `tmag doctor` reports recent failures.
+`tmag notify` sends a test alert and retains bounded command output for its
+foreground result. At most four cooperating external notification commands run
+per state directory, using permanent local lock slots inherited directly by the
+shell; full capacity refuses without a queue. This bounds external executions,
+not all short-lived detached launchers. Ordinary descendants retain their slot;
+commands that deliberately close inherited FDs or escape the owned process group
+are outside that guarantee. The existing 20-second execution bound remains.
+
+New `hook.log` entries contain timestamp, source and a fixed failure category,
+never command output or hook input. A serialized append/rotation keeps the log at
+256 KiB; older raw entries survive only until rotation and doctor redacts them.
+`tmag doctor` uses one two-second diagnostic budget, bounded host output and
+owned helper cleanup. It reports the first current metadata fault and location,
+last hook contact from at most 32 directory entries, recent metadata-only hook
+failures and existing event-log validation. Incomplete probes remain unknown;
+historical failures alone do not establish current failure. Log validation keeps
+its existing recovery behavior; doctor does not certify a forensic history.
 
 | Variable | Meaning |
 | --- | --- |
@@ -605,6 +634,13 @@ timeout. With `--json`, errors are also printed as
 `refused:idle`, `refused:unsupported`, `refused:self`, `refused:agent`,
 `ended`, `no_reply`, `history_unavailable`, `integrity_loss`, `timeout` and `error`.
 
+Complete session views fail with `records_unavailable` on the first unreadable,
+corrupt, unsafe or oversized record. Reconciliation preserves unknown resources
+and pending event markers, returning the failure instead of inventing absence.
+Repair the reported metadata before global reconciliation can proceed. This is
+an explicit refusal, not a partial inventory or a claim that every other record
+was checked.
+
 ## Footprint
 
 | Piece | Where | Removed by |
@@ -614,100 +650,56 @@ timeout. With `--json`, errors are also printed as
 | Pane state | `@tmag_*` pane options, gone with the pane | `tmag uninstall --purge` |
 | `tmag serve` | a tmux window, while you keep it open, and `@tmag_api_addr` while it runs | closing the window |
 | Owner credentials | `$XDG_STATE_HOME/tmag/auth/`, or `TMAG_AUTH_DIR`: metadata and verification digests | `tmag auth revoke`, or `tmag uninstall --purge` |
-| Sessions and event log | `$XDG_STATE_HOME/tmag/<realm>/` (default `~/.local/state/tmag/<realm>/`): one small file per live session, at most two 8 MB event files, answer sockets under `req/` while hooks wait. The realm names the process table tmag sees, one per container or machine and boot, so containers that share a home directory keep their sessions apart | `tmag uninstall --purge`; ordinary maintenance preserves foreign realms and legacy state trees whose retirement is unknown |
-| Coordination | `<state dir>/coord/`: permanent namespace gate, at most 256 pane, 256 session and 256 request-position locks, plus a fixed number of maintenance files; compatibility mode also retains per-resource files under `locks/` | removing the state directory with `tmag uninstall --purge` |
-| Answer endpoints after cutover | `<state dir>/req/`: at most 256 `sock-XX`, 256 identity-only `meta-XX` and 256 fixed `temp-XX` positions | bounded maintenance, or reuse after the previous listener closed |
-| Session publication temporaries | `<state dir>/sessions/<agent>/.tmag-tmp-s-XX`: at most 256 fixed positions per agent, sharing its session stripes | the next successful publication at that position, or bounded maintenance |
+| Sessions and event log | `$XDG_STATE_HOME/tmag/<realm>/` (default `~/.local/state/tmag/<realm>/`): one small file per live session, at most two 8 MB event files, answer sockets under `req/` while hooks wait. The realm names the process table tmag sees, one per container or machine and boot, so containers that share a home directory keep their sessions apart | `tmag uninstall --purge`; ordinary reconciliation preserves foreign realms and legacy state trees |
+| Coordination | `<state dir>/coord/`: one format marker, a permanent namespace gate, at most 256 pane, 256 session and 256 request-position locks, and one allocation lock | removing the state directory with `tmag uninstall --purge` |
+| Answer endpoints | `<state dir>/req/`: at most 256 `sock-XX`, 256 identity-only `meta-XX` and 256 fixed `temp-XX` positions | safe reuse after the previous listener closed |
+| Session publication temporaries | `<state dir>/sessions/<agent>/.tmag-tmp-s-XX`: at most 256 fixed positions per agent, sharing its session stripes | the next publication at that position |
 
-Resource locks default to compatibility mode in every directory, including an
-empty one. New tmag commands acquire a fixed pool stripe and the same legacy
-per-resource inode older binaries use. Existing holders and waiters that opened
-their descriptors earlier keep their mutual exclusion. Compatibility continues
-creating legacy files for new identifiers, so its legacy cost can keep growing.
-Answer hooks also retain flat legacy socket pathnames in compatibility mode:
-older creators ignore new exclusion, so safe automatic unlink requires the
-explicit retirement declaration too.
+A state directory is dedicated to tmag. Reserved files and names belong to its
+one supported writer protocol. Fresh empty directories initialize the fixed
+layout directly. Existing state without the current `coord/mode` marker (`pool-v2`) refuses
+ordinary reads and writes and requires an explicit migration:
 
-To declare a directory exclusive to binaries supporting the fixed pools:
-
-1. Finish every older tmag process, including `serve`, answer hooks, hooks,
-   commands and lock waiters. Stop their launch paths while upgrading.
-2. Verify every host's hook/launcher resolves the new released binary, and
-   ensure no older executable or rollback will write this state directory again.
+1. Quiesce **tmag invocations**: finish hooks, answer hooks, `serve`, commands and
+   lock waiters, and pause their launch paths during the upgrade. tmux and the
+   coding agents' main tasks can remain running.
+2. Upgrade every hook/launcher to the new binary. Keep old executables and
+   rollback binaries from writing this state directory afterward.
 3. From your own terminal, run `tmag prune --retire-legacy-locks` with the same
-   `TMAG_STATE_DIR`/realm as the deployment. This command is the explicit
-   retirement declaration; it applies immediately, with no further prompt.
+   `TMAG_STATE_DIR`/realm. This declares those preconditions and publishes the
+   current format immediately. Agents cannot make the declaration. Unknown
+   format markers require inspection or a fresh dedicated state directory.
 
-The declaration waits for participating new commands before publishing the mode
-atomically. Older binaries do not know that gate: free lock files, absent
-processes, or missing legacy names do not establish the preconditions. Agents
-cannot make the declaration. Do not restart an older writer after it succeeds.
-Fresh deployments using only the new binary make the same declaration before
-starting their agents. After cutover, new identifiers create no legacy locks;
-new coordination files are bounded by the fixed pools. Cutover pins the
-`locks/` and `req/` directory inodes, creating empty anchors when necessary.
-Ordinary maintenance incrementally removes known empty legacy locks under the
-exclusive stable gate, with a nonblocking per-file lock and identity check. It
-also removes known legacy answer sockets only on definite connection refusal or
-absence; live, uncertain and contended objects stay intact. The gate, pool files
-and directory anchors remain permanent. Unknown names, nonempty lock files,
-aliases and foreign realms remain preserved.
+Migration preserves legacy lock inodes, sockets and unknown files. It never
+infers retirement from absent processes, old timestamps or unlocked files, and
+never scans or removes old lock files. Mixed-version writers and rollback within
+one directory are unsupported. Keep the old tree when moving to a fresh one.
 
-Session publication uses one fixed `.tmag-tmp-s-XX` temporary position per
-agent and stripe, directly beside its record. Publication renames two direct
-children of the same pinned directory. A bounded realm ownership manifest
-records directory inodes and admits the fixed prefix only when all 256 names
-are absent. Maintenance requires that prior reservation. Symlinks, replaced
-ancestors, unclaimed names and unknown child directories stay preserved;
-basename and user ownership alone do not establish scope. A killed publisher
-therefore leaves at most 512 new session temporaries, regardless of historical
-session count. Hooks and
-ordinary `prune` calls inspect up to eight stripes (sixteen fixed candidate
-names) after required work, within a fifty-millisecond cooperative budget and
-the earlier operation deadline. The saved starting stripe advances one position
-per admitted pass, so every stripe gets the first turn within 256 passes even
-when earlier batches run out of time. Active creators exclude their cleaner;
-contended stripes are skipped. Legacy random `.tmp-*` files lack that creator
-evidence and remain preserved. The realm's `.tmag-scope-lock` is permanent;
-`.tmag-scope.json` binds managed directories to their inodes. Copying or
-replacing directories does not transfer that ownership proof. If a restore
-invalidates it, stop all tmag writers and retain the old realm for inspection
-before starting with a fresh state directory; never erase the proof beneath
-active writers. Manifest publication reserves one of 256 fixed bootstrap names.
-Before the first committed reservation, existing names stay unknown and are
-skipped, including interrupted bootstrap files. A committed manifest records
-its own reusable temporary; subsequent interrupted publications recover only
-through that reserved name. Exhausting all bootstrap positions fails open and
-preserves them for owner inspection.
+Session publication uses one reserved temporary per agent and stripe, beside
+its record, and atomically renames within the same pinned directory. A killed
+publisher can leave at most 512 such temporary positions, regardless of historical
+session count. The next publisher under that stripe reuses the position. Runtime
+root, ancestry, ownership, file type and inode checks refuse aliases or a directory
+replaced during an operation. There is no persistent directory-inode registry:
+a later invocation trusts the operator-selected dedicated tree. Stop tmag writers
+before restoring or replacing it; do not put unrelated files at reserved names.
 
-After cutover, answer hooks allocate fixed positions; simultaneous requests
-whose initial hashes collide use different free positions. A position stays
-locked for the listener's whole lifetime. At most 256 answer hooks can wait in
-one realm; exhaustion or uncertain ownership leaves the agent's original
-on-screen dialog in control. Request identity is checked by the socket protocol;
-a short probe returns only that identity, never tool input. Corrupt or aliased
-identity metadata stays unknown and prevents a second allocation from
-redirecting a request. Bind and connect use the pinned directory on both
-supported operating systems. A closed pathname
-is not proof of a waiting hook. Listener close performs no unsafe unlink; a
-later excluded sweep or allocation removes dead leftovers before reuse.
+Answer hooks allocate up to 256 fixed positions; colliding request hashes use
+different free positions. The position lock lasts for the listener's whole
+lifetime. Allocation removes a leftover socket only after the lock and definite
+connection refusal prove it dead. Live or uncertain endpoints, corrupt identity
+metadata and aliases prevent reuse. Request identity is checked again by the
+socket protocol; a short probe returns only identity, never tool input. Bind and
+connect stay within pinned directories on Linux and macOS. Listener close does
+not unlink a pathname that could now belong to someone else. Exhaustion or
+uncertain ownership leaves the agent's own on-screen dialog in control.
 
-Housekeeping shares the earlier operation deadline, with a cooperative ceiling
-of 150 milliseconds: up to 50 milliseconds per artifact class. Its saved first
-class rotates between session temporaries, retired locks and answer sockets.
-A lock sweep reads at most one 4 KiB native directory page and processes 32
-saved names; a socket sweep checks four fixed positions and processes eight
-legacy names from at most one such page. Unknown entries count toward the
-examination budget. Persistent filesystem cookies and bounded pending names
-resume beyond unknown prefixes; EOF wraps the sweep. Fixed socket starting
-positions advance before cleanup, giving each position first turn within 256
-admitted passes, while the fixed/legacy socket class order alternates. These
-limits bound examined work; storage latency and OS scheduling still determine
-how much useful progress fits an invocation.
-
-Automatic maintenance preserves other realms and older shared state trees. Age,
-local PID absence, or an unlocked file cannot prove a foreign realm retired.
-Idle agents elsewhere can legitimately leave their metadata untouched for weeks.
+Bounded leftovers can remain until reuse. Hooks and ordinary `prune` perform no
+rotating artifact sweeps or legacy-state scans. Session End/Exit handling and
+pending event settlement still run; event-log continuity and its checkpoint
+transaction remain intact. Ordinary reconciliation preserves foreign realms and
+older shared state trees. Idle agents elsewhere may leave their metadata
+untouched for weeks.
 
 `tmag uninstall` prints the exact removal steps.
 

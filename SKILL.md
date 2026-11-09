@@ -48,7 +48,7 @@ A user typically hands you this document with a prompt such as:
 ```sh
 uname -sm                                  # Linux or Darwin; x86_64/amd64 or arm64/aarch64
 tmux -V                                    # 3.2 or newer
-command -v curl || command -v wget         # one of them
+command -v curl                            # required for bounded release downloads
 echo "$TMUX"                               # non-empty: you run inside tmux
 tmux show-environment -g TMUX_PLUGIN_MANAGER_PATH
 ```
@@ -88,7 +88,14 @@ tmux source-file CONF                                            # load it
 
 On load the plugin downloads the released binary for its version, checks its
 SHA-256 and puts it at `${PLUGINS}tmux-agent-experience/bin/tmag`. It runs in
-the background; wait for it (up to a minute):
+the background. Curl is required; each download has a 10-second connection
+limit and a 25-second total transfer limit, without retries. Local tools,
+filesystems and version probes have no whole-attempt deadline. Checksums and the
+candidate's version are verified before atomic replacement inside `bin/`. A busy
+or interrupted `bin/.install.lock` fails clearly: after all installers finish,
+the person must inspect and recover it. Never steal a lock because of age or
+remove a replacement owner's lock. Keep older installers stopped while upgrading.
+Poll for the binary under normal local-tool operation:
 
 ```sh
 TMAG="${PLUGINS}tmux-agent-experience/bin/tmag"

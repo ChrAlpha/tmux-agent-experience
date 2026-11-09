@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"flag"
@@ -11,8 +10,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ChrAlpha/tmux-agent-experience/internal/contextio"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/ownedfs"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
-	"github.com/ChrAlpha/tmux-agent-experience/internal/query"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/tmux"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/version"
 )
@@ -34,9 +35,15 @@ func (a *app) cmdDoctor(args []string) int {
 	}
 	ctx, cancel := a.signalContext()
 	defer cancel()
-	checks := []check{checkTmux(), checkPlugin(), checkBinary(), a.checkState(ctx), a.checkHookErrors(), a.checkNotify(), checkServe()}
-	peers := peersWanted(context.Background())
-	checks = append(checks, claudeCheck(claudeHost(), peers), codexCheck(codexHost(), peers), a.checkAgents())
+	ctx, stopProbe := context.WithTimeout(ctx, 2*time.Second)
+	defer stopProbe()
+	checks := []check{a.checkRecords(ctx), a.checkState(ctx), a.checkHookErrors(ctx), checkTmux(ctx), checkPlugin(ctx), checkBinary(), a.checkNotify(ctx), checkServe(ctx)}
+	peers, err := doctorPeers(ctx)
+	if err != nil {
+		checks = append(checks, check{"claude", "warn", "host plugin checks incomplete: tmux policy unavailable"}, check{"codex", "warn", "host plugin checks incomplete: tmux policy unavailable"})
+	} else {
+		checks = append(checks, claudeCheck(claudeHostContext(ctx), peers), codexCheck(ctx, codexHostContext(ctx), peers))
+	}
 
 	failed := false
 	for _, c := range checks {
@@ -56,29 +63,43 @@ func (a *app) cmdDoctor(args []string) int {
 	return ExitOK
 }
 
-func checkTmux() check {
-	out, err := run("tmux", "-V")
-	if err != nil {
-		return check{"tmux", "fail", "tmux not found"}
+func checkTmux(ctx context.Context) check {
+	out, err := run(ctx, "tmux", "-V")
+	if err != nil || hostMetadata(out, 128) == "unknown" {
+		return check{"tmux", "warn", "tmux version probe unavailable"}
 	}
 	v := strings.TrimPrefix(out, "tmux ")
 	if !tmux.VersionAtLeast(v, minTmuxMajor, minTmuxMinor) {
 		return check{"tmux", "fail", fmt.Sprintf("%s; tmag needs %d.%d or newer", v, minTmuxMajor, minTmuxMinor)}
 	}
 	live := 0
-	for _, s := range tmux.Servers() {
-		if _, err := s.Version(context.Background()); err == nil {
+	servers, err := doctorServers(ctx)
+	if err != nil {
+		return check{"tmux", "warn", "server discovery incomplete"}
+	}
+	for _, s := range servers {
+		if _, err := s.Version(ctx); err == nil {
 			live++
+		} else {
+			return check{"tmux", "warn", "server version probe incomplete"}
 		}
 	}
 	return check{"tmux", "ok", fmt.Sprintf("%s, %d server(s) running", v, live)}
 }
 
 // checkPlugin reports whether the tmux plugin is loaded, and at which version.
-func checkPlugin() check {
+func checkPlugin(ctx context.Context) check {
 	loaded, stale := 0, ""
-	for _, s := range tmux.Servers() {
-		switch v := s.GlobalOption(context.Background(), "@tmag-plugin-version"); v {
+	servers, err := doctorServers(ctx)
+	if err != nil {
+		return check{"plugin", "warn", "server discovery incomplete"}
+	}
+	for _, s := range servers {
+		value, err := s.GlobalOptionContext(ctx, "@tmag-plugin-version")
+		if err != nil {
+			return check{"plugin", "warn", "plugin option unavailable"}
+		}
+		switch v := value; v {
 		case "":
 		case version.Version:
 			loaded++
@@ -88,7 +109,7 @@ func checkPlugin() check {
 	}
 	switch {
 	case stale != "":
-		return check{"plugin", "warn", fmt.Sprintf("tmux plugin %s loaded, binary is %s; reload tmux.conf or update with prefix + U", stale, version.Version)}
+		return check{"plugin", "warn", "loaded plugin version differs; reload tmux.conf or update with prefix + U"}
 	case loaded == 0:
 		return check{"plugin", "warn", "tmux plugin not loaded; add set -g @plugin '" + repo + "' to tmux.conf and press prefix + I"}
 	}
@@ -172,36 +193,129 @@ func (a *app) checkState(ctx context.Context) check {
 		return check{"state", "warn", fmt.Sprintf("%s: no events yet; are the agent plugins installed and trusted?", dir)}
 	}
 	events, _, err := a.log.Since(ctx, cursor.Seq-1)
-	if err != nil || len(events) == 0 {
-		return check{"state", "ok", dir}
+	if err != nil {
+		return check{"state", "fail", "event log validation incomplete"}
+	}
+	if len(events) == 0 {
+		return check{"state", "warn", "last event unavailable"}
 	}
 	last := events[len(events)-1]
-	return check{"state", "ok", fmt.Sprintf("%s, last event %s from %s %s ago", dir, last.Event, last.Agent, time.Since(last.Time).Round(time.Second))}
+	return check{"state", "ok", fmt.Sprintf("%s, last event seq %d at %s", dir, last.Seq, last.Time.UTC().Format(time.RFC3339))}
 }
 
-func (a *app) checkHookErrors() check {
-	f, err := os.Open(filepath.Join(a.log.Dir, "hook.log"))
+func (a *app) checkHookErrors(ctx context.Context) check {
+	data, err := contextio.ReadFile(ctx, filepath.Join(a.log.Dir, "hook.log"), 256<<10)
 	if errors.Is(err, os.ErrNotExist) {
-		return check{"hooks", "ok", "no hook errors recorded"}
+		return check{"hooks", "ok", "no hook failures recorded"}
 	}
 	if err != nil {
-		return check{"hooks", "warn", err.Error()}
+		return check{"hooks", "warn", "hook log unreadable or probe incomplete"}
 	}
-	defer f.Close()
-	var recent []string
+	count, latest := 0, ""
 	cutoff := time.Now().Add(-24 * time.Hour)
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		line := sc.Text()
-		ts, _, _ := strings.Cut(line, " ")
-		if t, err := time.Parse(time.RFC3339, ts); err == nil && t.After(cutoff) {
-			recent = append(recent, line)
+	for _, line := range strings.Split(string(data), "\n") {
+		if ctx.Err() != nil {
+			return check{"hooks", "warn", "hook log probe incomplete"}
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		at, err := time.Parse(time.RFC3339, fields[0])
+		if err != nil || !at.After(cutoff) {
+			continue
+		}
+		count++
+		latest = "legacy record (message redacted)"
+		if len(fields) == 3 && (fields[1] == "claude" || fields[1] == "codex" || fields[1] == "notify" || fields[1] == "hook") {
+			switch fields[2] {
+			case "failed", "timeout", "canceled", "records_unavailable", "limited":
+				latest = fields[1] + " " + fields[2]
+			}
 		}
 	}
-	if len(recent) == 0 {
-		return check{"hooks", "ok", "no hook errors in the last 24h"}
+	return check{"hooks", "ok", fmt.Sprintf("%d historical failure(s) in 24h; latest: %s; current health checked separately", count, latest)}
+}
+
+// Current metadata only, at most 32 physical entries and one 4MiB record at a
+// time. The first fault is actionable; incomplete enumeration is never absence.
+func (a *app) checkRecords(ctx context.Context) check {
+	examined, readable := 0, 0
+	var latest time.Time
+	for _, agent := range []string{"claude", "codex"} {
+		for _, dir := range []string{a.log.Dir, filepath.Join(a.log.Dir, "sessions"), filepath.Join(a.log.Dir, "sessions", agent)} {
+			if ctx.Err() != nil {
+				return check{"records", "warn", "record probe incomplete"}
+			}
+			st, err := os.Lstat(dir)
+			if err == nil && (!st.IsDir() || !ownedfs.Owner(st)) {
+				return check{"records", "fail", "unsafe metadata directory: " + dir}
+			}
+			if err != nil && !errors.Is(err, os.ErrNotExist) {
+				return check{"records", "warn", "metadata directory unreadable: " + dir}
+			}
+		}
+		err := contextio.Entries(ctx, filepath.Join(a.log.Dir, "sessions", agent), func(e os.DirEntry) error {
+			examined++
+			if examined > 32 {
+				return errDoctorSample
+			}
+			id, ok := strings.CutSuffix(e.Name(), ".json")
+			if !ok || !session.ValidID(id) {
+				return nil
+			}
+			r, found, err := a.store().GetContext(ctx, agent, id)
+			if err != nil {
+				return err
+			}
+			if found {
+				readable++
+				if r.LastHookAt.After(latest) {
+					latest = r.LastHookAt
+				}
+			}
+			return ctx.Err()
+		})
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			var fault *session.RecordError
+			if errors.As(err, &fault) {
+				return check{"records", "fail", fault.Error() + "; preserve the original and repair metadata"}
+			}
+			return check{"records", "warn", fmt.Sprintf("checked %d readable records; remaining metadata unknown (probe incomplete)", readable)}
+		}
 	}
-	return check{"hooks", "warn", fmt.Sprintf("%d hook error(s) in the last 24h; latest: %s", len(recent), recent[len(recent)-1])}
+	contact := "unknown"
+	if !latest.IsZero() {
+		contact = latest.UTC().Format(time.RFC3339Nano)
+	}
+	return check{"records", "ok", fmt.Sprintf("%d readable records in sample; latest hook contact %s (not state freshness)", readable, contact)}
+}
+
+var errDoctorSample = errors.New("doctor sample complete")
+
+func doctorServers(ctx context.Context) ([]tmux.Server, error) {
+	servers, err := tmux.ServersContext(ctx)
+	if err == nil && len(servers) > 16 {
+		err = errDoctorSample
+	}
+	return servers, err
+}
+func doctorPeers(ctx context.Context) (bool, error) {
+	servers, err := doctorServers(ctx)
+	if err != nil {
+		return false, err
+	}
+	peers := true
+	for _, s := range servers {
+		v, err := s.GlobalOptionContext(ctx, peersOption)
+		if err != nil {
+			return false, err
+		}
+		if v == "off" {
+			peers = false
+		}
+	}
+	return peers, ctx.Err()
 }
 
 // pluginNote describes tmag's plugins in a host and whether they need action.
@@ -236,6 +350,9 @@ func pluginNote(h host, peers bool) (status, note string) {
 }
 
 func claudeCheck(h host, peers bool) check {
+	if h.Unavailable {
+		return check{"claude", "warn", "host probe incomplete; installation status unknown"}
+	}
 	if !h.Present {
 		return check{"claude", "skip", "Claude Code not installed"}
 	}
@@ -243,7 +360,10 @@ func claudeCheck(h host, peers bool) check {
 	return check{"claude", status, h.Version + "; " + note}
 }
 
-func codexCheck(h host, peers bool) check {
+func codexCheck(ctx context.Context, h host, peers bool) check {
+	if h.Unavailable || ctx.Err() != nil {
+		return check{"codex", "warn", "host probe incomplete; installation status unknown"}
+	}
 	if !h.Present {
 		return check{"codex", "skip", "Codex not installed"}
 	}
@@ -251,6 +371,9 @@ func codexCheck(h host, peers bool) check {
 	notes := []string{h.Version, note}
 	switch {
 	case status != "ok":
+	case h.ApprovalUnknown:
+		status = "warn"
+		notes = append(notes, "hook approval evidence unavailable")
 	case !h.HookApproval:
 		status = "warn"
 		notes = append(notes, "plugin hooks not approved yet; approve them in Codex with /hooks")
@@ -259,12 +382,11 @@ func codexCheck(h host, peers bool) check {
 		// does not say whether the current ones match.
 		notes = append(notes, "hook approval found, not verifiable for the current hooks; if states stop updating, approve again with /hooks")
 	}
-	if pid, ok := codexDaemon(); ok {
-		notes = append(notes, "threads run in the shared daemon: panes show them through thread-id in the terminal title")
-		if problem := daemonBinaryProblem(pid); problem != "" {
-			status = "warn"
-			notes = append(notes, problem)
-		}
+	if _, ok, err := codexDaemonContext(ctx); err != nil {
+		status = "warn"
+		notes = append(notes, "daemon probe incomplete")
+	} else if ok {
+		notes = append(notes, "threads run in the shared daemon; panes require thread-id; daemon environment not checked")
 	}
 	return check{"codex", status, strings.Join(notes, "; ")}
 }
@@ -287,28 +409,4 @@ func daemonBinaryProblem(pid int) string {
 		}
 	}
 	return ""
-}
-
-func (a *app) checkAgents() check {
-	v, _, err := query.Load(context.Background(), a.store())
-	if err != nil {
-		return check{"agents", "warn", err.Error()}
-	}
-	if len(v.Panes) == 0 && len(v.Sessions) == 0 {
-		return check{"agents", "ok", "no agents running"}
-	}
-	shown := 0
-	for _, p := range v.Panes {
-		if p.Session != "" {
-			shown++
-		}
-	}
-	note := fmt.Sprintf("%d session(s); %d of %d agent pane(s) show one", len(v.Sessions), shown, len(v.Panes))
-	if hint := codexHint(v); hint != "" {
-		return check{"agents", "warn", note + ". " + hint}
-	}
-	if shown < len(v.Panes) {
-		return check{"agents", "ok", note + " (the others have not reported yet)"}
-	}
-	return check{"agents", "ok", note}
 }

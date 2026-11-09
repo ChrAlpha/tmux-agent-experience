@@ -29,10 +29,12 @@ type Host struct {
 
 // Record is the state of one session.
 type Record struct {
-	Agent string `json:"agent"` // claude | codex
-	ID    string `json:"id"`
-	Cwd   string `json:"cwd,omitempty"`
-	Host  Host   `json:"host"`
+	// LastHookAt is accepted hook contact, independent of state age or authority.
+	LastHookAt time.Time `json:"last_hook_at,omitzero"`
+	Agent      string    `json:"agent"` // claude | codex
+	ID         string    `json:"id"`
+	Cwd        string    `json:"cwd,omitempty"`
+	Host       Host      `json:"host"`
 	// Transcript is the path of the agent's transcript of the session, as its
 	// hooks report it. The file may not exist before the first turn.
 	Transcript string `json:"transcript,omitempty"`
@@ -131,6 +133,7 @@ func (r Record) RequestRefs() []eventlog.Request {
 // Report is what an event reports of a session. Lists are joined, so that
 // reports compare with ==.
 type Report struct {
+	LastHookAt string `json:"last_hook_at,omitempty"`
 	State      string `json:"state,omitempty"`
 	Kind       string `json:"kind,omitempty"`
 	Turn       string `json:"turn,omitempty"`
@@ -148,8 +151,13 @@ func (r Record) Reports() Report {
 	if !r.Since.IsZero() {
 		since = r.Since.UTC().Format(time.RFC3339Nano)
 	}
+	contact := ""
+	if !r.LastHookAt.IsZero() {
+		contact = r.LastHookAt.UTC().Format(time.RFC3339Nano)
+	}
 	return Report{
-		State: r.State(), Kind: r.Kind(), Turn: r.Turn, Cwd: r.Cwd, Runtime: string(r.Host.Role),
+		LastHookAt: contact,
+		State:      r.State(), Kind: r.Kind(), Turn: r.Turn, Cwd: r.Cwd, Runtime: string(r.Host.Role),
 		Transcript: r.Transcript, Subagents: strings.Join(r.RunningSubagents(), "\n"),
 		Requests: strings.Join(r.requestIDs(), "\n"), Since: since,
 	}
@@ -166,6 +174,7 @@ func (r Record) requestIDs() []string {
 // Report fills ev with everything an event reports of the session.
 func (r Record) Report(ev *eventlog.Event) {
 	ev.Agent, ev.Session = r.Agent, r.ID
+	ev.LastHookAt = r.LastHookAt
 	ev.State, ev.Kind, ev.Turn, ev.Cwd = r.State(), r.Kind(), r.Turn, r.Cwd
 	ev.Since = nil
 	if !r.Since.IsZero() {

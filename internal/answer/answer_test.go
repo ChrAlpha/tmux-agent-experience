@@ -84,10 +84,18 @@ func TestWait(t *testing.T) {
 
 	done, out = wait("r2")
 	Close(ctx, dir, "r2")
-	if <-done || out.Len() != 0 {
+	emitted := <-done
+	if ctx.Err() != nil {
+		t.Fatalf("explicit close not observed before parent cancellation: %v", ctx.Err())
+	}
+	if emitted || out.Len() != 0 {
 		t.Fatalf("a closed request printed %q", out.String())
 	}
-	os.Remove(Path(dir, "r2"))
+	path, err := location(ctx, dir, "r2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Remove(path)
 	if err := Decide(ctx, dir, "r2", Decision{Behavior: Allow}); !errors.Is(err, ErrGone) {
 		t.Fatalf("deciding a request no hook waits on: %v", err)
 	}
@@ -110,7 +118,11 @@ func TestWaitPrintsNothingOnceItEnds(t *testing.T) {
 	go func() { done <- Wait(ctx, ln, Asked{Tool: "Bash"}, func(b []byte) error { out.Write(b); return nil }) }()
 
 	// A connection is being served when the hook is told to leave.
-	conn, err := net.Dial("unix", Path(dir, "r1"))
+	path, err := location(ctx, dir, "r1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := net.Dial("unix", path)
 	if err != nil {
 		t.Fatal(err)
 	}
