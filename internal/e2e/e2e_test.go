@@ -225,6 +225,15 @@ func (h *harness) waiting(id string) bool {
 	return err == nil
 }
 
+// gone requires definite endpoint absence/refusal, allowing helper startup
+// time without treating a timeout or another unknown failure as closure.
+func (h *harness) gone(id string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_, err := answer.Show(ctx, h.state, id)
+	return errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ECONNREFUSED)
+}
+
 // waitPane waits until the pane shows a session in state, by evidence; an
 // empty evidence waits until it shows none.
 func (h *harness) waitPane(pane, state, evidence string) (query.Pane, query.Session) {
@@ -505,7 +514,7 @@ func TestClaudeAnswersThroughTheHook(t *testing.T) {
 	req = open("block")
 	h.tmux("send-keys", "-t", pane, "yes", "Enter")
 	received("terminal:yes")
-	h.eventually("the hook leaves", func() bool { return answer.Probe(context.Background(), h.state, req.ID) == answer.Dead })
+	h.eventually("the hook leaves", func() bool { return h.gone(req.ID) })
 	if r := h.tmag("", "answer", sidA[:8], req.ID, "allow"); r.code != 3 || !strings.Contains(r.out, "changed") {
 		t.Fatalf("answer after the terminal did: %d %s", r.code, r.out)
 	}
@@ -535,7 +544,7 @@ func TestClaudeAnswersThroughTheHook(t *testing.T) {
 		t.Fatalf("requests with answering off = %+v", s.Requests)
 	}
 	h.eventually("no hook waits while answering is off", func() bool {
-		return answer.Probe(context.Background(), h.state, s.Requests[0].ID) == answer.Dead
+		return h.gone(s.Requests[0].ID)
 	})
 	if r := h.tmag("", "answer", sidA[:8], s.Requests[0].ID, "allow"); r.code != 3 || !strings.Contains(r.out, "unsupported") {
 		t.Fatalf("answer with answering off: %d %s", r.code, r.out)
