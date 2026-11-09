@@ -83,8 +83,12 @@ func TestAnswerHookRefusesBeforeDeciding(t *testing.T) {
 		t.Fatalf("the hook got a decision: %s", out)
 	case <-time.After(300 * time.Millisecond):
 	}
-	if answer.Probe(ctx, dir, id) != answer.Alive {
-		t.Fatal("the answer hook stopped waiting")
+	// A short liveness probe may return Unknown under race/CI load. Read the
+	// request to prove the refusal left its identity-checked channel usable.
+	showCtx, cancelShow := context.WithTimeout(ctx, 5*time.Second)
+	defer cancelShow()
+	if asked, err := answer.Show(showCtx, dir, id); err != nil || asked.Tool != "Bash" {
+		t.Fatalf("the answer hook no longer serves its request: %v", err)
 	}
 	after, _ := os.ReadFile(path)
 	if now, err := log.Head(ctx); err != nil || now != head || string(after) != string(before) {

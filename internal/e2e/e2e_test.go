@@ -215,6 +215,16 @@ func (h *harness) eventually(what string, cond func() bool) {
 	h.t.Fatalf("timed out waiting for %s; view: %+v", what, h.view())
 }
 
+// waiting proves the request channel can serve its identity. A production
+// liveness probe can legitimately return Unknown while a race-instrumented
+// helper starts under CI load; that is not evidence the hook stopped waiting.
+func (h *harness) waiting(id string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_, err := answer.Show(ctx, h.state, id)
+	return err == nil
+}
+
 // waitPane waits until the pane shows a session in state, by evidence; an
 // empty evidence waits until it shows none.
 func (h *harness) waitPane(pane, state, evidence string) (query.Pane, query.Session) {
@@ -452,7 +462,7 @@ func TestClaudeAnswersThroughTheHook(t *testing.T) {
 		var req eventlog.Request
 		h.eventually("a waiting request", func() bool {
 			s, ok := h.sessionOf(sidA)
-			if !ok || len(s.Requests) != 1 || !answer.Waiting(h.state, s.Requests[0].ID) {
+			if !ok || len(s.Requests) != 1 || !h.waiting(s.Requests[0].ID) {
 				return false
 			}
 			req = s.Requests[0]
@@ -573,7 +583,7 @@ func TestClaudeBackgroundSessionTakesAnswersOnly(t *testing.T) {
 	var id string
 	h.eventually("a waiting request", func() bool {
 		s, _ := h.sessionOf(sidA)
-		if len(s.Requests) == 1 && answer.Waiting(h.state, s.Requests[0].ID) {
+		if len(s.Requests) == 1 && h.waiting(s.Requests[0].ID) {
 			id = s.Requests[0].ID
 		}
 		return id != ""
@@ -1934,7 +1944,7 @@ func TestAgentsActOnEachOther(t *testing.T) {
 	var req eventlog.Request
 	h.eventually("B's request waits", func() bool {
 		s, ok := h.sessionOf(sidB)
-		if !ok || len(s.Requests) != 1 || !answer.Waiting(h.state, s.Requests[0].ID) {
+		if !ok || len(s.Requests) != 1 || !h.waiting(s.Requests[0].ID) {
 			return false
 		}
 		req = s.Requests[0]
