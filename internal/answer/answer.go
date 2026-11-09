@@ -303,9 +303,9 @@ func Decide(ctx context.Context, stateDir, id string, d Decision) error {
 // Close tells a hook still waiting that its prompt closed, so it leaves. A
 // request no hook waits on is left alone.
 func Close(ctx context.Context, stateDir, id string) {
-	ctx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+	ctx, cancel := context.WithTimeout(ctx, exchangeBudget)
 	defer cancel()
 	// The call looks up the endpoint and validates the request identity itself.
-	// A separate probe would repeat that work inside the same short budget.
+	// A separate probe would repeat that work, and start a second helper.
 	_, _ = call(ctx, stateDir, id, message{Op: "close"})
 }
