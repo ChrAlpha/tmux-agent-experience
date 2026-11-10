@@ -250,9 +250,23 @@ func (h *harness) waitSession(id, state string) query.Session {
 	h.eventually(fmt.Sprintf("session %s to be %s", id, state), func() bool {
 		s, ok := h.sessionOf(id)
 		got = s
-		return ok && s.State == state
+		return ok && s.State == state && h.loggedState(id) == state
 	})
 	return got
+}
+
+// loggedState is the state the session's latest event that reports one has,
+// as the follower applies the log: events without a state leave it as it was.
+// waitSession needs it because a record changes before its event is logged.
+func (h *harness) loggedState(session string) string {
+	h.t.Helper()
+	state := ""
+	for _, e := range h.events(session) {
+		if e.State != "" {
+			state = e.State
+		}
+	}
+	return state
 }
 
 func (h *harness) events(session string) []eventlog.Event {
