@@ -30,7 +30,9 @@ func halting(rec session.Record, now time.Time) bool {
 // agent last reported, and not the caller's own. The Halt event is logged
 // under the session's lock.
 // What the agent does next comes from its hooks: Codex reports the interrupt,
-// Claude Code reports nothing until it notices it is idle.
+// Pi and oh-my-pi the end of the aborted turn, Claude Code nothing until it
+// notices it is idle. A blocked Pi or oh-my-pi declines its dialog on
+// Escape, and the agent decides whether its turn goes on.
 func Interrupt(ctx context.Context, log *eventlog.Log, target string) (Delivery, error) {
 	v, caller, err := prepare(ctx, log)
 	if err != nil {

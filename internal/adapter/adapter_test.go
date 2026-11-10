@@ -64,6 +64,30 @@ func TestMap(t *testing.T) {
 		{"codex stop", "codex", map[string]any{"hook_event_name": "Stop", "turn_id": "t1"}, Transition{Action: Set, State: Idle, Turn: "t1"}},
 		{"codex subagent start", "codex", map[string]any{"hook_event_name": "SubagentStart", "turn_id": "t9", "agent_id": "a", "agent_type": "default"}, Transition{Action: Spawn, Turn: "t9", Call: Call{Agent: "a"}}},
 		{"codex subagent stop", "codex", map[string]any{"hook_event_name": "SubagentStop", "turn_id": "t9", "agent_id": "a"}, Transition{Action: Reap, Turn: "t9", Call: Call{Agent: "a"}}},
+		{"pi start", "pi", map[string]any{"hook_event_name": "session_start", "source": "startup"}, Transition{Action: Set, State: Idle, Fresh: true}},
+		{"pi resume names its last turn", "pi", map[string]any{"hook_event_name": "session_start", "source": "resume", "turn_id": "73544b94"}, Transition{Action: Set, State: Idle, Turn: "73544b94", Fresh: true}},
+		{"pi reload keeps state", "pi", map[string]any{"hook_event_name": "session_start", "source": "reload"}, Transition{}},
+		{"pi prompt", "pi", map[string]any{"hook_event_name": "message_end", "turn_id": "73544b94"}, Transition{Action: Set, State: Working, Turn: "73544b94", KeepSubagents: true}},
+		{"pi run without a prompt", "pi", map[string]any{"hook_event_name": "agent_start"}, Transition{Action: Set, State: Working, KeepSubagents: true}},
+		{"pi tool start", "pi", map[string]any{"hook_event_name": "tool_execution_start", "tool_name": "bash", "tool_use_id": "call_1"}, Transition{Action: Start, Call: Call{Tool: "bash", ID: "call_1"}}},
+		{"pi tool finish", "pi", map[string]any{"hook_event_name": "tool_execution_end", "tool_name": "bash", "tool_use_id": "call_1"}, Transition{Action: Finish, Call: Call{Tool: "bash", ID: "call_1"}}},
+		{"pi dialog", "pi", map[string]any{"hook_event_name": "ui_prompt_start"}, Transition{Action: Ask, State: Blocked, Kind: KindQuestion, Prompt: Prompt{Tool: dialog}}},
+		{"pi dialog closed", "pi", map[string]any{"hook_event_name": "ui_prompt_end"}, Transition{Action: Answer, Prompt: Prompt{Tool: dialog}}},
+		{"pi settled", "pi", map[string]any{"hook_event_name": "agent_settled", "stop_reason": "aborted"}, Transition{Action: Set, State: Idle}},
+		{"pi failed turn", "pi", map[string]any{"hook_event_name": "agent_settled", "stop_reason": "error"}, Transition{Action: Set, State: Idle, Kind: KindError}},
+		{"pi end", "pi", map[string]any{"hook_event_name": "session_shutdown", "reason": "new"}, Transition{Action: End}},
+		{"pi reload goes on", "pi", map[string]any{"hook_event_name": "session_shutdown", "reason": "reload"}, Transition{}},
+		{"omp start", "omp", map[string]any{"hook_event_name": "session_start"}, Transition{Action: Set, State: Idle, Fresh: true}},
+		{"omp switched to", "omp", map[string]any{"hook_event_name": "session_switch", "source": "resume", "turn_id": "ad08e5b4"}, Transition{Action: Set, State: Idle, Turn: "ad08e5b4", Fresh: true}},
+		{"omp prompt", "omp", map[string]any{"hook_event_name": "message_end", "turn_id": "ad08e5b4"}, Transition{Action: Set, State: Working, Turn: "ad08e5b4", KeepSubagents: true}},
+		{"omp tool start", "omp", map[string]any{"hook_event_name": "tool_execution_start", "tool_name": "bash", "tool_use_id": "c1"}, Transition{Action: Start, Call: Call{Tool: "bash", ID: "c1"}}},
+		{"omp question", "omp", map[string]any{"hook_event_name": "tool_execution_start", "tool_name": "ask", "tool_use_id": "c2"}, Transition{Action: Ask, State: Blocked, Kind: KindQuestion, Prompt: Prompt{Tool: ompAsk}, Call: Call{Tool: ompAsk, ID: "c2"}}},
+		{"omp question answered", "omp", map[string]any{"hook_event_name": "tool_execution_end", "tool_name": "ask", "tool_use_id": "c2"}, Transition{Action: Finish, Call: Call{Tool: ompAsk, ID: "c2"}}},
+		{"omp approval", "omp", map[string]any{"hook_event_name": "tool_approval_requested", "tool_name": "bash", "tool_use_id": "c3"}, Transition{Action: Ask, State: Blocked, Kind: KindPermission, Prompt: Prompt{Tool: "bash"}, Call: Call{Tool: "bash", ID: "c3"}}},
+		{"omp approval decided", "omp", map[string]any{"hook_event_name": "tool_approval_resolved", "tool_name": "bash", "tool_use_id": "c3"}, Transition{Action: Answer, Prompt: Prompt{Tool: "bash"}}},
+		{"omp end of turn", "omp", map[string]any{"hook_event_name": "agent_end", "stop_reason": "stop"}, Transition{Action: Set, State: Idle}},
+		{"omp failed turn", "omp", map[string]any{"hook_event_name": "agent_end", "stop_reason": "error"}, Transition{Action: Set, State: Idle, Kind: KindError}},
+		{"omp end", "omp", map[string]any{"hook_event_name": "session_shutdown", "reason": "quit"}, Transition{Action: End}},
 		{"unknown agent", "aider", map[string]any{"hook_event_name": "Stop"}, Transition{}},
 	}
 	for _, c := range cases {
@@ -108,6 +132,7 @@ func TestDecodeBoundsWhatItKeeps(t *testing.T) {
 	}
 	payload := `{"hook_event_name":"Stop","session_id":"s1","cwd":"/` + strings.Repeat("d", MaxPath) + `",` +
 		`"transcript_path":"/t.jsonl","tool_name":"` + long + `","prompt_id":"` + long + `",` +
+		`"reason":"` + long + `","stop_reason":"` + long + `","mode":"` + long + `",` +
 		`"background_tasks":[` + strings.Join(tasks, ",") + `]}`
 	p, err := Decode([]byte(payload))
 	if err != nil {
@@ -116,7 +141,7 @@ func TestDecodeBoundsWhatItKeeps(t *testing.T) {
 	if p.Cwd != "" || p.TranscriptPath != "/t.jsonl" {
 		t.Errorf("cwd %d bytes, transcript %q", len(p.Cwd), p.TranscriptPath)
 	}
-	for _, f := range []string{p.ToolName, p.PromptID, (*p.BackgroundTasks)[0].ID} {
+	for _, f := range []string{p.ToolName, p.PromptID, p.Reason, p.StopReason, p.Mode, (*p.BackgroundTasks)[0].ID} {
 		if len(f) > MaxName || !utf8.ValidString(f) || !strings.HasPrefix(long, f) {
 			t.Errorf("a name was not cut cleanly: %d bytes", len(f))
 		}

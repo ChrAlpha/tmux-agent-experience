@@ -111,6 +111,13 @@ func RunContext(parent context.Context, in Input) error {
 	}()
 
 	host, hostKnown := w.Proc.HostOf(in.PID)
+	if hostKnown && p.Mode != "" && p.Mode != "tui" {
+		// Pi and oh-my-pi say when they run for a program rather than a
+		// person, which their process does not show: such a session runs as
+		// a service, which no pane shows and no channel controls. The claim
+		// only takes away, so it needs no proof.
+		host.Role = proc.Service
+	}
 	contact := now().UTC()
 	ev := eventlog.Event{Agent: in.Agent, Session: p.SessionID, Event: p.HookEventName, Cwd: p.Cwd, LastHookAt: contact}
 
@@ -127,6 +134,9 @@ func RunContext(parent context.Context, in Input) error {
 	}
 
 	if tr.Action == adapter.End {
+		// Whatever the agent calls it, the contract's end of a session is
+		// SessionEnd, which followers drop the session on.
+		ev.Event = eventlog.End
 		err := env.Store.Lock(ctx, in.Agent, p.SessionID, func() error {
 			cur, found, err := get()
 			if err != nil {

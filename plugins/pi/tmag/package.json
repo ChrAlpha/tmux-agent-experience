@@ -1,0 +1,15 @@
+{
+  "name": "tmag",
+  "version": "0.4.0",
+  "description": "Reports Pi session state to tmag so tmux, other agents and remote clients can see it. Runs the tmag binary of the tmux-agent-experience tmux plugin.",
+  "private": true,
+  "type": "module",
+  "author": "ChrAlpha",
+  "homepage": "https://github.com/ChrAlpha/tmux-agent-experience",
+  "repository": "github:ChrAlpha/tmux-agent-experience",
+  "license": "MIT",
+  "keywords": ["tmux", "agents", "status"],
+  "pi": {
+    "extensions": ["./extensions/tmag.ts"]
+  }
+}

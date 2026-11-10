@@ -178,8 +178,11 @@ func (r Record) TranscriptRef() *eventlog.Transcript {
 		return nil
 	}
 	format := "claude-jsonl"
-	if r.Agent == proc.Codex {
+	switch r.Agent {
+	case proc.Codex:
 		format = "codex-rollout"
+	case proc.Pi, proc.OMP:
+		format = "pi-jsonl"
 	}
 	return &eventlog.Transcript{Path: r.Transcript, Format: format}
 }

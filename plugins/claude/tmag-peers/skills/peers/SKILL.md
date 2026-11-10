@@ -1,6 +1,6 @@
 ---
 name: peers
-description: If files change under you that you did not change, another agent may be editing the same repository; load this skill to find out before you touch them. Also load it before switching branches, rewriting history or stopping processes in a repository others may share, when the user asks you to involve, delegate to, check on, coordinate with or message another agent (Claude Code, Codex) in this machine's tmux panes, and whenever a prompt starts with "[tmag] From" or "[tmag] Reply from". tmag shows which agents run and whether they are idle, working or blocked, prompts one, waits for it, reads its answer, replies, interrupts, or shows what it asks permission for.
+description: If files change under you that you did not change, another agent may be editing the same repository; load this skill to find out before you touch them. Also load it before switching branches, rewriting history or stopping processes in a repository others may share, when the user asks you to involve, delegate to, check on, coordinate with or message another agent (Claude Code, Codex, Pi, oh-my-pi) in this machine's tmux panes, and whenever a prompt starts with "[tmag] From" or "[tmag] Reply from". tmag shows which agents run and whether they are idle, working or blocked, prompts one, waits for it, reads its answer, replies, interrupts, or shows what it asks permission for.
 ---
 
 # Working with peer agents through tmag
@@ -13,8 +13,8 @@ record who acted. Use them for every interaction with another agent.
 ## Running tmag
 
 - In Claude Code, `tmag` is on your `PATH`, from this plugin.
-- In Codex, run `scripts/tmag` from this skill's directory, by its absolute
-  path.
+- In Codex, Pi and oh-my-pi, run `scripts/tmag` from this skill's directory,
+  by its absolute path.
 
 Both run the tmag binary your own hooks run. Exit 127 with `tmag: not
 installed` means the tmux plugin is missing: tell the user, and do not install

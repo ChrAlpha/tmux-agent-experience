@@ -32,7 +32,7 @@ import (
 	"github.com/ChrAlpha/tmux-agent-experience/internal/version"
 )
 
-var bin string // directory holding tmag, claude and codex
+var bin string // directory holding tmag and the fake claude, codex, pi and omp
 
 func TestMain(m *testing.M) {
 	// Children must not spend their budgets in the race runtime's
@@ -58,8 +58,10 @@ func TestMain(m *testing.M) {
 	}
 	build("github.com/ChrAlpha/tmux-agent-experience/cmd/tmag", "tmag")
 	build("github.com/ChrAlpha/tmux-agent-experience/internal/e2e/fakeagent", "claude")
-	if err := os.Link(filepath.Join(dir, "claude"), filepath.Join(dir, "codex")); err != nil {
-		panic(err)
+	for _, agent := range []string{"codex", "pi", "omp"} {
+		if err := os.Link(filepath.Join(dir, "claude"), filepath.Join(dir, agent)); err != nil {
+			panic(err)
+		}
 	}
 	// Never touch the developer's own tmux server.
 	os.Unsetenv("TMUX")
@@ -360,6 +362,128 @@ func TestClaudeInProcess(t *testing.T) {
 		t.Fatal("ended session still listed")
 	}
 	f.agrees(h)
+}
+
+// Pi and oh-my-pi report through tmag's extensions, under their own names
+// for the events: a pane shows the session on process proof, takes prompts
+// and interrupts, and blocks while a dialog waits on the person, which only
+// the person answers.
+func TestPiAndOhMyPi(t *testing.T) {
+	for agent, stop := range map[string]string{"pi": "agent_settled", "omp": "agent_end"} {
+		t.Run(agent, func(t *testing.T) {
+			h := start(t)
+			f := h.follow()
+			out := filepath.Join(h.dir, "received")
+			pane := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_OUT": out, "FAKE_HOOKS": "1", "FAKE_KEYS": "1", "FAKE_TURN_MS": "300"}, filepath.Join(bin, agent))
+			p, s := h.waitPane(pane, "idle", "process")
+			if s.Agent != agent || s.Runtime != "terminal" || p.Command != agent || !slices.Equal(s.Capabilities, []string{"send", "interrupt"}) {
+				t.Fatalf("pane %+v shows %+v", p, s)
+			}
+			if want := (eventlog.Transcript{Path: filepath.Join(h.dir, sidA+".jsonl"), Format: "pi-jsonl"}); s.Transcript == nil || *s.Transcript != want {
+				t.Fatalf("transcript = %+v", s.Transcript)
+			}
+
+			r := h.tmag("first line\nreview the diff", "send", sidA[:8], "--wait", "--json", "-")
+			if r.code != 0 || !strings.Contains(r.out, `"state":"idle"`) {
+				t.Fatalf("send --wait: %d %s", r.code, r.out)
+			}
+			if r := h.tmag("", "read", sidA[:8], "--last", "--json"); r.code != 0 || !strings.Contains(r.out, `"turn":"t1"`) || !strings.Contains(r.out, `"text":"answered: review the diff"`) {
+				t.Fatalf("read --last: %d %s", r.code, r.out)
+			}
+			if got, want := h.eventNames(sidA), "session_start:idle Attach:idle Send: message_end:working "+stop+":idle"; got != want {
+				t.Fatalf("events = %s, want %s", got, want)
+			}
+			f.agrees(h)
+
+			// A dialog blocks the session until the person answers it in
+			// the terminal; no channel carries tmag answer to it.
+			kind := map[string]string{"pi": "question", "omp": "permission"}[agent]
+			if r := h.tmag("", "send", sidA[:8], "--wait", "block"); r.code != 0 || !strings.Contains(r.out, "blocked ("+kind+")") {
+				t.Fatalf("send block: %d %s", r.code, r.out)
+			}
+			s, _ = h.sessionOf(sidA)
+			if len(s.Requests) != 1 || s.Requests[0].Kind != kind {
+				t.Fatalf("requests = %+v", s.Requests)
+			}
+			if r := h.tmag("", "answer", sidA[:8], s.Requests[0].ID, "allow"); r.code != 3 || !strings.Contains(r.out, "refused (unsupported)") {
+				t.Fatalf("answer: %d %s", r.code, r.out)
+			}
+			h.tmux("send-keys", "-t", pane, "yes", "Enter")
+			h.waitSession(sidA, "idle")
+			f.agrees(h)
+
+			// The agent reports the turn an interrupt ends.
+			if r := h.tmag("", "send", sidA[:8], "sleep"); r.code != 0 {
+				t.Fatalf("send: %d %s", r.code, r.out)
+			}
+			h.waitSession(sidA, "working")
+			if r := h.tmag("", "interrupt", sidA[:8]); r.code != 0 {
+				t.Fatalf("interrupt: %d %s", r.code, r.out)
+			}
+			h.waitSession(sidA, "idle")
+			if got := h.eventNames(sidA); !strings.HasSuffix(got, "Send: message_end:working Halt: "+stop+":idle") {
+				t.Fatalf("events = %s", got)
+			}
+			f.agrees(h)
+
+			h.tmux("send-keys", "-t", pane, "C-d")
+			h.eventually("session end", func() bool { return strings.HasSuffix(h.eventNames(sidA), "SessionEnd: Detach:") })
+			f.agrees(h)
+		})
+	}
+}
+
+// Pi run by another program in a pane, an editor's say, reports its mode:
+// its session is a service, which no pane shows and nothing controls, so
+// that nothing types into the program that runs it.
+func TestPiServingAProgramIsNoClient(t *testing.T) {
+	h := start(t)
+	pane := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_HOOKS": "1", "FAKE_MODE": "rpc"}, filepath.Join(bin, "pi"))
+	s := h.waitSession(sidA, "idle")
+	if s.Runtime != "service" || len(s.Capabilities) != 0 || len(s.Panes) != 0 {
+		t.Fatalf("session %+v", s)
+	}
+	if r := h.tmag("", "send", sidA[:8], "hello"); r.code != 3 || !strings.Contains(r.out, "refused (unsupported)") {
+		t.Fatalf("send: %d %s", r.code, r.out)
+	}
+	if p, shown, ok := h.paneIn(pane); ok && shown.ID != "" {
+		t.Fatalf("pane %+v shows %+v", p, shown)
+	}
+}
+
+// A Pi agent's tool proves who runs tmag as Claude Code's and Codex's do:
+// its prompt to oh-my-pi names it, and it does not act on itself.
+func TestPiPromptsOhMyPi(t *testing.T) {
+	h := start(t)
+	outA, outB := filepath.Join(h.dir, "a"), filepath.Join(h.dir, "b")
+	a := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_OUT": outA, "FAKE_HOOKS": "1"}, filepath.Join(bin, "pi"))
+	b := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidB, "FAKE_OUT": outB, "FAKE_HOOKS": "1"}, filepath.Join(bin, "omp"))
+	h.waitPane(a, "idle", "process")
+	h.waitPane(b, "idle", "process")
+	tools := func() []string {
+		lines, _ := os.ReadFile(outA)
+		var out []string
+		for _, l := range strings.Split(string(lines), "\n") {
+			if strings.HasPrefix(l, "tool ") {
+				out = append(out, l)
+			}
+		}
+		return out
+	}
+	h.tmux("send-keys", "-t", a, "tmag send "+sidB[:8]+" --wait hello", "Enter")
+	h.eventually("pi prompts oh-my-pi", func() bool { return len(tools()) == 1 })
+	if got := tools()[0]; got != "tool 0 "+sidB[:8]+" idle" {
+		t.Fatalf("send from pi: %s", got)
+	}
+	if got, _ := os.ReadFile(outB); !strings.Contains(string(got), "[tmag] From pi "+sidA+", another agent. Answer in your final message.\nhello\n") {
+		t.Fatalf("omp received %q", got)
+	}
+	h.waitSession(sidA, "idle")
+	h.tmux("send-keys", "-t", a, "tmag interrupt "+sidA[:8], "Enter")
+	h.eventually("pi interrupts itself", func() bool { return len(tools()) == 2 })
+	if got := tools()[1]; !strings.HasPrefix(got, "tool 3 ") || !strings.Contains(got, "refused (self)") {
+		t.Fatalf("interrupt from pi: %s", got)
+	}
 }
 
 // An interrupt presses Escape once in the session's pane, only while a turn

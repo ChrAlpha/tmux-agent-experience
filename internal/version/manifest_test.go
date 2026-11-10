@@ -1,10 +1,12 @@
 package version
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"testing"
 	"time"
 
@@ -13,12 +15,16 @@ import (
 )
 
 // manifests are the agent plugins' manifests: the hooks plugin tmag and the
-// skill plugin tmag-peers for each host.
+// skill plugin tmag-peers for each host; Pi's and oh-my-pi's are packages.
 var manifests = []string{
 	"plugins/claude/tmag/.claude-plugin/plugin.json",
 	"plugins/claude/tmag-peers/.claude-plugin/plugin.json",
 	"plugins/codex/tmag/.codex-plugin/plugin.json",
 	"plugins/codex/tmag-peers/.codex-plugin/plugin.json",
+	"plugins/pi/tmag/package.json",
+	"plugins/pi/tmag-peers/package.json",
+	"plugins/omp/tmag/package.json",
+	"plugins/omp/tmag-peers/package.json",
 }
 
 // Every plugin manifest ships the binary's version.
@@ -129,5 +135,69 @@ func TestPluginHooksUseHookCommand(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// readRepo reads a file of the repository.
+func readRepo(t *testing.T, path string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("..", "..", path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+// Pi's and oh-my-pi's plugins are packages named after their directories,
+// which their own hosts load (the pi key for Pi, omp for oh-my-pi) from
+// files they ship: the tmag extension, and the tmag-peers skill.
+func TestPiPackages(t *testing.T) {
+	for _, host := range []string{"pi", "omp"} {
+		for _, name := range []string{"tmag", "tmag-peers"} {
+			dir := filepath.Join("plugins", host, name)
+			var pkg map[string]json.RawMessage
+			if err := json.Unmarshal(readRepo(t, filepath.Join(dir, "package.json")), &pkg); err != nil {
+				t.Fatalf("%s: %v", dir, err)
+			}
+			var got string
+			_ = json.Unmarshal(pkg["name"], &got)
+			if got != name || string(pkg["private"]) != "true" {
+				t.Errorf("%s/package.json names %q, private %s", dir, got, pkg["private"])
+			}
+			var manifest struct{ Extensions, Skills []string }
+			if err := json.Unmarshal(pkg[host], &manifest); err != nil {
+				t.Errorf("%s/package.json has no %s manifest: %v", dir, host, err)
+			}
+			for _, entry := range append(manifest.Extensions, manifest.Skills...) {
+				if _, err := os.Stat(filepath.Join("..", "..", dir, entry)); err != nil {
+					t.Errorf("%s lists %s: %v", dir, entry, err)
+				}
+			}
+			if other := map[string]string{"pi": "omp", "omp": "pi"}[host]; pkg[other] != nil {
+				// oh-my-pi reads a pi manifest where it finds no omp one.
+				t.Errorf("%s/package.json also has a %s manifest", dir, other)
+			}
+		}
+	}
+}
+
+// Pi's and oh-my-pi's tmag extensions run exactly binpath.HookCommand for
+// their agent, through one reporter that both ship byte for byte.
+func TestPiExtensionsRunHookCommand(t *testing.T) {
+	hookRE := regexp.MustCompile(`(?m)^const hook = (".*");$`)
+	for _, agent := range []string{"pi", "omp"} {
+		path := filepath.Join("plugins", agent, "tmag", "extensions", "tmag.ts")
+		m := hookRE.FindSubmatch(readRepo(t, path))
+		var command string
+		if m == nil || json.Unmarshal(m[1], &command) != nil {
+			t.Fatalf("%s declares no hook command as a JSON string", path)
+		}
+		if command != binpath.HookCommand(agent) {
+			t.Errorf("%s runs %q, want %q", path, command, binpath.HookCommand(agent))
+		}
+	}
+	pi, omp := readRepo(t, "plugins/pi/tmag/extensions/report.ts"), readRepo(t, "plugins/omp/tmag/extensions/report.ts")
+	if !bytes.Equal(pi, omp) {
+		t.Error("plugins/omp/tmag/extensions/report.ts differs from plugins/pi/tmag/extensions/report.ts")
 	}
 }

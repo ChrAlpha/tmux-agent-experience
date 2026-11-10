@@ -26,7 +26,12 @@ type Caller struct {
 // call runs them. They are no evidence of their own, as no environment is:
 // they only tell apart the sessions of an agent process the caller is
 // proven to descend from.
-var sessionVars = map[string]string{proc.Claude: "CLAUDE_CODE_SESSION_ID", proc.Codex: "CODEX_THREAD_ID"}
+var sessionVars = map[string]string{
+	proc.Claude: "CLAUDE_CODE_SESSION_ID",
+	proc.Codex:  "CODEX_THREAD_ID",
+	proc.Pi:     "PI_SESSION_ID",
+	proc.OMP:    "PI_SESSION_ID",
+}
 
 // Caller identifies the process running this command in the world v was
 // built from.

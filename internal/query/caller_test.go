@@ -17,13 +17,14 @@ import (
 
 const sock = "/tmp/tmux-1/default"
 
-// callers is a world with a Claude Code pane, a person's pane and a Codex
-// daemon outside both, each running a tmag command.
+// callers is a world with a Claude Code pane, a person's pane, an oh-my-pi
+// pane and a Codex daemon outside them, each running a tmag command.
 func callers() (View, *attach.World) {
 	w := &attach.World{
 		Panes: []tmux.Pane{
 			{Server: sock, ID: "%1", PID: 10, Command: "claude"},
 			{Server: sock, ID: "%2", PID: 30, Command: "zsh"},
+			{Server: sock, ID: "%3", PID: 40, Command: "omp"},
 		},
 		Proc: proc.NewTable([]proc.Process{
 			{PID: 1, Comm: "init"},
@@ -40,12 +41,17 @@ func callers() (View, *attach.World) {
 			// A person at a shell in %2.
 			{PID: 30, PPID: 1, Comm: "zsh"},
 			{PID: 31, PPID: 30, Comm: "tmag"},
+			// oh-my-pi in %3 runs its tool's command in process.
+			{PID: 40, PPID: 1, Comm: "zsh"},
+			{PID: 41, PPID: 40, Comm: "omp", Args: "omp", Start: "o"},
+			{PID: 42, PPID: 41, Comm: "tmag"},
 		}),
 	}
 	recs := []session.Record{
 		{Agent: proc.Claude, ID: "s1", Main: adapter.Working, Host: session.Host{PID: 11, Start: "c", Role: proc.Terminal}},
 		{Agent: proc.Codex, ID: "th1", Main: adapter.Working, Subagents: []string{"sub1"}, Host: session.Host{PID: 20, Start: "d", Role: proc.Service}},
 		{Agent: proc.Codex, ID: "th2", Main: adapter.Idle, Host: session.Host{PID: 20, Start: "d", Role: proc.Service}},
+		{Agent: proc.OMP, ID: "o1", Main: adapter.Working, Host: session.Host{PID: 41, Start: "o", Role: proc.Terminal}},
 	}
 	return Build(w, recs), w
 }
@@ -75,6 +81,8 @@ func TestCallerIsProvenByAncestry(t *testing.T) {
 		{"codex untold", 23, nil, Caller{By: &eventlog.Actor{Agent: proc.Codex}}},
 		// Claude's variable is no Codex thread.
 		{"codex with claude's variable", 23, map[string]string{"CLAUDE_CODE_SESSION_ID": "th1"}, Caller{By: &eventlog.Actor{Agent: proc.Codex}}},
+		{"oh-my-pi naming its session", 42, map[string]string{"PI_SESSION_ID": "o1"}, Caller{Pane: pane("%3"), By: &eventlog.Actor{Agent: proc.OMP, Session: "o1"}}},
+		{"oh-my-pi naming another", 42, map[string]string{"PI_SESSION_ID": "s1"}, Caller{Pane: pane("%3"), By: &eventlog.Actor{Agent: proc.OMP}}},
 	} {
 		if got := identify(v, w, c.pid, env(c.vars)); !reflect.DeepEqual(got, c.want) {
 			t.Errorf("%s: %+v (by %+v), want %+v (by %+v)", c.name, got, got.By, c.want, c.want.By)

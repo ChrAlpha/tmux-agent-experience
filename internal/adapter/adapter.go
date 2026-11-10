@@ -8,6 +8,7 @@ package adapter
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"unicode/utf8"
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
@@ -31,12 +32,20 @@ const (
 )
 
 // Payload is the subset of hook input tmag reads. Claude Code and Codex share
-// these field names.
+// these field names, and tmag's extensions for Pi and oh-my-pi use them too.
 type Payload struct {
-	HookEventName    string `json:"hook_event_name"`
-	SessionID        string `json:"session_id"`
-	Cwd              string `json:"cwd"`
-	Source           string `json:"source"`
+	HookEventName string `json:"hook_event_name"`
+	SessionID     string `json:"session_id"`
+	Cwd           string `json:"cwd"`
+	// Source says why a session started, Reason why it ended.
+	Source string `json:"source"`
+	Reason string `json:"reason"`
+	// StopReason is how the last model response of a turn ended, as Pi and
+	// oh-my-pi name it ("stop", "aborted", "error", ...).
+	StopReason string `json:"stop_reason"`
+	// Mode is how Pi or oh-my-pi runs: "tui" for a person at its terminal,
+	// or for a program (rpc, json, print).
+	Mode             string `json:"mode"`
 	PromptID         string `json:"prompt_id"`
 	TurnID           string `json:"turn_id"`
 	AgentID          string `json:"agent_id"`
@@ -84,7 +93,7 @@ func Decode(data []byte) (Payload, error) {
 			*f = ""
 		}
 	}
-	for _, f := range []*string{&p.HookEventName, &p.SessionID, &p.Source, &p.PromptID, &p.TurnID, &p.AgentID, &p.ToolName, &p.ToolUseID, &p.NotificationType} {
+	for _, f := range []*string{&p.HookEventName, &p.SessionID, &p.Source, &p.Reason, &p.StopReason, &p.Mode, &p.PromptID, &p.TurnID, &p.AgentID, &p.ToolName, &p.ToolUseID, &p.NotificationType} {
 		*f = cut(*f)
 	}
 	if p.BackgroundTasks != nil {
@@ -148,8 +157,15 @@ type Call struct {
 	ID    string `json:"id,omitempty"`
 }
 
-// Pseudo tool names for prompts that are not tool calls.
-const elicitation = "@elicitation"
+// Pseudo tool names, which start with @, stand for prompts that ask the user
+// a question rather than for approval of a tool call.
+const (
+	elicitation = "@elicitation" // an MCP server's request for input
+	dialog      = "@dialog"      // a Pi extension's dialog, waiting during a turn
+	ompAsk      = "@ask"         // oh-my-pi's ask tool, whose call asks the user
+)
+
+func pseudo(tool string) bool { return strings.HasPrefix(tool, "@") }
 
 // askUserQuestion is Claude Code's tool for asking the user a question.
 const askUserQuestion = "AskUserQuestion"
@@ -159,7 +175,7 @@ const exitPlanMode = "ExitPlanMode"
 
 // Kind is the record kind a prompt blocks with.
 func (p Prompt) Kind() string {
-	if p.Tool == askUserQuestion || p.Tool == elicitation {
+	if p.Tool == askUserQuestion || pseudo(p.Tool) {
 		return KindQuestion
 	}
 	return KindPermission
@@ -177,7 +193,7 @@ func (p Prompt) RequestKind() string {
 // ToolName is the tool the prompt is about, "" when it names none or is not
 // about a tool.
 func (p Prompt) ToolName() string {
-	if p.Tool == elicitation {
+	if pseudo(p.Tool) {
 		return ""
 	}
 	return p.Tool
@@ -226,6 +242,10 @@ func Map(agent string, p Payload) Transition {
 		return mapClaude(p)
 	case proc.Codex:
 		return mapCodex(p)
+	case proc.Pi:
+		return mapPi(p)
+	case proc.OMP:
+		return mapOMP(p)
 	}
 	return Transition{}
 }
@@ -279,11 +299,13 @@ func reap(p Payload) Transition {
 	return Transition{Action: Reap, Turn: turn(p), Call: Call{Agent: p.AgentID}}
 }
 
+// started starts a session anew: idle, with the turn it last ran when it
+// resumes one.
 func started(p Payload) Transition {
 	if p.Source == "compact" {
 		return Transition{} // the same process goes on
 	}
-	return Transition{Action: Set, State: Idle, Fresh: true}
+	return Transition{Action: Set, State: Idle, Turn: turn(p), Fresh: true}
 }
 
 func answer(p Payload, tool string) Transition {
@@ -400,4 +422,93 @@ func tasks(list *[]Task) *[]string {
 		}
 	}
 	return &ids
+}
+
+// Pi and oh-my-pi report through tmag's extensions (plugins/pi, plugins/omp),
+// which run tmag hook in the order of the agents' own events and under their
+// names, with the fields Claude Code's hooks use. A turn is named by the
+// entry id of the user message that starts it, as the session file records
+// it (see package transcript); message_end reports a user message only, and
+// agent_start only a run that none starts, such as an extension's.
+
+func mapPi(p Payload) Transition {
+	switch p.HookEventName {
+	case "session_start":
+		if p.Source == "reload" {
+			return Transition{} // the same session goes on, in reloaded extensions
+		}
+		return started(p)
+	case "session_shutdown":
+		if p.Reason == "reload" {
+			return Transition{}
+		}
+		return Transition{Action: End}
+	case "agent_start", "message_end":
+		return promptSubmitted(p)
+	case "tool_execution_start":
+		return start(p)
+	case "tool_execution_end":
+		return finish(p)
+	case "ui_prompt_start":
+		// An extension's dialog during a turn: a permission gate, a question.
+		return ask(p, dialog)
+	case "ui_prompt_end":
+		return answer(p, dialog)
+	case "agent_settled":
+		// Pi runs no more on its own: the turn is over, aborted or not.
+		return settled(p)
+	}
+	return Transition{}
+}
+
+func mapOMP(p Payload) Transition {
+	switch p.HookEventName {
+	case "session_start", "session_switch":
+		// session_switch starts the session the process moved to (/new,
+		// /resume, /fork, /branch); the one it left is reported shut down.
+		return started(p)
+	case "session_shutdown":
+		return Transition{Action: End}
+	case "agent_start", "message_end":
+		return promptSubmitted(p)
+	case "tool_execution_start":
+		if p.ToolName == "ask" {
+			tr := ask(p, ompAsk)
+			tr.Call = ompCall(p)
+			return tr
+		}
+		return start(p)
+	case "tool_execution_end":
+		return Transition{Action: Finish, Turn: turn(p), Call: ompCall(p)}
+	case "tool_approval_requested":
+		tr := ask(p, p.ToolName)
+		tr.Call = call(p)
+		return tr
+	case "tool_approval_resolved":
+		return answer(p, p.ToolName)
+	case "agent_end":
+		// The extension reports only an end that waits on the user, or on
+		// background work whose result starts a run of its own.
+		return settled(p)
+	}
+	return Transition{}
+}
+
+// ompCall is the call an oh-my-pi tool event is about; its ask tool asks the
+// user.
+func ompCall(p Payload) Call {
+	c := call(p)
+	if c.Tool == "ask" {
+		c.Tool = ompAsk
+	}
+	return c
+}
+
+// settled ends a Pi or oh-my-pi turn, failed when its last response did.
+func settled(p Payload) Transition {
+	tr := Transition{Action: Set, State: Idle, Turn: turn(p)}
+	if p.StopReason == "error" {
+		tr.Kind = KindError
+	}
+	return tr
 }

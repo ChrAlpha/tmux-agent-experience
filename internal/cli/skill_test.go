@@ -20,6 +20,8 @@ import (
 var skills = []string{
 	"plugins/claude/tmag-peers/skills/peers/SKILL.md",
 	"plugins/codex/tmag-peers/skills/peers/SKILL.md",
+	"plugins/pi/tmag-peers/skills/peers/SKILL.md",
+	"plugins/omp/tmag-peers/skills/peers/SKILL.md",
 }
 
 func readSkill(t *testing.T) string {
