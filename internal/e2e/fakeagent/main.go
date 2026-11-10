@@ -12,6 +12,9 @@
 //	FAKE_TURN_MS  how long a turn lasts (default 200)
 //	FAKE_MODE     the mode its hooks report, as Pi's and oh-my-pi's do
 //	FAKE_KEYS     "1" to read keys as a TUI does: Escape interrupts a turn
+//	FAKE_INBOX    "1" to serve the session's inbox: Claude Code's envelope,
+//	              or Pi's and oh-my-pi's extension framing
+//	FAKE_INBOX_DROP "1" to take a send and drop the extension's answer
 //	FAKE_ANSWER   "1" to open "block" (Bash) and "ask" (a question) as Claude
 //	              Code does: the answer hook waits beside the dialog, and the
 //	              next line ("yes" or anything else) answers it in the terminal
@@ -69,6 +72,10 @@ import (
 	"github.com/ChrAlpha/tmux-agent-experience/internal/codexsvc/svctest"
 )
 
+// message is one inbox delivery: name is the sender of Claude Code's
+// envelope, "" for Pi's and oh-my-pi's extension framing.
+type message struct{ name, text string }
+
 // names are the names an agent's hooks give the events the fake reports:
 // a session's start and end, a prompt, a tool call's start and end, a turn's
 // end, a permission prompt and its answer in the terminal.
@@ -108,11 +115,36 @@ func main() {
 	if title := os.Getenv("FAKE_TITLE"); title != "" {
 		fmt.Printf("\033]0;%s\007", title)
 	}
+	// The inbox is served for the session's whole life, before its first hook
+	// can name it, and receives one line per send.
+	var inbox string
+	messages := make(chan message, 8)
+	if os.Getenv("FAKE_INBOX") == "1" {
+		if dir, err := os.MkdirTemp(cwd, "inbox"); err == nil {
+			path := filepath.Join(dir, agent+".sock")
+			if ln, err := net.Listen("unix", path); err == nil {
+				inbox = path
+				defer func() {
+					ln.Close()
+					os.RemoveAll(dir)
+				}()
+				go serveInbox(ln, agent, messages)
+			} else {
+				os.RemoveAll(dir)
+			}
+		}
+	}
+	if agent == "claude" {
+		fakeInbox = inbox
+	}
 	transcript := filepath.Join(cwd, session+".jsonl")
 	payloadOf := func(event string, extra map[string]any) []byte {
 		payload := map[string]any{"hook_event_name": event, "session_id": session, "cwd": cwd, "transcript_path": transcript}
 		if mode := os.Getenv("FAKE_MODE"); mode != "" {
 			payload["mode"] = mode
+		}
+		if inbox != "" && piLike(agent) {
+			payload["inbox"] = inbox
 		}
 		for k, v := range extra {
 			payload[k] = v
@@ -126,6 +158,9 @@ func main() {
 		}
 		cmd := exec.Command(os.Getenv("TMAG_BIN"), "hook", agent)
 		cmd.Stdin = strings.NewReader(string(payloadOf(event, extra)))
+		if agent == "claude" && inbox != "" {
+			cmd.Env = setEnv(os.Environ(), "CLAUDE_CODE_MESSAGING_SOCKET", inbox)
+		}
 		_ = cmd.Run()
 	}
 	turnKey := "turn_id"
@@ -285,6 +320,18 @@ loop:
 		case <-ends:
 			ends = nil
 			end()
+		case m := <-messages:
+			if m.name != "" {
+				record("inbox " + m.name)
+			}
+			if ends != nil || dialog != nil {
+				// Working: the message is read at the agent's next step.
+				record("message " + m.text)
+			} else {
+				n++
+				begin(m.text)
+				ends = time.After(time.Duration(turnMS) * time.Millisecond)
+			}
 		case d := <-decided:
 			// Claude Code ignores what a hook prints once its dialog closed.
 			if d.prompt != dialog || len(d.out) == 0 {
@@ -378,12 +425,92 @@ func appendLine(path string, entry map[string]any) {
 // toolVars are the variables each agent sets for its tools' commands.
 var toolVars = map[string]string{"claude": "CLAUDE_CODE_SESSION_ID", "codex": "CODEX_THREAD_ID", "pi": "PI_SESSION_ID", "omp": "PI_SESSION_ID"}
 
+// fakeInbox is the Claude inbox this fake serves, if any, for its Bash tool.
+var fakeInbox string
+
+// setEnv replaces key's value in env, so an inherited variable cannot name
+// another agent or another inbox.
+func setEnv(env []string, key, value string) []string {
+	prefix := key + "="
+	out := make([]string, 0, len(env)+1)
+	for _, e := range env {
+		if !strings.HasPrefix(e, prefix) {
+			out = append(out, e)
+		}
+	}
+	return append(out, prefix+value)
+}
+
 // tool runs tmag as a tool of the session's, a child of the agent's process.
 func tool(agent, session string, args []string) (int, string) {
 	cmd := exec.Command(os.Getenv("TMAG_BIN"), args...)
-	cmd.Env = append(os.Environ(), toolVars[agent]+"="+session)
+	cmd.Env = setEnv(os.Environ(), toolVars[agent], session)
+	if agent == "claude" && fakeInbox != "" {
+		cmd.Env = setEnv(cmd.Env, "CLAUDE_CODE_MESSAGING_SOCKET", fakeInbox)
+	}
 	out, _ := cmd.CombinedOutput()
 	return cmd.ProcessState.ExitCode(), string(out)
+}
+
+// serveInbox serves the fake's inbox: one line per send, Claude Code's
+// envelope or the extension's request. Claude Code answers nothing, and
+// closes after the frame; the extension answers after taking the text.
+func serveInbox(ln net.Listener, agent string, messages chan<- message) {
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		go func() {
+			defer conn.Close()
+			_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+			line, err := bufio.NewReader(conn).ReadString('\n')
+			if err != nil {
+				return
+			}
+			if agent == "claude" {
+				var msg struct {
+					Message struct {
+						Content string `json:"content"`
+					} `json:"message"`
+				}
+				if json.Unmarshal([]byte(line), &msg) != nil {
+					return
+				}
+				name, text := envelope(msg.Message.Content)
+				messages <- message{name: name, text: text}
+				return
+			}
+			var msg struct {
+				Send string `json:"send"`
+			}
+			if json.Unmarshal([]byte(line), &msg) != nil {
+				return
+			}
+			messages <- message{text: msg.Send}
+			if os.Getenv("FAKE_INBOX_DROP") == "1" {
+				return
+			}
+			_, _ = conn.Write([]byte("{\"ok\":true}\n"))
+		}()
+	}
+}
+
+// envelope reads the name and text of Claude Code's cross-session envelope.
+func envelope(content string) (name, text string) {
+	rest, ok := strings.CutPrefix(content, `<cross-session-message from-name="`)
+	if !ok {
+		return "", content
+	}
+	name, rest, ok = strings.Cut(rest, "\">\n")
+	if !ok {
+		return "", content
+	}
+	text, ok = strings.CutSuffix(rest, "\n</cross-session-message>")
+	if !ok {
+		return name, rest
+	}
+	return name, text
 }
 
 // prompt is a permission dialog of a tool call.
@@ -684,25 +811,11 @@ func (d *fakeDaemon) answer(c *svctest.Conn, m svctest.Message) {
 		}
 		_ = c.Reply(m.ID, map[string]any{"thread": map[string]any{"id": p.ThreadID, "status": map[string]string{"type": st}}})
 	case "turn/start":
+		prompt := inputText(m.Params)
+		d.record(p.ThreadID, prompt)
 		if turn, busy := d.turns[p.ThreadID]; busy {
-			_ = c.Reply(m.ID, map[string]any{"turn": map[string]string{"id": turn}}) // steers
+			_ = c.Reply(m.ID, map[string]any{"turn": map[string]string{"id": turn}}) // joins the active turn
 			return
-		}
-		var in struct {
-			Input []struct {
-				Text string `json:"text"`
-			} `json:"input"`
-		}
-		_ = json.Unmarshal(m.Params, &in)
-		var prompt string
-		if len(in.Input) > 0 {
-			prompt = in.Input[0].Text
-		}
-		if out := os.Getenv("FAKE_OUT"); out != "" {
-			if f, err := os.OpenFile(out, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600); err == nil {
-				fmt.Fprintf(f, "%s %s\n", p.ThreadID, prompt)
-				f.Close()
-			}
 		}
 		d.n++
 		thread, turn := p.ThreadID, fmt.Sprintf("turn-%d", d.n)
@@ -737,6 +850,33 @@ func (d *fakeDaemon) answer(c *svctest.Conn, m svctest.Message) {
 	default:
 		_ = c.Fail(m.ID, "unknown method "+m.Method)
 	}
+}
+
+// inputText is the text a turn/start request adds.
+func inputText(params json.RawMessage) string {
+	var in struct {
+		Input []struct {
+			Text string `json:"text"`
+		} `json:"input"`
+	}
+	if json.Unmarshal(params, &in) != nil || len(in.Input) == 0 {
+		return ""
+	}
+	return in.Input[0].Text
+}
+
+// record writes what the daemon received for a thread to FAKE_OUT.
+func (d *fakeDaemon) record(thread, prompt string) {
+	out := os.Getenv("FAKE_OUT")
+	if out == "" {
+		return
+	}
+	f, err := os.OpenFile(out, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	fmt.Fprintf(f, "%s %s\n", thread, prompt)
 }
 
 // decided takes a client's answer to an approval: the first one wins, the

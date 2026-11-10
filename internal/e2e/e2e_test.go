@@ -674,13 +674,13 @@ func TestClaudeAnswersThroughTheHook(t *testing.T) {
 // terminal owns: it takes no prompt through a pane or interrupt. A send
 // reaches its inbox, and its answer hook runs there too, so its prompts can
 // be answered.
-func TestClaudeBackgroundSessionTakesAnswers(t *testing.T) {
+func TestClaudeBackgroundSessionTakesSendAndAnswers(t *testing.T) {
 	h := start(t)
 	f := h.follow()
 	out := filepath.Join(h.dir, "received")
 	worker := exec.Command(filepath.Join(bin, "claude"), "daemon", "run")
 	worker.Dir = h.dir
-	worker.Env = append(os.Environ(), "FAKE_SESSION="+sidA, "FAKE_HOOKS=1", "FAKE_ANSWER=1", "FAKE_OUT="+out, "TMAG_BIN="+filepath.Join(bin, "tmag"))
+	worker.Env = append(os.Environ(), "FAKE_SESSION="+sidA, "FAKE_HOOKS=1", "FAKE_ANSWER=1", "FAKE_INBOX=1", "FAKE_OUT="+out, "TMAG_BIN="+filepath.Join(bin, "tmag"))
 	in, err := worker.StdinPipe()
 	if err != nil {
 		t.Fatal(err)
@@ -696,6 +696,13 @@ func TestClaudeBackgroundSessionTakesAnswers(t *testing.T) {
 	if s.Runtime != "service" || len(s.Panes) != 0 || !slices.Equal(s.Capabilities, []string{"send", "answer"}) {
 		t.Fatalf("background session = %+v", s)
 	}
+	if r := h.tmag("", "send", sidA[:8], "hello"); r.code != 0 || !strings.Contains(r.out, "(inbox)") {
+		t.Fatalf("send to a background session: %d %s", r.code, r.out)
+	}
+	h.eventually("the background session answers the send", func() bool {
+		r := h.tmag("", "read", sidA[:8], "--last")
+		return r.code == 0 && r.out == "answered: hello\n"
+	})
 	f.agrees(h)
 
 	if _, err := io.WriteString(in, "block\n"); err != nil {
@@ -917,14 +924,27 @@ func TestCodexDaemonCarriesSendAndInterrupt(t *testing.T) {
 	if r := h.tmag("", "send", sidC[:8], "--json", "long work"); r.code != 0 || !strings.Contains(r.out, `"via":"service"`) {
 		t.Fatalf("send: %d %s", r.code, r.out)
 	}
+	// The first turn's hook clears the prompt it queued; the next send
+	// waits for that, rather than for no mark to exist.
 	h.waitSession(sidC, "working")
+	if rec, ok, err := (session.Store{Dir: h.state}).Get(context.Background(), "codex", sidC); err != nil || !ok || !rec.Queued.IsZero() {
+		t.Fatalf("the first turn's hook left its prompt queued: %+v %v", rec, err)
+	}
 	if r := h.tmag("", "send", sidC[:8], "more"); r.code != 0 || !strings.Contains(r.out, "(service)") {
 		t.Fatalf("send to a busy thread: %d %s", r.code, r.out)
+	}
+	// A joined turn reports no prompt of its own; its next main report, the
+	// interrupt, clears the queued mark.
+	if rec, ok, err := (session.Store{Dir: h.state}).Get(context.Background(), "codex", sidC); err != nil || !ok || rec.Queued.IsZero() {
+		t.Fatalf("the second send left no queued prompt: %+v %v", rec, err)
 	}
 	if r := h.tmag("", "interrupt", sidC[:8], "--json"); r.code != 0 || !strings.Contains(r.out, `"via":"service"`) {
 		t.Fatalf("interrupt: %d %s", r.code, r.out)
 	}
 	h.waitSession(sidC, "idle")
+	if rec, ok, err := (session.Store{Dir: h.state}).Get(context.Background(), "codex", sidC); err != nil || !ok || !rec.Queued.IsZero() {
+		t.Fatalf("the interrupt left the second prompt queued: %+v %v", rec, err)
+	}
 	if got := h.eventNames(sidC); !strings.Contains(got, "Send: UserPromptSubmit:working") || !strings.HasSuffix(got, "Send: Halt: Interrupt:idle") {
 		t.Fatalf("events = %s", got)
 	}
