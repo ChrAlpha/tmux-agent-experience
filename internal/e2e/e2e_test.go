@@ -2062,14 +2062,17 @@ func TestReplyWaitsForTheAsker(t *testing.T) {
 		t.Fatalf("send: %d %s", r.code, r.out)
 	}
 	h.waitSession(sidA, "working")
-	if r := h.tmag("", "read", sidA[:8], "--last"); r.code != 3 || !strings.Contains(r.out, "refused (busy)") {
+	if r := h.tmag("", "read", sidA[:8], "--last"); r.code != 3 || !strings.Contains(r.out, "refused (busy)") ||
+		!strings.Contains(r.out, "next: wait until it is idle with tmag wait "+sidA[:8]+" --for idle") {
 		t.Fatalf("read --last of a working agent: %d %s", r.code, r.out)
 	}
-	// Not before its timeout: then nothing is delivered.
+	// Not before its timeout: then nothing is delivered, and the agent is
+	// told to try again.
 	h.tmux("send-keys", "-t", b, "tmag reply "+sidA+" --timeout 300ms too soon", "Enter")
 	h.eventually("B's reply times out", func() bool {
 		got, _ := os.ReadFile(outB)
-		return strings.Contains(string(got), "tool 4 tmag reply: timed out after 300ms, nothing delivered: refused (busy)")
+		return strings.Contains(string(got), "tool 4 tmag reply: timed out after 300ms, nothing delivered: refused (busy)") &&
+			strings.Contains(string(got), "next: nothing was delivered: run the same tmag reply again")
 	})
 	h.waitSession(sidB, "idle")
 	h.tmux("send-keys", "-t", b, "tmag reply "+sidA+" all done", "Enter")

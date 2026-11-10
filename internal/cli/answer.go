@@ -32,7 +32,7 @@ func (a *app) cmdRequest(args []string) int {
 	defer cancel()
 	asked, err := query.Show(ctx, a.log, pos[0], pos[1])
 	if err != nil {
-		return a.fail("request", err)
+		return a.failOn("request", pos[0], err)
 	}
 	if a.json {
 		a.emit(map[string]any{"session": asked.Session, "request": asked.Request, "tool": asked.Tool, "input": asked.Input})
@@ -77,7 +77,7 @@ func (a *app) cmdAnswer(args []string) int {
 		if errors.Is(err, answer.ErrInvalid) {
 			return a.usageError("answer", err)
 		}
-		return a.fail("answer", err)
+		return a.failOn("answer", pos[0], err)
 	}
 	a.reportDelivery("answered", dl)
 	return ExitOK

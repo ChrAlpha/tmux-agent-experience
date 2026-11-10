@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strings"
 	"testing"
 
@@ -69,6 +68,26 @@ func TestPeersSkillMatchesCLI(t *testing.T) {
 		}
 	}
 
+	for _, phrase := range []string{
+		fmt.Sprintf("exits %d with `refused (CODE): reason`", ExitRefused),
+		fmt.Sprintf("Exit %d from `send --wait` or `wait` means the wait timed out", ExitTimeout),
+		fmt.Sprintf("exit %d then means nothing was delivered", ExitTimeout),
+		fmt.Sprintf("Exit %d is an error, such as `ended`", ExitError),
+		"`no_reply` (its last turn left no reply",
+		fmt.Sprintf("starting with `%s`, says what to do", strings.TrimSpace(nextPrefix)),
+		fmt.Sprintf("starting with `%s` is refused with exit %d", query.Marker, ExitUsage),
+		fmt.Sprintf("exit %d is a usage error", ExitUsage),
+		"Exit 127 with `tmag: not installed`",
+	} {
+		if !strings.Contains(flat, phrase) {
+			t.Errorf("the skill no longer says %q", phrase)
+		}
+	}
+}
+
+// The skill leaves what to do after each refusal to the line the CLI prints
+// after it, so every refusal reason must have one.
+func TestEveryRefusalSaysWhatNext(t *testing.T) {
 	src, err := os.ReadFile(filepath.Join("..", "query", "control.go"))
 	if err != nil {
 		t.Fatal(err)
@@ -77,30 +96,41 @@ func TestPeersSkillMatchesCLI(t *testing.T) {
 	for _, c := range regexp.MustCompile(`(?m)^\s+Refuse\w+\s+= "(\w+)"`).FindAllStringSubmatch(string(src), -1) {
 		codes = append(codes, c[1])
 	}
-	_, section, _ := strings.Cut(text, "\n## Refusals\n")
-	section, _, _ = strings.Cut(section, "\n## ")
-	var listed []string
-	for _, c := range regexp.MustCompile("(?m)^\\| `(\\w+)` \\|").FindAllStringSubmatch(section, -1) {
-		listed = append(listed, c[1])
+	if len(codes) == 0 {
+		t.Fatal("found no refusal reasons in query/control.go")
 	}
-	slices.Sort(codes)
-	slices.Sort(listed)
-	if len(codes) == 0 || !slices.Equal(codes, listed) {
-		t.Errorf("refusal table lists %v, the CLI refuses with %v", listed, codes)
-	}
-
-	for _, phrase := range []string{
-		fmt.Sprintf("exits %d with `refused (CODE): reason`", ExitRefused),
-		fmt.Sprintf("Exit %d from `send --wait` or `wait` means the wait timed out", ExitTimeout),
-		fmt.Sprintf("exit %d then means nothing was delivered", ExitTimeout),
-		fmt.Sprintf("Exit %d is an error (`ended`", ExitError),
-		"`no_reply`: its last turn left no reply",
-		fmt.Sprintf("starting with `%s` is refused with exit %d", query.Marker, ExitUsage),
-		fmt.Sprintf("exit %d is a usage error", ExitUsage),
-		"Exit 127 with `tmag: not installed`",
-	} {
-		if !strings.Contains(flat, phrase) {
-			t.Errorf("the skill no longer says %q", phrase)
+	for _, code := range codes {
+		for _, cmd := range []string{"send", "reply", "interrupt", "answer", "read"} {
+			if next(cmd, "abcd", &query.RefusedError{Reason: code}) == "" {
+				t.Errorf("%s refused %s says nothing about what to do next", cmd, code)
+			}
 		}
+	}
+	for _, err := range []error{query.ErrEnded, query.ErrNoReply, query.ErrNotFound, query.ErrAmbiguous} {
+		if next("send", "abcd", err) == "" {
+			t.Errorf("%v says nothing about what to do next", err)
+		}
+	}
+	for _, cmd := range []string{"send", "wait", "reply"} {
+		if next(cmd, "abcd", errTimeout) == "" {
+			t.Errorf("a timed out %s says nothing about what to do next", cmd)
+		}
+	}
+}
+
+// What to do next follows the error on stderr, naming the target as typed,
+// and stays out of the JSON document.
+func TestNextFollowsTheError(t *testing.T) {
+	var stdout, stderr strings.Builder
+	a := &app{stdout: &stdout, stderr: &stderr, json: true}
+	if code := a.failOn("send", "01a1", &query.RefusedError{Reason: query.RefuseBusy, Detail: "01a19fda is working"}); code != ExitRefused {
+		t.Fatalf("exit %d, want %d", code, ExitRefused)
+	}
+	want := "tmag send: refused (busy): 01a19fda is working\n" + nextPrefix + "wait until it is idle with tmag wait 01a1 --for idle, then try once more\n"
+	if stderr.String() != want {
+		t.Errorf("stderr is %q, want %q", stderr.String(), want)
+	}
+	if strings.Contains(stdout.String(), "tmag wait") {
+		t.Errorf("the JSON document carries the advice: %s", stdout.String())
 	}
 }

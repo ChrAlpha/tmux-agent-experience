@@ -232,7 +232,11 @@ func (a *app) usageError(cmd string, err error) int {
 }
 
 // fail reports err and returns the matching exit code.
-func (a *app) fail(cmd string, err error) int {
+func (a *app) fail(cmd string, err error) int { return a.failOn(cmd, "", err) }
+
+// failOn reports err from cmd on target, then what to do next when there is
+// something to say (next), and returns the matching exit code.
+func (a *app) failOn(cmd, target string, err error) int {
 	code, exit := "error", ExitError
 	var record *session.RecordError
 	var refused *query.RefusedError
@@ -266,6 +270,9 @@ func (a *app) fail(cmd string, err error) int {
 		a.emit(map[string]any{"error": map[string]string{"code": code, "message": err.Error()}})
 	}
 	fmt.Fprintf(a.stderr, "tmag %s: %v\n", cmd, err)
+	if n := next(cmd, target, err); n != "" {
+		fmt.Fprintf(a.stderr, "%s%s\n", nextPrefix, n)
+	}
 	return exit
 }
 

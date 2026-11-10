@@ -1,6 +1,6 @@
 ---
 name: peers
-description: Work with the other coding agents (Claude Code, Codex) in this machine's tmux panes through tmag - see which run and whether they are idle, working or blocked, prompt one, wait for it, read its answer, reply to it, interrupt it, or see what it asks permission for. Use when the user asks you to involve, delegate to, check on, coordinate with or message another agent, and whenever a prompt starts with "[tmag] From" or "[tmag] Reply from", which another agent sent through tmag.
+description: Work with the other coding agents (Claude Code, Codex) in this machine's tmux panes through tmag - see which run and whether they are idle, working or blocked, prompt one, wait for it, read its answer, reply to it, interrupt it, or see what it asks permission for. Use when the user asks you to involve, delegate to, check on, coordinate with or message another agent, when changes you did not make appear in your workspace, before switching branches, rewriting history or stopping processes in a repository other agents may share, and whenever a prompt starts with "[tmag] From" or "[tmag] Reply from", which another agent sent through tmag.
 ---
 
 # Working with peer agents through tmag
@@ -24,17 +24,26 @@ command again with the permissions it needs.
 
 ## Rules
 
-1. Act on another agent only when the user asked you to, or when a peer's
+1. Look at peers only when the user asks you to involve one, or on a signal
+   that one shares your work: changes you did not make appear in your
+   workspace, or you are about to switch, rebase or reset branches,
+   force-push, or stop processes others in this repository may rely on. Then
+   run `tmag list` once. Never check peers routinely; follow one up with
+   `tmag wait` or `send --reply`, not by listing again.
+2. If a peer works in your repository, leave its changes alone. Read it
+   (`tmag inspect`, `tmag read`) only as far as you need to coordinate, and
+   tell the user what collides. Prompt it only if it is idle and one short
+   message settles the collision.
+3. Otherwise act on a peer only when the user asked you to, or when a peer's
    prompt asks for something within the work the user gave you (see
-   [Receiving](#receiving)). Do not survey or prompt peers on your own
-   initiative.
-2. Only through tmag. Never use `tmux send-keys`, `paste-buffer` or
+   [Receiving](#receiving)).
+4. Only through tmag. Never use `tmux send-keys`, `paste-buffer` or
    `capture-pane` to drive or read an agent's pane, and never judge its state
    from its screen: typing through tmux skips tmag's checks, can submit twice
    or into a shell, and leaves no record.
-3. Your own session is the `(you)` row of `tmag list`. tmag refuses verbs on
+5. Your own session is the `(you)` row of `tmag list`. tmag refuses verbs on
    it.
-4. A permission request is the user's decision. Answer one only when the user
+6. A permission request is the user's decision. Answer one only when the user
    tells you to; tmag refuses agents unless the user set `@tmag-answer` to
    `agents`.
 
@@ -52,7 +61,7 @@ command again with the permissions it needs.
 | `tmag read ID --lines 80` | the recent text of its pane, to see what it shows |
 | `tmag interrupt ID` | stop its running turn |
 | `tmag request ID REQ` | what an open request asks: the tool and its input |
-| `tmag answer ID REQ allow` | decide an open request, or `deny --message M` (rule 4) |
+| `tmag answer ID REQ allow` | decide an open request, or `deny --message M` (rule 6) |
 
 `ID` is a session id or a unique prefix of at least 4 characters, as `tmag
 list` shows it; a pane id `%N` works too. States: `idle` takes a prompt;
@@ -115,27 +124,10 @@ default); exit 4 then means nothing was delivered, so run it again.
 A prompt whose first line starts with `[tmag] Reply from` answers one you
 sent. Go on with the work it was for, and do not reply to it.
 
-## Refusals
+## When tmag says no
 
 A refused verb exits 3 with `refused (CODE): reason` and delivers nothing.
-
-| Code | Means | Do |
-| --- | --- | --- |
-| `busy` | the peer is working or blocked, or tmag just delivered to it | `tmag wait ID --for idle`, then send or read once |
-| `changed` | it changed between the check and the delivery | `tmag list`, then decide again |
-| `subagent` | its pane shows a subagent, which takes no input | wait until it is idle |
-| `idle` | an interrupt found no turn to stop | nothing to do |
-| `unbound` | no pane is proven to show it | tell the user; it cannot be prompted from here |
-| `background` | its agent does not hold its terminal | tell the user |
-| `unsupported` | nothing carries this verb to it | tell the user |
-| `self` | the target is your own session | use the peer's id |
-| `agent` | agents may not answer requests here | show the user `tmag request ID REQ` |
-
-Exit 1 is an error (`ended`: the peer's session ended; `no_reply`: its last
-turn left no reply to read); exit 2 is a usage error.
-
-A wait error `history_unavailable` means required historical transitions are no
-longer available; current state cannot reconstruct them. If `send --wait` reports
-that the prompt was delivered, do not repeat the send. Read the peer's current
-state and reply before deciding the next action. `integrity_loss` means
-the event log needs explicit maintenance. Both errors exit 1.
+Exit 1 is an error, such as `ended` (the peer's session ended) or `no_reply`
+(its last turn left no reply to read); exit 2 is a usage error. The line after
+the error, starting with `next:`, says what to do; do that rather than
+repeating the command. When it says only the person can, tell the user.
