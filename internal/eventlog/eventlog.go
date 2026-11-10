@@ -16,6 +16,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"io"
@@ -143,10 +144,6 @@ const ReadTimeout = 5 * time.Second
 // damage, skipped like any line that does not decode.
 const maxLine = 1 << 20
 
-// tailWindow is how much of a file's end Append reads to find its last
-// sequence number.
-const tailWindow = 64 << 10
-
 // Log is a directory holding the current and one rotated event file.
 type Log struct {
 	Dir      string
@@ -243,42 +240,63 @@ func (l *Log) lastRotated(ctx context.Context) (int64, error) {
 	return last, err
 }
 
-// lastSeq returns the sequence number of the last line of f that decodes,
-// within its last tailWindow bytes, or 0, and whether f ends a line.
-func lastSeq(ctx context.Context, f *os.File, size int64) (int64, bool, error) {
-	seq, ended, _, err := lastLine(ctx, f, size)
-	return seq, ended, err
-}
-
-// lastLine is lastSeq, and also where f's last newline ends, which is where
-// a reader that has read every complete line stands.
-func lastLine(ctx context.Context, f *os.File, size int64) (int64, bool, int64, error) {
-	if size == 0 {
-		return 0, true, 0, nil
-	}
-	var seq, read int64
-	var ended bool
-	// A line is far shorter than the first window, which usually holds the
-	// last one; a longer tail of damage needs the larger.
-	for _, window := range []int64{4 << 10, tailWindow} {
+// scanBack reads the first size bytes of f from their end, in windows that
+// double until fn, given a window and where it starts, is satisfied, or the
+// window reaches the start of the file: a line may be as long as readers
+// accept, so no fixed window is enough. The first window holds the last
+// line of a healthy log.
+func scanBack(ctx context.Context, f *os.File, size int64, fn func(buf []byte, base int64) bool) error {
+	for window := int64(4 << 10); ; window *= 2 {
 		n := min(size, window)
 		buf := make([]byte, n)
 		if _, err := f.ReadAt(buf, size-n); err != nil && !errors.Is(err, io.EOF) {
-			return 0, false, 0, err
+			return err
 		}
 		if err := ctx.Err(); err != nil {
-			return 0, false, 0, err
+			return err
 		}
-		ended = buf[len(buf)-1] == '\n'
-		read = size // no newline in the window: damage, which nobody reads
-		if i := bytes.LastIndexByte(buf, '\n'); i >= 0 {
-			read = size - n + int64(i) + 1
-		}
-		if seq = lastSeqIn(buf); seq > 0 || n == size {
-			break
+		if fn(buf, size-n) || n == size {
+			return nil
 		}
 	}
-	return seq, ended, read, nil
+}
+
+// lastSeq returns the sequence number of the last line of f that decodes,
+// or 0, and whether f ends a line.
+func lastSeq(ctx context.Context, f *os.File, size int64) (int64, bool, error) {
+	if size == 0 {
+		return 0, true, nil
+	}
+	var seq int64
+	var ended bool
+	err := scanBack(ctx, f, size, func(buf []byte, _ int64) bool {
+		ended = buf[len(buf)-1] == '\n'
+		seq = lastSeqIn(buf)
+		return seq > 0
+	})
+	return seq, ended, err
+}
+
+// lastComplete returns where the last complete line of f starts and ends: a
+// reader that has read every complete line stands at its end. Both are 0
+// when f holds no complete line.
+func lastComplete(ctx context.Context, f *os.File, size int64) (start, end int64, err error) {
+	if size == 0 {
+		return 0, 0, nil
+	}
+	err = scanBack(ctx, f, size, func(buf []byte, base int64) bool {
+		i := bytes.LastIndexByte(buf, '\n')
+		if i < 0 {
+			return false
+		}
+		j := bytes.LastIndexByte(buf[:i], '\n')
+		if j < 0 && base > 0 {
+			return false // the line starts before the window
+		}
+		start, end = base+int64(j)+1, base+int64(i)+1
+		return true
+	})
+	return start, end, err
 }
 
 // lastSeqIn returns the sequence number of the last line in buf that
@@ -389,7 +407,7 @@ func (l *Log) read(ctx context.Context, name string) ([]Event, error) {
 		return nil, err
 	}
 	defer f.Close()
-	events, _, err := readFrom(ctx, f, 0)
+	events, _, _, err := readFrom(ctx, f, 0)
 	return events, err
 }
 
@@ -418,24 +436,28 @@ func identity(st os.FileInfo) fileID {
 	return fileID{}
 }
 
-func readFrom(ctx context.Context, f *os.File, off int64) ([]Event, int64, error) {
+// readFrom decodes the complete lines of f from offset off, skipping those
+// that do not decode. It returns where its last complete line ends, and
+// where the last one it consumed starts, -1 when it consumed none.
+func readFrom(ctx context.Context, f *os.File, off int64) ([]Event, int64, int64, error) {
 	if _, err := f.Seek(off, io.SeekStart); err != nil {
-		return nil, off, err
+		return nil, off, -1, err
 	}
 	r := bufio.NewReaderSize(f, 64<<10)
 	var events []Event
+	last := int64(-1)
 	for {
 		if err := ctx.Err(); err != nil {
-			return nil, off, err
+			return nil, off, -1, err
 		}
 		line, n, err := readLine(r)
 		if errors.Is(err, io.EOF) {
-			return events, off, nil // the end, or an unfinished last line
+			return events, off, last, nil // the end, or an unfinished last line
 		}
 		if err != nil {
-			return nil, off, err
+			return nil, off, -1, err
 		}
-		off += n
+		last, off = off, off+n
 		if line == nil {
 			continue // longer than maxLine
 		}
@@ -478,12 +500,17 @@ func readLine(r *bufio.Reader) ([]byte, int64, error) {
 // Tail follows the log, reading only what each file gained since it last
 // looked. It holds the file it reads open, so that the file's inode stays
 // its own whatever rotation does to its name, and it can read the rest of
-// it after the file is rotated away. Close releases it.
+// it after the file is rotated away. It also keeps a witness of the last
+// line it read, so that a file emptied and written again under it, which
+// keeps its inode, is noticed rather than read from the middle. Close
+// releases the file.
 type Tail struct {
 	log  *Log
 	seq  int64
 	file *os.File // the file it reads; nil before the first look
-	off  int64    // where its last complete line ended
+	off  int64    // where its last complete line ends
+	line int64    // where that line starts
+	sum  [32]byte // and what it holds, when off > 0
 }
 
 // Tail returns a tail that delivers the events after seq after, which it
@@ -502,20 +529,43 @@ func (l *Log) Follow(ctx context.Context) (*Tail, error) {
 	if err != nil {
 		return nil, err
 	}
-	st, err := f.Stat()
-	if err != nil {
-		f.Close()
-		return nil, err
-	}
 	t := &Tail{log: l, file: f}
-	if t.seq, _, t.off, err = lastLine(ctx, f, st.Size()); err == nil && t.seq == 0 {
-		t.seq, err = l.lastRotated(ctx)
-	}
-	if err != nil {
+	if err := t.start(ctx); err != nil {
 		f.Close()
 		return nil, err
 	}
 	return t, nil
+}
+
+func (t *Tail) start(ctx context.Context) error {
+	st, err := t.file.Stat()
+	if err != nil {
+		return err
+	}
+	if t.seq, _, err = lastSeq(ctx, t.file, st.Size()); err != nil {
+		return err
+	}
+	if t.seq == 0 {
+		if t.seq, err = t.log.lastRotated(ctx); err != nil {
+			return err
+		}
+	}
+	if t.line, t.off, err = lastComplete(ctx, t.file, st.Size()); err != nil {
+		return err
+	}
+	if t.off > 0 {
+		t.sum, err = witness(t.file, t.line, t.off)
+	}
+	return err
+}
+
+// witness is what the bytes of f from start to end hold.
+func witness(f *os.File, start, end int64) ([32]byte, error) {
+	buf := make([]byte, end-start)
+	if _, err := f.ReadAt(buf, start); err != nil {
+		return [32]byte{}, err
+	}
+	return sha256.Sum256(buf), nil
 }
 
 // Seq is the sequence number of the last event the tail delivered, or the
@@ -530,6 +580,18 @@ func (t *Tail) Close() error {
 	err := t.file.Close()
 	t.file = nil
 	return err
+}
+
+// read reads the file the tail holds from where it stopped, and keeps a
+// witness of the last line it consumed.
+func (t *Tail) read(ctx context.Context) ([]Event, error) {
+	events, end, last, err := readFrom(ctx, t.file, t.off)
+	if err != nil || last < 0 {
+		return events, err
+	}
+	t.line, t.off = last, end
+	t.sum, err = witness(t.file, t.line, t.off)
+	return events, err
 }
 
 // Next returns the events logged since the last call, oldest first, and
@@ -556,12 +618,17 @@ func (t *Tail) Next(ctx context.Context) ([]Event, bool, error) {
 		if err != nil {
 			return nil, false, err
 		}
-		if st.Size() < t.off {
-			return nil, false, nil // emptied in place: what the tail read is gone
+		if t.off > 0 {
+			if st.Size() < t.off {
+				return nil, false, nil // emptied under the tail
+			}
+			if sum, err := witness(t.file, t.line, t.off); err != nil || sum != t.sum {
+				return nil, false, err // written again under the tail
+			}
 		}
 		// The rest of the file the tail holds; once rotated, then any file
 		// between it and the current one.
-		if events, t.off, err = readFrom(ctx, t.file, t.off); err != nil {
+		if events, err = t.read(ctx); err != nil {
 			return nil, false, err
 		}
 		same = cur != nil && identity(st) == curID
@@ -573,7 +640,7 @@ func (t *Tail) Next(ctx context.Context) ([]Event, bool, error) {
 			if rotated != nil {
 				if rotatedID != identity(st) {
 					var between []Event
-					between, _, err = readFrom(ctx, rotated, 0)
+					between, _, _, err = readFrom(ctx, rotated, 0)
 					events = append(events, between...)
 				}
 				rotated.Close()
@@ -587,10 +654,10 @@ func (t *Tail) Next(ctx context.Context) ([]Event, bool, error) {
 	}
 	if !same {
 		t.Close()
-		t.file, t.off, held = cur, 0, cur != nil
+		t.file, t.off, t.line, held = cur, 0, 0, cur != nil
 		if cur != nil {
 			var more []Event
-			if more, t.off, err = readFrom(ctx, cur, 0); err != nil {
+			if more, err = t.read(ctx); err != nil {
 				return nil, false, err
 			}
 			events = append(events, more...)

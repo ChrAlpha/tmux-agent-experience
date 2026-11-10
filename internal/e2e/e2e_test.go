@@ -25,6 +25,7 @@ import (
 	"github.com/ChrAlpha/tmux-agent-experience/internal/answer"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/attach"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/hook"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/query"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/tmux"
@@ -2001,5 +2002,33 @@ func TestGlobalOptionPreservesShellCommands(t *testing.T) {
 	}
 	if got := unavailable.GlobalOption(context.Background(), "@tmag-option-unset"); got != "" {
 		t.Fatalf("convenience wrapper changed on unavailable server: %q", got)
+	}
+}
+
+// A hook that changes nothing writes nothing, but still attaches its pane
+// when an earlier hook died before doing so.
+func TestUnchangedHookRestoresItsPanesAttachment(t *testing.T) {
+	h := start(t)
+	pane := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_HOOKS": "1"}, filepath.Join(bin, "claude"))
+	h.waitPane(pane, "idle", "process")
+	h.tmux("send-keys", "-t", pane, "hello", "Enter")
+	h.eventually("the turn ends", func() bool { return strings.HasSuffix(h.eventNames(sidA), "Stop:idle") })
+	before := h.eventNames(sidA)
+	s, _ := h.sessionOf(sidA)
+	// Lose the attachment, as a hook that died before attaching leaves it.
+	h.tmux("set-option", "-p", "-u", "-t", pane, "@tmag_session")
+	if p, _, _ := h.paneIn(pane); p.Session != "" {
+		t.Fatalf("the pane still shows %s", p.Session)
+	}
+	h.tmux("send-keys", "-t", pane, "/notify", "Enter")
+	h.eventually("the pane is attached again", func() bool {
+		p, _, _ := h.paneIn(pane)
+		return p.Session == sidA
+	})
+	if got := h.eventNames(sidA); got != before+" Attach:idle" {
+		t.Fatalf("events %q, want %q and its Attach", got, before)
+	}
+	if after, _ := h.sessionOf(sidA); !after.LastHookAt.Equal(s.LastHookAt) {
+		t.Fatalf("contact within %s was written: %v, then %v", hook.ContactInterval, s.LastHookAt, after.LastHookAt)
 	}
 }

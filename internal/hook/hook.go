@@ -144,6 +144,7 @@ func RunContext(parent context.Context, in Input) error {
 	}
 
 	var prev, rec session.Record
+	wrote := false
 	err = env.Store.Lock(ctx, in.Agent, p.SessionID, func() error {
 		cur, found, err := get()
 		if err != nil {
@@ -165,6 +166,7 @@ func RunContext(parent context.Context, in Input) error {
 		next, changed := session.Apply(base, tr, now())
 		moved := base.Cwd != cur.Cwd || base.Host != cur.Host || base.Transcript != cur.Transcript
 		if found && !changed && !moved && contact.Sub(cur.LastHookAt) < ContactInterval {
+			prev, rec = cur, cur // nothing to write
 			return nil
 		}
 		if contact.After(next.LastHookAt) {
@@ -175,11 +177,19 @@ func RunContext(parent context.Context, in Input) error {
 		if err := env.Store.Save(ctx, in.Log, cur, next, ev); err != nil {
 			return err
 		}
-		prev, rec = cur, next
+		prev, rec, wrote = cur, next, true
 		return nil
 	})
 	if err != nil || rec.ID == "" {
 		return err
+	}
+	if !wrote {
+		// Nothing changed, but the hook still proves its pane shows the
+		// session: an earlier hook may have died before attaching it.
+		if c, ok := w.ClientOf(host); hostKnown && ok && !c.Shows(rec) {
+			return env.Attach(ctx, w, c, rec, attach.Process)
+		}
+		return nil
 	}
 	// An answer hook whose prompt closed (answered in the terminal, the call
 	// ran, the turn ended) would otherwise wait on: the agent ignores what it

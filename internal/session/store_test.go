@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -166,5 +168,58 @@ func TestCanceledReads(t *testing.T) {
 	}
 	if _, _, err := s.All(ctx); !errors.Is(err, context.Canceled) {
 		t.Fatalf("All = %v", err)
+	}
+}
+
+// Sessions that share a lock stripe share its temporary too; their writes
+// take turns, and every record stays whole.
+func TestSessionsOfOneStripeWriteInTurn(t *testing.T) {
+	ctx := context.Background()
+	s := Store{Dir: t.TempDir()}
+	ids := []string{"a0"}
+	for i := 1; len(ids) < 2; i++ {
+		id := "a" + strconv.Itoa(i)
+		if sessionKey(proc.Claude, id)[0] == sessionKey(proc.Claude, ids[0])[0] {
+			ids = append(ids, id)
+		}
+	}
+	var wg sync.WaitGroup
+	for _, id := range ids {
+		wg.Go(func() {
+			for i := range 50 {
+				rec := Record{Agent: proc.Claude, ID: id, Main: "idle", Turn: strconv.Itoa(i)}
+				if err := s.Lock(ctx, rec.Agent, rec.ID, func() error { return s.Put(ctx, rec) }); err != nil {
+					t.Error(err)
+					return
+				}
+			}
+		})
+	}
+	wg.Wait()
+	for _, id := range ids {
+		if rec, ok, err := s.Get(ctx, proc.Claude, id); err != nil || !ok || rec.ID != id || rec.Turn != "49" {
+			t.Fatalf("%s: %+v %v %v", id, rec, ok, err)
+		}
+	}
+}
+
+// A session keeps a bounded number of prompts; the oldest go first, and
+// their requests with them, which tells the answer hooks waiting on them to
+// leave the decision to the agent's dialog.
+func TestPromptsBeyondTheBoundCloseTheirRequests(t *testing.T) {
+	rec := play(t)
+	for i := range maxPending + 1 {
+		tr := askFor("", "tool"+strconv.Itoa(i))
+		tr.Request, tr.Waits = "r"+strconv.Itoa(i), true
+		rec, _ = Apply(rec, tr, t0)
+	}
+	if len(rec.Pending) != maxPending || rec.Pending[0].Tool != "tool1" {
+		t.Fatalf("%d prompts kept, the oldest %+v", len(rec.Pending), rec.Pending[0])
+	}
+	if _, open := rec.Request("r0"); open || len(rec.Requests) != maxPending {
+		t.Fatalf("requests %d, the dropped prompt's still open: %v", len(rec.Requests), open)
+	}
+	if rec.State() != "blocked" {
+		t.Fatalf("state %s", rec.State())
 	}
 }

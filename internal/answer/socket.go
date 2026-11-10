@@ -95,12 +95,11 @@ func ListenContext(ctx context.Context, root, id string) (net.Listener, error) {
 	sweep(ctx, filepath.Dir(path))
 	ln, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
 	if errors.Is(err, syscall.EADDRINUSE) {
-		if probe(ctx, path, id) != Dead {
+		st, statErr := os.Lstat(path)
+		if statErr != nil || probe(ctx, path, id) != Dead {
 			return nil, fmt.Errorf("another answer hook waits on request %s", id)
 		}
-		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return nil, err
-		}
+		removeIfSame(path, st)
 		ln, err = net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
 	}
 	if err != nil {
@@ -116,7 +115,9 @@ func ListenContext(ctx context.Context, root, id string) (net.Listener, error) {
 // sweep removes the sockets of hooks that died without closing them: older
 // than staleAfter, and refusing connections. The directory holds only the
 // sockets of hooks waiting now, and those of hooks that died since the last
-// sweep.
+// sweep. A socket's path belongs to one hook, named by its request's random
+// id (session.NewRequestID), so no other hook binds it once its own is gone;
+// and only the very socket found refusing is removed, never one bound since.
 func sweep(ctx context.Context, dir string) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -135,8 +136,15 @@ func sweep(ctx context.Context, dir string) {
 		}
 		path := filepath.Join(dir, e.Name())
 		if refused(ctx, path) {
-			_ = os.Remove(path)
+			removeIfSame(path, info)
 		}
+	}
+}
+
+// removeIfSame removes path if it is still the file st describes.
+func removeIfSame(path string, st os.FileInfo) {
+	if now, err := os.Lstat(path); err == nil && os.SameFile(st, now) {
+		_ = os.Remove(path)
 	}
 }
 

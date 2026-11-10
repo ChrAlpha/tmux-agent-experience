@@ -2,10 +2,12 @@ package eventlog
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -319,5 +321,85 @@ func TestTailNoticesAFileItMistookForItsOwn(t *testing.T) {
 	appendN(t, l, 1)
 	if _, complete, err := tail.Next(bg); err != nil || complete {
 		t.Fatalf("a refilled file passed for the tail's own: complete=%v err=%v", complete, err)
+	}
+}
+
+// large is an event as long as bounded hook input lets one be: escaped
+// names expand sixfold in JSON, far past the window that holds a healthy
+// log's last line.
+func large() *Event {
+	name := strings.Repeat("<", 256) // escaped as <
+	e := &Event{Agent: "claude", Session: "s", Event: "PermissionRequest", State: "blocked"}
+	for i := range 64 {
+		e.Requests = append(e.Requests, Request{ID: itoa(int64(i)), Kind: "permission", Tool: name, Agent: name})
+	}
+	return e
+}
+
+// An event longer than any window numbers the next one all the same, also
+// when the rotated file ends with an older one, and a tail at it gets what
+// follows.
+func TestLongEventsKeepTheNumbering(t *testing.T) {
+	for _, rotate := range []bool{false, true} {
+		l := Open(t.TempDir())
+		appendN(t, l, 1)
+		if rotate {
+			l.MaxBytes = 1000 // the long event goes to a file of its own
+		}
+		big := large()
+		if err := l.Append(bg, big); err != nil {
+			t.Fatal(err)
+		}
+		if b, _ := json.Marshal(big); len(b) < 128<<10 {
+			t.Fatalf("the long event encodes to only %d bytes", len(b))
+		}
+		tail, err := l.Follow(bg)
+		if err != nil || tail.Seq() != big.Seq || head(t, l) != big.Seq {
+			t.Fatalf("rotate=%v: Follow at %d, head %d, long event %d: %v", rotate, tail.Seq(), head(t, l), big.Seq, err)
+		}
+		stop := Event{Agent: "claude", Session: "s", Event: "Stop", State: "idle"}
+		if err := l.Append(bg, &stop); err != nil {
+			t.Fatal(err)
+		}
+		if stop.Seq != big.Seq+1 {
+			t.Fatalf("rotate=%v: Stop numbered %d after %d", rotate, stop.Seq, big.Seq)
+		}
+		evs, complete, err := tail.Next(bg)
+		if err != nil || !complete || len(evs) != 1 || evs[0].Event != "Stop" {
+			t.Fatalf("rotate=%v: after the long event: %v %v %v", rotate, evs, complete, err)
+		}
+		tail.Close()
+	}
+}
+
+// A file emptied and written again to the same size under a tail keeps its
+// inode and its size; the tail notices all the same.
+func TestTailNoticesAFileWrittenAgainToTheSameSize(t *testing.T) {
+	l := Open(t.TempDir())
+	at := time.Date(2026, 11, 10, 6, 0, 0, 123456789, time.UTC)
+	stop := func() {
+		t.Helper()
+		if err := l.Append(bg, &Event{Agent: "claude", Session: "s", Event: "Stop", State: "idle", Time: at}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stop()
+	tail, err := l.Follow(bg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tail.Close()
+	path := filepath.Join(l.Dir, currentName)
+	before, _ := os.Stat(path)
+	if err := os.Truncate(path, 0); err != nil {
+		t.Fatal(err)
+	}
+	stop()
+	after, _ := os.Stat(path)
+	if after.Size() != before.Size() {
+		t.Fatalf("the refill is %d bytes, the original %d", after.Size(), before.Size())
+	}
+	if _, complete, err := tail.Next(bg); err != nil || complete {
+		t.Fatalf("a refill of the same size: complete=%v err=%v", complete, err)
 	}
 }
