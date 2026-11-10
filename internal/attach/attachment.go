@@ -59,6 +59,18 @@ func (a Attachment) same(b Attachment) bool {
 	return a == b
 }
 
+// client reports whether a and b attach one session to one client process.
+func (a Attachment) client(b Attachment) bool {
+	return a.Agent == b.Agent && a.Session == b.Session && a.PID == b.PID && a.Start == b.Start
+}
+
+// keeps reports whether a stands against b: it is the same attachment, or a
+// process proof b would replace with a title inference. A process proof lasts
+// as long as its client does.
+func (a Attachment) keeps(b Attachment) bool {
+	return a.client(b) && (a.Evidence == b.Evidence || a.Evidence == Process)
+}
+
 // holds reports whether the attachment is not being detached.
 func (a Attachment) holds() bool { return a.Change != eventlog.Detach }
 
