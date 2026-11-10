@@ -16,7 +16,8 @@ import (
 var ErrNoReply = errors.New("no reply")
 
 // transcriptLag is how long an agent may take to write a turn's end to its
-// transcript after the hook that reported it.
+// transcript after the hook that reported it: Claude Code may still write
+// the reply after its Stop hook ran.
 const transcriptLag = 3 * time.Second
 
 // LastReply returns the reply that ended an idle session's last turn, as
@@ -44,13 +45,13 @@ func LastReply(ctx context.Context, store session.Store, target string) (Session
 	for {
 		r, err := transcript.Last(ctx, s.Transcript.Path, s.Transcript.Format)
 		switch {
-		case err == nil && r.Turn == s.Turn && r.Text == "":
-			return s, r, fmt.Errorf("%w: turn %s of %s ended without one", ErrNoReply, s.Turn, s.ID)
-		case err == nil && r.Turn == s.Turn:
+		case err == nil && r.Turn == s.Turn && r.Text != "":
 			return s, r, nil
 		case err != nil && !errors.Is(err, transcript.ErrNoTurn) && !errors.Is(err, fs.ErrNotExist):
 			return s, transcript.Reply{}, err
-		case time.Now().After(deadline):
+		case !time.Now().Before(deadline) && err == nil && r.Turn == s.Turn:
+			return s, r, fmt.Errorf("%w: turn %s of %s ended without one", ErrNoReply, s.Turn, s.ID)
+		case !time.Now().Before(deadline):
 			return s, transcript.Reply{}, fmt.Errorf("%w: the transcript of %s does not hold the end of its turn %s", ErrNoReply, s.ID, s.Turn)
 		}
 		select {
