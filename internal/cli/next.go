@@ -43,7 +43,7 @@ func next(cmd, target string, err error) string {
 		case errors.Is(err, query.ErrEnded):
 			return "the prompt arrived, but its session ended: tmag list shows the agents that run"
 		}
-		return fmt.Sprintf("the prompt arrived and its turn had not ended: run tmag wait %s --for idle,blocked, then tmag read %s --last; do not send the prompt again", target, target)
+		return fmt.Sprintf("the prompt arrived and what became of it is unknown: run tmag wait %s --for idle,blocked, then tmag read %s --last; do not send the prompt again", target, target)
 	}
 	if errors.As(err, new(undelivered)) {
 		return fmt.Sprintf("nothing was delivered: run the same tmag %s again", cmd)

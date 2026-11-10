@@ -2,12 +2,15 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/query"
@@ -72,8 +75,8 @@ func TestPeersSkillMatchesCLI(t *testing.T) {
 
 	for _, phrase := range []string{
 		fmt.Sprintf("exits %d with `refused (CODE): reason`", ExitRefused),
-		fmt.Sprintf("Exit %d from `send --wait` or `wait` means the wait timed out", ExitTimeout),
-		fmt.Sprintf("exit %d then means nothing was delivered", ExitTimeout),
+		fmt.Sprintf("A timeout exits %d, and its error says whether the prompt was delivered", ExitTimeout),
+		"run it again only when it says nothing was delivered",
 		fmt.Sprintf("Exit %d is an error, such as `ended`", ExitError),
 		"`no_reply` (its last turn left no reply",
 		fmt.Sprintf("starting with `%s`, says what to do", strings.TrimSpace(nextPrefix)),
@@ -164,5 +167,29 @@ func TestNextFollowsTheError(t *testing.T) {
 	}
 	if strings.Contains(stdout.String(), "tmag wait") {
 		t.Errorf("the JSON document carries the advice: %s", stdout.String())
+	}
+}
+
+// A reply that times out says nothing was delivered only when its last try
+// was refused, which delivers nothing; after any other error, such as an
+// agent service that took the request and did not answer, the outcome is
+// unknown and nothing invites running it again. Either way it exits 4.
+func TestReplyTimeoutClaimsNothingUnproven(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
+	defer cancel()
+	<-ctx.Done()
+	a := &app{stdout: io.Discard, stderr: io.Discard}
+	refused := a.deadline(ctx, time.Second, &query.RefusedError{Reason: query.RefuseBusy, Detail: "01a19fda is working"})
+	if !strings.Contains(refused.Error(), "nothing delivered") || !strings.Contains(next("reply", "01a1", refused), "run the same tmag reply again") {
+		t.Errorf("after a refusal: %q, next %q", refused, next("reply", "01a1", refused))
+	}
+	uncertain := a.deadline(ctx, time.Second, errors.New("logged at seq 9, but the Codex daemon did not take it: i/o timeout"))
+	if strings.Contains(uncertain.Error(), "nothing delivered") || next("reply", "01a1", uncertain) != "" {
+		t.Errorf("after an uncertain delivery: %q, next %q", uncertain, next("reply", "01a1", uncertain))
+	}
+	for _, err := range []error{refused, uncertain} {
+		if code := a.failOn("reply", "01a1", err); code != ExitTimeout {
+			t.Errorf("%v exits %d, want %d", err, code, ExitTimeout)
+		}
 	}
 }

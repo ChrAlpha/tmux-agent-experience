@@ -409,7 +409,7 @@ func (a *app) cmdReply(args []string) int {
 		stop()
 		if ctx.Err() != nil {
 			// Its last try was refused busy: nothing went out.
-			return a.failOn("reply", pos[0], undelivered{a.deadline(ctx, *timeout, refused)})
+			return a.failOn("reply", pos[0], a.deadline(ctx, *timeout, refused))
 		}
 		if err != nil && !errors.Is(err, context.DeadlineExceeded) {
 			return a.failOn("reply", pos[0], err)
@@ -419,11 +419,16 @@ func (a *app) cmdReply(args []string) int {
 
 // deadline reports err as a timeout when ctx ran out of time. It keeps
 // only err's message: a refusal it wraps would report the timeout as one.
+// A refusal delivers nothing, so after one the reply may run again; any
+// other error may have come after the reply went out.
 func (a *app) deadline(ctx context.Context, timeout time.Duration, err error) error {
-	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		return fmt.Errorf("%w after %s, nothing delivered: %s", errTimeout, timeout, err.Error())
+	if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return err
 	}
-	return err
+	if errors.As(err, new(*query.RefusedError)) {
+		return undelivered{fmt.Errorf("%w after %s, nothing delivered: %s", errTimeout, timeout, err.Error())}
+	}
+	return fmt.Errorf("%w after %s; whether the reply was delivered is unknown: %s", errTimeout, timeout, err.Error())
 }
 
 func (a *app) cmdInterrupt(args []string) int {

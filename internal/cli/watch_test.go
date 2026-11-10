@@ -227,7 +227,7 @@ func TestSendWaitHistoryLossRetainsAcceptedDeliveryOutcome(t *testing.T) {
 	}
 	// What to do next names the target as typed, and keeps the prompt from
 	// being sent twice.
-	if want := nextPrefix + "the prompt arrived and its turn had not ended: run tmag wait %7 --for idle,blocked"; !strings.Contains(stderr.String(), want) {
+	if want := nextPrefix + "the prompt arrived and what became of it is unknown: run tmag wait %7 --for idle,blocked"; !strings.Contains(stderr.String(), want) {
 		t.Fatalf("stderr %q lacks %q", stderr.String(), want)
 	}
 }

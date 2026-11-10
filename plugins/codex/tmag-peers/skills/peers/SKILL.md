@@ -99,10 +99,10 @@ Choose how the peer answers:
   `tmag reply` with its answer when done. Finish your own turn: the reply
   arrives later as a prompt to you.
 
-Keep `--timeout` under your shell tool's own time limit. Exit 4 from
-`send --wait` or `wait` means the wait timed out, not the delivery: the
-prompt arrived and the peer is still busy, so run `tmag wait` again. Never
-send the same prompt twice.
+Keep `--timeout` under your shell tool's own time limit. A timeout exits 4,
+and its error says whether the prompt was delivered: after `send --wait`
+reports a delivery, run `tmag wait` again rather than sending the prompt
+twice. Send a prompt again only when tmag says nothing was delivered.
 
 ## Receiving
 
@@ -120,7 +120,8 @@ EOF
 ```
 
 `tmag reply` waits for the asker to be idle, until `--timeout` (one minute by
-default); exit 4 then means nothing was delivered, so run it again.
+default). If it times out, run it again only when it says nothing was
+delivered; otherwise follow its `next:` line.
 
 A prompt whose first line starts with `[tmag] Reply from` answers one you
 sent. Go on with the work it was for, and do not reply to it.
