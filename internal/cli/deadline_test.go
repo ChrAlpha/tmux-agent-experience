@@ -105,7 +105,7 @@ func TestHookCLIInheritedInput(t *testing.T) {
 				// Complete the payload after exit: it must not have been handed
 				// to an abandoned reader that can apply it later.
 				_, _ = io.WriteString(w, "\n")
-				if records, err := (session.Store{Dir: filepath.Join(dir, "state")}).All(); err != nil || len(records) != 0 {
+				if records, _, err := (session.Store{Dir: filepath.Join(dir, "state")}).All(context.Background()); err != nil || len(records) != 0 {
 					t.Fatalf("late records=%v err=%v", records, err)
 				}
 			})
@@ -117,15 +117,15 @@ func TestWatchCancelsOwnedBlockedOutput(t *testing.T) {
 	t.Setenv("TMUX", "")
 	t.Setenv("TMUX_PANE", "")
 	t.Setenv("TMUX_TMPDIR", t.TempDir())
-	for _, backlog := range []bool{false, true} {
-		t.Run(map[bool]string{false: "snapshot", true: "copied backlog"}[backlog], func(t *testing.T) {
+	{
+		t.Run("snapshot", func(t *testing.T) {
 			log := eventlog.Open(t.TempDir())
 			log.MaxBytes = 64 << 20
 			store := session.Store{Dir: log.Dir}
 			large := strings.Repeat("x", 2<<20)
 			for i := range 2 {
 				id := fmt.Sprintf("large-%d", i)
-				if err := store.Put(session.Record{Agent: "claude", ID: id, Main: "idle", Cwd: large}); err != nil {
+				if err := store.Put(context.Background(), session.Record{Agent: "claude", ID: id, Main: "idle", Cwd: large}); err != nil {
 					t.Fatal(err)
 				}
 				ev := eventlog.Event{Agent: "claude", Session: id, Event: "SessionStart", Cwd: large}
@@ -144,9 +144,6 @@ func TestWatchCancelsOwnedBlockedOutput(t *testing.T) {
 			var stderr bytes.Buffer
 			a := app{ctx: ctx, log: log, stdout: w, stderr: &stderr}
 			args := []string{"watch"}
-			if backlog {
-				args = append(args, "--since", "0")
-			}
 			done := make(chan int, 1)
 			go func() { done <- a.run(args) }()
 			first := make(chan []byte, 1)
@@ -212,7 +209,7 @@ func TestAnswerWaitOutlivesSetupBudgetAndCancelsSilently(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("setup did not finish")
 	}
-	rec, ok, err := (session.Store{Dir: log.Dir}).Get("claude", "answer-deadline")
+	rec, ok, err := (session.Store{Dir: log.Dir}).Get(context.Background(), "claude", "answer-deadline")
 	if err != nil || !ok || len(rec.Requests) != 1 {
 		t.Fatalf("request=%+v err=%v", rec, err)
 	}

@@ -1,13 +1,11 @@
 package attach
 
 import (
-	"context"
 	"reflect"
-	"slices"
 	"strconv"
+	"strings"
 	"testing"
 
-	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/tmux"
@@ -200,70 +198,22 @@ func TestLiveDropsSessionsWhoseHostExited(t *testing.T) {
 	}
 }
 
-func TestReconcileFinishesWhatAWriterLeft(t *testing.T) {
-	dir := t.TempDir()
-	env := Env{Log: eventlog.Open(dir), Store: session.Store{Dir: dir}}
-	ctx := context.Background()
-	// Crashed between storing and logging: a change, an end, and a session
-	// whose process exited without either.
-	unlogged := session.Record{Agent: proc.Codex, ID: "a", Main: "idle", Change: "Stop"}
-	ended := session.Record{Agent: proc.Codex, ID: "b", Main: "idle", Logged: session.Report{State: "idle"}, Ended: eventlog.End}
-	exited := session.Record{Agent: proc.Claude, ID: "c", Main: "idle", Logged: session.Report{State: "idle"}, Host: session.Host{PID: 77, Start: "1"}}
-	for _, r := range []session.Record{unlogged, ended, exited} {
-		if err := env.Store.Put(r); err != nil {
-			t.Fatal(err)
+func TestFromPaneReadsOnlyAttachmentsTmagWrites(t *testing.T) {
+	valid := Attachment{Agent: proc.Claude, Session: "c1", PID: 101, Start: "s%1", Evidence: Process}
+	for name, spoil := range map[string]func(o map[string]string){
+		"unknown agent":     func(o map[string]string) { o[optAgent] = "aider" },
+		"path as session":   func(o map[string]string) { o[optSession] = "../c1" },
+		"oversized session": func(o map[string]string) { o[optSession] = strings.Repeat("c", 200) },
+		"no process":        func(o map[string]string) { o[optPID] = "0" },
+		"unknown evidence":  func(o map[string]string) { o[optEvidence] = "name" },
+	} {
+		o := stored(valid)
+		spoil(o)
+		if a, ok := FromPane(tmux.Pane{Server: sock, ID: "%1", Options: o}); ok {
+			t.Errorf("%s read as %+v", name, a)
 		}
 	}
-	w := &World{Proc: proc.NewTable(nil)}
-	if live, gone := Live(w, []session.Record{unlogged, ended, exited}); len(live) != 1 || len(gone) != 2 {
-		t.Fatalf("live %v, gone %v", live, gone)
-	}
-	if err := Reconcile(ctx, env, w); err != nil {
-		t.Fatalf("initial reconciliation: %v", err)
-	}
-	// A second reconciliation finds nothing left to do.
-	if err := Reconcile(ctx, env, w); err != nil {
-		t.Fatalf("repeated reconciliation: %v", err)
-	}
-
-	all, _, err := env.Log.Since(ctx, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var got []string
-	for _, e := range all {
-		got = append(got, e.Session+":"+e.Event+":"+e.State)
-	}
-	slices.Sort(got)
-	if want := []string{"a:Stop:idle", "b:SessionEnd:", "c:Exit:"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("events %q, want %q", got, want)
-	}
-	recs, _ := env.Store.All()
-	if len(recs) != 1 || recs[0].ID != "a" || recs[0].Unlogged() {
-		t.Fatalf("sessions left: %+v", recs)
-	}
-}
-
-func TestAttachmentBeingDetachedNoLongerHolds(t *testing.T) {
-	rec := session.Record{Agent: proc.Claude, ID: "c1", Main: "idle"}
-	a := Attachment{Agent: proc.Claude, Session: "c1", PID: 101, Start: "s%1", Evidence: Process}
-	for change, want := range map[string]bool{"": true, eventlog.Attach: true, eventlog.Detach: false} {
-		opts := stored(a)
-		if change != "" {
-			opts[optChange] = change
-		}
-		var f fixture
-		f.pane("%1", 100, proc.Claude, 101, "", opts)
-		w := f.world()
-		got, ok := FromPane(f.panes[0])
-		if !ok || got.Change != change || !got.same(a) {
-			t.Fatalf("change %q read as %+v, %v", change, got, ok)
-		}
-		if l := linkOf(t, Links(w, []session.Record{rec}), "%1"); (l.Session != nil) != want {
-			t.Errorf("change %q: link %+v", change, l)
-		}
-		if shown := w.Attached(rec); (len(shown) == 1) != want {
-			t.Errorf("change %q: attached %+v", change, shown)
-		}
+	if a, ok := FromPane(tmux.Pane{Server: sock, ID: "%1", Options: stored(valid)}); !ok || a != valid {
+		t.Fatalf("a valid attachment read as %+v, %v", a, ok)
 	}
 }

@@ -1,5 +1,10 @@
 // Package lockfile provides advisory file locks whose waiting is bounded by a
 // context.
+//
+// A lock file is opened without following a symlink and without waiting for
+// a peer, and must be a regular file: a lock name replaced by anything else
+// fails rather than blocking a hook. Lock files are never removed, so a lock
+// held through an open file always guards the name others open.
 package lockfile
 
 import (
@@ -10,143 +15,99 @@ import (
 	"path/filepath"
 	"syscall"
 	"time"
-
-	"github.com/ChrAlpha/tmux-agent-experience/internal/ownedfs"
 )
 
 // retry is how often a contended lock is tried again.
 const retry = 5 * time.Millisecond
 
-// ErrBusy is returned by Try when another holder excludes this operation.
+// ErrBusy is returned by Acquire without waiting when another holder
+// excludes this one.
 var ErrBusy = errors.New("lock busy")
 
 // With runs fn while holding an exclusive flock on path, creating the file and
 // its directory if needed. Waiting for the lock ends with ctx. Closing the file
 // releases the lock, so it is released even if fn panics.
 func With(ctx context.Context, path string, fn func() error) error {
-	return with(ctx, path, syscall.LOCK_EX, true, fn)
-}
-
-// Shared participates in a stable namespace until fn returns. Every opener
-// enters before opening a resource lock and leaves after closing that lock.
-func Shared(ctx context.Context, path string, fn func() error) error {
-	return with(ctx, path, syscall.LOCK_SH, true, fn)
-}
-
-// Try runs fn only when the exclusive lock can be acquired immediately.
-func Try(ctx context.Context, path string, fn func() error) error {
-	return with(ctx, path, syscall.LOCK_EX, false, fn)
-}
-
-// TryShared joins a namespace only if its shared lock is available immediately.
-func TryShared(ctx context.Context, path string, fn func() error) error {
-	return with(ctx, path, syscall.LOCK_SH, false, fn)
-}
-
-// Within acquires a lock below an explicitly selected root using pinned,
-// runtime-validated ancestry. Permanent gate/pool files must never be unlinked.
-func Within(ctx context.Context, root, path string, shared, wait bool, fn func() error) error {
-	held, err := AcquireWithin(ctx, root, path, shared, wait)
-	if err != nil {
-		return err
-	}
-	defer held.Close()
-	return fn()
-}
-
-// Held owns a descriptor and pinned scope until Close. This supports an answer
-// listener's intentional lifetime without a parked goroutine or a per-ID file.
-type Held struct {
-	file *os.File
-	dir  *ownedfs.Dir
-}
-
-// File borrows the lock descriptor for child inheritance. The caller must not
-// close it; Held retains ownership until Close.
-func (h *Held) File() *os.File { return h.file }
-
-func (h *Held) Close() error {
-	err := h.file.Close()
-	return errors.Join(err, h.dir.Close())
-}
-
-// AcquireWithin returns an already-validated permanent lock descriptor. The
-// caller must Close it on every path, including failed listener setup.
-func AcquireWithin(ctx context.Context, root, path string, shared, wait bool) (*Held, error) {
-	d, err := ownedfs.Open(ctx, root, filepath.Dir(path), true)
-	if err != nil {
-		return nil, err
-	}
-	f, err := d.OpenFile(ctx, filepath.Base(path), os.O_CREATE|os.O_RDWR, 0o600)
-	if err != nil {
-		d.Close()
-		return nil, err
-	}
-	how := syscall.LOCK_EX
-	if shared {
-		how = syscall.LOCK_SH
-	}
-	err = flock(ctx, f, path, how, wait, func() error {
-		if err := d.Validate(ctx); err != nil {
-			return err
-		}
-		current, err := d.Stat(ctx, filepath.Base(path))
-		if err != nil {
-			return err
-		}
-		held, err := f.Stat()
-		if err != nil {
-			return err
-		}
-		if !os.SameFile(current, held) {
-			return ownedfs.ErrScope
-		}
-		return nil
-	})
-	if err != nil {
-		f.Close()
-		d.Close()
-		return nil, err
-	}
-	return &Held{file: f, dir: d}, nil
-}
-
-func with(ctx context.Context, path string, how int, wait bool, fn func() error) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0o600)
+	f, err := open(ctx, path)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-	st, err := f.Stat()
-	if err != nil {
+	if err := flock(ctx, f, path, syscall.LOCK_EX, true); err != nil {
 		return err
 	}
-	if !st.Mode().IsRegular() {
-		return fmt.Errorf("lock %s is not a regular file", filepath.Base(path))
+	if err := ctx.Err(); err != nil {
+		return err
 	}
-	return flock(ctx, f, path, how, wait, fn)
+	return fn()
 }
 
-func flock(ctx context.Context, f *os.File, path string, how int, wait bool, fn func() error) error {
+// Stripes is how many locks a pool of Stripe holds per class.
+const Stripes = 256
+
+// Stripe runs fn holding the lock of key in a fixed pool under dir/locks:
+// one file per class and first byte of key, so that the number of lock files
+// stays bounded however many resources come and go. Resources that share a
+// stripe wait for each other. Whoever takes stripes of two classes takes
+// them in a fixed order, and nobody takes two stripes of one class.
+func Stripe(ctx context.Context, dir, class string, key [32]byte, fn func() error) error {
+	return With(ctx, filepath.Join(dir, "locks", fmt.Sprintf("%s-%02x", class, key[0])), fn)
+}
+
+// Held is a lock held until Close, for a holder whose lifetime is not one
+// function call: a lease a child process inherits.
+type Held struct{ file *os.File }
+
+// File is the locked descriptor, for a child to inherit; Held keeps owning it.
+func (h *Held) File() *os.File { return h.file }
+
+// Close releases the lock.
+func (h *Held) Close() error { return h.file.Close() }
+
+// Acquire takes the exclusive lock on path and returns it held, waiting for
+// it until ctx ends when wait is true, and failing with ErrBusy otherwise.
+func Acquire(ctx context.Context, path string, wait bool) (*Held, error) {
+	f, err := open(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	if err := flock(ctx, f, path, syscall.LOCK_EX, wait); err != nil {
+		f.Close()
+		return nil, err
+	}
+	return &Held{file: f}, nil
+}
+
+func open(ctx context.Context, path string) (*os.File, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, err
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	st, err := f.Stat()
+	if err == nil && !st.Mode().IsRegular() {
+		err = fmt.Errorf("lock %s is not a regular file", filepath.Base(path))
+	}
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
+	return f, nil
+}
+
+func flock(ctx context.Context, f *os.File, path string, how int, wait bool) error {
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		err := syscall.Flock(int(f.Fd()), how|syscall.LOCK_NB)
 		if err == nil {
-			if err := ctx.Err(); err != nil {
-				return err
-			}
-			return fn()
+			return nil
 		}
 		if !errors.Is(err, syscall.EWOULDBLOCK) && !errors.Is(err, syscall.EINTR) {
 			return err

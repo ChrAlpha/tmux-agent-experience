@@ -91,7 +91,7 @@ func TestWait(t *testing.T) {
 	if emitted || out.Len() != 0 {
 		t.Fatalf("a closed request printed %q", out.String())
 	}
-	path, err := location(ctx, dir, "r2")
+	path, err := socketPath(dir, "r2")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +118,7 @@ func TestWaitPrintsNothingOnceItEnds(t *testing.T) {
 	go func() { done <- Wait(ctx, ln, Asked{Tool: "Bash"}, func(b []byte) error { out.Write(b); return nil }) }()
 
 	// A connection is being served when the hook is told to leave.
-	path, err := location(ctx, dir, "r1")
+	path, err := socketPath(dir, "r1")
 	if err != nil {
 		t.Fatal(err)
 	}

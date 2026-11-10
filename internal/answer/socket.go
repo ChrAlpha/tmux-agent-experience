@@ -1,9 +1,9 @@
 package answer
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,334 +12,204 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sync"
+	"strings"
 	"syscall"
 	"time"
-
-	"github.com/ChrAlpha/tmux-agent-experience/internal/coord"
-	"github.com/ChrAlpha/tmux-agent-experience/internal/lockfile"
-	"github.com/ChrAlpha/tmux-agent-experience/internal/ownedfs"
-	"github.com/ChrAlpha/tmux-agent-experience/internal/socketbind"
-	"github.com/ChrAlpha/tmux-agent-experience/internal/statefile"
 )
 
-const socketSlots = 256
+// setupBudget bounds listening, separately from Wait's lifetime.
 const setupBudget = time.Second
+
+// exchangeBudget bounds an exchange that is not the operation itself: a
+// probe, or telling hooks their prompts closed.
+const exchangeBudget = time.Second
+
+// staleAfter is how old a socket nothing serves must be before Listen
+// removes it: younger, it may be one whose hook is still starting to listen.
+const staleAfter = time.Minute
 
 var requestName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 
-type endpoint struct {
-	Request string `json:"request"`
+// socketBase holds socketDir; tests point it elsewhere.
+var socketBase = "/tmp"
+
+// socketDir is where answer hooks listen: a directory of this user's own
+// under /tmp, as tmux keeps its sockets, so that a socket's path stays within
+// the platform's limit however long the state directory's is. A directory
+// another user made, or one others may enter, is refused: a hook then does
+// not wait, and the prompt is answered in the agent.
+func socketDir() (string, error) {
+	dir := filepath.Join(socketBase, fmt.Sprintf("tmag-%d", os.Geteuid()))
+	if err := os.Mkdir(dir, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
+		return "", err
+	}
+	st, err := os.Lstat(dir)
+	if err != nil {
+		return "", err
+	}
+	sys, ok := st.Sys().(*syscall.Stat_t)
+	if !st.IsDir() || !ok || sys.Uid != uint32(os.Geteuid()) || st.Mode().Perm()&0o077 != 0 {
+		return "", fmt.Errorf("%s is not a directory of this user's alone", dir)
+	}
+	return dir, nil
+}
+
+// socketPath is where the hook of request id of state directory stateDir
+// listens: the request ids of different state directories never meet.
+func socketPath(stateDir, id string) (string, error) {
+	if !requestName.MatchString(id) {
+		return "", ErrInvalid
+	}
+	dir, err := socketDir()
+	if err != nil {
+		return "", err
+	}
+	if abs, err := filepath.Abs(stateDir); err == nil {
+		stateDir = abs
+	}
+	sum := sha256.Sum256([]byte(filepath.Clean(stateDir) + "\x00" + id))
+	return filepath.Join(dir, hex.EncodeToString(sum[:8])+".sock"), nil
 }
 
 type listener struct {
 	*net.UnixListener
-	id   string
-	dir  *ownedfs.Dir
-	slot *lockfile.Held
-	once sync.Once
-	err  error
+	id string
 }
 
-// Close owns no filesystem cleanup. It cannot unlink a rebound endpoint or
-// spend a fresh budget after cancellation. Allocation reclaims dead leftovers
-// on reuse. Closing the liveness descriptor releases exclusion.
-func (l *listener) Close() error {
-	l.once.Do(func() {
-		l.err = l.UnixListener.Close()
-		if l.slot != nil {
-			l.err = errors.Join(l.err, l.slot.Close())
-		}
-		l.err = errors.Join(l.err, l.dir.Close())
-	})
-	return l.err
-}
-
-// Listen retains the bounded setup compatibility API. Operation-bearing callers
-// use ListenContext so their earlier deadline also contains setup.
+// Listen listens for the request id of state directory root.
 func Listen(root, id string) (net.Listener, error) {
 	return ListenContext(context.Background(), root, id)
 }
 
-// ListenContext bounds setup, separately from Wait's intentional lifetime.
-// A pool allocates at most 256 simultaneous listeners and
-// bounded fixed metadata/socket positions. Exhaustion fails open to the dialog.
+// ListenContext listens for the request id of state directory root, within
+// ctx's budget and setupBudget for setting up. It first removes the sockets
+// of hooks that died without closing theirs. A socket left at its own path
+// that nothing serves is replaced; one something serves is not.
 func ListenContext(ctx context.Context, root, id string) (net.Listener, error) {
-	if !requestName.MatchString(id) {
-		return nil, ErrInvalid
-	}
 	ctx, cancel := context.WithTimeout(ctx, setupBudget)
 	defer cancel()
-	if _, err := coord.Current(ctx, root); err != nil {
-		return nil, err
-	}
-	var result net.Listener
-	gate, err := lockfile.AcquireWithin(ctx, root, "coord/gate", true, true)
+	path, err := socketPath(root, id)
 	if err != nil {
 		return nil, err
 	}
-	defer gate.Close()
-	allocation, err := lockfile.AcquireWithin(ctx, root, "coord/request-allocation", false, true)
+	sweep(ctx, filepath.Dir(path))
+	ln, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
+	if errors.Is(err, syscall.EADDRINUSE) {
+		if probe(ctx, path, id) != Dead {
+			return nil, fmt.Errorf("another answer hook waits on request %s", id)
+		}
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+		ln, err = net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
+	}
 	if err != nil {
-		return nil, err
-	}
-	defer allocation.Close()
-	err = func() error {
-		if _, err := coord.Current(ctx, root); err != nil {
-			return err
-		}
-		d, err := ownedfs.Open(ctx, root, "req", true)
-		if err != nil {
-			return err
-		}
-		defer func() {
-			if d != nil {
-				d.Close()
-			}
-		}()
-
-		// Duplicate IDs never acquire another slot. Published metadata is only
-		// request identity; no tool name/input or decision reaches disk.
-		if previous, found, err := locate(ctx, d, id); err != nil {
-			return err
-		} else if found {
-			held, err := lockfile.AcquireWithin(ctx, root, fmt.Sprintf("coord/r-%02x", previous), false, false)
-			if err != nil {
-				return err
-			}
-			free, err := clearSlot(ctx, d, previous)
-			held.Close()
-			if err != nil {
-				return err
-			}
-			if !free {
-				return errors.New("request endpoint is live or uncertain")
-			}
-		}
-		start := sha256.Sum256([]byte(id))
-		for i := range socketSlots {
-			if err := ctx.Err(); err != nil {
-				return err
-			}
-			slot := byte(int(start[0]) + i)
-			held, err := lockfile.AcquireWithin(ctx, root, fmt.Sprintf("coord/r-%02x", slot), false, false)
-			if errors.Is(err, lockfile.ErrBusy) {
-				continue
-			}
-			if err != nil {
-				return err
-			}
-			free, err := clearSlot(ctx, d, slot)
-			if err != nil {
-				held.Close()
-				return err
-			}
-			if !free {
-				held.Close()
-				continue
-			}
-			data, _ := json.Marshal(endpoint{Request: id})
-			meta, tmp := fmt.Sprintf("req/meta-%02x", slot), fmt.Sprintf("req/temp-%02x", slot)
-			if err := statefile.WriteWithin(ctx, root, meta, tmp, data); err != nil {
-				held.Close()
-				return err
-			}
-			ln, err := bind(ctx, d, fmt.Sprintf("sock-%02x", slot), id, held, gate.File(), allocation.File(), held.File())
-			if err != nil {
-				held.Close()
-				return err
-			}
-			d = nil
-			result = ln
-			return nil
-		}
-		return errors.New("all answer socket positions are occupied or uncertain")
-	}()
-	return result, err
-}
-
-// bind creates through a short-lived child whose cwd is the pinned directory.
-// Exclusion descriptors survive parent death until that child exits. The
-// returned inode identity must match the entry in the still-valid realm scope.
-func bind(ctx context.Context, d *ownedfs.Dir, name, id string, held *lockfile.Held, keep ...*os.File) (net.Listener, error) {
-	if _, err := d.Stat(ctx, name); !errors.Is(err, os.ErrNotExist) {
-		if err == nil {
-			return nil, errors.New("answer endpoint already exists")
-		}
-		return nil, err
-	}
-	anchor, err := d.File(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer anchor.Close()
-	bound, err := socketbind.Listen(ctx, anchor, name, keep...)
-	if err != nil {
-		return nil, err
-	}
-	success := false
-	defer func() {
-		if !success {
-			bound.Listener.Close()
-		}
-	}()
-	st, err := d.Stat(ctx, name)
-	if err != nil {
-		return nil, err
-	}
-	sys := st.Sys().(*syscall.Stat_t)
-	if st.Mode()&os.ModeSocket == 0 || !ownedfs.Owner(st) || sys.Nlink != 1 || int64(sys.Dev) != bound.Device || sys.Ino != bound.Inode {
-		return nil, ownedfs.ErrScope
-	}
-	if err := d.Validate(ctx); err != nil {
 		return nil, err
 	}
 	if err := ctx.Err(); err != nil {
+		ln.Close()
 		return nil, err
 	}
-	success = true
-	return &listener{UnixListener: bound.Listener, id: id, dir: d, slot: held}, nil
+	return &listener{UnixListener: ln, id: id}, nil
 }
 
-func readEndpoint(ctx context.Context, d *ownedfs.Dir, slot byte) (endpoint, error) {
-	f, err := d.OpenFile(ctx, fmt.Sprintf("meta-%02x", slot), os.O_RDONLY, 0)
+// sweep removes the sockets of hooks that died without closing them: older
+// than staleAfter, and refusing connections. The directory holds only the
+// sockets of hooks waiting now, and those of hooks that died since the last
+// sweep.
+func sweep(ctx context.Context, dir string) {
+	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return endpoint{}, err
+		return
 	}
-	defer f.Close()
-	b, err := io.ReadAll(io.LimitReader(f, 513))
-	if err != nil {
-		return endpoint{}, err
-	}
-	var e endpoint
-	decoder := json.NewDecoder(bytes.NewReader(b))
-	decoder.DisallowUnknownFields()
-	if len(b) > 512 || decoder.Decode(&e) != nil || !requestName.MatchString(e.Request) {
-		return e, ownedfs.ErrScope
-	}
-	var tail any
-	if err := decoder.Decode(&tail); !errors.Is(err, io.EOF) {
-		return e, ownedfs.ErrScope
-	}
-	return e, ctx.Err()
-}
-
-func locate(ctx context.Context, d *ownedfs.Dir, id string) (byte, bool, error) {
-	start := sha256.Sum256([]byte(id))
-	var found bool
-	var selected byte
-	for i := range socketSlots {
-		if err := ctx.Err(); err != nil {
-			return 0, false, err
+	for _, e := range entries {
+		if ctx.Err() != nil {
+			return
 		}
-		slot := byte(int(start[0]) + i)
-		e, err := readEndpoint(ctx, d, slot)
-		if errors.Is(err, os.ErrNotExist) {
+		if !strings.HasSuffix(e.Name(), ".sock") {
 			continue
 		}
-		// An unreadable record may already name id. Neither a missing flat path
-		// nor another free slot can turn uncertain identity into proven absence.
-		if err != nil {
-			return 0, false, err
+		info, err := e.Info()
+		if err != nil || info.Mode()&os.ModeSocket == 0 || time.Since(info.ModTime()) < staleAfter {
+			continue
 		}
-		if e.Request == id {
-			if found {
-				return 0, false, ownedfs.ErrScope
-			}
-			found = true
-			selected = slot
+		path := filepath.Join(dir, e.Name())
+		if refused(ctx, path) {
+			_ = os.Remove(path)
 		}
 	}
-	return selected, found, nil
 }
 
-// lookup retains the pinned scope through connect and identity validation.
-func lookup(ctx context.Context, root, id string) (*ownedfs.Dir, string, bool, error) {
-	if !requestName.MatchString(id) {
-		return nil, "", false, ErrInvalid
+// refused reports whether connecting to path is refused: no process
+// listens there any longer.
+func refused(ctx context.Context, path string) bool {
+	ctx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+	defer cancel()
+	c, err := (&net.Dialer{}).DialContext(ctx, "unix", path)
+	if err == nil {
+		c.Close()
+		return false
 	}
-	d, err := ownedfs.Open(ctx, root, "req", false)
-	if err != nil {
-		return nil, "", false, err
-	}
-	success := false
-	defer func() {
-		if !success {
-			d.Close()
-		}
-	}()
-	if _, err := coord.Current(ctx, root); err != nil {
-		return nil, "", false, err
-	}
-	slot, found, err := locate(ctx, d, id)
-	if err != nil {
-		return nil, "", false, err
-	}
-	if !found {
-		return nil, "", false, os.ErrNotExist
-	}
-	name := fmt.Sprintf("sock-%02x", slot)
-
-	if _, err := d.Stat(ctx, name); err != nil {
-		return nil, "", false, err
-	}
-	if err := d.Validate(ctx); err != nil {
-		return nil, "", false, err
-	}
-	success = true
-	return d, name, true, nil
+	return errors.Is(err, syscall.ECONNREFUSED)
 }
 
-// location is a contextual path helper for fixtures/diagnostics. Production
-// retains lookup's pinned handle for socketbind.Dial, on Linux and Darwin.
-func location(ctx context.Context, root, id string) (string, error) {
-	d, name, _, err := lookup(ctx, root, id)
+func dial(ctx context.Context, root, id string) (net.Conn, error) {
+	path, err := socketPath(root, id)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	defer d.Close()
-	return filepath.Join(root, "req", name), nil
+	return (&net.Dialer{}).DialContext(ctx, "unix", path)
 }
 
-func dialAt(ctx context.Context, d *ownedfs.Dir, name string) (net.Conn, error) {
-	before, err := d.Stat(ctx, name)
+// Presence is what a probe found of a request's hook. Unknown includes a
+// timeout, an unexpected reply and a refused socket directory; only Dead, a
+// socket missing or refusing connections, proves no hook waits.
+type Presence uint8
+
+const (
+	Unknown Presence = iota
+	Alive
+	Dead
+)
+
+// Probe tells whether a hook waits on request id of state directory root.
+func Probe(ctx context.Context, root, id string) Presence {
+	path, err := socketPath(root, id)
 	if err != nil {
-		return nil, err
+		return Unknown
 	}
-	if before.Mode()&os.ModeSocket == 0 || !ownedfs.Owner(before) {
-		return nil, ownedfs.ErrScope
-	}
-	anchor, err := d.File(ctx)
+	return probe(ctx, path, id)
+}
+
+// Waiting reports whether a hook waits on request id, within a bounded probe.
+func Waiting(root, id string) bool { return Probe(context.Background(), root, id) == Alive }
+
+func probe(ctx context.Context, path, id string) Presence {
+	ctx, cancel := context.WithTimeout(ctx, exchangeBudget)
+	defer cancel()
+	c, err := (&net.Dialer{}).DialContext(ctx, "unix", path)
 	if err != nil {
-		return nil, err
-	}
-	defer anchor.Close()
-	connected, err := socketbind.Dial(ctx, anchor, name)
-	if err != nil {
-		// A refusal is meaningful only while the original directory and entry
-		// still establish this endpoint's identity.
-		after, scopeErr := d.Stat(ctx, name)
-		if scopeErr != nil {
-			return nil, scopeErr
+		if ctx.Err() == nil && (errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, os.ErrNotExist)) {
+			return Dead
 		}
-		if !os.SameFile(before, after) {
-			return nil, ownedfs.ErrScope
-		}
-		return nil, err
+		return Unknown
 	}
-	after, err := d.Stat(ctx, name)
-	if err != nil {
-		connected.Conn.Close()
-		return nil, err
+	defer c.Close()
+	stop := context.AfterFunc(ctx, func() { c.Close() })
+	defer stop()
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = c.SetDeadline(deadline)
 	}
-	sys := after.Sys().(*syscall.Stat_t)
-	if !os.SameFile(before, after) || !ownedfs.Owner(after) || int64(sys.Dev) != connected.Device || sys.Ino != connected.Inode {
-		connected.Conn.Close()
-		return nil, ownedfs.ErrScope
+	if err := json.NewEncoder(c).Encode(message{Op: "probe", Request: id}); err != nil {
+		return Unknown
 	}
-	if err := d.Validate(ctx); err != nil {
-		connected.Conn.Close()
-		return nil, err
+	var r struct {
+		OK      bool   `json:"ok"`
+		Request string `json:"request"`
 	}
-	return connected.Conn, nil
+	decoder := json.NewDecoder(io.LimitReader(c, 512))
+	if err := decoder.Decode(&r); err != nil || !r.OK || r.Request != id || ctx.Err() != nil {
+		return Unknown
+	}
+	return Alive
 }

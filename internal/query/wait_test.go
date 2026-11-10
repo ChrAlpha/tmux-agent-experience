@@ -6,101 +6,103 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
 )
 
-func TestWaitForTurnIgnoresStatesBeforeItStarts(t *testing.T) {
-	log := eventlog.Open(t.TempDir())
-	ctx := context.Background()
-	appendEvent := func(event, state string) int64 {
-		e := eventlog.Event{Agent: "claude", Session: "s1", Event: event, State: state}
-		if err := log.Append(ctx, &e); err != nil {
-			t.Fatal(err)
-		}
-		return e.Seq
+// put stores the session's record as its hooks would leave it.
+func put(t *testing.T, store session.Store, rec session.Record) {
+	t.Helper()
+	rec.Agent, rec.ID = "claude", "s1"
+	if err := store.Put(context.Background(), rec); err != nil {
+		t.Fatal(err)
 	}
-	send := appendEvent("Send", "")
-	// A late idle notification lands between delivery and the turn's start.
-	appendEvent("Notification", "idle")
-	appendEvent("UserPromptSubmit", "working")
-	stop := appendEvent("Stop", "idle")
+}
 
-	o := WaitOptions{States: []string{"idle", "blocked"}, After: send, StartGrace: time.Second}
-	ev, err := Wait(ctx, log, Session{ID: "s1", Agent: "claude"}, o)
-	if err != nil || ev.Seq != stop {
-		t.Fatalf("Wait = %+v, %v; want the Stop event %d", ev, err, stop)
+var s1 = Session{ID: "s1", Agent: "claude"}
+
+// A prompt's turn counts once its hooks report it, not before: the state the
+// session was in when the prompt was sent is no answer.
+func TestWaitForTurnIgnoresStatesBeforeItStarts(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	store := session.Store{Dir: t.TempDir()}
+	put(t, store, session.Record{Main: "idle", Turn: "t0", Sent: time.Now()})
+	turn := "t0"
+	got := make(chan session.Record, 1)
+	go func() {
+		rec, err := Wait(ctx, store, s1, WaitOptions{States: []string{"idle", "blocked"}, Prompted: &turn, Grace: 5 * time.Second})
+		if err != nil {
+			t.Error(err)
+		}
+		got <- rec
+	}()
+	time.Sleep(3 * waitPoll)
+	select {
+	case rec := <-got:
+		t.Fatalf("the state before the turn ended the wait: %+v", rec)
+	default:
+	}
+	put(t, store, session.Record{Main: "working", Turn: "t1"})
+	time.Sleep(3 * waitPoll)
+	put(t, store, session.Record{Main: "idle", Turn: "t1"})
+	if rec := <-got; rec.State() != "idle" || rec.Turn != "t1" {
+		t.Fatalf("Wait = %+v", rec)
+	}
+}
+
+// A turn that started and ended between two looks is seen by its traces:
+// the prompt's mark is cleared and the turn is another.
+func TestWaitSeesATurnThatEndedBetweenLooks(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	store := session.Store{Dir: t.TempDir()}
+	put(t, store, session.Record{Main: "idle", Turn: "t1"})
+	turn := "t0"
+	rec, err := Wait(ctx, store, s1, WaitOptions{States: []string{"idle"}, Prompted: &turn, Grace: time.Second})
+	if err != nil || rec.Turn != "t1" {
+		t.Fatalf("Wait = %+v, %v", rec, err)
 	}
 }
 
 func TestWaitForTurnReportsNoTurn(t *testing.T) {
-	log := eventlog.Open(t.TempDir())
-	ctx := context.Background()
-	e := eventlog.Event{Agent: "claude", Session: "s1", Event: "Send"}
-	if err := log.Append(ctx, &e); err != nil {
-		t.Fatal(err)
-	}
-	idle := eventlog.Event{Agent: "claude", Session: "s1", Event: "Notification", State: "idle"}
-	if err := log.Append(ctx, &idle); err != nil {
-		t.Fatal(err)
-	}
-	o := WaitOptions{States: []string{"idle"}, After: e.Seq, StartGrace: 300 * time.Millisecond}
-	if _, err := Wait(ctx, log, Session{ID: "s1", Agent: "claude"}, o); !errors.Is(err, ErrNoTurn) {
-		t.Fatalf("Wait err = %v, want ErrNoTurn", err)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	store := session.Store{Dir: t.TempDir()}
+	put(t, store, session.Record{Main: "idle", Turn: "t0", Sent: time.Now()})
+	turn := "t0"
+	rec, err := Wait(ctx, store, s1, WaitOptions{States: []string{"idle"}, Prompted: &turn, Grace: 300 * time.Millisecond})
+	if !errors.Is(err, ErrNoTurn) || rec.State() != "idle" {
+		t.Fatalf("Wait = %+v, %v; want ErrNoTurn", rec, err)
 	}
 }
 
 func TestWaitEndsWithTheSession(t *testing.T) {
-	log := eventlog.Open(t.TempDir())
-	ctx := context.Background()
-	for _, e := range []eventlog.Event{
-		{Agent: "codex", Session: "s1", Event: eventlog.Detach},
-		{Agent: "claude", Session: "s1", Event: "Stop", State: "idle"}, // another agent's session
-		{Agent: "codex", Session: "s1", Event: eventlog.Exit},
-	} {
-		if err := log.Append(ctx, &e); err != nil {
-			t.Fatal(err)
-		}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	store := session.Store{Dir: t.TempDir()}
+	put(t, store, session.Record{Main: "working", Turn: "t1"})
+	done := make(chan error, 1)
+	go func() {
+		_, err := Wait(ctx, store, s1, WaitOptions{States: []string{"idle"}})
+		done <- err
+	}()
+	time.Sleep(2 * waitPoll)
+	if err := store.Delete(ctx, "claude", "s1"); err != nil {
+		t.Fatal(err)
 	}
-	o := WaitOptions{States: []string{"idle"}, After: 0}
-	if _, err := Wait(ctx, log, Session{ID: "s1", Agent: "codex"}, o); !errors.Is(err, ErrEnded) {
+	if err := <-done; !errors.Is(err, ErrEnded) {
 		t.Fatalf("Wait err = %v, want ErrEnded", err)
 	}
 }
 
-func TestHistoricalWaitRejectsLossEvenWhenCurrentStateMatches(t *testing.T) {
-	for _, grace := range []time.Duration{0, time.Nanosecond} {
-		log := eventlog.Open(t.TempDir())
-		log.MaxBytes = 1
-		sent := eventlog.Event{Agent: "claude", Session: "s1", Event: eventlog.Send}
-		if err := log.Append(context.Background(), &sent); err != nil {
-			t.Fatal(err)
-		}
-		for range 4 {
-			if err := log.Append(context.Background(), &eventlog.Event{Agent: "claude", Session: "s1", Event: "Stop", State: "idle"}); err != nil {
-				t.Fatal(err)
-			}
-		}
-		ev, err := Wait(context.Background(), log, Session{Agent: "claude", ID: "s1", State: "idle"}, WaitOptions{
-			After: sent.Seq, States: []string{"idle"}, StartGrace: grace,
-		})
-		if !errors.Is(err, eventlog.ErrHistoryUnavailable) || ev.State != "" {
-			t.Fatalf("grace %s invented a historical result: %+v, %v", grace, ev, err)
-		}
-	}
-}
-
-func TestWaitAcceptsRetainedNumericCursorWithoutNewIdentity(t *testing.T) {
-	log := eventlog.Open(t.TempDir())
-	sent := eventlog.Event{Agent: "claude", Session: "s1", Event: eventlog.Send}
-	if err := log.Append(context.Background(), &sent); err != nil {
-		t.Fatal(err)
-	}
-	stopped := eventlog.Event{Agent: "claude", Session: "s1", Event: "Stop", State: "idle"}
-	if err := log.Append(context.Background(), &stopped); err != nil {
-		t.Fatal(err)
-	}
-	e, err := Wait(context.Background(), log, Session{Agent: "claude", ID: "s1"}, WaitOptions{After: sent.Seq, States: []string{"idle"}})
-	if err != nil || e.Seq != stopped.Seq {
-		t.Fatalf("numeric wait = %+v, %v", e, err)
+// A plain wait returns at once when the session is already in a state it
+// waits for.
+func TestWaitReturnsTheCurrentState(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	store := session.Store{Dir: t.TempDir()}
+	put(t, store, session.Record{Main: "idle", Turn: "t1"})
+	if rec, err := Wait(ctx, store, s1, WaitOptions{States: []string{"idle", "blocked"}}); err != nil || rec.State() != "idle" {
+		t.Fatalf("Wait = %+v, %v", rec, err)
 	}
 }

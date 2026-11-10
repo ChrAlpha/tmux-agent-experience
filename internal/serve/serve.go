@@ -21,9 +21,10 @@ import (
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/auth"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/query"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/version"
 )
 
-const Schema = "tmag/http/v1"
+const Schema = "tmag/http/v2"
 const actTimeout = 2 * time.Minute
 
 // Runner runs an allowlisted local CLI operation in process, with the owner's
@@ -62,13 +63,13 @@ func New(cfg Config) (*Server, error) {
 		cfg.Log = log.New(io.Discard, "", 0)
 	}
 	s := &Server{cfg: cfg, mux: http.NewServeMux()}
-	s.mux.HandleFunc("GET /v1/info", s.info)
-	s.mux.HandleFunc("GET /v1/list", s.list)
-	s.mux.HandleFunc("GET /v1/inspect", s.inspect)
-	s.mux.HandleFunc("GET /v1/request", s.request)
-	s.mux.HandleFunc("GET /v1/read", s.read)
-	s.mux.HandleFunc("GET /v1/watch", s.watch)
-	s.mux.HandleFunc("POST /v1/act", s.act)
+	s.mux.HandleFunc("GET /v2/info", s.info)
+	s.mux.HandleFunc("GET /v2/list", s.list)
+	s.mux.HandleFunc("GET /v2/inspect", s.inspect)
+	s.mux.HandleFunc("GET /v2/request", s.request)
+	s.mux.HandleFunc("GET /v2/read", s.read)
+	s.mux.HandleFunc("GET /v2/watch", s.watch)
+	s.mux.HandleFunc("POST /v2/act", s.act)
 	return s, nil
 }
 func same(a, b string) bool { return strings.EqualFold(a, b) }
@@ -127,7 +128,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	if r.URL.Path == "/v1/pair" && r.Method == http.MethodPost {
+	if r.URL.Path == "/v2/pair" && r.Method == http.MethodPost {
 		s.pair(w, r)
 		return
 	}
@@ -208,7 +209,7 @@ func (s *Server) info(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"schema": Schema, "state_schema": "tmag/v1", "version": s.cfg.Version, "instance": instance,
+	_ = json.NewEncoder(w).Encode(map[string]any{"schema": Schema, "state_schema": version.Schema, "version": s.cfg.Version, "instance": instance,
 		"operations": []string{"list", "inspect", "watch", "read", "request", "send", "interrupt", "answer"}})
 }
 func (s *Server) relay(w http.ResponseWriter, r *http.Request, args []string, input io.Reader) int {
@@ -343,14 +344,6 @@ func (s *Server) watch(w http.ResponseWriter, r *http.Request) {
 		cursor = r.Header.Get("Last-Event-ID")
 	}
 	args := []string{"watch"}
-	switch r.URL.Query().Get("resync") {
-	case "", "0":
-	case "1":
-		args = append(args, "--resync")
-	default:
-		fail(w, 400, "usage", "resync must be 0 or 1")
-		return
-	}
 	if cursor != "" {
 		n, err := strconv.ParseInt(cursor, 10, 64)
 		if err != nil || n < 0 {

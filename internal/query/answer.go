@@ -140,36 +140,27 @@ func answerHook(ctx context.Context, log *eventlog.Log, s Session, id string, d 
 	store := session.Store{Dir: log.Dir}
 	var dl Delivery
 	err := store.Lock(ctx, s.Agent, s.ID, func() error {
-		rec, ok, err := store.Current(ctx, log, s.Agent, s.ID)
+		rec, ok, err := store.Get(ctx, s.Agent, s.ID)
 		if err != nil || !ok {
 			return &RefusedError{RefuseChanged, fmt.Sprintf("%s has ended", s.ID)}
 		}
 		if _, open := rec.Request(id); !open {
 			return &RefusedError{RefuseChanged, fmt.Sprintf("request %s of %s was answered or withdrawn", id, s.ID)}
 		}
-		// Once the agent has the decision, and its next hooks wait for this
-		// lock, the request is answered. What records it is admitted before
-		// the decision goes out.
+		decideCtx, cancel := context.WithTimeout(ctx, answerTimeout)
+		defer cancel()
+		if err := answer.Decide(decideCtx, log.Dir, id, d); err != nil {
+			return hookError(s, id, err)
+		}
+		// The agent has the decision, and its next hooks wait for this lock:
+		// the request is answered.
 		after, _ := session.Apply(rec, adapter.Transition{Action: adapter.Answer, Request: id}, time.Now())
 		ev := eventlog.Event{Event: eventlog.Answer, Via: driver.Hook, Request: id, Decision: d.Behavior}
 		caller.stamp(&ev)
-		report, err := session.PrepareReport(after, ev)
-		if err != nil {
-			return err
-		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		ctx, cancel := context.WithTimeout(ctx, answerTimeout)
-		defer cancel()
-		if err := answer.Decide(ctx, log.Dir, id, d); err != nil {
-			return hookError(s, id, err)
-		}
-		_, logged, err := store.Publish(ctx, log, report)
-		if err != nil {
+		if err := store.Report(ctx, log, after, &ev); err != nil {
 			return fmt.Errorf("answer delivered but not logged: %w", err)
 		}
-		dl = Delivery{Session: s, Via: driver.Hook, Seq: logged.Seq, Cursor: logged.Cursor()}
+		dl = Delivery{Session: s, Via: driver.Hook, Seq: ev.Seq}
 		return nil
 	})
 	return dl, err
@@ -319,7 +310,7 @@ func answerService(ctx context.Context, log *eventlog.Log, v View, s Session, id
 	store := session.Store{Dir: log.Dir}
 	var dl Delivery
 	err = store.Lock(ctx, s.Agent, s.ID, func() error {
-		rec, ok, err := store.Current(ctx, log, s.Agent, s.ID)
+		rec, ok, err := store.Get(ctx, s.Agent, s.ID)
 		if err != nil || !ok {
 			return &RefusedError{RefuseChanged, fmt.Sprintf("%s has ended", s.ID)}
 		}
@@ -335,10 +326,10 @@ func answerService(ctx context.Context, log *eventlog.Log, v View, s Session, id
 		rec.Requests[i].Answered = now.UTC()
 		ev := eventlog.Event{Event: eventlog.Answer, Via: driver.Service, Request: id, Decision: d.Behavior}
 		caller.stamp(&ev)
-		if _, err := store.Report(ctx, log, rec, &ev); err != nil {
+		if err := store.Report(ctx, log, rec, &ev); err != nil {
 			return err
 		}
-		dl = Delivery{Session: s, Via: driver.Service, Seq: ev.Seq, Cursor: ev.Cursor()}
+		dl = Delivery{Session: s, Via: driver.Service, Seq: ev.Seq}
 		return nil
 	})
 	if err != nil {

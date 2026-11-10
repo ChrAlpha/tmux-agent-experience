@@ -2,64 +2,16 @@ package session
 
 import (
 	"context"
-	"errors"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/adapter"
-	"github.com/ChrAlpha/tmux-agent-experience/internal/coord"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
 )
 
 var t0 = time.Unix(100, 0).UTC()
-
-func TestFailedLogPublicationPreservesSessionRepair(t *testing.T) {
-	dir := t.TempDir()
-	s, log := Store{Dir: dir}, eventlog.Open(dir)
-	ctx := context.Background()
-	if _, err := coord.Current(ctx, dir); err != nil {
-		t.Fatal(err)
-	}
-	// A non-regular log is an integrity failure. The session must retain its
-	// pending change so explicit repair can later settle it through Current.
-	broken := filepath.Join(dir, "events.jsonl")
-	if err := os.Mkdir(broken, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	rec := play(t)
-	err := s.Lock(ctx, rec.Agent, rec.ID, func() error {
-		_, err := s.Save(ctx, log, rec, "UserPromptSubmit")
-		return err
-	})
-	if !errors.Is(err, eventlog.ErrIntegrityLoss) {
-		t.Fatalf("Save = %v", err)
-	}
-	stored, ok, err := s.Get(rec.Agent, rec.ID)
-	if err != nil || !ok || !stored.Unlogged() || stored.Change != "UserPromptSubmit" {
-		t.Fatalf("pending repair lost: %+v, %v, %v", stored, ok, err)
-	}
-	if err := os.Remove(broken); err != nil {
-		t.Fatal(err)
-	}
-	err = s.Lock(ctx, rec.Agent, rec.ID, func() error {
-		settled, ok, err := s.Current(ctx, log, rec.Agent, rec.ID)
-		if err == nil && (!ok || settled.Unlogged()) {
-			t.Fatalf("Current failed to settle: %+v, %v", settled, ok)
-		}
-		return err
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	events, _, err := log.Since(ctx, 0)
-	if err != nil || len(events) != 1 || events[0].Event != "UserPromptSubmit" {
-		t.Fatalf("repair event = %+v, %v", events, err)
-	}
-}
 
 // play applies events in order, starting from a main-agent turn p1.
 func play(t *testing.T, trs ...adapter.Transition) Record {
@@ -324,94 +276,33 @@ func TestSinceChangesWithTheReportedState(t *testing.T) {
 }
 
 func TestStore(t *testing.T) {
+	ctx := context.Background()
 	s := Store{Dir: t.TempDir()}
 	rec := play(t, askFor("", "Bash"))
-	if err := s.Put(rec); err != nil {
+	if err := s.Put(ctx, rec); err != nil {
 		t.Fatal(err)
 	}
-	got, ok, err := s.Get(proc.Claude, "s1")
+	got, ok, err := s.Get(ctx, proc.Claude, "s1")
 	if err != nil || !ok || !got.equal(rec) {
 		t.Fatalf("Get = %+v, %v, %v", got, ok, err)
 	}
-	all, err := s.All()
-	if err != nil || len(all) != 1 {
-		t.Fatalf("All = %+v, %v", all, err)
+	all, faults, err := s.All(ctx)
+	if err != nil || len(all) != 1 || len(faults) != 0 {
+		t.Fatalf("All = %+v, %v, %v", all, faults, err)
 	}
-	if err := s.Delete(proc.Claude, "s1"); err != nil {
+	if err := s.Delete(ctx, proc.Claude, "s1"); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok, _ := s.Get(proc.Claude, "s1"); ok {
+	if _, ok, _ := s.Get(ctx, proc.Claude, "s1"); ok {
 		t.Fatal("deleted session still there")
 	}
 	for _, id := range []string{"", "../x", "a/b", ".hidden"} {
-		if err := s.Put(Record{Agent: proc.Claude, ID: id}); err == nil {
+		if err := s.Put(ctx, Record{Agent: proc.Claude, ID: id}); err == nil {
 			t.Errorf("Put accepted id %q", id)
 		}
 	}
-	if err := s.Put(Record{Agent: "aider", ID: "s1"}); err == nil {
+	if err := s.Put(ctx, Record{Agent: "aider", ID: "s1"}); err == nil {
 		t.Error("Put accepted an unknown agent")
-	}
-	if matches, _ := filepath.Glob(filepath.Join(s.Dir, "sessions", "*", ".tmp-*")); len(matches) > 0 {
-		t.Fatalf("temporary files left: %v", matches)
-	}
-}
-
-func TestSaveLeavesNoChangeUnlogged(t *testing.T) {
-	dir := t.TempDir()
-	s, log := Store{Dir: dir}, eventlog.Open(dir)
-	ctx := context.Background()
-	events := func() string {
-		all, _, err := log.Since(ctx, 0)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var names []string
-		for _, e := range all {
-			names = append(names, e.Event+":"+e.State)
-		}
-		return strings.Join(names, " ")
-	}
-
-	rec, _ := Apply(Record{Agent: proc.Claude, ID: "s1"}, adapter.Transition{Action: adapter.Set, State: adapter.Idle}, t0)
-	if !rec.Unlogged() {
-		t.Fatal("a new session counts as logged")
-	}
-	rec, err := s.Save(ctx, log, rec, "SessionStart")
-	if err != nil || rec.Unlogged() || events() != "SessionStart:idle" {
-		t.Fatalf("Save = %+v, %v; events %s", rec, err, events())
-	}
-	// Bookkeeping alone logs nothing.
-	busy, _ := Apply(rec, startOf("a1", "Read", "r1"), t0)
-	if _, err := s.Save(ctx, log, busy, "PreToolUse"); err != nil || events() != "SessionStart:idle" {
-		t.Fatalf("bookkeeping logged: %v %s", err, events())
-	}
-
-	// A writer that dies after storing a change and before logging it.
-	working, _ := Apply(rec, submit, t0)
-	working.Change = "UserPromptSubmit"
-	if err := s.Put(working); err != nil {
-		t.Fatal(err)
-	}
-	stored, _, _ := s.Get(proc.Claude, "s1")
-	settled, ok, err := s.Settle(ctx, log, stored)
-	if err != nil || !ok || settled.Unlogged() || events() != "SessionStart:idle UserPromptSubmit:working" {
-		t.Fatalf("Settle = %+v, %v, %v; events %s", settled, ok, err, events())
-	}
-	if again, _, _ := s.Settle(ctx, log, settled); again.Unlogged() || events() != "SessionStart:idle UserPromptSubmit:working" {
-		t.Fatalf("a settled record logged again: %s", events())
-	}
-
-	// A writer that dies after deciding the end and before logging it.
-	settled.Ended = eventlog.End
-	if err := s.Put(settled); err != nil {
-		t.Fatal(err)
-	}
-	stored, _, _ = s.Get(proc.Claude, "s1")
-	if _, ok, err := s.Settle(ctx, log, stored); ok || err != nil {
-		t.Fatalf("an ended session lives on: %v %v", ok, err)
-	}
-	if _, found, _ := s.Get(proc.Claude, "s1"); found || !strings.HasSuffix(events(), "SessionEnd:") {
-		t.Fatalf("end not finished: found %v, events %s", found, events())
 	}
 }
 
@@ -429,8 +320,7 @@ func TestEventsReportTheWholeSession(t *testing.T) {
 
 	rec, _ := Apply(Record{Agent: proc.Codex, ID: "s1", Cwd: "/a", Host: Host{PID: 9, Role: proc.Service}, Transcript: "/t.jsonl"},
 		adapter.Transition{Action: adapter.Set, State: adapter.Idle}, t0)
-	rec, err := s.Save(ctx, log, rec, "SessionStart")
-	if err != nil {
+	if err := s.Save(ctx, log, Record{}, rec, eventlog.Event{Event: "SessionStart"}); err != nil {
 		t.Fatal(err)
 	}
 	ev := last()
@@ -442,16 +332,25 @@ func TestEventsReportTheWholeSession(t *testing.T) {
 	// Each of these changes nothing but what an event reports, and is logged.
 	moved := rec
 	moved.Cwd = "/b"
-	if rec, err = s.Save(ctx, log, moved, "PreToolUse"); err != nil || last().Event != "PreToolUse" || last().Cwd != "/b" {
+	if err := s.Save(ctx, log, rec, moved, eventlog.Event{Event: "PreToolUse"}); err != nil || last().Event != "PreToolUse" || last().Cwd != "/b" {
 		t.Fatalf("cwd change: %v %+v", err, last())
 	}
-	spawned, _ := Apply(rec, spawnOf("a1"), t0)
-	if rec, err = s.Save(ctx, log, spawned, "SubagentStart"); err != nil || strings.Join(last().Subagents, ",") != "a1" {
+	spawned, _ := Apply(moved, spawnOf("a1"), t0)
+	if err := s.Save(ctx, log, moved, spawned, eventlog.Event{Event: "SubagentStart"}); err != nil || strings.Join(last().Subagents, ",") != "a1" {
 		t.Fatalf("subagent start: %v %+v", err, last())
 	}
-	reaped, _ := Apply(rec, reapOf("a1"), t0)
-	if _, err = s.Save(ctx, log, reaped, "SubagentStop"); err != nil || last().Event != "SubagentStop" || last().Subagents != nil {
+	reaped, _ := Apply(spawned, reapOf("a1"), t0)
+	if err := s.Save(ctx, log, spawned, reaped, eventlog.Event{Event: "SubagentStop"}); err != nil || last().Event != "SubagentStop" || last().Subagents != nil {
 		t.Fatalf("subagent stop: %v %+v", err, last())
+	}
+	// A subagent's tool call changes the record but nothing an event reports.
+	before := last().Seq
+	called, _ := Apply(reaped, startOf("a2", "Bash", "c1"), t0)
+	if err := s.Save(ctx, log, reaped, called, eventlog.Event{Event: "PreToolUse"}); err != nil || last().Seq != before {
+		t.Fatalf("a call alone was logged: %v %+v", err, last())
+	}
+	if stored, _, _ := s.Get(ctx, proc.Codex, "s1"); len(stored.Calls) != 1 {
+		t.Fatalf("the call was not stored: %+v", stored)
 	}
 }
 
@@ -577,102 +476,5 @@ func TestAnsweringARequestClosesItsPromptOnce(t *testing.T) {
 	is(t, rec, adapter.Working, "")
 	if _, changed := Apply(rec, answered("h2"), t0); changed {
 		t.Fatal("answering a closed request changed the session")
-	}
-}
-
-func TestReportedDeliveryIsLoggedWhole(t *testing.T) {
-	dir := t.TempDir()
-	s, log := Store{Dir: dir}, eventlog.Open(dir)
-	ctx := context.Background()
-	tr := askFor("", "Bash")
-	tr.Request, tr.Waits = "h1", true
-	asked := play(t, tr)
-	rec, _ := Apply(asked, adapter.Transition{Action: adapter.Answer, Request: "h1"}, t0)
-
-	// A writer that dies after storing what its answer did and before
-	// logging the answer, as Store.Report leaves it.
-	rec.Change = eventlog.Answer
-	rec.Delivery = &eventlog.Event{Event: eventlog.Answer, Via: "hook", Request: "h1", Decision: "allow"}
-	if err := s.Put(rec); err != nil {
-		t.Fatal(err)
-	}
-	stored, _, _ := s.Get(proc.Claude, "s1")
-	settled, _, err := s.Settle(ctx, log, stored)
-	if err != nil || settled.Delivery != nil || settled.Unsettled() {
-		t.Fatalf("Settle = %+v, %v", settled, err)
-	}
-	all, _, _ := log.Since(ctx, 0)
-	if len(all) != 1 {
-		t.Fatalf("events %+v", all)
-	}
-	if ev := all[0]; ev.Event != eventlog.Answer || ev.Via != "hook" || ev.Request != "h1" || ev.Decision != "allow" || ev.State != adapter.Working {
-		t.Fatalf("settled event = %+v", ev)
-	}
-
-	// Report itself leaves nothing behind.
-	ev := eventlog.Event{Event: eventlog.Halt, Via: "pane"}
-	reported, err := s.Report(ctx, log, settled, &ev)
-	if err != nil || ev.Seq == 0 || reported.Delivery != nil || reported.Change != "" {
-		t.Fatalf("Report = %+v, %v (seq %d)", reported, err, ev.Seq)
-	}
-	if stored, _, _ := s.Get(proc.Claude, "s1"); stored.Delivery != nil || stored.Change != "" {
-		t.Fatalf("stored after Report: %+v", stored)
-	}
-}
-
-func TestDeliveryThatChangedNothingIsLoggedToo(t *testing.T) {
-	dir := t.TempDir()
-	s, log := Store{Dir: dir}, eventlog.Open(dir)
-	ctx := context.Background()
-	// A service answer takes the request and leaves the session as it was
-	// reported; its writer dies before logging it.
-	rec := play(t)
-	rec.Logged = rec.Reports()
-	rec.Change = eventlog.Answer
-	rec.Delivery = &eventlog.Event{Event: eventlog.Answer, Via: "service", Request: "r1", Decision: "allow"}
-	if err := s.Put(rec); err != nil {
-		t.Fatal(err)
-	}
-	if rec.Unlogged() || !rec.Unsettled() {
-		t.Fatalf("a delivery left unlogged is not unsettled: %+v", rec)
-	}
-	// The next writer reads it settled, so it cannot overwrite the delivery.
-	cur, ok, err := s.Current(ctx, log, proc.Claude, "s1")
-	if err != nil || !ok || cur.Delivery != nil || cur.Unsettled() {
-		t.Fatalf("Current = %+v %v %v", cur, ok, err)
-	}
-	if all, _, _ := log.Since(ctx, 0); len(all) != 1 || all[0].Event != eventlog.Answer || all[0].Request != "r1" {
-		t.Fatalf("events %+v", all)
-	}
-}
-
-func TestSettleNamesPromptsAnOlderTmagLeft(t *testing.T) {
-	dir := t.TempDir()
-	s, log := Store{Dir: dir}, eventlog.Open(dir)
-	ctx := context.Background()
-	// A record of tmag 0.1.0: a pending prompt, no requests, logged as such.
-	old := Record{Agent: proc.Codex, ID: "s1", Main: adapter.Working, Turn: "t1", Since: t0,
-		Pending: []adapter.Prompt{{Tool: "Bash"}}}
-	old.Logged = Report{State: old.State(), Kind: old.Kind(), Turn: old.Turn}
-	if err := s.Put(old); err != nil {
-		t.Fatal(err)
-	}
-	stored, _, _ := s.Get(proc.Codex, "s1")
-	if !stored.Unsettled() {
-		t.Fatal("a prompt without a request counts as settled")
-	}
-	settled, _, err := s.Settle(ctx, log, stored)
-	if err != nil || len(settled.Requests) != 1 || settled.Requests[0].Prompt != (adapter.Prompt{Tool: "Bash"}) || settled.Requests[0].Turn != "t1" || settled.Unsettled() {
-		t.Fatalf("Settle = %+v, %v", settled, err)
-	}
-	all, _, _ := log.Since(ctx, 0)
-	if len(all) != 1 || len(all[0].Requests) != 1 || all[0].Requests[0].ID != settled.Requests[0].ID {
-		t.Fatalf("events %+v", all)
-	}
-	// The next Ask about the same prompt keeps the name.
-	tr := askFor("", "Bash")
-	tr.Request = "r2"
-	if again, _ := Apply(settled, tr, t0); len(again.Requests) != 1 || again.Requests[0].ID != settled.Requests[0].ID {
-		t.Fatalf("after another Ask: %+v", again.Requests)
 	}
 }

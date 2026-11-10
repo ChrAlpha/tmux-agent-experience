@@ -1,71 +1,14 @@
 package e2e
 
 import (
-	"context"
 	"os"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"testing"
 	"time"
 
-	"github.com/ChrAlpha/tmux-agent-experience/internal/coord"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 )
-
-func TestExplicitLockCutoverFromOwnerTerminal(t *testing.T) {
-	h := start(t)
-	// This fixture is old state: no writers run until the person migrates it.
-	legacy := filepath.Join(h.state, "locks", "s-0000000000000000")
-	if err := os.MkdirAll(filepath.Dir(legacy), 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(legacy, nil, 0600); err != nil {
-		t.Fatal(err)
-	}
-	before, err := os.Stat(legacy)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if r := h.tmag("", "list"); r.code == 0 || !strings.Contains(r.out, "retire-legacy-locks") {
-		t.Fatalf("legacy ordinary invocation = %d %s", r.code, r.out)
-	}
-	if r := h.tmag("", "prune", "--retire-legacy-locks", "--server", h.name); r.code != 2 {
-		t.Fatalf("migration accepted server subset: %d %s", r.code, r.out)
-	}
-	if r := h.tmag("", "prune", "--retire-legacy-locks"); r.code != 0 || !strings.Contains(r.out, "Persistent lock pools active") {
-		t.Fatalf("owner migration = %d %s", r.code, r.out)
-	}
-	if mode, err := coord.Current(context.Background(), h.state); err != nil || mode != coord.Pool {
-		t.Fatalf("migration mode = %s %v", mode, err)
-	}
-	pane := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_HOOKS": "1"}, filepath.Join(bin, "claude"))
-	h.waitPane(pane, "idle", "process")
-	if r := h.tmag("", "send", sidA[:8], "--wait", "--timeout", "10s", "pool control"); r.code != 0 {
-		t.Fatalf("pooled control = %d %s", r.code, r.out)
-	}
-	after, err := os.Stat(legacy)
-	if err != nil || !os.SameFile(before, after) {
-		t.Fatalf("migration rebound legacy lock: %v", err)
-	}
-	if entries, err := os.ReadDir(filepath.Dir(legacy)); err != nil || len(entries) != 1 {
-		t.Fatalf("new identifiers created legacy locks: %d %v", len(entries), err)
-	}
-}
-
-func TestAgentCannotDeclareLegacyRetirement(t *testing.T) {
-	h := start(t)
-	d := h.daemon()
-	d.hook(map[string]any{"hook_event_name": "SessionStart", "session_id": sidC, "source": "startup"})
-	h.waitSession(sidC, "idle")
-	r := d.tool(sidC, "prune", "--retire-legacy-locks")
-	if r.code != 3 || !strings.Contains(r.out, "refused (agent)") {
-		t.Fatalf("agent declared retirement: %d %s", r.code, r.out)
-	}
-	if mode, err := coord.Current(context.Background(), h.state); err != nil || mode != coord.Pool {
-		t.Fatalf("refused declaration changed mode: %s, %v", mode, err)
-	}
-}
 
 func TestPrunePreservesUnknownForeignRealmsEvenWithAgedHeldLocks(t *testing.T) {
 	h := start(t)
@@ -117,9 +60,6 @@ func TestPrunePreservesAliasedSessionTemporaryParents(t *testing.T) {
 	for _, level := range []string{"sessions/claude/.tmag-tmp", "sessions/claude"} {
 		t.Run(level, func(t *testing.T) {
 			h := start(t)
-			if _, err := coord.Current(context.Background(), h.state); err != nil {
-				t.Fatal(err)
-			}
 			path := filepath.Join(h.state, level)
 			if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 				t.Fatal(err)

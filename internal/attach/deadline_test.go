@@ -19,13 +19,13 @@ func TestCanceledDiscoveryCannotReconcileAbsence(t *testing.T) {
 	log := eventlog.Open(t.TempDir())
 	store := session.Store{Dir: log.Dir}
 	rec := session.Record{Agent: proc.Claude, ID: "preserve", Host: session.Host{PID: 123, Start: "known"}, Main: "idle"}
-	if err := store.Put(rec); err != nil {
+	if err := store.Put(context.Background(), rec); err != nil {
 		t.Fatal(err)
 	}
 	if err := Reconcile(ctx, Env{Log: log, Store: store}, &World{Proc: proc.NewTable(nil)}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled reconciliation lost context error: %v", err)
 	}
-	if _, ok, err := store.Get(rec.Agent, rec.ID); !ok || err != nil {
+	if _, ok, err := store.Get(context.Background(), rec.Agent, rec.ID); !ok || err != nil {
 		t.Fatalf("canceled reconciliation removed session: ok=%v err=%v", ok, err)
 	}
 }
@@ -43,14 +43,14 @@ func TestIncompleteProcessTableCannotAuthorizeAnyExit(t *testing.T) {
 	log := eventlog.Open(t.TempDir())
 	store := session.Store{Dir: log.Dir}
 	rec := session.Record{Agent: proc.Claude, ID: "preserve", Host: session.Host{PID: 456, Start: "known"}, Main: "idle"}
-	if err := store.Put(rec); err != nil {
+	if err := store.Put(context.Background(), rec); err != nil {
 		t.Fatal(err)
 	}
 	w := &World{Proc: proc.NewTable([]proc.Process{{PID: 123, Uncertain: true}})}
 	if err := Reconcile(context.Background(), Env{Log: log, Store: store}, w); err == nil {
 		t.Fatal("incomplete process evidence accepted for reconciliation")
 	}
-	if _, ok, err := store.Get(rec.Agent, rec.ID); !ok || err != nil {
+	if _, ok, err := store.Get(context.Background(), rec.Agent, rec.ID); !ok || err != nil {
 		t.Fatalf("incomplete discovery authorized an exit: ok=%v err=%v", ok, err)
 	}
 }

@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ChrAlpha/tmux-agent-experience/internal/attach"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/contextio"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/hook"
@@ -35,7 +34,7 @@ const usage = `tmag — agent awareness for tmux
 Usage:
   tmag list     [--json]                       agents in all tmux panes
   tmag inspect  <target> [--json] [--events N] one agent and its recent events
-  tmag watch    [--since SEQ] [--resync]       JSON lines: snapshot, then events
+  tmag watch    [--since SEQ]                  JSON lines: snapshot, then events
   tmag read     <target> [--lines N | --last] [--json]
                                                recent pane output, or the agent's last reply
   tmag send     <target> [--wait | --reply] [--timeout D] [--json] [text | -]
@@ -46,11 +45,10 @@ Usage:
   tmag request  <target> <request> [--json]    what an open request asks
   tmag answer   <target> <request> allow|deny [--message M] [--answers JSON] [--json]
                                                decide an open request
-  tmag wait     <target> [--for STATES] [--after SEQ] [--timeout D] [--json]
+  tmag wait     <target> [--for STATES] [--timeout D] [--json]
                                                wait for a state (default idle,blocked)
   tmag status   [--tmux] [--server S]          one-line summary for the status line
-  tmag prune    [--server S] [--retire-legacy-locks]
-                                               reconcile state; declare quiescent state migration
+  tmag prune    [--server S]                   reconcile panes with the sessions
   tmag jump     [--client C] [--server S] [--from %N] [--json]
                                                go to the agent waiting longest
   tmag notify   [--json]                       send a test alert through @tmag-notify
@@ -245,10 +243,6 @@ func (a *app) failOn(cmd, target string, err error) int {
 		code = "records_unavailable"
 	case errors.As(err, &refused):
 		code, exit = "refused:"+refused.Reason, ExitRefused
-	case errors.As(err, new(*session.LimitError)), errors.As(err, new(*eventlog.LimitError)):
-		code = "limit_exceeded"
-	case errors.As(err, new(*attach.MarkerError)):
-		code = "attachment_unavailable"
 	case errors.Is(err, errTimeout), errors.Is(err, context.DeadlineExceeded):
 		code, exit = "timeout", ExitTimeout
 	case errors.Is(err, query.ErrMarker):
@@ -261,10 +255,6 @@ func (a *app) failOn(cmd, target string, err error) int {
 		code = "ambiguous"
 	case errors.Is(err, query.ErrEnded):
 		code = "ended"
-	case errors.Is(err, eventlog.ErrHistoryUnavailable):
-		code = "history_unavailable"
-	case errors.Is(err, eventlog.ErrIntegrityLoss):
-		code = "integrity_loss"
 	}
 	if a.json {
 		a.emit(map[string]any{"error": map[string]string{"code": code, "message": err.Error()}})

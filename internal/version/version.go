@@ -5,4 +5,4 @@ package version
 const Version = "0.3.0"
 
 // Schema names the JSON contract emitted by every machine-readable command.
-const Schema = "tmag/v1"
+const Schema = "tmag/v2"

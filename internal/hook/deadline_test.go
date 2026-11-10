@@ -51,10 +51,10 @@ func TestFirstDiagnosticAllowsNormalStateInitialization(t *testing.T) {
 	}
 	store := session.Store{Dir: dir}
 	rec := session.Record{Agent: proc.Claude, ID: "healthy", Main: "idle"}
-	if err := store.Lock(ctx, rec.Agent, rec.ID, func() error { return store.PutContext(ctx, rec) }); err != nil {
+	if err := store.Lock(ctx, rec.Agent, rec.ID, func() error { return store.Put(ctx, rec) }); err != nil {
 		t.Fatalf("healthy invocation after diagnostic: %v", err)
 	}
-	if records, err := store.AllContext(ctx); err != nil || len(records) != 1 {
+	if records, _, err := store.All(ctx); err != nil || len(records) != 1 {
 		t.Fatalf("normal read after diagnostic: %d %v", len(records), err)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func payload(t *testing.T, fields map[string]any) Payload {
@@ -93,5 +94,38 @@ func TestDecodeRejectsIncomplete(t *testing.T) {
 		if _, err := Decode([]byte(in)); err == nil {
 			t.Errorf("Decode(%s) succeeded", in)
 		}
+	}
+}
+
+// What a payload keeps is bounded whatever an agent sends: a path longer
+// than any path is dropped, names and ids are cut at a character boundary
+// the same way every time, and a Stop lists a bounded number of tasks.
+func TestDecodeBoundsWhatItKeeps(t *testing.T) {
+	long := strings.Repeat("é", MaxName) // two bytes each
+	tasks := make([]string, 0, 3*MaxTasks)
+	for range 3 * MaxTasks {
+		tasks = append(tasks, `{"id":"`+long+`"}`)
+	}
+	payload := `{"hook_event_name":"Stop","session_id":"s1","cwd":"/` + strings.Repeat("d", MaxPath) + `",` +
+		`"transcript_path":"/t.jsonl","tool_name":"` + long + `","prompt_id":"` + long + `",` +
+		`"background_tasks":[` + strings.Join(tasks, ",") + `]}`
+	p, err := Decode([]byte(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Cwd != "" || p.TranscriptPath != "/t.jsonl" {
+		t.Errorf("cwd %d bytes, transcript %q", len(p.Cwd), p.TranscriptPath)
+	}
+	for _, f := range []string{p.ToolName, p.PromptID, (*p.BackgroundTasks)[0].ID} {
+		if len(f) > MaxName || !utf8.ValidString(f) || !strings.HasPrefix(long, f) {
+			t.Errorf("a name was not cut cleanly: %d bytes", len(f))
+		}
+	}
+	if len(*p.BackgroundTasks) != MaxTasks {
+		t.Errorf("%d background tasks kept", len(*p.BackgroundTasks))
+	}
+	again, _ := Decode([]byte(payload))
+	if again.ToolName != p.ToolName {
+		t.Error("the same name is cut differently")
 	}
 }

@@ -3,10 +3,10 @@ package lockfile
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -82,21 +82,77 @@ func TestCanceledUncontendedLockDoesNotCreateNamespaceOrRunCallback(t *testing.T
 	}
 }
 
-func TestSharedParticipantsExcludeExclusiveCutover(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "gate")
-	ctx := context.Background()
-	err := Shared(ctx, path, func() error {
-		return Shared(ctx, path, func() error {
-			if err := Try(ctx, path, func() error { t.Fatal("exclusive bypassed shared holders"); return nil }); !errors.Is(err, ErrBusy) {
-				return fmt.Errorf("exclusive attempt: %w", err)
-			}
-			return nil
-		})
+// Resources share a bounded pool of lock files: two keys with the same first
+// byte wait for each other, classes never do, and no more than one file per
+// class and byte ever exists.
+func TestStripesBoundTheLockFiles(t *testing.T) {
+	dir := t.TempDir()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	a, b, c := [32]byte{7, 1}, [32]byte{7, 2}, [32]byte{8}
+	err := Stripe(ctx, dir, "s", a, func() error {
+		short, stop := context.WithTimeout(ctx, 30*time.Millisecond)
+		defer stop()
+		if err := Stripe(short, dir, "s", b, func() error { return nil }); !errors.Is(err, context.DeadlineExceeded) {
+			t.Errorf("a key of the same stripe got in: %v", err)
+		}
+		if err := Stripe(ctx, dir, "s", c, func() error { return nil }); err != nil {
+			t.Errorf("another stripe waited: %v", err)
+		}
+		return Stripe(ctx, dir, "p", a, func() error { return nil })
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := Try(ctx, path, func() error { return nil }); err != nil {
-		t.Fatalf("released shared holders still exclude writer: %v", err)
+	for i := range 3 * Stripes {
+		key := [32]byte{byte(i)}
+		if err := Stripe(ctx, dir, "s", key, func() error { return nil }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	files, err := os.ReadDir(filepath.Join(dir, "locks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != Stripes+1 {
+		t.Fatalf("%d lock files, want %d", len(files), Stripes+1)
+	}
+}
+
+// A held lock excludes others until it is closed, and a lock file replaced by
+// something else fails instead of blocking.
+func TestAcquire(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	path := filepath.Join(t.TempDir(), "lease")
+	held, err := Acquire(ctx, path, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Acquire(ctx, path, false); !errors.Is(err, ErrBusy) {
+		t.Fatalf("second holder: %v", err)
+	}
+	if err := held.Close(); err != nil {
+		t.Fatal(err)
+	}
+	again, err := Acquire(ctx, path, false)
+	if err != nil {
+		t.Fatalf("after release: %v", err)
+	}
+	again.Close()
+
+	fifo := filepath.Join(t.TempDir(), "fifo")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Acquire(ctx, fifo, true); err == nil || errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("a FIFO lock: %v", err)
+	}
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(path, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := With(ctx, link, func() error { return nil }); err == nil {
+		t.Fatal("a lock through a symlink was taken")
 	}
 }

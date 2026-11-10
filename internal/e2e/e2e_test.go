@@ -27,21 +27,15 @@ import (
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/query"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
-	"github.com/ChrAlpha/tmux-agent-experience/internal/socketbind"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/tmux"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/version"
 )
 
 var bin string // directory holding tmag, claude and codex
 
 func TestMain(m *testing.M) {
-	if handled, err := socketbind.RunChild(os.Args[1:]); handled {
-		if err != nil {
-			os.Exit(1)
-		}
-		os.Exit(0)
-	}
-	// Probe children must dispatch before tmux/build setup and must not spend
-	// their connection budget in the race runtime's artificial exit sleep.
+	// Children must not spend their budgets in the race runtime's
+	// artificial exit sleep.
 	if err := os.Setenv("GORACE", os.Getenv("GORACE")+" atexit_sleep_ms=0"); err != nil {
 		panic(err)
 	}
@@ -176,7 +170,7 @@ func (h *harness) view() query.View {
 		Schema string `json:"schema"`
 		query.View
 	}
-	if err := json.Unmarshal([]byte(strings.SplitN(r.out, "\n", 2)[0]), &doc); err != nil || doc.Schema != "tmag/v1" {
+	if err := json.Unmarshal([]byte(strings.SplitN(r.out, "\n", 2)[0]), &doc); err != nil || doc.Schema != version.Schema {
 		h.t.Fatalf("list --json: %v %q", err, r.out)
 	}
 	return doc.View
@@ -331,14 +325,9 @@ func TestClaudeInProcess(t *testing.T) {
 	if r := h.tmag("", "send", h.target(pane), "second"); r.code != 3 || !strings.Contains(r.out, "busy") {
 		t.Fatalf("busy send: %d %s", r.code, r.out)
 	}
-	// The pane can still show the previous idle before this delivery starts.
-	// Replay from its Send event so even an already completed turn is observed.
-	if r := h.tmag("", "wait", h.target(pane), "--after", strconv.FormatInt(sent.Seq, 10), "--for", "idle", "--timeout", "10s", "--json"); r.code != 0 {
-		t.Fatalf("wait after delivery: %d %s", r.code, r.out)
-	}
-	if got := h.eventNames(sidA); !strings.HasSuffix(got, "Send: UserPromptSubmit:working Stop:idle") {
-		t.Fatalf("delivered prompt did not finish a turn: %s", got)
-	}
+	h.eventually("the delivered prompt finishes a turn", func() bool {
+		return strings.HasSuffix(h.eventNames(sidA), "Send: UserPromptSubmit:working Stop:idle")
+	})
 	if r := h.tmag("", "wait", h.target(pane), "--json"); r.code != 0 || !strings.Contains(r.out, `"idle"`) {
 		t.Fatalf("wait on idle agent: %d %s", r.code, r.out)
 	}
@@ -476,7 +465,7 @@ func TestClaudeAnswersThroughTheHook(t *testing.T) {
 	received("hook:allow")
 	h.waitSession(sidA, "idle")
 	// The answer closes the request at once; the call runs on.
-	if got := h.eventNames(sidA); !strings.HasSuffix(got, "PreToolUse:working PermissionRequest:blocked Answer:working PostToolUse:working Stop:idle") {
+	if got := h.eventNames(sidA); !strings.HasSuffix(got, "UserPromptSubmit:working PermissionRequest:blocked Answer:working Stop:idle") {
 		t.Fatalf("events = %s", got)
 	}
 	f.agrees(h)
@@ -1147,7 +1136,7 @@ func reported(s query.Session) query.Session {
 func TestWatchResumes(t *testing.T) {
 	h := start(t)
 	w := h.watch()
-	if doc := w.next(); doc["type"] != "snapshot" || doc["schema"] != "tmag/v1" {
+	if doc := w.next(); doc["type"] != "snapshot" || doc["schema"] != version.Schema {
 		t.Fatalf("first line = %v", doc)
 	}
 	h.externalHook(map[string]any{"hook_event_name": "Stop", "session_id": sidA, "cwd": h.dir})
@@ -1662,7 +1651,7 @@ func TestAttachNeedsItsClientStillRunning(t *testing.T) {
 	ctx := context.Background()
 	env := attach.Env{Log: eventlog.Open(h.state), Store: session.Store{Dir: h.state}}
 	rec := session.Record{Agent: "claude", ID: sidA, Main: "idle"}
-	if err := env.Store.Put(rec); err != nil {
+	if err := env.Store.Put(ctx, rec); err != nil {
 		t.Fatal(err)
 	}
 	w, err := attach.Load(ctx)
@@ -1706,7 +1695,7 @@ func TestChangingEvidenceKeepsThePaneShowingItsSession(t *testing.T) {
 	ctx := context.Background()
 	env := attach.Env{Log: eventlog.Open(h.state), Store: session.Store{Dir: h.state}}
 	rec := session.Record{Agent: "codex", ID: sidB, Main: "idle"}
-	if err := env.Store.Put(rec); err != nil {
+	if err := env.Store.Put(ctx, rec); err != nil {
 		t.Fatal(err)
 	}
 	w, err := attach.Load(ctx)
@@ -1733,132 +1722,6 @@ func TestChangingEvidenceKeepsThePaneShowingItsSession(t *testing.T) {
 	}
 	if p, _ := h.waitPane(pane, "idle", "process"); p.Session != sidB {
 		t.Fatalf("pane shows %+v", p)
-	}
-}
-
-func TestAttachmentEventsSurviveACrash(t *testing.T) {
-	// A writer died after changing a pane's attachment and before logging
-	// it; the next reconciliation logs what the pane is marked with.
-	h := start(t)
-	pane := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_HOOKS": "1"}, filepath.Join(bin, "claude"))
-	h.waitPane(pane, "idle", "process")
-	srv := tmux.ServerByName(h.name)
-	// Crash markers represent one completed pane write before event logging.
-	// Publish the whole marker set under the same exclusion as the real writer.
-	mark := func(options map[string]string) {
-		t.Helper()
-		ctx := context.Background()
-		if err := attach.Lock(ctx, h.state, srv.Socket, pane, func() error {
-			return srv.SetPaneOptions(ctx, pane, options, nil)
-		}); err != nil {
-			t.Fatalf("inject pending attachment write: %v", err)
-		}
-	}
-	count := func(event string) int {
-		n := 0
-		for _, e := range h.events(sidA) {
-			if e.Event == event {
-				n++
-			}
-		}
-		return n
-	}
-	mark(map[string]string{"change": "Attach"})
-	h.tmag("", "status")
-	if n := count("Attach"); n != 2 || h.tmux("display-message", "-p", "-t", pane, "#{@tmag_change}") != "" {
-		t.Fatalf("pending Attach: %d Attach events, marker %q", n, h.tmux("display-message", "-p", "-t", pane, "#{@tmag_change}"))
-	}
-	mark(map[string]string{"change": "Detach"})
-	if p, _, _ := h.paneIn(pane); p.Session != "" {
-		t.Fatalf("a pane being detached still shows %s", p.Session)
-	}
-	h.tmag("", "status")
-	if n := count("Detach"); n != 1 || h.tmux("display-message", "-p", "-t", pane, "#{@tmag_session}") != "" {
-		t.Fatalf("pending Detach: %d Detach events", n)
-	}
-	// The agent's next turn proves the pane again. Wait for that turn's Stop,
-	// since the idle state from before input does not prove it has completed.
-	previous, _ := h.sessionOf(sidA)
-	h.tmux("send-keys", "-t", pane, "hello", "Enter")
-	h.eventually("new turn stopped", func() bool {
-		current, ok := h.sessionOf(sidA)
-		if !ok || current.Turn == "" || current.Turn == previous.Turn || current.State != "idle" {
-			return false
-		}
-		for _, event := range h.events(sidA) {
-			if event.Event == "Stop" && event.Turn == current.Turn {
-				return true
-			}
-		}
-		return false
-	})
-	h.waitPane(pane, "idle", "process")
-	if n := count("Attach"); n != 3 {
-		t.Fatalf("reattached with %d Attach events", n)
-	}
-
-	// Died while replacing another session's attachment: both events follow.
-	mark(map[string]string{"change": "Attach", "replaced": "claude " + sidB})
-	result := h.tmag("", "status")
-	if result.code != 0 {
-		t.Fatalf("replacement reconciliation exited %d", result.code)
-	}
-	if got := h.eventNames(sidB); got != "Detach:" || count("Attach") != 4 {
-		t.Logf("replacement status: code=%d; A events=%s; markers=%q", result.code, h.eventNames(sidA), h.tmux("display-message", "-p", "-t", pane, "#{@tmag_change}|#{@tmag_replaced}"))
-		t.Fatalf("replaced: %q, %d Attach events", got, count("Attach"))
-	}
-	if got := h.tmux("display-message", "-p", "-t", pane, "#{@tmag_change}#{@tmag_replaced}"); got != "" {
-		t.Fatalf("markers left: %q", got)
-	}
-
-	// Options that hold no attachment are cleared rather than displayed.
-	quiet := h.spawn(h.dir, map[string]string{}, filepath.Join(bin, "codex"))
-	h.tmux("set-option", "-p", "-t", quiet, "@tmag_state", "blocked")
-	h.tmag("", "status")
-	if got := h.tmux("display-message", "-p", "-t", quiet, "#{@tmag_state}"); got != "" {
-		t.Fatalf("broken options left: %q", got)
-	}
-}
-
-func TestWatchSnapshotConvergesAcrossPendingSessionAndPaneRepair(t *testing.T) {
-	h := start(t)
-	pane := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_HOOKS": "1"}, filepath.Join(bin, "claude"))
-	h.waitPane(pane, "idle", "process")
-	store := session.Store{Dir: h.state}
-	since := time.Unix(123, 987654321).UTC()
-	ctx := context.Background()
-	err := store.Lock(ctx, "claude", sidA, func() error {
-		rec, ok, err := store.Get("claude", sidA)
-		if err != nil {
-			return fmt.Errorf("read session before pending write: %w", err)
-		}
-		if !ok {
-			return fmt.Errorf("session missing before pending write")
-		}
-		rec.Main, rec.Since, rec.Change = "working", since, "UserPromptSubmit"
-		return store.Put(rec)
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	h.tmux("set-option", "-p", "-t", pane, "@tmag_change", "Attach")
-	f := h.follow()
-	select {
-	case first := <-f.lines:
-		f.apply(first)
-	case <-time.After(5 * time.Second):
-		t.Fatal("snapshot never published")
-	}
-	if s := f.sessions["claude/"+sidA]; s.State != "working" || s.Since == nil || !s.Since.Equal(since) {
-		t.Fatalf("pending snapshot state = %+v", s)
-	}
-	h.eventually("watch repairs both pending markers", func() bool {
-		rec, ok, err := store.Get("claude", sidA)
-		return err == nil && ok && !rec.Unsettled() && h.tmux("display-message", "-p", "-t", pane, "#{@tmag_change}") == ""
-	})
-	f.agrees(h)
-	if s := f.sessions["claude/"+sidA]; s.Since == nil || !s.Since.Equal(since) {
-		t.Fatalf("replayed repair replaced state since with append time: %+v", s)
 	}
 }
 

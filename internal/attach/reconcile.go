@@ -3,7 +3,6 @@ package attach
 import (
 	"context"
 	"errors"
-	"strings"
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
@@ -29,7 +28,7 @@ func (w *World) Attached(rec session.Record) []Shown {
 	var out []Shown
 	for _, p := range w.Panes {
 		a, ok := FromPane(p)
-		if !ok || !a.holds() || a.Agent != rec.Agent || a.Session != rec.ID {
+		if !ok || a.Agent != rec.Agent || a.Session != rec.ID {
 			continue
 		}
 		if view, valid := w.Check(p, a, rec); valid {
@@ -40,11 +39,11 @@ func (w *World) Attached(rec session.Record) []Shown {
 	return out
 }
 
-// Live splits sessions into those that run and those that are gone: ended,
-// or whose host process exited without SessionEnd.
+// Live splits sessions into those that run and those whose host process
+// exited without SessionEnd.
 func Live(w *World, recs []session.Record) (live, gone []session.Record) {
 	for _, r := range recs {
-		if r.Ended != "" || (r.Host.PID > 0 && !w.Proc.Alive(r.Host.PID, r.Host.Start)) {
+		if r.Host.PID > 0 && !w.Proc.Alive(r.Host.PID, r.Host.Start) {
 			gone = append(gone, r)
 		} else {
 			live = append(live, r)
@@ -80,7 +79,7 @@ func Links(w *World, live []session.Record) []Link {
 	var out []Link
 	for _, c := range w.Clients() {
 		l := Link{Client: c}
-		if a, ok := FromPane(c.Pane); ok && a.holds() {
+		if a, ok := FromPane(c.Pane); ok {
 			if rec := index[[2]string{a.Agent, a.Session}]; rec != nil {
 				if view, valid := w.Check(c.Pane, a, *rec); valid {
 					l.Session, l.Evidence, l.View, l.Stored = rec, a.Evidence, view, true
@@ -106,20 +105,15 @@ func Links(w *World, live []session.Record) []Link {
 
 // Reconcile brings every pane in w in line with the sessions:
 //
-//   - a change, an end, an attachment or a detachment a writer did not get
-//     to log is logged;
 //   - a session whose host process is gone without SessionEnd ends (Exit);
 //   - a pane whose stored attachment Links no longer confirms loses it
 //     (Detach), and one Links attaches by title gains it (Attach);
 //   - a projection that lags its session is rewritten.
 //
 // Every change is decided again under the pane's or session's lock against
-// fresh state, so several tmag processes reconciling at once record each
-// change once, and nothing newer than w is undone. The first real error is
-// returned; unknown resources and pending markers remain intact for a later
-// invocation. A pane marking a change that cannot be read stops it
-// (MarkerError) when reached: that pane's options are left as they are and
-// nothing is logged for it, though panes settled before it stay settled.
+// fresh state, so several tmag processes reconciling at once make each change
+// once, and nothing newer than w is undone. A session whose record cannot be
+// read is left alone. The first error is returned.
 func Reconcile(ctx context.Context, env Env, w *World) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -127,22 +121,9 @@ func Reconcile(ctx context.Context, env Env, w *World) error {
 	if w == nil || w.Proc == nil || !w.Proc.Complete() {
 		return errors.New("process table incomplete; reconciliation requires complete evidence")
 	}
-	recs, err := env.Store.AllContext(ctx)
+	recs, _, err := env.Store.All(ctx)
 	if err != nil {
 		return err
-	}
-	for _, p := range w.Panes {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if unreadable(p) {
-			return markerError(p)
-		}
-		if a, ok := FromPane(p); ok && a.Change != "" {
-			if err := env.settlePane(ctx, p); err != nil {
-				return err
-			}
-		}
 	}
 	live, gone := Live(w, recs)
 	for _, r := range gone {
@@ -151,16 +132,6 @@ func Reconcile(ctx context.Context, env Env, w *World) error {
 		}
 		if err := env.exit(ctx, r); err != nil {
 			return err
-		}
-	}
-	for _, r := range live {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if r.Unsettled() {
-			if err := env.settle(ctx, r); err != nil {
-				return err
-			}
 		}
 	}
 	linked := map[[2]string]bool{}
@@ -218,9 +189,6 @@ func (env Env) clearBroken(ctx context.Context, p tmux.Pane) error {
 		if _, ok := FromPane(fresh); ok || len(fresh.Options) == 0 {
 			return nil
 		}
-		if unreadable(fresh) {
-			return markerError(fresh)
-		}
 		return srv.ClearPaneOptions(ctx, fresh.ID)
 	})
 }
@@ -230,8 +198,9 @@ func (env Env) clearBroken(ctx context.Context, p tmux.Pane) error {
 // again against a fresh process table before writing a new attachment, and
 // gives up if the proof no longer holds. A title inference never replaces a
 // process proof of the same client and session, which a reconciliation may
-// not have seen yet; a change of evidence alone logs no Detach, since the
-// pane never stopped showing the session.
+// not have seen yet. The pane changes first, then the events are logged: a
+// Detach of the session the pane stops showing, then the Attach; a change
+// of evidence or client alone logs only the Attach.
 func (env Env) Attach(ctx context.Context, w *World, c Client, rec session.Record, evidence string) error {
 	srv := tmux.Server{Socket: c.Pane.Server}
 	return Lock(ctx, env.Log.Dir, c.Pane.Server, c.Pane.ID, func() error {
@@ -247,19 +216,13 @@ func (env Env) Attach(ctx context.Context, w *World, c Client, rec session.Recor
 				return nil
 			}
 		}
-		latest, ok, err := env.Store.GetContext(ctx, rec.Agent, rec.ID)
-		if err != nil || !ok || latest.Ended != "" {
+		latest, ok, err := env.Store.Get(ctx, rec.Agent, rec.ID)
+		if err != nil || !ok {
 			return err
-		}
-		if unreadable(fresh) {
-			return markerError(fresh)
 		}
 		next := Attachment{Agent: rec.Agent, Session: rec.ID, PID: c.Process.PID, Start: c.Process.Start, Evidence: evidence}
 		cur, had := FromPane(fresh)
-		if had && cur.keeps(next) && cur.holds() {
-			if err := env.finish(ctx, srv, fresh, cur); err != nil {
-				return err
-			}
+		if had && cur.keeps(next) {
 			return writeProjection(ctx, srv, fresh.ID, ProjectionOf(latest))
 		}
 		pt, err := proc.SnapshotContext(ctx)
@@ -270,43 +233,20 @@ func (env Env) Attach(ctx context.Context, w *World, c Client, rec session.Recor
 		if !ok || now.Agent != c.Agent || now.Process.PID != c.Process.PID || now.Process.Start != c.Process.Start {
 			return nil // the client the proof was about no longer runs in the pane
 		}
-		// One write replaces the old attachment and marks both events; a
-		// writer that dies leaves them for the next one to log.
-		if had && cur.Change != "" {
-			// Finish what the old attachment was in the middle of first.
-			if err := env.finish(ctx, srv, fresh, cur); err != nil {
-				return err
-			}
-			had = cur.holds()
-		}
-		next.Change = eventlog.Attach
-		if had && !cur.client(next) {
-			next.Replaced = cur.Agent + " " + cur.Session
-		}
 		if err := write(ctx, srv, fresh.ID, fresh.Command, next, ProjectionOf(latest)); err != nil {
 			return err
 		}
-		return env.finish(ctx, srv, fresh, next)
-	})
-}
-
-// finish logs the event an attachment is in the middle of and completes it:
-// an Attach is confirmed, a Detach clears the pane. The caller holds the
-// pane's lock, and no session's; fresh is the pane as read under it.
-func (env Env) finish(ctx context.Context, srv tmux.Server, fresh tmux.Pane, a Attachment) error {
-	switch a.Change {
-	case eventlog.Attach:
-		if agent, id, ok := strings.Cut(a.Replaced, " "); ok {
-			if err := env.append(ctx, eventlog.Event{Agent: agent, Session: id, Event: eventlog.Detach, Pane: ref(fresh)}); err != nil {
+		if had && (cur.Agent != next.Agent || cur.Session != next.Session) {
+			if err := env.append(ctx, eventlog.Event{Agent: cur.Agent, Session: cur.Session, Event: eventlog.Detach, Pane: ref(fresh)}); err != nil {
 				return err
 			}
 		}
-		// The event reports the session in full, so it is read and logged
+		// The Attach reports the session in full, so it is read and logged
 		// under the session's lock: a hook changing the session meanwhile
 		// logs after it, never before with this event reporting less.
-		ev := eventlog.Event{Agent: a.Agent, Session: a.Session, Event: eventlog.Attach, Pane: ref(fresh), Evidence: a.Evidence}
-		if err := env.Store.Lock(ctx, a.Agent, a.Session, func() error {
-			rec, ok, err := env.Store.GetContext(ctx, a.Agent, a.Session)
+		ev := eventlog.Event{Agent: next.Agent, Session: next.Session, Event: eventlog.Attach, Pane: ref(fresh), Evidence: next.Evidence}
+		return env.Store.Lock(ctx, next.Agent, next.Session, func() error {
+			rec, ok, err := env.Store.Get(ctx, next.Agent, next.Session)
 			if err != nil {
 				return err
 			}
@@ -314,48 +254,7 @@ func (env Env) finish(ctx context.Context, srv tmux.Server, fresh tmux.Pane, a A
 				rec.Report(&ev)
 			}
 			return env.append(ctx, ev)
-		}); err != nil {
-			return err
-		}
-		return srv.SetPaneOptions(ctx, fresh.ID, nil, []string{optChange, optReplaced})
-	case eventlog.Detach:
-		if err := env.append(ctx, eventlog.Event{Agent: a.Agent, Session: a.Session, Event: eventlog.Detach, Pane: ref(fresh)}); err != nil {
-			return err
-		}
-		return srv.ClearPaneOptions(ctx, fresh.ID)
-	}
-	return nil
-}
-
-// unset detaches a from the pane: marked first, then logged, then cleared,
-// so that a writer that dies leaves the mark for the next one to finish.
-// The caller holds the pane's lock.
-func (env Env) unset(ctx context.Context, srv tmux.Server, fresh tmux.Pane, a Attachment) error {
-	if a.Change != eventlog.Detach {
-		if err := srv.SetPaneOptions(ctx, fresh.ID, map[string]string{optChange: eventlog.Detach}, nil); err != nil {
-			return err
-		}
-		a.Change = eventlog.Detach
-	}
-	return env.finish(ctx, srv, fresh, a)
-}
-
-// settlePane finishes the event a pane's attachment was left in the middle
-// of, if it still is.
-func (env Env) settlePane(ctx context.Context, p tmux.Pane) error {
-	srv := tmux.Server{Socket: p.Server}
-	return Lock(ctx, env.Log.Dir, p.Server, p.ID, func() error {
-		fresh, err := srv.Pane(ctx, p.ID)
-		if err != nil {
-			return err
-		}
-		if cur, ok := FromPane(fresh); ok && cur.Change != "" {
-			return env.finish(ctx, srv, fresh, cur)
-		}
-		if unreadable(fresh) {
-			return markerError(fresh)
-		}
-		return nil
+		})
 	})
 }
 
@@ -368,10 +267,10 @@ func (env Env) Show(ctx context.Context, p tmux.Pane, a Attachment) error {
 		if err != nil {
 			return err
 		}
-		if cur, ok := FromPane(fresh); !ok || !cur.same(a) || !cur.holds() {
+		if cur, ok := FromPane(fresh); !ok || cur != a {
 			return nil
 		}
-		rec, ok, err := env.Store.GetContext(ctx, a.Agent, a.Session)
+		rec, ok, err := env.Store.Get(ctx, a.Agent, a.Session)
 		if err != nil || !ok {
 			return err
 		}
@@ -390,7 +289,7 @@ func (env Env) DetachAll(ctx context.Context, w *World, agent, id string) error 
 	return errors.Join(errs...)
 }
 
-// detach removes the pane's attachment if it is still a.
+// detach removes the pane's attachment if it is still a, then logs it.
 func (env Env) detach(ctx context.Context, p tmux.Pane, a Attachment) error {
 	srv := tmux.Server{Socket: p.Server}
 	return Lock(ctx, env.Log.Dir, p.Server, p.ID, func() error {
@@ -398,20 +297,23 @@ func (env Env) detach(ctx context.Context, p tmux.Pane, a Attachment) error {
 		if err != nil {
 			return err // usually a pane closed since: its options went with it
 		}
-		if cur, ok := FromPane(fresh); ok && cur.same(a) {
-			return env.unset(ctx, srv, fresh, cur)
+		if cur, ok := FromPane(fresh); !ok || cur != a {
+			return nil
 		}
-		return nil
+		if err := srv.ClearPaneOptions(ctx, fresh.ID); err != nil {
+			return err
+		}
+		return env.append(ctx, eventlog.Event{Agent: a.Agent, Session: a.Session, Event: eventlog.Detach, Pane: ref(fresh)})
 	})
 }
 
-// exit ends a session that is gone: it finishes an end already decided, or
-// ends a session whose host process exited, if it still has.
+// exit ends a session whose host process exited without SessionEnd, if it
+// still has.
 func (env Env) exit(ctx context.Context, r session.Record) error {
 	return env.Store.Lock(ctx, r.Agent, r.ID, func() error {
-		cur, ok, err := env.Store.Current(ctx, env.Log, r.Agent, r.ID)
+		cur, ok, err := env.Store.Get(ctx, r.Agent, r.ID)
 		if err != nil || !ok {
-			return err // or an end already decided is now finished
+			return err
 		}
 		if cur.Host != r.Host {
 			return nil // reported from another process since
@@ -427,14 +329,6 @@ func (env Env) exit(ctx context.Context, r session.Record) error {
 			return nil
 		}
 		return env.Store.End(ctx, env.Log, cur, eventlog.Event{Event: eventlog.Exit})
-	})
-}
-
-// settle logs a change its writer did not get to log, if it still is not.
-func (env Env) settle(ctx context.Context, r session.Record) error {
-	return env.Store.Lock(ctx, r.Agent, r.ID, func() error {
-		_, _, err := env.Store.Current(ctx, env.Log, r.Agent, r.ID)
-		return err
 	})
 }
 

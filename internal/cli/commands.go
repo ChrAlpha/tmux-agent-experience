@@ -352,14 +352,18 @@ func (a *app) cmdSend(args []string) int {
 		a.reportDelivery("sent to", d)
 		return ExitOK
 	}
-	return a.awaitAndReport("send", pos[0], d.Session, query.WaitOptions{
-		States: []string{adapter.Idle, adapter.Blocked}, After: d.Seq, Cursor: d.Cursor, StartGrace: query.PendingWindow,
+	prompted := d.Session.Turn
+	return a.awaitAndReport("send", pos[0], d.Session, d.Seq, query.WaitOptions{
+		States: []string{adapter.Idle, adapter.Blocked}, Prompted: &prompted,
 	}, *timeout)
 }
 
+// replyRetry is how often a reply tries a busy asker again.
+const replyRetry = time.Second
+
 // cmdReply answers a prompt that asked for a reply: the peer gets it as a
-// prompt whose first line says it is one. A peer still busy is waited for,
-// until --timeout, and prompted once it is idle.
+// prompt whose first line says it is one. A peer still busy is tried again
+// every replyRetry, until --timeout, and prompted once it is idle.
 func (a *app) cmdReply(args []string) int {
 	fs := flag.NewFlagSet("reply", flag.ContinueOnError)
 	fs.BoolVar(&a.json, "json", false, "")
@@ -380,12 +384,6 @@ func (a *app) cmdReply(args []string) int {
 	ctx, cancelTimeout := context.WithTimeout(ctx, *timeout)
 	defer cancelTimeout()
 	for {
-		// Read the cursor before trying: the peer turning idle in between
-		// is then seen rather than waited for.
-		cursor, err := a.log.Head(ctx)
-		if err != nil {
-			return a.failOn("reply", pos[0], err)
-		}
 		d, err := query.Send(ctx, a.log, pos[0], text, query.Answering)
 		if err == nil {
 			a.reportDelivery("replied to", d)
@@ -395,24 +393,10 @@ func (a *app) cmdReply(args []string) int {
 		if !errors.As(err, &refused) || refused.Reason != query.RefuseBusy {
 			return a.failOn("reply", pos[0], a.deadline(ctx, *timeout, err))
 		}
-		t, err := a.resolve(ctx, pos[0])
-		if err == nil {
-			_, err = needSession(t)
-		}
-		if err != nil {
-			return a.failOn("reply", pos[0], a.deadline(ctx, *timeout, err))
-		}
-		// Wait for the peer's next idle, or a pending window at most: a
-		// prompt tmag just delivered may start no turn.
-		wait, stop := context.WithTimeout(ctx, query.PendingWindow)
-		_, err = query.Wait(wait, a.log, *t.Session, query.WaitOptions{States: []string{adapter.Idle}, After: cursor.Seq, Cursor: cursor})
-		stop()
-		if ctx.Err() != nil {
-			// Its last try was refused busy: nothing went out.
+		select {
+		case <-ctx.Done():
 			return a.failOn("reply", pos[0], a.deadline(ctx, *timeout, refused))
-		}
-		if err != nil && !errors.Is(err, context.DeadlineExceeded) {
-			return a.failOn("reply", pos[0], err)
+		case <-time.After(replyRetry):
 		}
 	}
 }
@@ -455,7 +439,6 @@ func (a *app) cmdWait(args []string) int {
 	fs := flag.NewFlagSet("wait", flag.ContinueOnError)
 	fs.BoolVar(&a.json, "json", false, "")
 	states := fs.String("for", "idle,blocked", "")
-	after := fs.Int64("after", -1, "")
 	timeout := fs.Duration("timeout", 30*time.Minute, "")
 	pos, err := parse(fs, args)
 	if err == nil && len(pos) != 1 {
@@ -474,12 +457,6 @@ func (a *app) cmdWait(args []string) int {
 	defer cancel()
 	ctx, cancelTimeout := context.WithTimeout(ctx, *timeout)
 	defer cancelTimeout()
-	// Read the cursor before the state: a transition landing in between is
-	// then replayed instead of missed.
-	cursor, err := a.log.Head(ctx)
-	if err != nil {
-		return a.failOn("wait", pos[0], err)
-	}
 	t, err := a.resolve(ctx, pos[0])
 	if err != nil {
 		return a.failOn("wait", pos[0], err)
@@ -488,58 +465,46 @@ func (a *app) cmdWait(args []string) int {
 	if err != nil {
 		return a.failOn("wait", pos[0], err)
 	}
-	if *after < 0 {
-		for _, st := range want {
-			if s.State == st {
-				a.reportWait(s, eventlog.Event{Seq: cursor.Seq, State: s.State, Kind: s.Kind, Turn: s.Turn}, true)
-				return ExitOK
-			}
-		}
-		*after = cursor.Seq
-	}
-	o := query.WaitOptions{States: want, After: *after}
-	if *after == cursor.Seq {
-		o.Cursor = cursor
-	}
-	return a.awaitAndReportContext(ctx, "wait", pos[0], s, o, *timeout)
+	return a.awaitAndReportContext(ctx, "wait", pos[0], s, 0, query.WaitOptions{States: want}, *timeout)
 }
 
-func (a *app) awaitAndReport(cmd, target string, s query.Session, o query.WaitOptions, timeout time.Duration) int {
+func (a *app) awaitAndReport(cmd, target string, s query.Session, sent int64, o query.WaitOptions, timeout time.Duration) int {
 	ctx, cancel := a.signalContext()
 	defer cancel()
-	return a.awaitAndReportContext(ctx, cmd, target, s, o, timeout)
+	return a.awaitAndReportContext(ctx, cmd, target, s, sent, o, timeout)
 }
 
-// awaitAndReportContext waits for s as o says and reports the outcome; cmd
-// and target are the command and the target as typed, for the report.
-func (a *app) awaitAndReportContext(ctx context.Context, cmd, target string, s query.Session, o query.WaitOptions, timeout time.Duration) int {
+// awaitAndReportContext waits for s as o says and reports the state it
+// reached; cmd and target are the command and the target as typed, and sent
+// the event of the prompt send delivered, for a failure to report.
+func (a *app) awaitAndReportContext(ctx context.Context, cmd, target string, s query.Session, sent int64, o query.WaitOptions, timeout time.Duration) int {
 	ctx, cancelTimeout := context.WithTimeout(ctx, timeout)
 	defer cancelTimeout()
-	ev, err := query.Wait(ctx, a.log, s, o)
+	rec, err := query.Wait(ctx, a.store(), s, o)
 	switch {
 	case errors.Is(err, query.ErrNoTurn):
 		// Delivered, but the agent started no turn (a slash command, say).
-		a.reportWait(s, eventlog.Event{State: adapter.Idle}, false)
+		a.reportWait(s, rec.State(), rec.Kind(), rec.Turn, false)
 		return ExitOK
 	case errors.Is(err, context.DeadlineExceeded):
 		err = fmt.Errorf("%w after %s waiting for %s", errTimeout, timeout, strings.Join(o.States, "|"))
 	}
 	if err != nil {
 		if cmd == "send" {
-			err = delivered{fmt.Errorf("prompt delivered at seq %d; subsequent outcome unknown, do not repeat delivery: %w", o.After, err)}
+			err = delivered{fmt.Errorf("prompt delivered at seq %d; subsequent outcome unknown, do not repeat delivery: %w", sent, err)}
 		}
 		return a.failOn(cmd, target, err)
 	}
-	a.reportWait(s, ev, true)
+	a.reportWait(s, rec.State(), rec.Kind(), rec.Turn, true)
 	return ExitOK
 }
 
-func (a *app) reportWait(s query.Session, ev eventlog.Event, started bool) {
+func (a *app) reportWait(s query.Session, state, kind, turn string, started bool) {
 	if a.json {
-		a.emit(map[string]any{"id": s.ID, "state": ev.State, "kind": ev.Kind, "turn": ev.Turn, "seq": ev.Seq, "started": started})
+		a.emit(map[string]any{"id": s.ID, "state": state, "kind": kind, "turn": turn, "started": started})
 		return
 	}
-	state := describe(ev.State, ev.Kind)
+	state = describe(state, kind)
 	if !started {
 		state += " (no turn started)"
 	}

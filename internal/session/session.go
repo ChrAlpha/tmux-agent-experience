@@ -71,19 +71,6 @@ type Record struct {
 	// Halted is when tmag last interrupted the main agent, until the agent
 	// reports again: Claude Code reports nothing on an interrupt.
 	Halted time.Time `json:"halted,omitzero"`
-
-	// Logged is what the event log last reported of the session. A record
-	// that reports otherwise has a change its writer did not get to log;
-	// Change names the event that made it. See Store.Save.
-	Logged Report `json:"logged"`
-	Change string `json:"change,omitempty"`
-	// Delivery is the event of a delivery of tmag's that Change names, kept
-	// until it is logged so that it is logged whole. See Store.Report.
-	Delivery *eventlog.Event `json:"delivery,omitempty"`
-	// Ended names the event that ends the session (SessionEnd or Exit) once
-	// that is decided. The record is deleted after the event is logged; until
-	// then it counts as gone. See Store.End.
-	Ended string `json:"ended,omitempty"`
 }
 
 // Request is a pending prompt under the id tmag answers it by.
@@ -130,36 +117,28 @@ func (r Record) RequestRefs() []eventlog.Request {
 	return out
 }
 
-// Report is what an event reports of a session. Lists are joined, so that
-// reports compare with ==.
+// Report is what an event reports of a session, contact time aside. Lists
+// are joined, so that reports compare with ==.
 type Report struct {
-	LastHookAt string `json:"last_hook_at,omitempty"`
-	State      string `json:"state,omitempty"`
-	Kind       string `json:"kind,omitempty"`
-	Turn       string `json:"turn,omitempty"`
-	Cwd        string `json:"cwd,omitempty"`
-	Runtime    string `json:"runtime,omitempty"`
-	Transcript string `json:"transcript,omitempty"`
-	Subagents  string `json:"subagents,omitempty"`
-	Requests   string `json:"requests,omitempty"`
-	Since      string `json:"since,omitempty"`
+	State      string
+	Kind       string
+	Turn       string
+	Cwd        string
+	Runtime    string
+	Transcript string
+	Subagents  string
+	Requests   string
+	Since      time.Time
 }
 
-// Reports is what the session's next event would report.
+// Reports is what an event of the session reports, contact time aside: when
+// it differs from what the session reported before a change, the change is
+// logged.
 func (r Record) Reports() Report {
-	since := ""
-	if !r.Since.IsZero() {
-		since = r.Since.UTC().Format(time.RFC3339Nano)
-	}
-	contact := ""
-	if !r.LastHookAt.IsZero() {
-		contact = r.LastHookAt.UTC().Format(time.RFC3339Nano)
-	}
 	return Report{
-		LastHookAt: contact,
-		State:      r.State(), Kind: r.Kind(), Turn: r.Turn, Cwd: r.Cwd, Runtime: string(r.Host.Role),
+		State: r.State(), Kind: r.Kind(), Turn: r.Turn, Cwd: r.Cwd, Runtime: string(r.Host.Role),
 		Transcript: r.Transcript, Subagents: strings.Join(r.RunningSubagents(), "\n"),
-		Requests: strings.Join(r.requestIDs(), "\n"), Since: since,
+		Requests: strings.Join(r.requestIDs(), "\n"), Since: r.Since.UTC(),
 	}
 }
 
@@ -216,33 +195,18 @@ func (r Record) RunningSubagents() []string {
 	return out
 }
 
-// Unlogged reports whether the event log does not yet report the session as
-// it is.
-func (r Record) Unlogged() bool { return r.Reports() != r.Logged }
-
-// Unsettled reports whether Store.Settle has something to do: a change or a
-// delivery of tmag's to log, or a prompt an older tmag left without a
-// request.
-func (r Record) Unsettled() bool { return r.Unlogged() || r.Delivery != nil || r.unnamed() }
-
-// unnamed reports whether a pending prompt has no request.
-func (r Record) unnamed() bool {
-	return slices.ContainsFunc(r.Pending, func(p adapter.Prompt) bool {
-		return !slices.ContainsFunc(r.Requests, func(q Request) bool { return q.Prompt == p })
-	})
-}
-
-// name gives every pending prompt without a request one, as an Ask does.
-func (r *Record) name(now time.Time) {
-	for _, p := range r.Pending {
-		if !slices.ContainsFunc(r.Requests, func(q Request) bool { return q.Prompt == p }) {
-			r.Requests = append(r.Requests, Request{ID: NewRequestID(), Prompt: p, Turn: r.Turn, Since: now.UTC().Truncate(time.Second)})
-		}
-	}
-}
-
-// maxSubagents bounds Record.Subagents.
-const maxSubagents = 32
+// Bounds of what a record keeps, far above what an agent does: hook input is
+// bounded where it is read (adapter.Decode), and these bound how much of it
+// a session accumulates, so that a record, and an event reporting it, stay
+// small whatever an agent sends. The oldest entries go first.
+const (
+	maxPending   = 32
+	maxRequests  = 64
+	maxCalls     = 64
+	maxDone      = 64
+	maxTasks     = 64
+	maxSubagents = 32
+)
 
 // State is the session's state as tmag reports it: blocked while a prompt is
 // open, working during a turn or while background work runs, otherwise the
@@ -371,9 +335,6 @@ func Apply(cur Record, tr adapter.Transition, now time.Time) (Record, bool) {
 			rec.Background = append(rec.Background, agent)
 		}
 		rec.Subagents = append(slices.DeleteFunc(rec.Subagents, func(s string) bool { return s == agent }), agent)
-		if len(rec.Subagents) > maxSubagents {
-			rec.Subagents = rec.Subagents[len(rec.Subagents)-maxSubagents:]
-		}
 	case adapter.Reap:
 		agent := tr.Call.Agent
 		rec.Background = slices.DeleteFunc(rec.Background, func(s string) bool { return s == agent })
@@ -387,8 +348,6 @@ func Apply(cur Record, tr adapter.Transition, now time.Time) (Record, bool) {
 	if main {
 		rec.Halted = time.Time{} // the main agent reports again
 	}
-	// A request closes with its prompt.
-	rec.Requests = slices.DeleteFunc(rec.Requests, func(q Request) bool { return !slices.Contains(rec.Pending, q.Prompt) })
 	normalize(&rec)
 	if rec.State() != cur.State() || rec.Kind() != cur.Kind() || cur.Since.IsZero() {
 		rec.Since = now.UTC().Truncate(time.Second)
@@ -473,6 +432,14 @@ func answerUnnamed(pending []adapter.Prompt) []adapter.Prompt {
 }
 
 func normalize(r *Record) {
+	r.Pending = newest(r.Pending, maxPending)
+	// A request closes with its prompt.
+	r.Requests = slices.DeleteFunc(r.Requests, func(q Request) bool { return !slices.Contains(r.Pending, q.Prompt) })
+	r.Requests = newest(r.Requests, maxRequests)
+	r.Calls = newest(r.Calls, maxCalls)
+	r.Done = newest(r.Done, maxDone)
+	r.Background = newest(r.Background, maxTasks)
+	r.Subagents = newest(r.Subagents, maxSubagents)
 	if len(r.Pending) == 0 {
 		r.Pending = nil
 	}
@@ -493,11 +460,18 @@ func normalize(r *Record) {
 	}
 }
 
+// newest keeps the last n entries of s.
+func newest[S ~[]E, E any](s S, n int) S {
+	if len(s) > n {
+		return slices.Clone(s[len(s)-n:])
+	}
+	return s
+}
+
 func (r Record) equal(o Record) bool {
 	return r.Agent == o.Agent && r.ID == o.ID && r.Cwd == o.Cwd && r.Host == o.Host && r.Transcript == o.Transcript &&
 		r.Main == o.Main && r.MainKind == o.MainKind && r.Turn == o.Turn &&
 		slices.Equal(r.Pending, o.Pending) && slices.Equal(r.Requests, o.Requests) && slices.Equal(r.Calls, o.Calls) &&
 		slices.Equal(r.Done, o.Done) && slices.Equal(r.Background, o.Background) &&
-		slices.Equal(r.Subagents, o.Subagents) && r.Since.Equal(o.Since) && r.Sent.Equal(o.Sent) && r.Halted.Equal(o.Halted) &&
-		r.Logged == o.Logged && r.Change == o.Change && r.Ended == o.Ended
+		slices.Equal(r.Subagents, o.Subagents) && r.Since.Equal(o.Since) && r.Sent.Equal(o.Sent) && r.Halted.Equal(o.Halted)
 }

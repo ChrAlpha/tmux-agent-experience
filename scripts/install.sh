@@ -12,7 +12,8 @@ bin="$dir/bin/tmag"
 lock="$dir/bin/.install.lock"
 # Keep failure reporting independent of tmux/client availability.
 fail() { printf 'tmag installer: %s\n' "$*" >&2; exit 1; }
-installed() { [ "$("$bin" version 2>/dev/null)" = "tmag $want (tmag/v1)" ]; }
+# A version prints "tmag VERSION (SCHEMA)"; the version decides the schema.
+installed() { local v; v="$("$bin" version 2>/dev/null)"; [ "${v%% (*}" = "tmag $want" ]; }
 
 # This script is always scheduled in the background by tmag.tmux. Even a stuck
 # installed-version probe therefore cannot block tmux's plugin entry path.
@@ -74,7 +75,8 @@ tar -tzf archive | awk '$0 == "tmag" { n++; next } $0 == "LICENSE" || $0 == "REA
 tar -tvzf archive tmag | awk 'substr($0,1,1) != "-" { bad=1 } END { if (NR != 1 || bad) exit 1 }' || fail 'release binary is not regular'
 tar -xOzf archive tmag >candidate || fail 'could not read released binary'
 chmod 755 candidate || fail 'cannot mark released binary executable'
-[ "$(./candidate version 2>/dev/null)" = "tmag $want (tmag/v1)" ] || fail 'release binary reports a different version'
+reported="$(./candidate version 2>/dev/null)"
+[ "${reported%% (*}" = "tmag $want" ] || fail 'release binary reports a different version'
 # The lock/workspace and destination share bin's filesystem. Refuse a rebound
 # namespace; never delete another owner's lock or use a cross-filesystem copy.
 [[ ! -L "$lock" && . -ef "$lock" && .. -ef "$dir/bin" && ! -L "$dir/bin" ]] || fail 'installation namespace changed'

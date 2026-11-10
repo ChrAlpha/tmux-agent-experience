@@ -16,7 +16,7 @@ import (
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 )
 
-var serveAddress = regexp.MustCompile(`http://(127\.0\.0\.1:\d+)/v1/info`)
+var serveAddress = regexp.MustCompile(`http://(127\.0\.0\.1:\d+)/v2/info`)
 
 // The local HTTP contract uses the common gates with authenticated owner authority.
 func TestServeCarriesOwnerVerbs(t *testing.T) {
@@ -85,7 +85,7 @@ func TestServeCarriesOwnerVerbs(t *testing.T) {
 	}
 
 	// The stream carries the single local instance snapshot.
-	watch, _ := http.NewRequest(http.MethodGet, base+"/v1/watch", nil)
+	watch, _ := http.NewRequest(http.MethodGet, base+"/v2/watch", nil)
 	watch.Header.Set("Authorization", "Bearer "+token)
 	res, err := client.Do(watch)
 	if err != nil {
@@ -119,7 +119,7 @@ func TestServeCarriesOwnerVerbs(t *testing.T) {
 	res.Body.Close()
 
 	// An owner action records its admitted credential, with no agent identity.
-	if code, body := call(http.MethodPost, "/v1/act", `{"verb":"send","target":"`+sidA+`","text":"from the phone"}`); code != http.StatusOK || !strings.Contains(body, `"via":"pane"`) {
+	if code, body := call(http.MethodPost, "/v2/act", `{"verb":"send","target":"`+sidA+`","text":"from the phone"}`); code != http.StatusOK || !strings.Contains(body, `"via":"pane"`) {
 		t.Fatalf("send: %d %s", code, body)
 	}
 	h.eventually("the agent receives the prompt", func() bool {
@@ -137,7 +137,7 @@ func TestServeCarriesOwnerVerbs(t *testing.T) {
 		t.Fatalf("Send event = %+v", sent)
 	}
 	h.eventually("the reply on the page", func() bool {
-		code, body := call(http.MethodGet, "/v1/read?target="+sidA+"&last=1", "")
+		code, body := call(http.MethodGet, "/v2/read?target="+sidA+"&last=1", "")
 		return code == http.StatusOK && strings.Contains(body, `"text":"answered: from the phone`)
 	})
 
@@ -152,17 +152,17 @@ func TestServeCarriesOwnerVerbs(t *testing.T) {
 		return req != ""
 	})
 	h.eventually("what the request asks", func() bool {
-		code, body := call(http.MethodGet, "/v1/request?target="+sidA+"&request="+req, "")
+		code, body := call(http.MethodGet, "/v2/request?target="+sidA+"&request="+req, "")
 		return code == http.StatusOK && strings.Contains(body, `"command":"date"`)
 	})
-	if code, body := call(http.MethodPost, "/v1/act", `{"verb":"answer","target":"`+sidA+`","request":"`+req+`","decision":"allow"}`); code != http.StatusOK {
+	if code, body := call(http.MethodPost, "/v2/act", `{"verb":"answer","target":"`+sidA+`","request":"`+req+`","decision":"allow"}`); code != http.StatusOK {
 		t.Fatalf("answer: %d %s", code, body)
 	}
 	h.eventually("the agent receives the answer", func() bool {
 		got, _ := os.ReadFile(out)
 		return strings.Contains(string(got), "hook:allow")
 	})
-	if code, body := call(http.MethodPost, "/v1/act", `{"verb":"answer","target":"`+sidA+`","request":"`+req+`","decision":"allow"}`); code != http.StatusConflict || !strings.Contains(body, "refused:changed") {
+	if code, body := call(http.MethodPost, "/v2/act", `{"verb":"answer","target":"`+sidA+`","request":"`+req+`","decision":"allow"}`); code != http.StatusConflict || !strings.Contains(body, "refused:changed") {
 		t.Fatalf("answering twice: %d %s", code, body)
 	}
 
@@ -171,7 +171,7 @@ func TestServeCarriesOwnerVerbs(t *testing.T) {
 	if r := h.tmag("", "auth", "revoke", issued.ID); r.code != 0 {
 		t.Fatalf("revoke: %d", r.code)
 	}
-	if code, _ := call(http.MethodGet, "/v1/list", ""); code != http.StatusUnauthorized {
+	if code, _ := call(http.MethodGet, "/v2/list", ""); code != http.StatusUnauthorized {
 		t.Fatalf("revoked client: %d", code)
 	}
 	// Closing the window stops it, and the page's address goes with it.

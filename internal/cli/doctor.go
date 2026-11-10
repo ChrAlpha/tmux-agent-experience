@@ -11,9 +11,7 @@ import (
 	"time"
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/contextio"
-	"github.com/ChrAlpha/tmux-agent-experience/internal/ownedfs"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
-	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/tmux"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/version"
 )
@@ -185,16 +183,16 @@ func (a *app) checkState(ctx context.Context) check {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return check{"state", "fail", fmt.Sprintf("%s: %v", dir, err)}
 	}
-	cursor, err := a.log.Head(ctx)
+	seq, err := a.log.Head(ctx)
 	if err != nil {
 		return check{"state", "fail", fmt.Sprintf("%s: %v", dir, err)}
 	}
-	if cursor.Seq == 0 {
+	if seq == 0 {
 		return check{"state", "warn", fmt.Sprintf("%s: no events yet; are the agent plugins installed and trusted?", dir)}
 	}
-	events, _, err := a.log.Since(ctx, cursor.Seq-1)
+	events, _, err := a.log.Since(ctx, seq-1)
 	if err != nil {
-		return check{"state", "fail", "event log validation incomplete"}
+		return check{"state", "fail", fmt.Sprintf("%s: event log unreadable: %v", dir, err)}
 	}
 	if len(events) == 0 {
 		return check{"state", "warn", "last event unavailable"}
@@ -229,7 +227,7 @@ func (a *app) checkHookErrors(ctx context.Context) check {
 		latest = "legacy record (message redacted)"
 		if len(fields) == 3 && (fields[1] == "claude" || fields[1] == "codex" || fields[1] == "notify" || fields[1] == "hook") {
 			switch fields[2] {
-			case "failed", "timeout", "canceled", "records_unavailable", "limited", "limit_exceeded", "attachment_unavailable":
+			case "failed", "timeout", "canceled", "records_unavailable", "limited":
 				latest = fields[1] + " " + fields[2]
 			}
 		}
@@ -237,58 +235,27 @@ func (a *app) checkHookErrors(ctx context.Context) check {
 	return check{"hooks", "ok", fmt.Sprintf("%d historical failure(s) in 24h; latest: %s; current health checked separately", count, latest)}
 }
 
-// Current metadata only, at most 32 physical entries and one 4MiB record at a
-// time. The first fault is actionable; incomplete enumeration is never absence.
+// checkRecords reports the session records, and those tmag cannot read,
+// which views leave out until their sessions' next hooks write them anew.
 func (a *app) checkRecords(ctx context.Context) check {
-	examined, readable := 0, 0
+	recs, faults, err := a.store().All(ctx)
+	if err != nil {
+		return check{"records", "warn", "record probe incomplete"}
+	}
 	var latest time.Time
-	for _, agent := range []string{"claude", "codex"} {
-		for _, dir := range []string{a.log.Dir, filepath.Join(a.log.Dir, "sessions"), filepath.Join(a.log.Dir, "sessions", agent)} {
-			if ctx.Err() != nil {
-				return check{"records", "warn", "record probe incomplete"}
-			}
-			st, err := os.Lstat(dir)
-			if err == nil && (!st.IsDir() || !ownedfs.Owner(st)) {
-				return check{"records", "fail", "unsafe metadata directory: " + dir}
-			}
-			if err != nil && !errors.Is(err, os.ErrNotExist) {
-				return check{"records", "warn", "metadata directory unreadable: " + dir}
-			}
-		}
-		err := contextio.Entries(ctx, filepath.Join(a.log.Dir, "sessions", agent), func(e os.DirEntry) error {
-			examined++
-			if examined > 32 {
-				return errDoctorSample
-			}
-			id, ok := strings.CutSuffix(e.Name(), ".json")
-			if !ok || !session.ValidID(id) {
-				return nil
-			}
-			r, found, err := a.store().GetContext(ctx, agent, id)
-			if err != nil {
-				return err
-			}
-			if found {
-				readable++
-				if r.LastHookAt.After(latest) {
-					latest = r.LastHookAt
-				}
-			}
-			return ctx.Err()
-		})
-		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			var fault *session.RecordError
-			if errors.As(err, &fault) {
-				return check{"records", "fail", fault.Error() + "; preserve the original and repair metadata"}
-			}
-			return check{"records", "warn", fmt.Sprintf("checked %d readable records; remaining metadata unknown (probe incomplete)", readable)}
+	for _, r := range recs {
+		if r.LastHookAt.After(latest) {
+			latest = r.LastHookAt
 		}
 	}
 	contact := "unknown"
 	if !latest.IsZero() {
 		contact = latest.UTC().Format(time.RFC3339Nano)
 	}
-	return check{"records", "ok", fmt.Sprintf("%d readable records in sample; latest hook contact %s (not state freshness)", readable, contact)}
+	if len(faults) > 0 {
+		return check{"records", "warn", fmt.Sprintf("%d readable and %d unreadable record(s), first %s; views leave them out until their sessions' next hooks rewrite them", len(recs), len(faults), faults[0])}
+	}
+	return check{"records", "ok", fmt.Sprintf("%d record(s); latest hook contact %s (not state freshness)", len(recs), contact)}
 }
 
 var errDoctorSample = errors.New("doctor sample complete")

@@ -2,8 +2,9 @@
 // PermissionRequest hook that waits, while the agent's own dialog is on
 // screen, for a decision made elsewhere.
 //
-// Each waiting hook owns one fixed Unix socket position under
-// the state directory. A connection sends one JSON object and reads one:
+// Each waiting hook listens on a Unix socket of its own, in a directory of
+// the user's own under /tmp (socketDir). A connection sends one JSON object,
+// naming the request, and reads one:
 //
 //	{"op":"show"}                 → {"ok":true,"tool":…,"input":…}
 //	{"op":"decide","decision":…}  → {"ok":true} once the hook has printed it
@@ -189,12 +190,10 @@ func Wait(ctx context.Context, ln net.Listener, a Asked, emit func([]byte) error
 			return false
 		}
 		id := ""
-		require := false
 		if own, ok := ln.(*listener); ok {
 			id = own.id
-			require = own.slot != nil
 		}
-		done, emitted := serve(ctx, conn, id, require, a, emit)
+		done, emitted := serve(ctx, conn, id, a, emit)
 		if done {
 			return emitted
 		}
@@ -202,7 +201,7 @@ func Wait(ctx context.Context, ln net.Listener, a Asked, emit func([]byte) error
 }
 
 // serve answers one connection; done says the wait is over.
-func serve(ctx context.Context, conn net.Conn, id string, require bool, a Asked, emit func([]byte) error) (done, emitted bool) {
+func serve(ctx context.Context, conn net.Conn, id string, a Asked, emit func([]byte) error) (done, emitted bool) {
 	defer conn.Close()
 	stop := context.AfterFunc(ctx, func() { conn.Close() })
 	defer stop()
@@ -212,7 +211,7 @@ func serve(ctx context.Context, conn net.Conn, id string, require bool, a Asked,
 		return false, false
 	}
 	enc := json.NewEncoder(conn)
-	if (require || m.Request != "") && m.Request != id {
+	if m.Request != id {
 		_ = enc.Encode(reply{Error: "request identity changed"})
 		return false, false
 	}
@@ -257,13 +256,8 @@ func serve(ctx context.Context, conn net.Conn, id string, require bool, a Asked,
 var ErrGone = errors.New("no answer hook waits on the request")
 
 func call(ctx context.Context, stateDir, id string, m message) (reply, error) {
-	scope, name, pooled, err := lookup(ctx, stateDir, id)
-	if err != nil {
-		return reply{}, fmt.Errorf("%w: %w", ErrGone, err)
-	}
-	defer scope.Close()
 	m.Request = id
-	conn, err := dialAt(ctx, scope, name)
+	conn, err := dial(ctx, stateDir, id)
 	if err != nil {
 		return reply{}, fmt.Errorf("%w: %w", ErrGone, err)
 	}
@@ -280,7 +274,7 @@ func call(ctx context.Context, stateDir, id string, m message) (reply, error) {
 	if err := json.NewDecoder(conn).Decode(&r); err != nil {
 		return reply{}, fmt.Errorf("%w: it left without replying", ErrGone)
 	}
-	if r.OK && (pooled || r.Request != "") && r.Request != id {
+	if r.OK && r.Request != id {
 		return r, fmt.Errorf("%w: request identity changed", ErrGone)
 	}
 	if !r.OK {
@@ -309,9 +303,6 @@ func Close(ctx context.Context, stateDir string, ids ...string) {
 	defer cancel()
 	var wg sync.WaitGroup
 	for _, id := range ids {
-		// The call looks up the endpoint and validates the request identity
-		// itself. A separate probe would repeat that work, and start a second
-		// helper.
 		wg.Go(func() { _, _ = call(ctx, stateDir, id, message{Op: "close"}) })
 	}
 	wg.Wait()

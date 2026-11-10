@@ -19,16 +19,13 @@ import (
 )
 
 const (
-	watchRescan      = 2 * time.Second
-	watchPoll        = 200 * time.Millisecond
-	watchResetWindow = 30 * time.Second
-	watchResetLimit  = 3
+	watchRescan = 2 * time.Second
+	watchPoll   = 200 * time.Millisecond
 )
 
 func (a *app) cmdWatch(args []string) int {
 	fs := flag.NewFlagSet("watch", flag.ContinueOnError)
 	since := fs.Int64("since", -1, "")
-	resync := fs.Bool("resync", false, "")
 	pos, err := parse(fs, args)
 	if err == nil && len(pos) > 0 {
 		err = fmt.Errorf("unexpected argument %q", pos[0])
@@ -101,12 +98,12 @@ func (a *app) cmdWatch(args []string) int {
 			return out.Flush()
 		},
 	}
-	err = s.run(ctx, *since, *resync)
+	err = s.run(ctx, *since)
 	return a.watchEnd(err)
 }
 
-// watchStream owns every output in one loop. Snapshot replacement, copied
-// backlog, subsequent events and pane scans cannot race another output writer.
+// watchStream owns every output in one loop, so that a snapshot, the events
+// after it and pane scans never race each other.
 type watchStream struct {
 	log     *eventlog.Log
 	capture func(context.Context) (query.Snapshot, error)
@@ -115,8 +112,8 @@ type watchStream struct {
 	shown   string
 }
 
-func (s *watchStream) events(ctx context.Context, batch eventlog.Batch) error {
-	for _, e := range batch.Events {
+func (s *watchStream) events(ctx context.Context, events []eventlog.Event) error {
+	for _, e := range events {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -142,88 +139,102 @@ func (s *watchStream) panes(ctx context.Context, list []query.Pane) error {
 	return s.emit(map[string]any{"type": "panes", "panes": list})
 }
 
-func (s *watchStream) snapshot(ctx context.Context) (eventlog.Cursor, error) {
-	snap, err := s.capture(ctx)
+// snapshot sends every session and pane as they are, after the event its
+// seq names, and returns a tail of the events after that one. The tail is
+// placed first: what changes while the view is read is then both in the view
+// and among the events, and an event applied twice changes nothing.
+func (s *watchStream) snapshot(ctx context.Context) (*eventlog.Tail, error) {
+	tail, err := s.log.Follow(ctx)
 	if err != nil {
-		return eventlog.Cursor{}, err
+		return nil, err
 	}
-	if err := ctx.Err(); err != nil {
-		return eventlog.Cursor{}, err
+	snap, err := s.capture(ctx)
+	if err == nil {
+		err = s.emit(map[string]any{"type": "snapshot", "seq": tail.Seq(), "sessions": snap.Sessions, "panes": snap.Panes})
 	}
-	if err := s.emit(map[string]any{"type": "snapshot", "seq": snap.Seq, "sessions": snap.Sessions, "panes": snap.Panes}); err != nil {
-		return eventlog.Cursor{}, err
+	if err != nil {
+		tail.Close()
+		return nil, err
 	}
 	b, _ := json.Marshal(snap.Panes)
 	s.shown = string(b)
-	// These records were copied before snapshot publication. Retention can
-	// change while output blocks, but cannot invalidate the captured bytes.
-	if err := s.events(ctx, snap.Backlog); err != nil {
-		return eventlog.Cursor{}, err
-	}
-	return snap.Backlog.Cursor, nil
+	return tail, nil
 }
 
-func (s *watchStream) start(ctx context.Context, since int64) (eventlog.Cursor, error) {
+// run sends a snapshot, unless since names an event the log still goes on
+// from, then the events that follow, and the panes whenever they change.
+// Whenever the log cannot show it sent every event since, because some
+// rotated away or the log was recreated, it sends a new snapshot and goes on
+// from there.
+func (s *watchStream) run(ctx context.Context, since int64) error {
+	var tail *eventlog.Tail
+	defer func() {
+		if tail != nil {
+			tail.Close()
+		}
+	}()
 	if since >= 0 {
-		batch, err := s.log.Replay(ctx, eventlog.Cursor{Seq: since})
-		if err == nil {
-			if err := s.events(ctx, batch); err != nil {
-				return eventlog.Cursor{}, err
-			}
-			list, err := s.rescan(ctx)
-			if err != nil {
-				return eventlog.Cursor{}, err
-			}
-			return batch.Cursor, s.panes(ctx, list)
-		}
-		if !errors.Is(err, eventlog.ErrHistoryUnavailable) {
-			return eventlog.Cursor{}, err
-		}
-	}
-	// v1 already replaces an unavailable initial replay with a snapshot.
-	return s.snapshot(ctx)
-}
-
-func (s *watchStream) run(ctx context.Context, since int64, resync bool) error {
-	last, err := s.start(ctx, since)
-	if err != nil {
-		return err
-	}
-	nextScan := time.Now().Add(watchRescan)
-	var resets []time.Time
-	for {
-		err = s.log.FollowBatches(ctx, last, watchPoll, func(batch eventlog.Batch) error {
-			if err := s.events(ctx, batch); err != nil {
-				return err
-			}
-			if now := time.Now(); !now.Before(nextScan) {
-				nextScan = now.Add(watchRescan)
-				list, err := s.rescan(ctx)
-				if err == nil {
-					return s.panes(ctx, list)
-				}
-				if ctx.Err() != nil {
-					return ctx.Err()
-				}
-			}
-			return nil
-		})
-		if !resync || !errors.Is(err, eventlog.ErrHistoryUnavailable) {
-			return err
-		}
-		now := time.Now()
-		for len(resets) > 0 && now.Sub(resets[0]) >= watchResetWindow {
-			resets = resets[1:]
-		}
-		if len(resets) >= watchResetLimit {
-			return fmt.Errorf("watch resync limit reached: %w", err)
-		}
-		resets = append(resets, now)
-		last, err = s.snapshot(ctx)
+		tail = s.log.Tail(since)
+		events, complete, err := tail.Next(ctx)
 		if err != nil {
 			return err
 		}
-		nextScan = time.Now().Add(watchRescan)
+		if !complete {
+			tail.Close()
+			tail = nil
+		} else if err := s.events(ctx, events); err != nil {
+			return err
+		} else {
+			list, err := s.rescan(ctx)
+			if err != nil {
+				return err
+			}
+			if err := s.panes(ctx, list); err != nil {
+				return err
+			}
+		}
+	}
+	if tail == nil {
+		var err error
+		if tail, err = s.snapshot(ctx); err != nil {
+			return err
+		}
+	}
+	nextScan := time.Now().Add(watchRescan)
+	tick := time.NewTicker(watchPoll)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-tick.C:
+		}
+		events, complete, err := tail.Next(ctx)
+		if err != nil {
+			return err
+		}
+		if !complete {
+			tail.Close()
+			if tail, err = s.snapshot(ctx); err != nil {
+				return err
+			}
+			nextScan = time.Now().Add(watchRescan)
+			continue
+		}
+		if err := s.events(ctx, events); err != nil {
+			return err
+		}
+		if now := time.Now(); !now.Before(nextScan) {
+			nextScan = now.Add(watchRescan)
+			list, err := s.rescan(ctx)
+			if err == nil {
+				if err := s.panes(ctx, list); err != nil {
+					return err
+				}
+			} else if ctx.Err() != nil {
+				return ctx.Err()
+			}
+		}
 	}
 }
 

@@ -14,12 +14,12 @@ import (
 	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
 )
 
-func TestDoctorReportsCurrentFaultContactAndIncompleteSample(t *testing.T) {
+func TestDoctorReportsUnreadableRecordsContactAndIncompleteProbe(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	a := app{log: eventlog.Open(root)}
 	contact := time.Unix(20, 123).UTC()
-	if err := a.store().Put(session.Record{Agent: "claude", ID: "thread", Main: "idle", LastHookAt: contact}); err != nil {
+	if err := a.store().Put(context.Background(), session.Record{Agent: "claude", ID: "thread", Main: "idle", LastHookAt: contact}); err != nil {
 		t.Fatal(err)
 	}
 	if got := a.checkRecords(ctx); got.Status != "ok" || !strings.Contains(got.Detail, contact.Format(time.RFC3339Nano)) {
@@ -29,7 +29,7 @@ func TestDoctorReportsCurrentFaultContactAndIncompleteSample(t *testing.T) {
 	if err := os.WriteFile(bad, []byte("private decoder sentinel"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if got := a.checkRecords(ctx); got.Status != "fail" || !strings.Contains(got.Detail, "claude/broken") || !strings.Contains(got.Detail, "decode") || strings.Contains(got.Detail, "sentinel") {
+	if got := a.checkRecords(ctx); got.Status != "warn" || !strings.Contains(got.Detail, "claude/broken") || !strings.Contains(got.Detail, "decode") || strings.Contains(got.Detail, "sentinel") {
 		t.Fatalf("fault not actionable/private: %+v", got)
 	}
 	if err := os.Remove(bad); err != nil {
