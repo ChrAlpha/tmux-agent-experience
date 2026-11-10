@@ -10,7 +10,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -92,6 +94,10 @@ type plugin struct {
 	Installed bool
 	Enabled   bool
 	Version   string
+	// Elsewhere are copies Pi or oh-my-pi installed from another directory
+	// than the tmux plugin's: what removes them (Pi's package paths,
+	// oh-my-pi's plugin name).
+	Elsewhere []string
 }
 
 // outdated reports an installed plugin of another version than the binary.
@@ -102,12 +108,16 @@ func (p plugin) outdated() bool {
 // host describes one agent CLI and tmag's plugins in it.
 type host struct {
 	Name    string // display name
-	CLI     string // claude | codex
+	CLI     string // the agent (proc.Agents), whose command this is
 	Present bool   // the CLI is on PATH
 	Version string // the CLI's version line
 	Listed  bool   // the plugin list could be read
-	Tmag    plugin // the hooks
+	Tmag    plugin // the hooks, or the extension that runs them
 	Peers   plugin // the skill
+	// Packages is where Pi or oh-my-pi install tmag's plugins from: their
+	// directory in the tmux plugin whose tmag agent hooks run, so that
+	// they come and go with it; "" when hooks run a tmag of no plugin.
+	Packages string
 	// Codex: config.toml records an approval of the plugin's hooks. Codex
 	// honours it only while it matches the hashes of the current hooks, which
 	// it does not expose, so this is no proof that the hooks run.
@@ -124,7 +134,6 @@ func (h *host) of(name string) *plugin {
 	return &h.Tmag
 }
 
-func claudeHost() host { return claudeHostContext(context.Background()) }
 func claudeHostContext(ctx context.Context) host {
 	h := host{Name: "Claude Code", CLI: "claude"}
 	h.Version, h.Present, h.Unavailable = probe(ctx, "claude")
@@ -157,7 +166,25 @@ func claudeHostContext(ctx context.Context) host {
 	return h
 }
 
-func codexHost() host { return codexHostContext(context.Background()) }
+// hostProbes probe the host of each agent tmag has plugins for.
+var hostProbes = map[string]func(context.Context) host{
+	proc.Claude: claudeHostContext, proc.Codex: codexHostContext, proc.Pi: piHostContext, proc.OMP: ompHostContext,
+}
+
+// probeHosts probes the hosts, all of them or only the one named, at once,
+// and returns them in proc.Agents order.
+func probeHosts(ctx context.Context, only string) []host {
+	hosts := make([]host, len(proc.Agents))
+	var wg sync.WaitGroup
+	for i, agent := range proc.Agents {
+		if only == "" || agent == only {
+			wg.Go(func() { hosts[i] = hostProbes[agent](ctx) })
+		}
+	}
+	wg.Wait()
+	return slices.DeleteFunc(hosts, func(h host) bool { return h.CLI == "" })
+}
+
 func codexHostContext(ctx context.Context) host {
 	h := host{Name: "Codex", CLI: "codex"}
 	h.Version, h.Present, h.Unavailable = probe(ctx, "codex")

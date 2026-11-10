@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/version"
 )
 
@@ -25,6 +27,11 @@ func setupPlan(h host, peers bool) [][]string {
 	want := map[string]bool{pluginName: true, peersName: peers}
 	var plan [][]string
 	add := func(argv ...string) { plan = append(plan, argv) }
+	switch h.CLI {
+	case "pi", "omp":
+		packagesPlan(h, want, add)
+		return plan
+	}
 
 	// The marketplace is added with tmag, and refreshed before anything else
 	// it provides is installed or updated.
@@ -68,8 +75,43 @@ func setupPlan(h host, peers bool) [][]string {
 	return plan
 }
 
+// packagesPlan installs tmag's plugins in Pi or oh-my-pi from the tmux
+// plugin's directory, after removing any installed from another, and
+// removes those not wanted. Only oh-my-pi enables a plugin from its CLI.
+func packagesPlan(h host, want map[string]bool, add func(...string)) {
+	if h.Packages == "" {
+		return
+	}
+	for _, name := range []string{pluginName, peersName} {
+		p, dir := *h.of(name), filepath.Join(h.Packages, name)
+		if h.CLI == "pi" {
+			for _, stale := range p.Elsewhere {
+				add("pi", "remove", stale)
+			}
+			switch {
+			case want[name] && !p.Installed:
+				add("pi", "install", dir)
+			case !want[name] && p.Installed:
+				add("pi", "remove", dir)
+			}
+			continue
+		}
+		switch {
+		case want[name] && !p.Installed:
+			add("omp", "plugin", "install", dir) // links it anew where it links elsewhere
+		case want[name] && !p.Enabled:
+			add("omp", "plugin", "enable", name)
+		case !want[name] && (p.Installed || len(p.Elsewhere) > 0):
+			add("omp", "plugin", "uninstall", name)
+		}
+	}
+}
+
 // setupState says what tmag's plugins in a host are when nothing is left to do.
 func setupState(h host, peers bool) string {
+	if h.CLI == "pi" && (!h.Tmag.Enabled || peers && !h.Peers.Enabled) {
+		return "tmag's packages are installed, but disabled in Pi's configuration; enable them with pi config"
+	}
 	if !peers {
 		return fmt.Sprintf("tmag plugin %s is installed and enabled; tmag-peers is off (%s)", h.Tmag.Version, peersOption)
 	}
@@ -85,7 +127,7 @@ func (a *app) cmdSetup(args []string) int {
 	if err == nil && len(pos) > 0 {
 		err = fmt.Errorf("unexpected argument %q", pos[0])
 	}
-	if err == nil && *only != "" && *only != "claude" && *only != "codex" {
+	if err == nil && *only != "" && !proc.IsAgent(*only) {
 		err = fmt.Errorf("unknown agent %q", *only)
 	}
 	if err != nil {
@@ -93,12 +135,7 @@ func (a *app) cmdSetup(args []string) int {
 	}
 
 	peers := peersWanted(context.Background())
-	var hosts []host
-	for _, probe := range []func() host{claudeHost, codexHost} {
-		if h := probe(); *only == "" || h.CLI == *only {
-			hosts = append(hosts, h)
-		}
-	}
+	hosts := probeHosts(context.Background(), *only)
 	type step struct {
 		host host
 		cmds [][]string
@@ -113,6 +150,8 @@ func (a *app) cmdSetup(args []string) int {
 			fmt.Fprintf(a.stdout, "%s: not installed, skipped\n", h.Name)
 		case !h.Listed:
 			fmt.Fprintf(a.stdout, "%s: cannot list its plugins; is %s up to date?\n", h.Name, h.CLI)
+		case h.Packages == "" && (h.CLI == "pi" || h.CLI == "omp"):
+			fmt.Fprintf(a.stdout, "%s: %s\n", h.Name, noPackages)
 		case len(plan) == 0:
 			fmt.Fprintf(a.stdout, "%s: %s\n", h.Name, setupState(h, peers))
 		default:
@@ -183,9 +222,17 @@ func (a *app) setupNotes(hosts []host) {
 					fmt.Fprintln(a.stdout, "Codex: "+problem)
 				}
 			}
+		case "pi", "omp":
+			if h.Packages != "" {
+				fmt.Fprintln(a.stdout, h.Name+": start a new session in a tmux pane to load tmag's packages.")
+			}
 		}
 	}
 }
+
+// noPackages says why Pi and oh-my-pi cannot be connected: tmag's packages
+// for them come with the tmux plugin.
+const noPackages = "tmag's packages for it come with the tmux plugin, and agent hooks run no tmux plugin's tmag; install the tmux plugin with TPM"
 
 func interactive() bool {
 	st, err := os.Stdin.Stat()

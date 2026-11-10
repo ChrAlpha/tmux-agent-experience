@@ -7,7 +7,7 @@
 #
 #   @tmag-key-picker  a           prefix key for a tree of panes with agents
 #   @tmag-key-jump    A           prefix key to jump to the agent waiting longest
-#   @tmag-key-setup   M-a         prefix key to connect Claude Code and Codex, then check
+#   @tmag-key-setup   M-a         prefix key to connect the coding agents installed, then check
 #   @tmag-key-serve   M-r         prefix key to open the local HTTP API in a window
 #   @tmag-serve       (unset)     arguments for tmag serve: --addr, --host, --origin
 #   @tmag-alert       blocked,finished   alert on these changes: ring a pane's bell, run @tmag-notify
@@ -84,7 +84,7 @@ fi
 
 key="$(option @tmag-key-setup M-a)"
 if [ "$key" != off ]; then
-	tmux bind-key -N "Connect Claude Code and Codex to tmag" "$key" \
+	tmux bind-key -N "Connect the coding agents to tmag" "$key" \
 		display-popup -E -w 80% -h 80% "'$tmag' setup; echo; '$tmag' doctor; printf '\\nPress Enter to close.'; read -r _"
 fi
 

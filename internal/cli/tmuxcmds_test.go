@@ -83,6 +83,12 @@ func TestSetupPlan(t *testing.T) {
 	codex := func(tmag, peers plugin) host {
 		return host{CLI: "codex", Present: true, Listed: true, Tmag: tmag, Peers: peers}
 	}
+	pi := func(tmag, peers plugin) host {
+		return host{CLI: "pi", Present: true, Listed: true, Packages: "/p/plugins/pi", Tmag: tmag, Peers: peers}
+	}
+	omp := func(tmag, peers plugin) host {
+		return host{CLI: "omp", Present: true, Listed: true, Packages: "/p/plugins/omp", Tmag: tmag, Peers: peers}
+	}
 	cm, xm := "claude plugin marketplace ", "codex plugin marketplace "
 	ci, xi := "claude plugin ", "codex plugin "
 	tmag, peers := pluginID(pluginName), pluginID(peersName)
@@ -110,6 +116,19 @@ func TestSetupPlan(t *testing.T) {
 		{"codex peers turned on", codex(cur, plugin{}), true, []string{xm + "upgrade " + marketplace, xi + "add " + peers}},
 		{"codex peers turned off", codex(cur, cur), false, []string{xi + "remove " + peers}},
 		{"codex disabled", codex(off, cur), true, []string{xi + "add " + tmag}},
+		// Pi and oh-my-pi install the tmux plugin's own packages by path.
+		{"pi install", pi(plugin{}, plugin{}), true, []string{"pi install /p/plugins/pi/tmag", "pi install /p/plugins/pi/tmag-peers"}},
+		{"pi current", pi(cur, cur), true, nil},
+		{"pi peers turned off", pi(cur, cur), false, []string{"pi remove /p/plugins/pi/tmag-peers"}},
+		{"pi from another plugin directory", pi(plugin{Elsewhere: []string{"/old/plugins/pi/tmag"}}, cur), true, []string{"pi remove /old/plugins/pi/tmag", "pi install /p/plugins/pi/tmag"}},
+		{"pi disabled in its configuration", pi(off, off), true, nil},
+		{"pi without the tmux plugin", host{CLI: "pi", Present: true, Listed: true}, true, nil},
+		{"omp install", omp(plugin{}, plugin{}), true, []string{"omp plugin install /p/plugins/omp/tmag", "omp plugin install /p/plugins/omp/tmag-peers"}},
+		{"omp current", omp(cur, cur), true, nil},
+		{"omp disabled", omp(off, cur), true, []string{"omp plugin enable tmag"}},
+		{"omp linked elsewhere", omp(plugin{Elsewhere: []string{"tmag"}}, cur), true, []string{"omp plugin install /p/plugins/omp/tmag"}},
+		{"omp peers turned off", omp(cur, cur), false, []string{"omp plugin uninstall tmag-peers"}},
+		{"omp peers off, linked elsewhere", omp(cur, plugin{Elsewhere: []string{"tmag-peers"}}), false, []string{"omp plugin uninstall tmag-peers"}},
 	} {
 		var got []string
 		for _, argv := range setupPlan(c.h, c.peers) {

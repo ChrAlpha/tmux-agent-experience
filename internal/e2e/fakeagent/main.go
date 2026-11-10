@@ -46,9 +46,10 @@
 // FAKE_OUT as "THREAD PROMPT"; the daemon keeps each thread's rollout in
 // its directory.
 //
-// As a host CLI it answers --version, prints FAKE_PLUGIN_LIST (default "[]")
-// for "plugin list --json", and appends any other plugin command, or as pi
-// any package command (install, remove), to FAKE_PLUGIN_LOG.
+// As a host CLI it answers --version, prints FAKE_PLUGIN_LIST (default "[]";
+// as omp FAKE_OMP_PLUGIN_LIST, default `{"npm":[]}`) for "plugin list
+// --json", and appends any other plugin command, or as pi any package
+// command (install, remove), to FAKE_PLUGIN_LOG.
 package main
 
 import (
@@ -774,9 +775,12 @@ func hostCLI(args []string) {
 		return
 	}
 	if len(args) >= 2 && args[1] == "list" {
-		list := os.Getenv("FAKE_PLUGIN_LIST")
+		list, empty := os.Getenv("FAKE_PLUGIN_LIST"), "[]"
+		if filepath.Base(os.Args[0]) == "omp" {
+			list, empty = os.Getenv("FAKE_OMP_PLUGIN_LIST"), `{"npm":[]}`
+		}
 		if list == "" {
-			list = "[]"
+			list = empty
 		}
 		fmt.Println(list)
 		return

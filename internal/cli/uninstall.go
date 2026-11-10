@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/auth"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
@@ -50,18 +51,33 @@ func (a *app) cmdUninstall(args []string) int {
 		return ExitOK
 	}
 	self, _ := os.Executable()
+	removals := []string{
+		fmt.Sprintf("claude plugin uninstall %s && claude plugin uninstall %s && claude plugin marketplace remove %s", pluginID(peersName), pluginID(pluginName), marketplace),
+		fmt.Sprintf("codex plugin remove %s && codex plugin remove %s && codex plugin marketplace remove %s", pluginID(peersName), pluginID(pluginName), marketplace),
+	}
+	// pi remove takes a package's path: those Pi's settings list, else the
+	// tmux plugin's.
+	paths := tmagPiPackages(context.Background())
+	if root := pluginRoot(os.Getenv); len(paths) == 0 && root != "" {
+		dir := filepath.Join(root, "plugins", "pi")
+		paths = []string{filepath.Join(dir, peersName), filepath.Join(dir, pluginName)}
+	}
+	if len(paths) > 0 {
+		removals = append(removals, "pi remove "+strings.Join(paths, " && pi remove "))
+	}
+	removals = append(removals, fmt.Sprintf("omp plugin uninstall %s && omp plugin uninstall %s", peersName, pluginName))
 	fmt.Fprintf(a.stdout, `Remove tmag in this order. Running agents and tmux sessions are not affected.
 Close tmag serve's window first, if it runs.
 
 1. tmag's state (pane options and %[1]s), while the binary still exists:
      tmag uninstall --purge
-2. The agent plugins (skip tmag-peers where it is not installed):
-     claude plugin uninstall %[5]s && claude plugin uninstall %[2]s && claude plugin marketplace remove %[3]s
-     codex plugin remove %[5]s && codex plugin remove %[2]s && codex plugin marketplace remove %[3]s
+2. The agent plugins, before the tmux plugin that Pi's and oh-my-pi's come
+   from (skip tmag-peers where it is not installed):
+     %[2]s
 3. The tmux plugin and its binary: delete this line from tmux.conf, then press
    prefix + alt + u (TPM's clean) to remove the plugin directory
-     set -g @plugin '%[4]s'
-`, a.log.Dir, pluginID(pluginName), marketplace, repo, pluginID(peersName))
+     set -g @plugin '%[3]s'
+`, a.log.Dir, strings.Join(removals, "\n     "), repo)
 	if !inPluginDir(canonical(self)) {
 		fmt.Fprintf(a.stdout, "4. This binary, installed outside the tmux plugin:\n     %s\n", removeBinary(self))
 	}
