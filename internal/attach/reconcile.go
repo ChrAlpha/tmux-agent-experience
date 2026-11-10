@@ -228,7 +228,10 @@ func (env Env) clearBroken(ctx context.Context, p tmux.Pane) error {
 // Attach records that c shows rec, replacing whatever the pane showed, and
 // writes the pane's projection. Under the pane's lock it proves the client
 // again against a fresh process table before writing a new attachment, and
-// gives up if the proof no longer holds.
+// gives up if the proof no longer holds. A title inference never replaces a
+// process proof of the same client and session, which a reconciliation may
+// not have seen yet; a change of evidence alone logs no Detach, since the
+// pane never stopped showing the session.
 func (env Env) Attach(ctx context.Context, w *World, c Client, rec session.Record, evidence string) error {
 	srv := tmux.Server{Socket: c.Pane.Server}
 	return Lock(ctx, env.Log.Dir, c.Pane.Server, c.Pane.ID, func() error {
@@ -253,7 +256,7 @@ func (env Env) Attach(ctx context.Context, w *World, c Client, rec session.Recor
 		}
 		next := Attachment{Agent: rec.Agent, Session: rec.ID, PID: c.Process.PID, Start: c.Process.Start, Evidence: evidence}
 		cur, had := FromPane(fresh)
-		if had && cur.same(next) && cur.holds() {
+		if had && cur.keeps(next) && cur.holds() {
 			if err := env.finish(ctx, srv, fresh, cur); err != nil {
 				return err
 			}
@@ -277,7 +280,7 @@ func (env Env) Attach(ctx context.Context, w *World, c Client, rec session.Recor
 			had = cur.holds()
 		}
 		next.Change = eventlog.Attach
-		if had {
+		if had && !cur.client(next) {
 			next.Replaced = cur.Agent + " " + cur.Session
 		}
 		if err := write(ctx, srv, fresh.ID, fresh.Command, next, ProjectionOf(latest)); err != nil {

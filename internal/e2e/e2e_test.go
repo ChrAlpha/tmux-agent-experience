@@ -1691,6 +1691,51 @@ func TestAttachNeedsItsClientStillRunning(t *testing.T) {
 	}
 }
 
+func TestChangingEvidenceKeepsThePaneShowingItsSession(t *testing.T) {
+	// A hook proves a Codex pane by process while a reconciliation that
+	// listed the panes before that proof attaches it by its title. The
+	// process proof stays, and a pane that keeps showing its session never
+	// reports that it stopped.
+	h := start(t)
+	title := codexTitle("repo", sidB)
+	pane := h.spawn(h.dir, map[string]string{"FAKE_TITLE": title}, filepath.Join(bin, "codex"))
+	h.waitPane(pane, "", "")
+	h.eventually("title shown", func() bool {
+		return h.tmux("display-message", "-p", "-t", pane, "#{pane_title}") == title
+	})
+	ctx := context.Background()
+	env := attach.Env{Log: eventlog.Open(h.state), Store: session.Store{Dir: h.state}}
+	rec := session.Record{Agent: "codex", ID: sidB, Main: "idle"}
+	if err := env.Store.Put(rec); err != nil {
+		t.Fatal(err)
+	}
+	w, err := attach.Load(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var client attach.Client
+	for _, c := range w.Clients() {
+		if c.Pane.ID == pane {
+			client = c
+		}
+	}
+	for _, evidence := range []string{attach.TitleID, attach.Process, attach.TitleID} {
+		if err := env.Attach(ctx, w, client, rec, evidence); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var got []string
+	for _, e := range h.events(sidB) {
+		got = append(got, e.Event+":"+e.Evidence)
+	}
+	if want := "Attach:title-id Attach:process"; strings.Join(got, " ") != want {
+		t.Fatalf("events %q, want %q", strings.Join(got, " "), want)
+	}
+	if p, _ := h.waitPane(pane, "idle", "process"); p.Session != sidB {
+		t.Fatalf("pane shows %+v", p)
+	}
+}
+
 func TestAttachmentEventsSurviveACrash(t *testing.T) {
 	// A writer died after changing a pane's attachment and before logging
 	// it; the next reconciliation logs what the pane is marked with.
