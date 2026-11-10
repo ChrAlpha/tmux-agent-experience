@@ -673,7 +673,7 @@ func TestClaudeAnswersThroughTheHook(t *testing.T) {
 // A Claude Code background session runs in its supervisor, which no
 // terminal owns: it takes no prompt or interrupt, but its answer hook runs
 // there too, so its prompts can be answered.
-func TestClaudeBackgroundSessionTakesAnswersOnly(t *testing.T) {
+func TestClaudeBackgroundSessionTakesAnswers(t *testing.T) {
 	h := start(t)
 	f := h.follow()
 	out := filepath.Join(h.dir, "received")
@@ -692,11 +692,8 @@ func TestClaudeBackgroundSessionTakesAnswersOnly(t *testing.T) {
 		_ = worker.Wait()
 	})
 	s := h.waitSession(sidA, "idle")
-	if s.Runtime != "service" || len(s.Panes) != 0 || !slices.Equal(s.Capabilities, []string{"answer"}) {
+	if s.Runtime != "service" || len(s.Panes) != 0 || !slices.Equal(s.Capabilities, []string{"send", "answer"}) {
 		t.Fatalf("background session = %+v", s)
-	}
-	if r := h.tmag("", "send", sidA[:8], "hello"); r.code != 3 || !strings.Contains(r.out, "unsupported") {
-		t.Fatalf("send to a background session: %d %s", r.code, r.out)
 	}
 
 	if _, err := io.WriteString(in, "block\n"); err != nil {

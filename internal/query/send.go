@@ -108,7 +108,8 @@ func Send(ctx context.Context, log *eventlog.Log, target, text string, ask Ask) 
 	if err := caller.selfGate(s, "prompt"); err != nil {
 		return Delivery{}, err
 	}
-	switch driver.Channel(s.Agent, s.Runtime, driver.Send) {
+	route := driver.SendRoute(s.Agent, s.Runtime, driver.Person, driver.Wait, true)
+	switch route.Channel {
 	case driver.Service:
 		return throughService(ctx, log, v, s, serviceVerb{
 			gate: idleGate,

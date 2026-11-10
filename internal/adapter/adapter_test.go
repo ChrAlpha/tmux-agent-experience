@@ -131,15 +131,20 @@ func TestDecodeBoundsWhatItKeeps(t *testing.T) {
 		tasks = append(tasks, `{"id":"`+long+`"}`)
 	}
 	payload := `{"hook_event_name":"Stop","session_id":"s1","cwd":"/` + strings.Repeat("d", MaxPath) + `",` +
-		`"transcript_path":"/t.jsonl","tool_name":"` + long + `","prompt_id":"` + long + `",` +
+		`"transcript_path":"/t.jsonl","inbox":"/` + strings.Repeat("i", MaxPath) + `",` +
+		`"tool_name":"` + long + `","prompt_id":"` + long + `",` +
 		`"reason":"` + long + `","stop_reason":"` + long + `","mode":"` + long + `",` +
 		`"background_tasks":[` + strings.Join(tasks, ",") + `]}`
 	p, err := Decode([]byte(payload))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p.Cwd != "" || p.TranscriptPath != "/t.jsonl" {
-		t.Errorf("cwd %d bytes, transcript %q", len(p.Cwd), p.TranscriptPath)
+	if p.Cwd != "" || p.TranscriptPath != "/t.jsonl" || p.Inbox != "" {
+		t.Errorf("cwd %d bytes, transcript %q, inbox %d bytes", len(p.Cwd), p.TranscriptPath, len(p.Inbox))
+	}
+	inboxed, err := Decode([]byte(`{"hook_event_name":"Stop","session_id":"s1","inbox":"/tmp/pi.sock"}`))
+	if err != nil || inboxed.Inbox != "/tmp/pi.sock" {
+		t.Errorf("inbox %q: %v", inboxed.Inbox, err)
 	}
 	for _, f := range []string{p.ToolName, p.PromptID, p.Reason, p.StopReason, p.Mode, (*p.BackgroundTasks)[0].ID} {
 		if len(f) > MaxName || !utf8.ValidString(f) || !strings.HasPrefix(long, f) {

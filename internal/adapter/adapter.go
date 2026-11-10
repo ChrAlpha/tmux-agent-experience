@@ -55,6 +55,9 @@ type Payload struct {
 	// TranscriptPath is where the agent writes the session's transcript: a
 	// path, not content.
 	TranscriptPath string `json:"transcript_path"`
+	// Inbox is the socket a Pi or oh-my-pi extension serves for messages:
+	// tmag records where it is, and hands it the message itself later.
+	Inbox string `json:"inbox"`
 	// BackgroundTasks lists the tasks a Stop reports still running; nil when
 	// the payload does not say.
 	BackgroundTasks *[]Task `json:"background_tasks"`
@@ -88,7 +91,7 @@ func Decode(data []byte) (Payload, error) {
 	if p.SessionID == "" || p.HookEventName == "" {
 		return p, fmt.Errorf("hook payload lacks session_id or hook_event_name")
 	}
-	for _, f := range []*string{&p.Cwd, &p.TranscriptPath} {
+	for _, f := range []*string{&p.Cwd, &p.TranscriptPath, &p.Inbox} {
 		if len(*f) > MaxPath {
 			*f = ""
 		}
@@ -233,6 +236,9 @@ type Transition struct {
 	// says an answer hook waits under that name (see package answer).
 	Request string
 	Waits   bool
+	// Synthetic marks a transition tmag made for its own delivery, not a
+	// report by the agent: it does not clear the inbox backpressure.
+	Synthetic bool
 }
 
 // Map returns the transition for a payload from the given agent.

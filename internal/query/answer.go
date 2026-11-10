@@ -154,7 +154,7 @@ func answerHook(ctx context.Context, log *eventlog.Log, s Session, id string, d 
 		}
 		// The agent has the decision, and its next hooks wait for this lock:
 		// the request is answered.
-		after, _ := session.Apply(rec, adapter.Transition{Action: adapter.Answer, Request: id}, time.Now())
+		after, _ := session.Apply(rec, adapter.Transition{Action: adapter.Answer, Request: id, Synthetic: true}, time.Now())
 		ev := eventlog.Event{Event: eventlog.Answer, Via: driver.Hook, Request: id, Decision: d.Behavior}
 		caller.stamp(&ev)
 		if err := store.Report(ctx, log, after, &ev); err != nil {
