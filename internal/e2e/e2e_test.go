@@ -35,6 +35,11 @@ import (
 var bin string // directory holding tmag and the fake claude, codex, pi and omp
 
 func TestMain(m *testing.M) {
+	// A crashing child (a pane shell, the tmux server, an agent) would write
+	// a core file into this package's directory; children inherit the limit.
+	if err := syscall.Setrlimit(syscall.RLIMIT_CORE, &syscall.Rlimit{Cur: 0, Max: 0}); err != nil {
+		panic(err)
+	}
 	// Children must not spend their budgets in the race runtime's
 	// artificial exit sleep.
 	if err := os.Setenv("GORACE", os.Getenv("GORACE")+" atexit_sleep_ms=0"); err != nil {
