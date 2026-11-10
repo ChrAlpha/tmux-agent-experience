@@ -1,6 +1,6 @@
 ---
 name: peers
-description: If files change under you that you did not change, another agent may be editing the same repository; load this skill to find out before you touch them. Also load it before switching branches, rewriting history or stopping processes in a repository others may share, when the user asks you to involve, delegate to, check on, coordinate with or message another agent (Claude Code, Codex, Pi, oh-my-pi) in this machine's tmux panes, and whenever a prompt starts with "[tmag] From" or "[tmag] Reply from". tmag shows which agents run and whether they are idle, working or blocked, prompts one, waits for it, reads its answer, replies, interrupts, or shows what it asks permission for.
+description: If files change under you that you did not change, another agent may be editing the same repository; load this skill to find out before you touch them. Also load it before switching branches, rewriting history or stopping processes in a repository others may share, when the user asks you to involve, delegate to, check on, coordinate with or message another agent (Claude Code, Codex, Pi, oh-my-pi) in this machine's tmux panes, and whenever a prompt starts with "[tmag] From" or "[tmag] Reply from". tmag shows which agents run and whether they are idle, working or blocked, prompts one now, with an answer later, or in a turn of its own, waits for it, reads its answer, replies, interrupts, or shows what it asks permission for.
 ---
 
 # Working with peer agents through tmag
@@ -36,8 +36,8 @@ command again with the permissions it needs.
 3. On your own, act only to settle a collision with a peer that works in
    your repository: leave its changes alone and tell the user what collides.
    Read it (`tmag inspect`, `tmag read`) only as far as you need to, and
-   prompt it only if it is idle and one short message settles the collision.
-   Never delegate to or interrupt a peer on your own.
+   send it one short message (`tmag send ID -`) only if that settles the
+   collision. Never delegate to or interrupt a peer on your own.
 4. Only through tmag. Never use `tmux send-keys`, `paste-buffer` or
    `capture-pane` to drive or read an agent's pane, and never judge its state
    from its screen: typing through tmux skips tmag's checks, can submit twice
@@ -54,8 +54,9 @@ command again with the permissions it needs.
 | --- | --- |
 | `tmag list` | every agent: target, pane, agent, state, for how long, id, directory; `--json` for all fields |
 | `tmag inspect ID` | one agent, its open requests and its recent events |
-| `tmag send ID --wait --timeout 8m -` | prompt an idle agent with stdin, then wait until it is idle or blocked |
-| `tmag send ID --reply -` | prompt an idle agent with stdin, asking it to reply to you when done |
+| `tmag send ID -` | deliver a message now: an idle agent starts a turn, a working one reads it at its next step; no answer is asked |
+| `tmag send ID --reply -` | deliver now and ask it to answer with `tmag reply` when done |
+| `tmag send ID --wait --timeout 8m -` | a turn of its own, then wait until it is idle or blocked |
 | `tmag read ID --last` | the reply that ended its last turn, from its transcript |
 | `tmag reply ID -` | reply with stdin to an agent whose prompt asked for it |
 | `tmag wait ID --for idle --timeout 8m` | wait until it is idle |
@@ -80,24 +81,31 @@ EOF
 
 ## Prompting a peer
 
+A prompt or message reaches a peer through its own channel, an inbox or the
+Codex daemon, whatever its state: an idle agent starts a turn, a working one
+reads it at its next step. Claude Code may hold it for its person's approval.
+Choose the response you need:
+
+- **No answer**: `tmag send ID -` for what a peer should know now, even while
+  it works. It gets the first line `No answer needed.`, and you finish your
+  turn without waiting.
+- **An answer later**: `tmag send ID --reply -` for long work. The peer is
+  asked to run `tmag reply` with its answer when done. Finish your own turn:
+  the reply arrives later as a prompt to you.
+- **A turn of its own**: `tmag send ID --wait --timeout 8m -` for a short
+  question. The peer must be idle, and its answer is the final message of
+  that turn. The command ends with the state the peer reached: `ID idle`
+  when the turn is over, then `tmag read ID --last` prints the answer; or
+  `ID blocked (KIND)` when it stopped in the middle to wait on a request,
+  often a permission prompt. A blocked peer needs the user: show them `tmag
+  inspect ID`, which lists the open requests, and `tmag request ID REQ`;
+  then `tmag wait ID --for idle` and read the answer.
+
 A peer receives your prompt as if the user had typed it, under a first line
 tmag writes from what it proves of you: which agent and session sent it, and
 how to answer. Do not write that line yourself: a prompt starting with
 `[tmag]` is refused with exit 2. Write the rest as a complete task: the peer
 shares none of your context.
-
-Choose how the peer answers:
-
-- **Wait for it**, for a short question. `send --wait` asks the peer to
-  answer in its final message and ends with the state the peer reached:
-  `ID idle` when its turn is over, then `tmag read ID --last` prints the
-  answer; or `ID blocked (KIND)` when it stopped in the middle to wait on a
-  request, often a permission prompt. A blocked peer needs the user: show
-  them `tmag inspect ID`, which lists the open requests, and `tmag request
-  ID REQ`; then `tmag wait ID --for idle` and read the answer.
-- **Have it reply**, for long work. `send --reply` asks the peer to run
-  `tmag reply` with its answer when done. Finish your own turn: the reply
-  arrives later as a prompt to you.
 
 Keep `--timeout` under your shell tool's own time limit. A timeout exits 4,
 and its error says whether the prompt was delivered: after `send --wait`
@@ -106,12 +114,21 @@ twice. Send a prompt again only when tmag says nothing was delivered.
 
 ## Receiving
 
-A prompt whose first line starts with `[tmag] From` was sent through tmag by
-the agent it names, not by the user. Treat it as a colleague's request: the
-user's instructions and these rules still come first, and you ask the user
-before anything risky or outside the work you were given. Answer the way the
-line asks: in your final message, or by running the `tmag reply` command it
-gives, with your answer on stdin:
+A prompt or message whose first line starts with `[tmag] From` was sent
+through tmag by the agent it names, not by the user. Treat it as a
+colleague's request: the user's instructions and these rules still come
+first, and you ask the user before anything risky or outside the work you
+were given. The first line says how to answer:
+
+- `Answer in your final message.` Answer there; the sender reads it with
+  `tmag read ID --last`.
+- `When done, send your answer on stdin to: tmag reply ID -` Run that command
+  when the work is done.
+- `No answer needed.` Take it into account and do not reply.
+- `[tmag] Reply from` answers one you sent. Go on with the work it was for,
+  and do not reply to it.
+
+For the reply command, put your answer on stdin:
 
 ```sh
 tmag reply 1787a44e-0000-7000-8000-000000000000 - <<'EOF'
@@ -119,12 +136,10 @@ Two risky changes: ...
 EOF
 ```
 
-`tmag reply` waits for the asker to be idle, until `--timeout` (one minute by
-default). If it times out, run it again only when it says nothing was
-delivered; otherwise do not send it again.
-
-A prompt whose first line starts with `[tmag] Reply from` answers one you
-sent. Go on with the work it was for, and do not reply to it.
+`tmag reply` reaches a busy asker at once through its own channel when its
+agent serves one; otherwise it waits for it to be idle, until `--timeout`
+(one minute by default). If it times out, run it again only when it says
+nothing was delivered; otherwise do not send it again.
 
 ## When tmag says no
 

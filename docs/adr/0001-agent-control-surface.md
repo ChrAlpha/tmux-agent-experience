@@ -2,7 +2,10 @@
 
 - Status: accepted; its "Remote access" section is superseded by
   [ADR 0003](0003-remote-access.md); amended 2026-11-10: a delivery's effect
-  is recorded, then logged, best effort, and the contract is `tmag/v2`
+  is recorded, then logged, best effort, and the contract is `tmag/v2`;
+  amended again 2026-11-10: one `send` verb delivers now, with `--wait` for a
+  turn of its own and `--reply` for an answer; `reply` uses the asker's
+  channel
 - Date: 2026-11-03
 - Evidence: [Claude Code control channels](../research/claude-control-channels.md)
   (2.1.317), [Codex control channels](../research/codex-control-channels.md)
@@ -14,8 +17,8 @@
 A client that also shows what a session is doing and acts on it (answers a
 permission prompt from a phone, stops a runaway turn) needs three more
 things: where the session's content is, a way to answer what the agent asks,
-and a way to interrupt it. Today `tmag send` is the only action, and it types
-into a pane.
+and a way to interrupt it. Until now `tmag send` was the only action, and it
+typed into a pane.
 
 The agents differ in how each of these can be done, and the differences move
 with every release. Codex in its shared daemon can be driven over the
@@ -53,27 +56,34 @@ as it proves which pane shows a session (see [Callers](#callers)).
 
 | Verb | Acts when | Guarantees |
 | --- | --- | --- |
-| `send <target> <text>` | session idle, no unconfirmed prompt | one prompt starts one turn; its `Send` event precedes the turn's events; later sends are refused until a hook confirms the turn |
+| `send <target> <text>` | live session, nothing of tmag's unconfirmed | delivered now: an idle session starts a turn, a working one reads the prompt at its next step; its `Send` event precedes what follows |
+| `send --wait <target> <text>` | session idle, no unconfirmed prompt | one prompt starts one turn; its `Send` event precedes the turn's events; later sends are refused until a hook confirms the turn |
+| `send --reply <target> <text>` | live session, nothing unconfirmed, a proven caller session | delivered now, asking the receiver to answer with `tmag reply`; its `Send` event precedes what follows |
 | `interrupt <target>` | session working or blocked | the interrupt is delivered once; its `Halt` event precedes what follows |
 | `answer <target> <request> allow\|deny [--message M] [--answers JSON]` | the named request still open | the decision reaches that request and no other; its `Answer` event precedes what follows |
 | `request <target> <request>` | the named request still open | shows what the request asks (tool and input), relayed live, never stored |
+
+`reply` is an agent's verb: it delivers now through the asker's own channel,
+or through its pane while idle. It needs a proven caller session.
 
 All verbs share the existing refusal codes and exit codes, add
 `refused:unsupported` for a verb no channel carries to the session,
 `refused:idle` for an interrupt with nothing to stop, `refused:self` for an
 agent's verb on its own session and `refused:agent` for an agent's answer
-that `@tmag-answer` does not allow, and report `via` (`pane`, `service` or
-`hook`) in their JSON output. `Interrupt` is already a
+that `@tmag-answer` does not allow, and report `via` (`pane`, `service`,
+`hook` or `inbox`) in their JSON output. `Interrupt` is already a
 Codex hook name, so tmag's own event for a delivered interrupt is `Halt`.
 
 ### Drivers
 
 | | `send` | `interrupt` | `answer` / `request` |
 | --- | --- | --- | --- |
-| Claude Code, terminal | pane: paste, Enter | pane: one Esc | answer hook |
-| Claude Code, background (`--bg`) | unsupported | unsupported | answer hook |
-| Codex, daemon (`runtime: service`) | service: `turn/start` | service: `turn/interrupt` | service: join, answer the replayed request |
-| Codex, `--no-daemon` (`runtime: terminal`) | pane: paste, Enter | pane: one Esc | unsupported |
+| Claude Code, terminal | person: pane while idle, inbox while working; agent: inbox, pane as fallback while idle; `--wait`: person pane, agent inbox | pane: one Esc | answer hook |
+| Claude Code, background (`--bg`) | inbox: cross-session socket; a person's `--wait` is unsupported | unsupported | answer hook |
+| Codex, daemon (`runtime: service`) | service: `turn/start` (joins an active turn; `--wait` needs idle) | service: `turn/interrupt` | service: join, answer the replayed request |
+| Codex, `--no-daemon` (`runtime: terminal`) | pane: paste, Enter, while idle only | pane: one Esc | unsupported |
+| Pi, oh-my-pi, terminal | person: pane while idle, inbox while working; agent: inbox, pane as fallback while idle; `--wait`: person pane, agent inbox | pane: one Esc | unsupported |
+| Pi, oh-my-pi, serving a program | unsupported | unsupported | unsupported |
 
 Why each cell:
 
@@ -97,14 +107,61 @@ Why each cell:
   particular request.
 - **Codex daemon, send and interrupt: the protocol.** It needs no pane (a
   thread outlives its terminal), bypasses the composer, and the TUI shows the
-  turn as if typed. The daemon does not refuse a busy thread (`turn/start`
-  steers the active turn), so tmag's own idle gate stays.
-- **Pane input elsewhere.** It is the only channel for interactive Claude
-  sessions and `--no-daemon` Codex. Two hazards, both observed: a draft left in
-  the composer is joined to the pasted prompt, and in Codex an open approval
-  dialog swallows the paste while Enter approves. The idle gate rules out the
-  dialog. No key clears a draft harmlessly in both agents, so tmag does not try;
-  the README says so.
+  turn as if typed. A send without `--wait` accepts an idle or active thread:
+  `turn/start` starts one or joins the running turn. `--wait` needs an idle
+  thread, because only then does its prompt start a turn of its own.
+- **Claude, sends: the session's own inbox.** Claude Code serves one socket
+  per session and exports its path to hooks and Bash as
+  `CLAUDE_CODE_MESSAGING_SOCKET`. It labels a message there as from another
+  session, so it cannot approve anything or change configuration; the
+  receiver's inbound controls apply, and a session that bypasses permission
+  prompts holds the message for the person unless its inbound setting is
+  `accept`. Background sessions bind one too, so send reaches them where
+  interrupt has no terminal. An agent's prompt always takes this channel; a
+  person's takes it while the session works, and stays typed while it is
+  idle. tmag names the sender in Claude Code's envelope and never asserts a
+  permission mode; Claude Code answers nothing on the connection, and the EOF
+  after tmag closes its write half is the only proof that the frame was read.
+  A send racing a session switch in the same Claude process may reach the
+  session that replaced the one it named: the socket belongs to the process,
+  and tmag cannot close that race.
+- **Codex daemon, sends: `turn/start`.** On Codex 0.167 a `turn/start` on an
+  active thread joins that turn with the same id, and on an idle thread starts
+  one. A send without `--wait` takes this as it is; `--wait` requires idle so
+  that its prompt starts a turn of its own. `turn/steer` adds only a
+  precondition that can fail.
+- **Pi and oh-my-pi, sends: the extension's socket.** The package's extension
+  serves a Unix socket inside the agent and hands the text to
+  `sendUserMessage`: Pi as `deliverAs: "steer"`, which starts a turn when idle
+  and joins the running one when streaming; oh-my-pi as `"aside"`, which does
+  the same and re-checks at each step. Pi's call is fire-and-forget, so steer
+  is right in both states; oh-my-pi's steer would queue even when idle, while
+  aside starts a turn then. The request names the session it is for; at
+  delivery the extension reads the agent's current session from its live
+  session manager and refuses it `changed` if they differ, so nothing is
+  delivered. The queue stays in the agent.
+- **Pane input.** It is the person's channel for an idle interactive Claude,
+  Pi or oh-my-pi session, and the agent's idle fallback when no inbox can be
+  proven. For Codex `--no-daemon`, which has no inbox, it is the only channel,
+  while idle. Two hazards, both observed: a draft left in the composer is
+  joined to the pasted prompt, and in Codex an open approval dialog swallows
+  the paste while Enter approves. The idle gate rules out the dialog. No key
+  clears a draft harmlessly in both agents, so tmag does not try; the README
+  says so.
+- **A send never takes a busy pane.** A pane takes input only while its agent
+  is idle: a dialog that opens mid-turn takes the paste, and Enter approves
+  it. The session's channel takes a prompt in any state: an inbox, or the
+  Codex daemon's control socket. So a send to a working session goes there,
+  or is refused `busy` when the session has none.
+- **A person's prompt keeps the person's authority.** It is typed while the
+  session is idle and takes the session's own channel while it works;
+  `--wait` stays on the pane (or the Codex daemon). An agent's prompt is not
+  the person's, so it takes the session's own channel in every state, with the
+  pane only as an idle fallback. That keeps a person's prompt from being
+  presented as a peer's and an agent's prompt from being typed as the
+  person's. It does not bypass Claude Code's inbound controls: a session that
+  bypasses permission prompts can hold the agent's message for the person's
+  approval, as the Claude cell says.
 - **Interrupt by one Esc**, only while the session is working or blocked:
   pressed twice on an empty composer, Esc opens a rewind menu in both agents,
   so after an interrupt another is refused until the agent reports again, or
@@ -115,11 +172,14 @@ Why each cell:
   `Interrupt` itself.
 
 `internal/driver` alone maps a verb, the session's agent and its `runtime`
-to a channel (`pane`, `service` or `hook`). A session lists in
-`capabilities` the verbs some channel carries to it; they follow from agent
-and runtime only, so every event that reports the session carries them, and
-clients never branch on the agent. A pane channel still needs the
-attachment when the verb is used, and is refused `unbound` without one.
+to a channel (`pane`, `service`, `hook` or `inbox`). Send has no single
+channel: the driver also takes the caller (person or agent), the response
+mode and whether the session is idle, and returns the inbox first with the
+pane as an idle fallback. A session lists in `capabilities` the verbs some
+channel carries to it; they follow from agent and runtime only, so every
+event that reports the session carries them, and clients never branch on the
+agent. A pane channel still needs the attachment when the verb is used, and
+is refused `unbound` without one.
 
 ### Callers
 
@@ -146,8 +206,8 @@ Every `Send`, `Halt` and `Answer` records the caller: `from`, its pane, and
 follow:
 
 - **No session acts on itself.** An agent's `send`, `interrupt` or `answer`
-  on its own session is refused `self`: the turn it would prompt, stop or
-  answer is the one running the command.
+  on its own session is refused `self`: the turn or request it would act on
+  is the one running the command.
 - **Agents answer only when allowed.** `@tmag-answer` says who may answer:
   `on` (the default) people, scripts and remote clients; `agents` agents too;
   `off` nobody, for every agent and channel. An agent's answer under `on` is
@@ -234,6 +294,16 @@ delivery's event reporting it, under the session's lock like every change.
 The record is the truth: a writer that dies before logging leaves the
 effect in it, for the session's next event and the next snapshot to report.
 
+`send --wait` records its prompt in the record's `Sent` whatever channel it
+uses; the asynchronous modes record a prompt written to the session's own
+channel, and a daemon prompt without `--wait`, in `Queued`, under the
+session's lock. `Sent` clears when a turn starts; `Queued` clears on the main
+agent's next report. While either stands, another send is refused `busy`. A
+late idle notification for the turn before a `--wait` prompt clears neither
+its `Sent` mark nor its wait; only a turn other than the one recorded before
+delivery confirms it. `Sent` is tmag's bound on the turn it asked for;
+`Queued` is its bound on the messages the agent takes asynchronously.
+
 ### Reaching the Codex daemon
 
 - tmag connects straight to the daemon's control socket
@@ -246,11 +316,11 @@ effect in it, for the session's next event and the next snapshot to report.
   ancestor of it, since hooks may run in a helper the daemon started, and
   `thread/read` must find the thread loaded there. Otherwise the verb is
   refused `unbound`.
-- **Side effects, kept small.** `send` and `interrupt` do not join the
-  thread. `answer` joins only for as long as it takes, sends no overrides
-  (they would cold-resume an idle thread), and connects only to a daemon that
-  already runs the session. Every call has a client timeout: an interrupt of a
-  steered turn was seen never to answer.
+- **Side effects, kept small.** `send` and `interrupt` do not resume the
+  thread for a client session. `answer` joins only for as long as it takes,
+  sends no overrides (they would cold-resume an idle thread), and connects
+  only to a daemon that already runs the session. Every call has a client
+  timeout: an interrupt of a steered turn was seen never to answer.
 - **Originator.** The first client to `initialize` with a non-internal name
   becomes the daemon's originator, recorded on every later thread. Checked:
   when the TUI connects first, the originator stays `codex-tui`. tmag
@@ -258,12 +328,24 @@ effect in it, for the session's next event and the next snapshot to report.
   originator only of a daemon no TUI has connected to; that affects
   attribution only.
 - **Ordering.** The daemon may run the turn's hooks, which wait for the
-  session's lock, before it answers `turn/start`. So `send` marks the session
-  sent and logs `Send` under the lock, as today, and makes the call after
-  releasing it. The `Sent` mark keeps other senders out until the turn is
-  confirmed.
+  session's lock, before it answers `turn/start`. So `send --wait` marks the
+  session sent and logs `Send` under the lock, and makes the call after
+  releasing it; the `Sent` mark keeps other senders out until the turn is
+  confirmed. A send without `--wait` logs `Send` under the lock and records
+  `Queued`; the daemon's answer took it into the thread's turn, and the main
+  agent's next report clears the mark.
 
-### Contract additions (`tmag/v1`, all optional fields)
+### Reaching an inbox
+
+`send` dials the socket the hooks recorded and reads its peer. The listener
+must be the process the hooks named: the nearest process above the hook that
+runs the agent's program, whatever its role, which for a Claude Code
+background session is its worker, not the service host it records. That
+process must still run with the recorded start; otherwise the inbox is not
+proven and the send is refused `unbound`, or falls back to the pane while the
+session is idle and has one.
+
+### Contract additions (`tmag/v2`, all optional fields)
 
 - Session: `transcript` (`path` and `format`: `claude-jsonl` or
   `codex-rollout`, from the hooks' `transcript_path`; the file may not exist
@@ -274,10 +356,15 @@ effect in it, for the session's next event and the next snapshot to report.
 - Events: an event with `state` reports the session in full: `state`,
   `kind`, `turn`, `cwd`, `runtime`, `transcript`, `subagents`,
   `capabilities` and `requests`, and every change to any of them is such an
-  event, so a client applying events to a snapshot stays current. New tmag
-  events `Halt` and `Answer` (with `request` and `decision`), each with `via`
-  where it delivered. `Send`, `Halt` and `Answer` carry `from` (now on
-  `Answer` too) and `by` (see [Callers](#callers)).
+  event, so a client applying events to a snapshot stays current.
+  `capabilities` lists `send` for every agent and runtime with a channel that
+  carries it in some state: a pane, the Codex daemon, or an inbox. A Claude
+  Code background session thus lists `send` and `answer`; using an inbox
+  still needs the session's recorded socket. New tmag events `Halt` and
+  `Answer` (with `request` and `decision`); `Send` also carries `via` `inbox`
+  when it wrote the session's own channel.
+  `Send`, `Halt` and `Answer` carry `from` (now on `Answer` too) and `by`
+  (see [Callers](#callers)).
 - Errors: `refused:unsupported`, `refused:idle`, `refused:self`,
   `refused:agent`.
 
@@ -301,22 +388,24 @@ These replace the corresponding entries in AGENTS.md:
   decision to the agent's own dialog.
 - **No content is stored.** Hook payloads decode into `adapter.Payload`, which
   declares no prompt, message or tool-input fields. Never add one. Session
-  files and event log records hold ids, states, paths and timestamps only.
-  `tmag answer-hook` is the one reader of a tool input: it keeps it in memory
-  to show it to `tmag request` and to hand it back to the agent, and writes it
-  nowhere.
+  files and event log records hold ids, states, paths and timestamps only. A
+  prompt sent through an inbox is written to the agent's channel and kept
+  nowhere. `tmag answer-hook` is the one reader of a tool input: it keeps it
+  in memory to show it to `tmag request` and to hand it back to the agent,
+  and writes it nowhere.
 - **Control is gated.** `send`, `interrupt` and `answer` act only through a
   channel proven to reach the session: its one attached pane (by `process` or
   `title-id`, showing the main agent, holding its terminal's foreground), the
   agent service it runs in (a socket whose peer is the session's host or an
-  ancestor of it), or the answer hook waiting on the request. Each checks the
-  state it needs (`send` idle, `interrupt` working or blocked, `answer` its
-  request open), checks all of it again under the pane's lock and the
-  session's, and logs its event before releasing them. `internal/driver`
-  alone decides which channel carries a verb. `wait` refuses a pane that
-  shows no session.
+  ancestor of it), the answer hook waiting on the request, or an inbox whose
+  listener is the agent process that named it. Each checks the state it needs
+  (`send` and `send --reply` nothing unconfirmed, `send --wait` idle too,
+  `interrupt` working or blocked, `answer` its request open), checks all of it
+  again under the locks it needs, and logs its event before releasing them.
+  `internal/driver` alone decides which channel carries a verb. `wait` refuses
+  a pane that shows no session.
 - **Callers are proven too.** Who runs a verb comes from process ancestry,
-  told apart by the agent's own tool variable and never named by it alone.
+  distinguished by the agent's own tool variable and never named by it alone.
   People and agents use the same verbs and every control event records
   `from` and `by`; an agent never acts on its own session, and answers for
   the person only when `@tmag-answer` is `agents`.
@@ -351,9 +440,12 @@ alone, so the tunnel is the one way in.
   marked experimental by Codex, as the `thread-id` title item already is; the
   methods used are in its stable schema, and `tmag doctor` reports when the
   daemon does not answer as expected.
+- A Claude Code session that bypasses permission prompts holds a message sent
+  to its inbox until its person accepts it. tmag reports the send as written;
+  whether it was accepted shows in the session's next turn.
 - What remains out of reach, reported as `refused:unsupported` or as state:
-  - `send` and `interrupt` for Claude background sessions: no terminal, and the
-    per-session inbox socket labels messages as from another session;
+  - `interrupt` for Claude background sessions: no terminal. `send` reaches
+    them through their inbox;
   - answers for `--no-daemon` Codex;
   - Claude's sandbox network prompts, which raise no `PermissionRequest`;
   - Codex `request_user_input` and `request_permissions`, which fire no hook,
@@ -369,7 +461,7 @@ alone, so the tunnel is the one way in.
   the peer idle from its screen, left no `Send` event, and once pressed
   Enter twice. Given four lines describing `tmag list`, `send --wait`,
   `wait` and `read`, it used those three calls and was gated and recorded.
-  The verbs are complete for agents; telling agents about them, and where
+  The verbs are complete for agents; describing them to agents, and where
   the binary is, belongs to the agent plugins, as
   [ADR 0002](0002-agents-work-with-each-other.md) decides.
 

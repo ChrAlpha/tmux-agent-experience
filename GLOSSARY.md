@@ -17,3 +17,7 @@ A new boot or isolated process environment creates a new realm.
 
 **Gateway**: An external client's relay that aggregates multiple instances or
 executes tmag through remote command transports.
+
+**Inbox**: The Unix socket a session's own agent serves for messages. It is
+`send`'s channel for Claude Code, Pi and oh-my-pi; the agent's queue holds the
+message, and tmag keeps nothing.

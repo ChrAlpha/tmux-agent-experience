@@ -48,7 +48,11 @@ Successful commands and command failures preserve their `tmag/v2` documents.
 
 Actions contain `verb` and `target`. A send carries `text`; an answer carries
 `request` and `decision` (`allow` or `deny`), with optional `message` and
-`answers` (question text to selected answer). Unknown body fields are rejected.
+`answers` (question text to selected answer). A send delivers now: an idle
+session starts a turn, a working one reads the prompt at its next step, and
+the Codex daemon joins an active turn. A person's or an owner's prompt carries
+no sender line.
+Unknown body fields are rejected.
 There is no machine selector, command string, sender identity or arbitrary shell.
 Bodies are limited to 1 MiB and ten seconds to read. Control authority is
 revalidated after the complete body and verb are checked; a stalled upload
