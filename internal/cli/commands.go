@@ -352,7 +352,7 @@ func (a *app) cmdSend(args []string) int {
 		a.reportDelivery("sent to", d)
 		return ExitOK
 	}
-	return a.awaitAndReport("send", d.Session, query.WaitOptions{
+	return a.awaitAndReport("send", pos[0], d.Session, query.WaitOptions{
 		States: []string{adapter.Idle, adapter.Blocked}, After: d.Seq, Cursor: d.Cursor, StartGrace: query.PendingWindow,
 	}, *timeout)
 }
@@ -408,7 +408,8 @@ func (a *app) cmdReply(args []string) int {
 		_, err = query.Wait(wait, a.log, *t.Session, query.WaitOptions{States: []string{adapter.Idle}, After: cursor.Seq, Cursor: cursor})
 		stop()
 		if ctx.Err() != nil {
-			return a.failOn("reply", pos[0], a.deadline(ctx, *timeout, refused))
+			// Its last try was refused busy: nothing went out.
+			return a.failOn("reply", pos[0], undelivered{a.deadline(ctx, *timeout, refused)})
 		}
 		if err != nil && !errors.Is(err, context.DeadlineExceeded) {
 			return a.failOn("reply", pos[0], err)
@@ -495,16 +496,18 @@ func (a *app) cmdWait(args []string) int {
 	if *after == cursor.Seq {
 		o.Cursor = cursor
 	}
-	return a.awaitAndReportContext(ctx, "wait", s, o, *timeout)
+	return a.awaitAndReportContext(ctx, "wait", pos[0], s, o, *timeout)
 }
 
-func (a *app) awaitAndReport(cmd string, s query.Session, o query.WaitOptions, timeout time.Duration) int {
+func (a *app) awaitAndReport(cmd, target string, s query.Session, o query.WaitOptions, timeout time.Duration) int {
 	ctx, cancel := a.signalContext()
 	defer cancel()
-	return a.awaitAndReportContext(ctx, cmd, s, o, timeout)
+	return a.awaitAndReportContext(ctx, cmd, target, s, o, timeout)
 }
 
-func (a *app) awaitAndReportContext(ctx context.Context, cmd string, s query.Session, o query.WaitOptions, timeout time.Duration) int {
+// awaitAndReportContext waits for s as o says and reports the outcome; cmd
+// and target are the command and the target as typed, for the report.
+func (a *app) awaitAndReportContext(ctx context.Context, cmd, target string, s query.Session, o query.WaitOptions, timeout time.Duration) int {
 	ctx, cancelTimeout := context.WithTimeout(ctx, timeout)
 	defer cancelTimeout()
 	ev, err := query.Wait(ctx, a.log, s, o)
@@ -518,9 +521,9 @@ func (a *app) awaitAndReportContext(ctx context.Context, cmd string, s query.Ses
 	}
 	if err != nil {
 		if cmd == "send" {
-			err = fmt.Errorf("prompt delivered at seq %d; subsequent outcome unknown, do not repeat delivery: %w", o.After, err)
+			err = delivered{fmt.Errorf("prompt delivered at seq %d; subsequent outcome unknown, do not repeat delivery: %w", o.After, err)}
 		}
-		return a.failOn(cmd, shortID(s.ID), err)
+		return a.failOn(cmd, target, err)
 	}
 	a.reportWait(s, ev, true)
 	return ExitOK

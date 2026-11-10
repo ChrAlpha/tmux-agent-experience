@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -8,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/query"
 )
 
@@ -111,9 +113,39 @@ func TestEveryRefusalSaysWhatNext(t *testing.T) {
 			t.Errorf("%v says nothing about what to do next", err)
 		}
 	}
-	for _, cmd := range []string{"send", "wait", "reply"} {
-		if next(cmd, "abcd", errTimeout) == "" {
-			t.Errorf("a timed out %s says nothing about what to do next", cmd)
+	for _, err := range []error{eventlog.ErrIntegrityLoss, eventlog.ErrHistoryUnavailable} {
+		if next("wait", "abcd", err) == "" {
+			t.Errorf("a wait ended by %v says nothing about what to do next", err)
+		}
+	}
+	if !strings.Contains(next("wait", "abcd", eventlog.ErrIntegrityLoss), "tell the user") {
+		t.Error("a damaged event log is not left to the user")
+	}
+}
+
+// What to do after a failed delivery depends on whether the prompt went
+// out: only a proven delivery forbids sending it again, and only a proven
+// non-delivery invites running the command again. Anything else leaves the
+// error's own words, which say what is known.
+func TestNextKnowsWhetherAPromptWasDelivered(t *testing.T) {
+	after := delivered{fmt.Errorf("prompt delivered at seq 9; subsequent outcome unknown, do not repeat delivery: %w", errTimeout)}
+	for _, c := range []struct {
+		cmd  string
+		err  error
+		want string // "" for no advice
+	}{
+		{"send", after, "run tmag wait %3 --for idle,blocked, then tmag read %3 --last; do not send the prompt again"},
+		{"send", delivered{fmt.Errorf("x: %w", eventlog.ErrIntegrityLoss)}, "do not send the prompt again"},
+		{"send", errTimeout, ""},
+		{"send", context.DeadlineExceeded, ""},
+		{"reply", undelivered{errTimeout}, "nothing was delivered: run the same tmag reply again"},
+		{"reply", errTimeout, ""},
+		{"wait", errTimeout, "run the same tmag wait again"},
+		{"interrupt", &query.RefusedError{Reason: query.RefuseBusy}, "tmag wait %3 --for idle shows when it stops"},
+	} {
+		got := next(c.cmd, "%3", c.err)
+		if (c.want == "") != (got == "") || !strings.Contains(got, c.want) {
+			t.Errorf("%s after %v: next is %q, want %q", c.cmd, c.err, got, c.want)
 		}
 	}
 }

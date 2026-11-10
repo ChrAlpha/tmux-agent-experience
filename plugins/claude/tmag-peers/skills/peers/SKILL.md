@@ -30,13 +30,14 @@ command again with the permissions it needs.
    force-push, or stop processes others in this repository may rely on. Then
    run `tmag list` once. Never check peers routinely; follow one up with
    `tmag wait` or `send --reply`, not by listing again.
-2. If a peer works in your repository, leave its changes alone. Read it
-   (`tmag inspect`, `tmag read`) only as far as you need to coordinate, and
-   tell the user what collides. Prompt it only if it is idle and one short
-   message settles the collision.
-3. Otherwise act on a peer only when the user asked you to, or when a peer's
-   prompt asks for something within the work the user gave you (see
+2. Act on a peer when the user asked you to, or when a peer's prompt asks
+   for something within the work the user gave you (see
    [Receiving](#receiving)).
+3. On your own, act only to settle a collision with a peer that works in
+   your repository: leave its changes alone and tell the user what collides.
+   Read it (`tmag inspect`, `tmag read`) only as far as you need to, and
+   prompt it only if it is idle and one short message settles the collision.
+   Never delegate to or interrupt a peer on your own.
 4. Only through tmag. Never use `tmux send-keys`, `paste-buffer` or
    `capture-pane` to drive or read an agent's pane, and never judge its state
    from its screen: typing through tmux skips tmag's checks, can submit twice
