@@ -365,6 +365,60 @@ func TestMainAgentReportClearsAnInterrupt(t *testing.T) {
 	}
 }
 
+func TestMainAgentReportClearsQueued(t *testing.T) {
+	rec := play(t)
+	rec.Queued = t0
+	if sub, _ := Apply(rec, startOf("a1", "Read", "r1"), t0); sub.Queued.IsZero() {
+		t.Fatal("a subagent's call cleared the queued mark")
+	}
+	if idle, _ := Apply(rec, stopWith(), t0); !idle.Queued.IsZero() {
+		t.Fatal("the main agent's Stop left the queued mark standing")
+	}
+	// Clearing it alone is a change to store even when the state reports the
+	// same session.
+	cur := play(t)
+	cur.Queued = t0
+	next, changed := Apply(cur, adapter.Transition{Action: adapter.Set, State: adapter.Working, Turn: "p1"}, t0)
+	if !changed || !next.Queued.IsZero() {
+		t.Fatalf("a report that only cleared queued changed %v: %+v", changed, next)
+	}
+}
+
+// A request answered through tmag is tmag's synthetic transition, not the
+// main agent reporting: the queued mark stands until the agent's next hook.
+func TestSyntheticAnswerKeepsQueued(t *testing.T) {
+	main := adapter.Prompt{Tool: "Bash"}
+	sub := adapter.Prompt{Agent: "a1", Tool: "Bash"}
+	rec := Record{
+		Agent: proc.Claude, ID: "s1", Main: adapter.Working, Turn: "t1", Since: t0, Queued: t0,
+		Pending:  []adapter.Prompt{main, sub},
+		Requests: []Request{{ID: "r1", Prompt: main, Since: t0}, {ID: "r2", Prompt: sub, Since: t0}},
+	}
+	for _, id := range []string{"r1", "r2"} {
+		got, _ := Apply(rec, adapter.Transition{Action: adapter.Answer, Request: id, Synthetic: true}, t0)
+		if got.Queued.IsZero() {
+			t.Errorf("answering request %s cleared queued", id)
+		}
+	}
+	if got, _ := Apply(rec, adapter.Transition{Action: adapter.Set, State: adapter.Idle, Turn: "t1"}, t0); !got.Queued.IsZero() {
+		t.Fatal("a main-agent report left queued standing")
+	}
+}
+
+func TestRecordComparesTheInbox(t *testing.T) {
+	rec := play(t)
+	with := rec
+	with.Inbox = &Inbox{Path: "/tmp/claude.sock", PID: 10, Start: "s10"}
+	if with.equal(rec) {
+		t.Fatal("an inbox does not make a record different")
+	}
+	same := with
+	same.Inbox = &Inbox{Path: "/tmp/claude.sock", PID: 10, Start: "s10"}
+	if !same.equal(with) {
+		t.Fatal("equal inboxes make records different")
+	}
+}
+
 func TestRequestsNameOpenPrompts(t *testing.T) {
 	ask := func(tool, id string, waits bool) adapter.Transition {
 		tr := askFor("", tool)

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ChrAlpha/tmux-agent-experience/internal/adapter"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
 )
 
@@ -104,5 +105,51 @@ func TestWaitReturnsTheCurrentState(t *testing.T) {
 	put(t, store, session.Record{Main: "idle", Turn: "t1"})
 	if rec, err := Wait(ctx, store, s1, WaitOptions{States: []string{"idle", "blocked"}}); err != nil || rec.State() != "idle" {
 		t.Fatalf("Wait = %+v, %v", rec, err)
+	}
+}
+
+// A late idle notification for the turn before a --wait prompt neither
+// starts the prompt's turn nor releases its back-pressure: only a turn other
+// than the one recorded before delivery does.
+func TestWaitForInboxPromptIgnoresThePreviousTurnsIdleNotification(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	store := session.Store{Dir: t.TempDir()}
+	old := "old-turn"
+	now := time.Now()
+	rec := session.Record{Agent: "claude", ID: "s1", Main: adapter.Idle, Turn: old, Sent: now}
+	late, _ := session.Apply(rec, adapter.Map("claude", adapter.Payload{
+		HookEventName: "Notification", NotificationType: "idle_prompt", PromptID: old,
+	}), now)
+	if late.Sent.IsZero() {
+		t.Fatal("the previous turn's idle notification cleared the prompt's Sent mark")
+	}
+	put(t, store, late)
+	idle := Session{Agent: "claude", ID: "s1", State: adapter.Idle}
+	if err := liveGate(idle, View{records: []session.Record{late}}, now); !isRefused(err, RefuseBusy) {
+		t.Fatalf("the previous turn's idle notification released the send gate: %v", err)
+	}
+	got := make(chan session.Record, 1)
+	go func() {
+		rec, err := Wait(ctx, store, s1, WaitOptions{States: []string{adapter.Idle, adapter.Blocked}, Prompted: &old, Grace: 5 * time.Second})
+		if err != nil {
+			t.Error(err)
+		}
+		got <- rec
+	}()
+	time.Sleep(3 * waitPoll)
+	select {
+	case rec := <-got:
+		t.Fatalf("the previous turn's idle notification ended the wait: %+v", rec)
+	default:
+	}
+	// A real new turn starts: it clears Sent, and its end confirms the wait.
+	working, _ := session.Apply(late, adapter.Transition{Action: adapter.Set, State: adapter.Working, Turn: "new-turn"}, time.Now())
+	put(t, store, working)
+	time.Sleep(3 * waitPoll)
+	idleTurn, _ := session.Apply(working, adapter.Transition{Action: adapter.Set, State: adapter.Idle, Turn: "new-turn"}, time.Now())
+	put(t, store, idleTurn)
+	if rec := <-got; rec.State() != adapter.Idle || rec.Turn != "new-turn" {
+		t.Fatalf("Wait = %+v", rec)
 	}
 }

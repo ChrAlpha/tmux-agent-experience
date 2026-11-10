@@ -338,9 +338,12 @@ func (a *app) cmdSend(args []string) int {
 	if err != nil {
 		return a.failOn("send", pos[0], err)
 	}
-	ask := query.AskFinal
-	if *reply {
+	ask := query.AskNoAnswer
+	switch {
+	case *reply:
 		ask = query.AskReply
+	case *wait:
+		ask = query.AskFinal
 	}
 	ctx, cancel := a.signalContext()
 	defer cancel()
@@ -361,9 +364,9 @@ func (a *app) cmdSend(args []string) int {
 // replyRetry is how often a reply tries a busy asker again.
 const replyRetry = time.Second
 
-// cmdReply answers a prompt that asked for a reply: the peer gets it as a
-// prompt whose first line says it is one. A peer still busy is tried again
-// every replyRetry, until --timeout, and prompted once it is idle.
+// cmdReply answers a prompt that asked for a reply: the peer gets it through
+// its own message channel, or through its pane while idle. A pane-only peer
+// that is busy is tried again every replyRetry, until --timeout.
 func (a *app) cmdReply(args []string) int {
 	fs := flag.NewFlagSet("reply", flag.ContinueOnError)
 	fs.BoolVar(&a.json, "json", false, "")
@@ -384,7 +387,7 @@ func (a *app) cmdReply(args []string) int {
 	ctx, cancelTimeout := context.WithTimeout(ctx, *timeout)
 	defer cancelTimeout()
 	for {
-		d, err := query.Send(ctx, a.log, pos[0], text, query.Answering)
+		d, err := query.Reply(ctx, a.log, pos[0], text)
 		if err == nil {
 			a.reportDelivery("replied to", d)
 			return ExitOK

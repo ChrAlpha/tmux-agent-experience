@@ -1,7 +1,8 @@
 # ADR 0002: Agents work with each other through tmag
 
 - Status: accepted; amended 2026-11-10 (when agents look at peers, and the
-  `next:` line after refusals)
+  `next:` line after refusals); amended again 2026-11-10 (one `send` verb,
+  and replies through the asker's channel)
 - Date: 2026-11-04
 - Builds on: [ADR 0001](0001-agent-control-surface.md), whose verbs agents
   use here unchanged.
@@ -47,7 +48,8 @@ stop processes others may rely on. It never checks peers routinely, which
 would spend every session's context on peers that do not matter. It acts on
 a peer when the person asks, when a peer's prompt asks for something within
 the person's work, or to settle a collision with a peer in the same
-repository, leaving that peer's changes alone. What to do after a refusal or
+repository, leaving that peer's changes alone; a working peer is sent one
+short message when that settles it. What to do after a refusal or
 an error is not in the skill: tmag prints it on the next line, starting with
 `next:`, so an agent reads it only when it meets one. The skill's description
 names the cases that should load it: those signals, and a prompt that starts
@@ -72,31 +74,40 @@ with `[tmag] From` or `[tmag] Reply from`.
 
 ### tmag writes who sent a prompt
 
-When an agent sends a prompt, `query.Send` writes its first line from the
-caller it proved (ADR 0001, Callers): the agent, its session, and how to
-answer. A person's prompt gets none. There are three lines:
+When an agent sends a prompt or a message, `query.Send` writes its first line
+from the caller it proved (ADR 0001, Callers): the agent, its session, and
+how to answer. A person's prompt gets none. There are four lines:
 
 ```
 [tmag] From claude <session>, another agent. Answer in your final message.
 [tmag] From claude <session>, another agent. When done, send your answer on stdin to: tmag reply <session> -
 [tmag] Reply from codex <session>, another agent, to your prompt. Do not reply to it.
+[tmag] From claude <session>, another agent. No answer needed.
 ```
 
-The first is what `send` writes, for a sender that waits for the turn and
-reads the answer itself; the second is what `send --reply` writes, for a
+The first is what `send --wait` writes, for a sender that waits for the turn
+and reads the answer itself; the second is what `send --reply` writes, for a
 sender that ends its turn and takes the answer as its next prompt; the third
 is what `tmag reply` writes, and nobody answers it, so two agents do not
-reply to each other forever.
+reply to each other forever; the fourth is what `send` writes, for something
+a peer should know now. Claude Code carries the sender's name in its own
+envelope as well: `<agent> <first 8 characters of its session> via tmag`, or
+`tmag` for a person or owner client. tmag says nothing about the sender's
+permission mode.
 
-No prompt given to `send` or `reply` may start with `[tmag]`, in any case and
-after leading blanks (a usage error), so a first line that does was written by
-tmag about an agent it proved. Like the rest of the gate this holds for what
-tmag delivers; text typed into a pane by other means can say anything.
+No prompt or message given to `send` or `reply` may start with `[tmag]`, in
+any case and after leading blanks (a usage error), so a first line that did
+was written by tmag about an agent it proved. Like the rest of the gate this
+holds for what tmag delivers; text typed into a pane by other means can say
+anything.
 
-`send --reply` and `reply` need a caller whose session tmag proves: the
-reply would have nowhere to go otherwise. `reply` waits for an asker that is
-busy, until its `--timeout` (one minute by default, inside the two minutes a
-Claude Code Bash tool waits), and prompts it once it is idle. It times out
+A send without a flag delivers now through the session's own channel, or
+through its pane while it is idle; `--wait` needs an idle session and starts
+a turn of its own; `--reply` needs a caller whose session tmag proves.
+`reply` needs one too, because the reply would have nowhere to go otherwise.
+It delivers now through the asker's own channel, whatever its state, with
+the reply line; a pane-only asker gets it through its pane while idle, and
+while busy it retries until `--timeout` on busy refusals alone. It times out
 with exit 4; it says nothing was delivered, and may run again, only when its
 last try was refused, which delivers nothing. After any other error the
 delivery is unknown, and the reply is not sent again.
@@ -132,10 +143,9 @@ This is the one transcript reader. It extends "no content is stored" as
 - Whether an agent loads the skill unprompted remains the model's choice. The
   description and the first line's marker are all tmag can offer, and it uses
   both.
-- Still open: an asker that becomes busy again while it waits for a reply
-  gets it only within `reply`'s timeout. Claude Code queues input typed while
-  it works, Codex joins it to the running turn, so queueing a reply would be
-  a per-agent driver decision.
+- Settled: a reply is delivered now through the asker's own channel when its
+  driver has one; a pane-only asker still waits for its `--timeout` while it
+  is busy.
 
 ## Alternatives considered
 
@@ -145,7 +155,9 @@ This is the one transcript reader. It extends "no content is stored" as
 - **Injecting the protocol at launch**, as ae does. It needs tmag to start
   the agents, which a tmux plugin does not.
 - **A mailbox or an MCP server.** It stores messages and runs beside the
-  agents, against two invariants, and adds nothing the verbs lack.
+  agents, against two invariants, and adds nothing the verbs lack. The
+  agents' own inboxes are different: the queue lives in the agent, tmag
+  stores no message, and the socket belongs to the session it reaches.
 - **Changing `read` to read the transcript.** `read` printing pane text is in
   the published contract; a new flag keeps it.
 - **One skill in the `tmag` plugin.** The person could not keep it out of the
@@ -153,12 +165,12 @@ This is the one transcript reader. It extends "no content is stored" as
 
 ## Checked live
 
-- Claude Code 2.1.317 (Haiku), told only to involve another agent, loaded the
+- Claude Code 2.1.317 (Haiku), asked only to involve another agent, loaded the
   skill and used `list`, `send --wait` and `read --last`, and `send --reply`
   answered by `reply`; the receiver saw tmag's first line with the sender's
   full session id.
 - Claude Code 2.1.318 and Codex 0.166 (`--no-daemon`, in a private tmux
-  server), each told only to ask the other: Claude used `send --reply`, Codex
+  server), each asked only to ask the other: Claude used `send --reply`, Codex
   followed the first line with the skill's `scripts/tmag reply`, and Claude
   reported the answer; Codex used `send --wait` and `read --last` on Claude.
   `read --last` named the turn the hooks reported for both agents.
@@ -169,6 +181,29 @@ This is the one transcript reader. It extends "no content is stored" as
   change matters (another agent may be editing the same repository), it
   loaded the skill and ran `tmag list` in 4 of 6. Neither description
   loaded it in a task without a signal.
+- Claude Code 2.1.319 (Haiku), 4f0937c: an interactive session's listener was
+  the process the hooks recorded; an idle send through the inbox started a
+  turn and `read --last` returned its marker; a working session absorbed the
+  send, and a second send was refused `busy` with its next step named; a
+  bypass session held the send while tmag reported it written, and an
+  explicit accept delivered it; a background session's inbox was served by
+  its worker, not its pty host, and both idle and working sends reached it;
+  a busy asker took an agent's reply through its inbox, an idle one through
+  its channel.
+- Pi 1.5.0 and oh-my-pi 18.18.6, 9c27e4e: each real hook payload named its
+  per-process inbox under `/tmp/tmag-<uid>/inbox` with 0700 directories; an
+  idle send started one run and `read --last` returned its marker; a working
+  send joined the running run (Pi as `steer`, oh-my-pi as `aside`) with one
+  uninterrupted `sleep 20` and one agent lifecycle, and the reply included
+  it; a normal exit removed the inbox; a busy Pi asker took an agent's reply
+  through its inbox, an idle one through its channel. The full suite, race suite, lint,
+  shellcheck, govulncheck and marketplace validation passed there.
+- Claude Code 2.1.319 (Haiku), 1793caa: with only the peers skill, in 4 of 4
+  samples (three given the full request, one the short one) it loaded the
+  skill, ran `tmag list` and then `tmag send` to a Pi that was working, and
+  the Pi received the message through its inbox. It never used `--wait`,
+  polling or raw tmux. In default permission mode the person confirmed the
+  Bash commands Claude chose.
 - Not checked: Codex in its shared daemon (the verbs go through its control
   socket, covered by the fake daemon in e2e) and Codex's sandbox, which the
   machine used could not run.

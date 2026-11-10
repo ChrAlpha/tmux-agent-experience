@@ -35,6 +35,10 @@ func next(cmd, target string, err error) string {
 	if target == "" {
 		target = "ID"
 	}
+	var notTaken *query.NotTakenError
+	if errors.As(err, &notTaken) {
+		return fmt.Sprintf("nothing was delivered: run the same tmag %s again", cmd)
+	}
 	if errors.As(err, new(delivered)) {
 		if errors.Is(err, query.ErrEnded) {
 			return "the prompt arrived, but its session ended: tmag list shows the agents that run"
@@ -70,6 +74,9 @@ func nextAfterRefusal(cmd, target, reason string) string {
 		if cmd == "interrupt" {
 			return fmt.Sprintf("it was just interrupted and has not reported since: tmag wait %s --for idle shows when it stops", target)
 		}
+		if cmd == "send" || cmd == "reply" {
+			return fmt.Sprintf("try once more in a few seconds, or wait until it is idle with tmag wait %s --for idle", target)
+		}
 		return fmt.Sprintf("wait until it is idle with tmag wait %s --for idle, then try once more", target)
 	case query.RefuseSubagent:
 		return fmt.Sprintf("wait until it is idle with tmag wait %s --for idle, then try once more", target)
@@ -78,7 +85,7 @@ func nextAfterRefusal(cmd, target, reason string) string {
 	case query.RefuseIdle:
 		return "nothing to do: it runs no turn"
 	case query.RefuseUnbound:
-		return "only the person can reach it: tmag needs a tmux pane proven to show it"
+		return "nothing tmag can prove reaches it: tmag list shows what it shows, and the person can act in the agent"
 	case query.RefuseBackground:
 		return "only the person can reach it: its agent must hold its terminal's foreground"
 	case query.RefuseUnsupported:

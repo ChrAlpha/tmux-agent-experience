@@ -99,13 +99,13 @@ type Event struct {
 	// Evidence is what an Attach rests on.
 	Evidence string `json:"evidence,omitempty"`
 	// From is the pane a Send, Halt or Answer came from, and By the agent,
-	// when an agent's tool ran it. Bytes is a prompt's size.
-	// Credential identifies an authenticated owner client, independently of By.
+	// when an agent's tool ran it. Bytes is a prompt's size. Credential
+	// identifies an authenticated owner client, independently of By.
 	Credential string   `json:"credential,omitempty"`
 	From       *PaneRef `json:"from,omitempty"`
 	By         *Actor   `json:"by,omitempty"`
 	Bytes      int      `json:"bytes,omitempty"`
-	// Via is the channel tmag delivered by: pane, service or hook.
+	// Via is the channel tmag delivered by: pane, service, hook or inbox.
 	Via string `json:"via,omitempty"`
 	// Request is the request an Answer decided, and Decision how: allow or
 	// deny.
@@ -115,7 +115,7 @@ type Event struct {
 
 // Events tmag itself records, beside those named after agent hooks.
 const (
-	Send   = "Send"   // tmag submitted a prompt to the session
+	Send   = "Send"   // tmag sent the session a prompt
 	Halt   = "Halt"   // tmag interrupted the session's turn
 	Answer = "Answer" // tmag answered a request of the session's
 	Attach = "Attach" // a pane started showing the session

@@ -67,8 +67,10 @@ type replyReader interface {
 
 // claude reads Claude Code's JSONL transcript. Each content block of an
 // assistant message is a line of its own; every user entry, prompt or tool
-// result, names the prompt whose turn it belongs to. The reply is the text
-// of the last assistant message with any, after the turn's last user entry.
+// result, names the prompt whose turn it belongs to. A peer message is a
+// meta user entry whose origin is a peer, and it names the turn it starts;
+// other meta entries are skipped. The reply is the text of the last
+// assistant message with any, after the turn's last user entry.
 type claude struct {
 	turn  string
 	found bool
@@ -83,7 +85,10 @@ type claudeEntry struct {
 	IsSidechain bool   `json:"isSidechain"`
 	IsMeta      bool   `json:"isMeta"`
 	PromptID    string `json:"promptId"`
-	Message     struct {
+	Origin      struct {
+		Kind string `json:"kind"`
+	} `json:"origin"`
+	Message struct {
 		ID      string          `json:"id"`
 		Content json.RawMessage `json:"content"`
 	} `json:"message"`
@@ -96,7 +101,7 @@ func (c *claude) line(b []byte) bool {
 	}
 	switch e.Type {
 	case "user":
-		if e.IsMeta || e.PromptID == "" {
+		if e.PromptID == "" || (e.IsMeta && e.Origin.Kind != "peer") {
 			return false
 		}
 		c.turn, c.found = e.PromptID, true

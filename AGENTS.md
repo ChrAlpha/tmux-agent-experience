@@ -18,8 +18,8 @@ layers, in order of importance:
    extension that runs it), and for Claude Code's permission prompts
    `tmag answer-hook`, which also carries a decision made with `tmag answer`.
    `tmag-peers` is what an agent knows of tmag: the `peers` skill, which
-   tells the model when and how to use tmag's verbs on other agents, and a
-   launcher that runs the hooks' binary.
+   describes to the model when and how to use tmag's verbs on other agents,
+   and a launcher that runs the hooks' binary.
 3. **The `tmag` binary** is the substrate: sessions and their state, which
    panes show them, the event log and a versioned JSON contract (`tmag/v2`)
    for agents, scripts and remote clients.
@@ -54,18 +54,21 @@ promise is documented in the package, and changes with it.
   delivery than tmag proved (`TestEveryRefusalSaysWhatNext`).
 - **tmag writes who sent a prompt.** An agent's prompt gets a first line
   `query.Send` writes from the proven caller; a person's gets none, and no
-  prompt given to tmag may start with `[tmag]`. A caller never names itself.
+  prompt or message given to tmag may start with `[tmag]`. A caller never
+  names itself.
 - **Hooks fail open.** `tmag hook` exits 0, never writes stdout and finishes
   within `hook.Deadline`, also through the `tmag-peers` launcher; failures go
   to `hook.log` as metadata. Pi's and oh-my-pi's extensions run it in the
-  order of the events without holding up the agent, and nothing they do
-  reaches it. `answer-hook` exits 0 too and sets up within that deadline,
-  then waits for a decision within its own hook timeout: it prints only a
+  order of the events without holding up the agent; the only prompt they hand
+  it is one a send wrote to their inbox. `answer-hook` exits 0 too and sets up
+  within that deadline, then waits for a decision within its own hook
+  timeout: it prints only a
   decision `tmag answer` delivered, and nothing on any failure, leaving the
   agent's dialog, on screen meanwhile, to decide.
 - **No content is stored.** Payloads decode into `adapter.Payload`, which has
   no prompt, message or tool-input field, and tmag's extensions send none;
-  records, events and alerts hold ids, states, paths and times.
+  records, events and alerts hold ids, states, paths and times. A prompt
+  sent through an inbox is written to the agent's channel and kept nowhere.
   `answer-hook` keeps a tool input in memory only, and `read --last` prints a
   reply and keeps nothing.
 - **What tmag accepts is bounded where it is read.** `adapter.Decode` bounds
@@ -86,8 +89,10 @@ promise is documented in the package, and changes with it.
   `jump` show only proven attachments; anything else is `unknown`.
 - **Control is gated.** `send`, `interrupt` and `answer` act only through a
   channel proven to reach the session, after checking the state they need
-  again under the pane's and the session's locks; `internal/driver` alone
-  picks the channel.
+  again under the locks they need; an inbox is proven when its listener is
+  the agent process that named it. `send` delivers now without needing an idle
+  turn, and `--wait` keeps today's idle gate. `internal/driver` alone picks
+  the channel from the agent, runtime, caller and response mode.
 - **Callers are proven too.** Who runs a verb comes from process ancestry
   (`query.Caller`), never from a variable alone, and every control event
   records it. An agent never acts on its own session, and answers for the
@@ -124,9 +129,10 @@ promise is documented in the package, and changes with it.
 | `internal/adapter` | Hook payload → state transition, per agent |
 | `internal/session` | Session records, the state machine, the per-session file store and lock |
 | `internal/attach` | Clients, attachments and their evidence, the `@tmag_*` pane projection, reconciliation |
-| `internal/query` | list / send / wait / snapshot over sessions and panes; the control verbs' gates |
-| `internal/driver` | Which channel (pane, service, hook) carries each verb for each agent and runtime |
+| `internal/query` | list / send / reply / wait / snapshot over sessions and panes; the control verbs' gates |
+| `internal/driver` | Which channel (pane, service, hook, inbox) carries each verb for each agent and runtime |
 | `internal/codexsvc` | One-command client of the Codex daemon's control socket (JSON-RPC over WebSocket) |
+| `internal/inbox` | The socket a session's agent serves for messages: dial, proof, Claude Code's envelope and the extension framing |
 | `internal/answer` | The answer hook's socket, under `/tmp/tmag-<uid>`, its protocol, and the decision it prints for Claude Code |
 | `internal/transcript` | A turn's reply, read backward from Claude Code's JSONL transcript, Codex's rollout or Pi's session file |
 | `internal/eventlog` | Append-only, sequence-numbered event log, and tails that know when they missed events |
@@ -135,7 +141,7 @@ promise is documented in the package, and changes with it.
 | `internal/lockfile` | flock bounded by a context, and the fixed pools of pane and session locks |
 | `internal/binpath` | Where hooks look for the binary; the hook command and the agents' launcher |
 | `internal/e2e` | End-to-end tests with real tmux and a fake agent |
-| `plugins/<host>/tmag` | Agent plugins: hooks for Claude Code and Codex, where Claude's `PermissionRequest` runs `tmag answer-hook`; for Pi and oh-my-pi a package whose extension runs `tmag hook` |
+| `plugins/<host>/tmag` | Agent plugins: hooks for Claude Code and Codex, where Claude's `PermissionRequest` runs `tmag answer-hook`; for Pi and oh-my-pi a package whose extension runs `tmag hook` and serves the session's inbox |
 | `plugins/<host>/tmag-peers` | The `peers` skill and the `tmag` launcher (`bin/` in Claude Code, which puts it on `PATH`; the skill's `scripts/` elsewhere) |
 | `.claude-plugin/`, `.agents/plugins/` | Marketplace manifests |
 | `SKILL.md` | Install and update procedure that agents follow from its raw URL |
@@ -167,7 +173,9 @@ claude plugin validate .      # marketplace and plugin manifests
   respects its deadline.
 - What the state directory holds is its layout (`eventlog.Layout`). A change
   to it renames the layout, which gives it a default directory of its own:
-  tmag never reads or migrates another layout's state.
+  tmag never reads or migrates another layout's state. An optional record
+  field an older tmag ignores, and drops when it rewrites a record, is not a
+  layout change; the next hook writes it again.
 - The version lives in `internal/version/version.go` and the eight plugin
   manifests; `TestManifestVersions` keeps them equal.
 - The launchers are `binpath.Launcher()`, the other copies of the skill are
@@ -205,7 +213,9 @@ claude plugin validate .      # marketplace and plugin manifests
   `PermissionRequest` leaves to its clients. `FAKE_KEYS=1` makes the
   interactive fake read keys like a TUI, so Escape interrupts its turn;
   `FAKE_ANSWER=1` makes it open permission dialogs as Claude Code does, with
-  `tmag answer-hook` waiting beside them. Like the agents it turns on
+  `tmag answer-hook` waiting beside them. `FAKE_INBOX=1` makes it serve the
+  session's inbox: Claude Code's envelope, whose sender it records, or Pi's
+  and oh-my-pi's extension framing. Like the agents it turns on
   bracketed paste, so a pasted prompt is one prompt, and ends each turn with
   the reply `answered: LINE` written to the transcript its hooks name, in the
   agent's format. A line `tmag ARGS` typed into it,
@@ -216,7 +226,9 @@ claude plugin validate .      # marketplace and plugin manifests
 - `TestExtensionsReport` runs Pi's and oh-my-pi's extensions on Node.js 22.6
   or later, which strips TypeScript types (skipped without it), through each
   host's events against a fake host, and reads what they ran `tmag hook`
-  with.
+  with. It also sends messages to each extension's inbox, idle and working,
+  and checks that each payload carries its path and that shutdown unlinks the
+  socket.
 - Control scenarios also run a `follower`: it rebuilds sessions and panes
   from `tmag watch` as the contract tells a client to, and `agrees` checks
   them against `tmag list --json` at the test's checkpoints. A change that
@@ -235,7 +247,7 @@ claude plugin validate .      # marketplace and plugin manifests
 ## Checking against real agents
 
 Hook payloads and TUI behaviour change between agent releases. Before changing
-an adapter or the Codex title rules, observe the real thing:
+an adapter, the Codex title rules or an inbox, observe the real thing:
 
 - Claude Code: `claude --plugin-dir ./plugins/claude/tmag --setting-sources
   local --permission-mode default` inside a private tmux server, with
@@ -249,7 +261,10 @@ an adapter or the Codex title rules, observe the real thing:
   the person from outside its tree (`setsid -f`). An agent's shell tool may
   kill what its command leaves running, a tmux server too: keep the command
   that starts the private server running, in the background, for as long as
-  the check takes.
+  the check takes. A hook exports `CLAUDE_CODE_MESSAGING_SOCKET`; `tmag send`
+  writes Claude Code's cross-session envelope there and reads EOF. Check that
+  the socket's peer is the session's process, that an idle session starts a
+  turn, and that a working one reads it at its next step.
 - Codex: `tmag` reads the `thread-id` title item of Codex 0.166 (the id's
   first 29 characters and `...`). Hooks load from a project's
   `.codex/hooks.json` once the project and its hooks are trusted; Codex writes
@@ -275,9 +290,14 @@ an adapter or the Codex title rules, observe the real thing:
   server in `~/.omp/agent/models.yml` serves as its model. Started with
   `env -i`, keep `TMUX_TMPDIR` in its environment: its hooks would otherwise
   reconcile the developer's tmux server against the scratch state.
-- Transcripts: `internal/transcript` reads Claude Code 2.1.318's JSONL (a
+- Pi and oh-my-pi inboxes: the package's extension serves
+  `/tmp/tmag-<uid>/inbox/<agent>-<pid>.sock`; `tmag send` reaches it with
+  `sendUserMessage`, as `steer` in Pi and `aside` in oh-my-pi. Check that each
+  payload names the socket and that its peer is the agent process.
+- Transcripts: `internal/transcript` reads Claude Code 2.1.319's JSONL (a
   line per content block, each user entry's `promptId` the hooks'
-  `prompt_id`), Codex 0.166's rollout (`task_complete` with `turn_id` and
+  `prompt_id`; a peer message is a meta entry whose `origin.kind` is
+  `peer`), Codex 0.166's rollout (`task_complete` with `turn_id` and
   `last_agent_message`), and Pi 1.5.0's and oh-my-pi 18.18.6's session files
   (an entry per message, a user message's entry id naming its turn). Before
   changing it, run a turn and check that `tmag read ID --last` names the turn

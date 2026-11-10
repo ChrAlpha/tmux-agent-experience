@@ -46,7 +46,7 @@ does not repeat it.
   - `behavior`: `allow` or `deny`;
   - `updatedInput`: allow only; replaces the whole input, and is re-checked against deny and ask rules;
   - `updatedPermissions`: allow only; `addRules`, `setMode`, … with destination `session`, `localSettings`, `projectSettings` or `userSettings`;
-  - `message`: deny only, told to Claude;
+  - `message`: deny only, passed to Claude;
   - `interrupt`: deny only, stops Claude.
 
   Deny and ask rules still apply over a hook's `allow`.

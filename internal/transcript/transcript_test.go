@@ -30,9 +30,13 @@ const (
 	claudeResult  = `{"type":"user","promptId":"p2","isSidechain":false,"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"u1","content":"ok"}]}}`
 	claudeFinalA  = `{"type":"assistant","isSidechain":false,"message":{"id":"m3","role":"assistant","content":[{"type":"text","text":"Found it."}]}}`
 	claudeFinalB  = `{"type":"assistant","isSidechain":false,"message":{"id":"m3","role":"assistant","content":[{"type":"text","text":"It is fine."}]}}`
-	claudeSide    = `{"type":"assistant","isSidechain":true,"message":{"id":"s1","role":"assistant","content":[{"type":"text","text":"subagent"}]}}`
-	claudeMeta    = `{"type":"user","promptId":"p9","isMeta":true,"message":{"role":"user","content":"caveat"}}`
-	claudeOther   = `{"type":"system","subtype":"turn_duration"}`
+	// Claude Code 2.1.319 projects a peer message as a meta user entry whose
+	// origin is the peer; its promptId names the turn it starts.
+	claudePeer     = `{"type":"user","uuid":"d648efb3-5e36-4ea6-8d28-3e4d97a8d909","promptId":"p10","isMeta":true,"origin":{"kind":"peer","from":"unknown","verifiedPeerPid":143638,"verifiedPeerProcStart":"61060964"},"promptSource":"system","turnOrigin":"peer"}`
+	claudePeerBack = `{"type":"assistant","isSidechain":false,"message":{"id":"m4","role":"assistant","content":[{"type":"text","text":"peer answer"}]}}`
+	claudeSide     = `{"type":"assistant","isSidechain":true,"message":{"id":"s1","role":"assistant","content":[{"type":"text","text":"subagent"}]}}`
+	claudeMeta     = `{"type":"user","promptId":"p9","isMeta":true,"origin":{"kind":"system"},"message":{"role":"user","content":"caveat"}}`
+	claudeOther    = `{"type":"system","subtype":"turn_duration"}`
 )
 
 func TestClaudeLastReply(t *testing.T) {
@@ -46,8 +50,10 @@ func TestClaudeLastReply(t *testing.T) {
 		{"the final message after tools, whole",
 			[]string{claudePrompt1, claudeReply1, claudePrompt2, claudeThink, claudeLook, claudeTool, claudeResult, claudeFinalA, claudeFinalB, claudeOther},
 			Reply{"p2", "Found it.\n\nIt is fine."}},
-		{"not a subagent's or a meta entry",
+		{"not a subagent's or another meta entry",
 			[]string{claudePrompt1, claudeReply1, claudeSide, claudeMeta, claudeOther}, Reply{"p1", "one"}},
+		{"a peer's message starts its turn",
+			[]string{claudePrompt1, claudeReply1, claudePeer, claudePeerBack, claudeOther}, Reply{"p10", "peer answer"}},
 		{"a turn with no text yet", []string{claudePrompt1, claudeReply1, claudePrompt2, claudeTool}, Reply{"p2", ""}},
 	} {
 		got, err := Last(ctx, write(t, c.lines...), ClaudeJSONL)

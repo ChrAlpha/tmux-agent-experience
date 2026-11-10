@@ -120,6 +120,9 @@ func RunContext(parent context.Context, in Input) error {
 	}
 	contact := now().UTC()
 	ev := eventlog.Event{Agent: in.Agent, Session: p.SessionID, Event: p.HookEventName, Cwd: p.Cwd, LastHookAt: contact}
+	// The inbox a hook's agent names, and the process that serves it, are
+	// recorded for a send to prove later. The hook never connects to it.
+	inbox := inboxFor(w, in.PID, in.Agent, inboxOf(in.Agent, p, os.Getenv))
 
 	// A record that cannot be read is the hook's to replace: the session's
 	// state comes from its hooks, and this one reports it anew.
@@ -173,9 +176,12 @@ func RunContext(parent context.Context, in Input) error {
 		if p.TranscriptPath != "" {
 			base.Transcript = p.TranscriptPath
 		}
+		if inbox != nil {
+			base.Inbox = inbox
+		}
 		next, changed := session.Apply(base, tr, now())
-		moved := base.Cwd != cur.Cwd || base.Host != cur.Host || base.Transcript != cur.Transcript
-		if found && !changed && !moved && contact.Sub(cur.LastHookAt) < ContactInterval {
+		recorded := moved(cur, base)
+		if found && !changed && !recorded && contact.Sub(cur.LastHookAt) < ContactInterval {
 			prev, rec = cur, cur // nothing to write
 			return nil
 		}

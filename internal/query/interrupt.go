@@ -75,7 +75,7 @@ func Interrupt(ctx context.Context, log *eventlog.Log, target string) (Delivery,
 				}
 				// The agent reports nothing of it: its turn is over, and with it
 				// whatever it asked the user.
-				after, _ := session.Apply(rec, adapter.Transition{Action: adapter.Set, State: adapter.Idle, Turn: rec.Turn}, now)
+				after, _ := session.Apply(rec, adapter.Transition{Action: adapter.Set, State: adapter.Idle, Turn: rec.Turn, Synthetic: true}, now)
 				after.Halted = rec.Halted
 				return rec, ev, &after
 			},

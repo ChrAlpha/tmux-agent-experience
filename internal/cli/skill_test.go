@@ -138,6 +138,10 @@ func TestNextKnowsWhetherAPromptWasDelivered(t *testing.T) {
 		{"reply", errTimeout, ""},
 		{"wait", errTimeout, "run the same tmag wait again"},
 		{"interrupt", &query.RefusedError{Reason: query.RefuseBusy}, "tmag wait %3 --for idle shows when it stops"},
+		{"send", &query.NotTakenError{Seq: 9, Target: "%3", Err: errors.New("the extension took nothing")}, "nothing was delivered: run the same tmag send again"},
+		{"send", &query.RefusedError{Reason: query.RefuseBusy}, "try once more in a few seconds"},
+		{"send", &query.RefusedError{Reason: query.RefuseUnbound}, "nothing tmag can prove reaches it"},
+		{"send", &query.RefusedError{Reason: query.RefuseUnsupported}, "only the person can do this"},
 	} {
 		got := next(c.cmd, "%3", c.err)
 		if (c.want == "") != (got == "") || !strings.Contains(got, c.want) {
@@ -154,7 +158,7 @@ func TestNextFollowsTheError(t *testing.T) {
 	if code := a.failOn("send", "01a1", &query.RefusedError{Reason: query.RefuseBusy, Detail: "01a19fda is working"}); code != ExitRefused {
 		t.Fatalf("exit %d, want %d", code, ExitRefused)
 	}
-	want := "tmag send: refused (busy): 01a19fda is working\n" + nextPrefix + "wait until it is idle with tmag wait 01a1 --for idle, then try once more\n"
+	want := "tmag send: refused (busy): 01a19fda is working\n" + nextPrefix + "try once more in a few seconds, or wait until it is idle with tmag wait 01a1 --for idle\n"
 	if stderr.String() != want {
 		t.Errorf("stderr is %q, want %q", stderr.String(), want)
 	}

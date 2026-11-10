@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // node returns the Node.js that runs TypeScript as it is (22.6 or later,
@@ -75,6 +76,7 @@ func TestExtensionsReport(t *testing.T) {
 	} {
 		t.Run(host, func(t *testing.T) {
 			tpm, log := t.TempDir(), filepath.Join(t.TempDir(), "hooks")
+			calls := filepath.Join(t.TempDir(), "calls")
 			tmag := filepath.Join(tpm, "tmux-agent-experience", "bin", "tmag")
 			if err := os.MkdirAll(filepath.Dir(tmag), 0o755); err != nil {
 				t.Fatal(err)
@@ -88,9 +90,14 @@ func TestExtensionsReport(t *testing.T) {
 				t.Fatal(err)
 			}
 			cmd := exec.Command(node, "--experimental-strip-types", "--no-warnings", filepath.Join("testdata", "extension.mjs"), host, extension)
-			cmd.Env = []string{"PATH=/usr/bin:/bin", "HOME=" + t.TempDir(), "TMUX_PLUGIN_MANAGER_PATH=" + tpm, "TMAG_LOG=" + log}
+			cmd.Env = []string{"PATH=/usr/bin:/bin", "HOME=" + t.TempDir(), "TMUX_PLUGIN_MANAGER_PATH=" + tpm, "TMAG_LOG=" + log, "TMAG_CALLS=" + calls}
+			started := time.Now()
 			if out, err := cmd.CombinedOutput(); err != nil {
 				t.Fatalf("%v: %s", err, out)
+			}
+			// A stalled connection's five-second timer must not outlive close.
+			if elapsed := time.Since(started); elapsed > 4*time.Second {
+				t.Fatalf("the extension kept its process alive for %s after close", elapsed)
 			}
 			data, err := os.ReadFile(log)
 			if err != nil {
@@ -99,7 +106,11 @@ func TestExtensionsReport(t *testing.T) {
 			if strings.Contains(string(data), "secret") {
 				t.Errorf("a report carries content:\n%s", data)
 			}
+			if strings.Contains(string(data), "send-idle") || strings.Contains(string(data), "send-running") {
+				t.Errorf("a report carries a prompt:\n%s", data)
+			}
 			var got []string
+			inbox := ""
 			sc := bufio.NewScanner(strings.NewReader(string(data)))
 			for sc.Scan() {
 				args, body, _ := strings.Cut(sc.Text(), " {")
@@ -109,6 +120,14 @@ func TestExtensionsReport(t *testing.T) {
 				}
 				if p["cwd"] != "/work" || p["mode"] != "tui" || p["transcript_path"] != nil && p["transcript_path"] != "/sessions/"+p["session_id"].(string)+".jsonl" {
 					t.Errorf("payload %v", p)
+				}
+				switch v, _ := p["inbox"].(string); {
+				case v == "":
+					t.Errorf("payload carries no inbox: %v", p)
+				case inbox == "":
+					inbox = v
+				case v != inbox:
+					t.Errorf("inbox changed from %q to %q", inbox, v)
 				}
 				line := fmt.Sprintf("%s %s", p["hook_event_name"], p["session_id"])
 				for _, f := range [][2]string{{"source", "source"}, {"reason", "reason"}, {"turn_id", "turn"}, {"tool_name", "tool"}, {"tool_use_id", "call"}, {"stop_reason", "stop"}} {
@@ -120,6 +139,40 @@ func TestExtensionsReport(t *testing.T) {
 			}
 			if strings.Join(got, "\n") != strings.Join(want, "\n") {
 				t.Errorf("reported\n  %s\nwant\n  %s", strings.Join(got, "\n  "), strings.Join(want, "\n  "))
+			}
+			if inbox == "" {
+				t.Fatal("no payload carried an inbox")
+			}
+			if _, err := os.Stat(inbox); !os.IsNotExist(err) {
+				t.Errorf("the inbox socket %s remains: %v", inbox, err)
+			}
+			called, err := os.ReadFile(calls)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var sent []struct {
+				API     string         `json:"api"`
+				Text    string         `json:"text"`
+				Options map[string]any `json:"options"`
+			}
+			for _, line := range strings.Split(strings.TrimSpace(string(called)), "\n") {
+				if line == "" {
+					continue
+				}
+				var call struct {
+					API     string         `json:"api"`
+					Text    string         `json:"text"`
+					Options map[string]any `json:"options"`
+				}
+				if err := json.Unmarshal([]byte(line), &call); err != nil {
+					t.Fatalf("sendUserMessage call %q: %v", line, err)
+				}
+				sent = append(sent, call)
+			}
+			deliverAs := map[string]string{"pi": "steer", "omp": "aside"}[host]
+			if len(sent) != 2 || sent[0].API != "main" || sent[0].Text != "send-idle" || sent[0].Options["deliverAs"] != deliverAs ||
+				sent[1].API != "main" || sent[1].Text != "send-running" || sent[1].Options["deliverAs"] != deliverAs {
+				t.Fatalf("sendUserMessage calls = %+v, want main with deliverAs %q", sent, deliverAs)
 			}
 		})
 	}

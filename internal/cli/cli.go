@@ -38,7 +38,7 @@ Usage:
   tmag read     <target> [--lines N | --last] [--json]
                                                recent pane output, or the agent's last reply
   tmag send     <target> [--wait | --reply] [--timeout D] [--json] [text | -]
-                                               submit a prompt to an idle agent
+                                               deliver a prompt now, or wait for its turn
   tmag reply    <target> [--timeout D] [--json] [text | -]
                                                answer an agent that asked for a reply
   tmag interrupt <target> [--json]             stop the agent's running turn

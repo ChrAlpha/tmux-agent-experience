@@ -38,6 +38,9 @@ type Record struct {
 	// Transcript is the path of the agent's transcript of the session, as its
 	// hooks report it. The file may not exist before the first turn.
 	Transcript string `json:"transcript,omitempty"`
+	// Inbox is the socket the session's own agent serves for messages, and
+	// the process that serves it, as its hooks proved it.
+	Inbox *Inbox `json:"inbox,omitempty"`
 
 	// Main is the main agent's own state (working, idle or unknown) and
 	// MainKind qualifies it (error after a failed turn).
@@ -68,9 +71,31 @@ type Record struct {
 	Since time.Time `json:"since"`
 	// Sent is when tmag last submitted a prompt that no turn has confirmed.
 	Sent time.Time `json:"sent,omitzero"`
+	// Queued is when tmag last sent the session a prompt through its own
+	// message channel, which no hook of its main agent has followed:
+	// nothing more goes through that channel until the agent reaches its
+	// next step.
+	Queued time.Time `json:"queued,omitzero"`
 	// Halted is when tmag last interrupted the main agent, until the agent
 	// reports again: Claude Code reports nothing on an interrupt.
 	Halted time.Time `json:"halted,omitzero"`
+}
+
+// Inbox is the socket a session's own agent serves for messages, and the
+// process that serves it: the one whose environment or extension named the
+// socket.
+type Inbox struct {
+	Path  string `json:"path"`
+	PID   int    `json:"pid"`
+	Start string `json:"start,omitempty"`
+}
+
+// SameInbox reports whether a and b name the same socket and process.
+func SameInbox(a, b *Inbox) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return *a == *b
 }
 
 // Request is a pending prompt under the id tmag answers it by.
@@ -350,6 +375,9 @@ func Apply(cur Record, tr adapter.Transition, now time.Time) (Record, bool) {
 	}
 	if main {
 		rec.Halted = time.Time{} // the main agent reports again
+		if !tr.Synthetic {
+			rec.Queued = time.Time{} // and has reached its next step
+		}
 	}
 	normalize(&rec)
 	if rec.State() != cur.State() || rec.Kind() != cur.Kind() || cur.Since.IsZero() {
@@ -473,8 +501,9 @@ func newest[S ~[]E, E any](s S, n int) S {
 
 func (r Record) equal(o Record) bool {
 	return r.Agent == o.Agent && r.ID == o.ID && r.Cwd == o.Cwd && r.Host == o.Host && r.Transcript == o.Transcript &&
-		r.Main == o.Main && r.MainKind == o.MainKind && r.Turn == o.Turn &&
+		SameInbox(r.Inbox, o.Inbox) && r.Main == o.Main && r.MainKind == o.MainKind && r.Turn == o.Turn &&
 		slices.Equal(r.Pending, o.Pending) && slices.Equal(r.Requests, o.Requests) && slices.Equal(r.Calls, o.Calls) &&
 		slices.Equal(r.Done, o.Done) && slices.Equal(r.Background, o.Background) &&
-		slices.Equal(r.Subagents, o.Subagents) && r.Since.Equal(o.Since) && r.Sent.Equal(o.Sent) && r.Halted.Equal(o.Halted)
+		slices.Equal(r.Subagents, o.Subagents) && r.Since.Equal(o.Since) && r.Sent.Equal(o.Sent) &&
+		r.Queued.Equal(o.Queued) && r.Halted.Equal(o.Halted)
 }

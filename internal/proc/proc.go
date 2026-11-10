@@ -167,16 +167,16 @@ func AgentKind(p Process) string {
 	if p.Uncertain {
 		return ""
 	}
-	kind := programKind(p)
+	kind := ProgramKind(p)
 	if kind == "" || serves(kind, p) || isOMPWorker(p) {
 		return ""
 	}
 	return kind
 }
 
-// programKind names the agent whose program p runs, as a client or a
+// ProgramKind names the agent whose program p runs, as a client or a
 // service, or returns "".
-func programKind(p Process) string {
+func ProgramKind(p Process) string {
 	switch {
 	case isClaude(p.Comm):
 		return Claude
@@ -233,7 +233,7 @@ func ServiceKind(p Process) string {
 	case IsCodexService(p):
 		return Codex
 	}
-	if kind := programKind(p); (kind == Pi || kind == OMP) && serves(kind, p) {
+	if kind := ProgramKind(p); (kind == Pi || kind == OMP) && serves(kind, p) {
 		return kind
 	}
 	return ""
