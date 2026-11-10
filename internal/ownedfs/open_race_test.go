@@ -3,6 +3,7 @@ package ownedfs
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -133,5 +134,76 @@ func TestOpenRetryHonorsCancellation(t *testing.T) {
 	}
 	if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("created after cancellation: %v", err)
+	}
+}
+
+func TestReadObservesRacedPublicationAgainWhileWriterRefuses(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		remove bool
+		late   bool
+	}{
+		{"replaced before open", false, false},
+		{"replaced after open", false, true},
+		{"removed after open", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root, d := rootDir(t)
+			path, tmp := filepath.Join(root, "record"), filepath.Join(root, "tmp")
+			publish := func(data string) {
+				if err := os.WriteFile(tmp, []byte(data), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Rename(tmp, path); err != nil {
+					t.Fatal(err)
+				}
+			}
+			race := func() {
+				if !tc.remove {
+					publish("new")
+				} else if err := os.Remove(path); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, read := range []bool{true, false} {
+				publish("old")
+				calls := 0
+				opener := func(name string, flags int, perm os.FileMode) (*os.File, error) {
+					calls++
+					if calls == 1 && !tc.late {
+						race()
+					}
+					f, err := d.current().OpenFile(name, flags, perm)
+					if calls == 1 && tc.late {
+						race()
+					}
+					return f, err
+				}
+				flags := os.O_RDONLY
+				if !read {
+					flags = os.O_RDWR
+				}
+				f, err := d.openUsing(context.Background(), "record", flags, 0, opener)
+				var got []byte
+				if err == nil {
+					got, err = io.ReadAll(f)
+					_ = f.Close()
+				}
+				switch {
+				case !read:
+					if calls != 1 || !errors.Is(err, ErrScope) {
+						t.Fatalf("writer accepted a raced name: calls=%d err=%v", calls, err)
+					}
+				case tc.remove:
+					if calls != 2 || !errors.Is(err, os.ErrNotExist) {
+						t.Fatalf("removal during read: calls=%d err=%v", calls, err)
+					}
+				default:
+					if calls != 2 || err != nil || string(got) != "new" {
+						t.Fatalf("raced read: calls=%d %q %v", calls, got, err)
+					}
+				}
+			}
+		})
 	}
 }

@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -127,5 +128,52 @@ func TestContextReadsRejectCanceledViewAndBlockingRecord(t *testing.T) {
 	}
 	if _, err := os.Stat(path); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestCompleteReadsSurviveConcurrentRepublication(t *testing.T) {
+	ctx := context.Background()
+	store := Store{Dir: t.TempDir()}
+	const records = 8
+	put := func(i, n int) error {
+		rec := Record{Agent: proc.Codex, ID: fmt.Sprintf("thread-%d", i), Main: "idle", LastHookAt: time.Unix(int64(n), 0).UTC()}
+		return store.Lock(ctx, rec.Agent, rec.ID, func() error { return store.PutContext(ctx, rec) })
+	}
+	for i := range records {
+		if err := put(i, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stop, published := make(chan struct{}), make(chan int, 1)
+	go func() {
+		n := 0
+		for {
+			select {
+			case <-stop:
+				published <- n
+				return
+			default:
+			}
+			if err := put(n%records, n+1); err != nil {
+				t.Error(err)
+				published <- n
+				return
+			}
+			n++
+		}
+	}()
+	defer func() {
+		close(stop)
+		if n := <-published; n == 0 {
+			t.Error("no publication overlapped the reads")
+		}
+	}()
+	for range 300 {
+		if all, err := store.AllContext(ctx); err != nil || len(all) != records {
+			t.Fatalf("complete view during republication: %d records, %v", len(all), err)
+		}
+		if _, ok, err := store.GetContext(ctx, proc.Codex, "thread-3"); err != nil || !ok {
+			t.Fatalf("record during republication: %v %v", ok, err)
+		}
 	}
 }
