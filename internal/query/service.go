@@ -2,6 +2,7 @@ package query
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"time"
@@ -83,42 +84,85 @@ func throughService(outer context.Context, log *eventlog.Log, v View, s Session,
 	}
 
 	var d Delivery
-	err = store.Lock(ctx, s.Agent, s.ID, func() error {
-		fresh, _, err := Load(ctx, store)
-		if err != nil {
-			return err
-		}
-		fs, ok := fresh.Session(s.Agent, s.ID)
-		if !ok {
-			return &RefusedError{RefuseChanged, fmt.Sprintf("%s has ended", s.ID)}
-		}
-		if err := verb.gate(fs, fresh, time.Now()); err != nil {
-			return err
-		}
-		rec, ok, err := store.Get(ctx, s.Agent, s.ID)
-		if err != nil || !ok {
-			return &RefusedError{RefuseChanged, fmt.Sprintf("%s has ended", s.ID)}
-		}
-		ev := verb.mark(&rec)
-		ev.Agent, ev.Session, ev.Via = fs.Agent, fs.ID, driver.Service
-		if err := store.Put(ctx, rec); err != nil {
-			return err
-		}
-		if err := log.Append(ctx, &ev); err != nil {
-			return err
-		}
-		d = Delivery{Session: fs, Via: driver.Service, Seq: ev.Seq}
-		return nil
-	})
+	d, err = recordDelivery(ctx, log, s, verb.gate, driver.Service, nil, func() error {
+		return &RefusedError{RefuseChanged, fmt.Sprintf("%s has ended", s.ID)}
+	}, verb.mark)
 	if err != nil {
 		return Delivery{}, err
 	}
 	ctx, cancelDelivery := context.WithTimeout(outer, serviceTimeout)
 	defer cancelDelivery()
 	if err := verb.deliver(ctx, c); err != nil {
-		return d, fmt.Errorf("logged at seq %d, but the Codex daemon did not take it: %w", d.Seq, err)
+		return d, deliveryFailure(d, err)
 	}
 	return d, nil
+}
+
+// deliveryFailure reports a failed write after its event was logged. A
+// JSON-RPC error response from the Codex daemon refuses the request, which
+// proves nothing was taken; anything else leaves the outcome unknown.
+func deliveryFailure(d Delivery, err error) error {
+	var rpc *codexsvc.RPCError
+	if errors.As(err, &rpc) {
+		return &NotTakenError{Seq: d.Seq, Target: d.Session.ID, Err: err}
+	}
+	return unknownDelivery(d, err)
+}
+
+// unknownDelivery reports a write whose outcome tmag cannot know.
+func unknownDelivery(d Delivery, err error) error {
+	return fmt.Errorf("logged at seq %d; whether %s took it is unknown: %w", d.Seq, d.Session.ID, err)
+}
+
+// recordDelivery marks a delivery on the session under its lock, against
+// fresh state, and logs the event before releasing it: the session's hooks
+// wait for the same lock, so what the delivery causes is logged after it.
+// The channel is reached and checked already, so only the session's own gate
+// runs again; proven, when not nil, is the inbox that channel was proven on.
+// gone says what a session that ended meanwhile is.
+func recordDelivery(ctx context.Context, log *eventlog.Log, s Session, gate stateGate, via string, proven *session.Inbox, gone func() error, mark func(*session.Record) eventlog.Event) (Delivery, error) {
+	store := session.Store{Dir: log.Dir}
+	var d Delivery
+	err := store.Lock(ctx, s.Agent, s.ID, func() error {
+		fresh, _, err := Load(ctx, store)
+		if err != nil {
+			return err
+		}
+		fs, ok := fresh.Session(s.Agent, s.ID)
+		if !ok {
+			return gone()
+		}
+		if err := gate(fs, fresh, time.Now()); err != nil {
+			return err
+		}
+		rec, ok, err := store.Get(ctx, s.Agent, s.ID)
+		if err != nil || !ok {
+			return gone()
+		}
+		if err := inboxChanged(s, rec, proven); err != nil {
+			return err
+		}
+		ev := mark(&rec)
+		ev.Agent, ev.Session, ev.Via = fs.Agent, fs.ID, via
+		if err := store.Put(ctx, rec); err != nil {
+			return err
+		}
+		if err := log.Append(ctx, &ev); err != nil {
+			return err
+		}
+		d = Delivery{Session: fs, Via: via, Seq: ev.Seq}
+		return nil
+	})
+	return d, err
+}
+
+// inboxChanged reports a fresh record that no longer names the inbox the
+// channel was proven on.
+func inboxChanged(s Session, rec session.Record, proven *session.Inbox) error {
+	if proven == nil || session.SameInbox(rec.Inbox, proven) {
+		return nil
+	}
+	return &RefusedError{RefuseChanged, fmt.Sprintf("%s's inbox changed while it was reached", s.ID)}
 }
 
 // threadIn checks that the daemon has the thread loaded in one of the

@@ -338,9 +338,12 @@ func (a *app) cmdSend(args []string) int {
 	if err != nil {
 		return a.failOn("send", pos[0], err)
 	}
-	ask := query.AskFinal
-	if *reply {
+	ask := query.AskNoAnswer
+	switch {
+	case *reply:
 		ask = query.AskReply
+	case *wait:
+		ask = query.AskFinal
 	}
 	ctx, cancel := a.signalContext()
 	defer cancel()

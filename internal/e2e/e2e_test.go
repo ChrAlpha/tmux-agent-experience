@@ -671,8 +671,9 @@ func TestClaudeAnswersThroughTheHook(t *testing.T) {
 }
 
 // A Claude Code background session runs in its supervisor, which no
-// terminal owns: it takes no prompt or interrupt, but its answer hook runs
-// there too, so its prompts can be answered.
+// terminal owns: it takes no prompt through a pane or interrupt. A send
+// reaches its inbox, and its answer hook runs there too, so its prompts can
+// be answered.
 func TestClaudeBackgroundSessionTakesAnswers(t *testing.T) {
 	h := start(t)
 	f := h.follow()
@@ -695,6 +696,7 @@ func TestClaudeBackgroundSessionTakesAnswers(t *testing.T) {
 	if s.Runtime != "service" || len(s.Panes) != 0 || !slices.Equal(s.Capabilities, []string{"send", "answer"}) {
 		t.Fatalf("background session = %+v", s)
 	}
+	f.agrees(h)
 
 	if _, err := io.WriteString(in, "block\n"); err != nil {
 		t.Fatal(err)
@@ -916,14 +918,14 @@ func TestCodexDaemonCarriesSendAndInterrupt(t *testing.T) {
 		t.Fatalf("send: %d %s", r.code, r.out)
 	}
 	h.waitSession(sidC, "working")
-	if r := h.tmag("", "send", sidC[:8], "more"); r.code != 3 || !strings.Contains(r.out, "busy") {
+	if r := h.tmag("", "send", sidC[:8], "more"); r.code != 0 || !strings.Contains(r.out, "(service)") {
 		t.Fatalf("send to a busy thread: %d %s", r.code, r.out)
 	}
 	if r := h.tmag("", "interrupt", sidC[:8], "--json"); r.code != 0 || !strings.Contains(r.out, `"via":"service"`) {
 		t.Fatalf("interrupt: %d %s", r.code, r.out)
 	}
 	h.waitSession(sidC, "idle")
-	if got := h.eventNames(sidC); !strings.HasSuffix(got, "Send: UserPromptSubmit:working Halt: Interrupt:idle") {
+	if got := h.eventNames(sidC); !strings.Contains(got, "Send: UserPromptSubmit:working") || !strings.HasSuffix(got, "Send: Halt: Interrupt:idle") {
 		t.Fatalf("events = %s", got)
 	}
 	f.agrees(h)
@@ -1933,7 +1935,7 @@ func TestAgentsActOnEachOther(t *testing.T) {
 	}
 
 	// A prompts B, and the Send event says who.
-	if got := run("send " + sidB[:8] + " hello"); !strings.HasPrefix(got, "tool 0 ") {
+	if got := run("send " + sidB[:8] + " --wait hello"); !strings.HasPrefix(got, "tool 0 ") {
 		t.Fatalf("send from A: %s", got)
 	}
 	h.waitSession(sidB, "idle")
@@ -2045,7 +2047,7 @@ func TestDaemonThreadsActOnEachOther(t *testing.T) {
 	if r := d.tool(sidC, "send", sidC[:8], "hello"); r.code != 3 || !strings.Contains(r.out, "refused (self)") {
 		t.Fatalf("a thread prompting itself: %d %s", r.code, r.out)
 	}
-	if r := d.tool(sidC, "send", sidD[:8], "hello"); r.code != 0 {
+	if r := d.tool(sidC, "send", sidD[:8], "--wait", "hello"); r.code != 0 {
 		t.Fatalf("a thread prompting another: %d %s", r.code, r.out)
 	}
 	h.waitSession(sidD, "idle")
@@ -2078,6 +2080,7 @@ func TestDaemonThreadsActOnEachOther(t *testing.T) {
 // doing, and its reply is read only once its turn is over.
 func TestReplyWaitsForTheAsker(t *testing.T) {
 	h := start(t)
+	f := h.follow()
 	outA, outB := filepath.Join(h.dir, "a"), filepath.Join(h.dir, "b")
 	a := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_OUT": outA, "FAKE_HOOKS": "1", "FAKE_TURN_MS": "1500"}, filepath.Join(bin, "claude"))
 	b := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidB, "FAKE_OUT": outB, "FAKE_HOOKS": "1"}, filepath.Join(bin, "claude"))
@@ -2129,6 +2132,7 @@ func TestReplyWaitsForTheAsker(t *testing.T) {
 	if r := h.tmag("", "read", sidA[:8], "--last"); r.code != 0 || r.out != "answered: all done\n" {
 		t.Fatalf("read --last: %d %q", r.code, r.out)
 	}
+	f.agrees(h)
 }
 
 // Printed options differ between tmux versions. Reading a command must keep

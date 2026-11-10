@@ -71,6 +71,9 @@ func TestAdmissionAndIndependentContract(t *testing.T) {
 	if !strings.Contains(info.Body.String(), Schema) || !strings.Contains(info.Body.String(), "instance") {
 		t.Fatal("missing public contract discovery")
 	}
+	if !strings.Contains(info.Body.String(), `"send"`) {
+		t.Fatal("send is not among the operations")
+	}
 	for _, path := range []string{"/app.js", "/", "/api/machines"} {
 		if got := call(s, "GET", path, "", c.Token, "", ""); got.Code != 404 {
 			t.Errorf("client route %s is still served", path)
@@ -96,6 +99,10 @@ func TestActionsPreserveArgumentsAndGates(t *testing.T) {
 	r := call(s, "POST", "/v2/act", `{"verb":"send","target":"--json","text":"hello"}`, c.Token, "", "")
 	if r.Code != 409 || strings.Join(got, " ") != "send --json -- --json -" || text != "hello" {
 		t.Fatal("control arguments or refusal changed")
+	}
+	r = call(s, "POST", "/v2/act", `{"verb":"shell","target":"--json","text":"hello"}`, c.Token, "", "")
+	if r.Code != 400 {
+		t.Fatalf("an unknown control verb: %d", r.Code)
 	}
 	got = nil
 	for _, b := range []string{`{"verb":"shell","target":"a"}`, `{"verb":"send","target":"a","machine":"remote"}`, `{"verb":"send","target":"a"} {}`} {
