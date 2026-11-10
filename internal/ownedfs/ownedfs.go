@@ -160,10 +160,22 @@ func (d *Dir) open(ctx context.Context, name string, flags int, perm os.FileMode
 	return d.openUsing(ctx, name, flags, perm, d.current().OpenFile)
 }
 
+// unaliased refuses hard links. A reader may observe a published object while
+// its successor replaces it: Linux drops the replaced inode's last link before
+// the name moves, so both the name and the opened descriptor can report zero
+// links, and the bytes are still one complete publication. Writers and lock
+// holders need the object that stays at the name, so they need exactly one.
+func unaliased(st os.FileInfo, read bool) bool {
+	n := st.Sys().(*syscall.Stat_t).Nlink
+	return n == 1 || read && n == 0
+}
+
 // openUsing keeps creation separate from opening an observed existing file.
 // Root.OpenFile resolves symlinks even with O_NOFOLLOW; only exclusive creation
-// can safely retain O_CREATE. The opener boundary also allows controlled races
-// against the real Root.OpenFile implementation in regression tests.
+// can safely retain O_CREATE. A reader whose name moves to another object, or
+// disappears, during the open observes it again; a writer refuses. The opener
+// boundary also allows controlled races against the real Root.OpenFile
+// implementation in regression tests.
 func (d *Dir) openUsing(ctx context.Context, name string, flags int, perm os.FileMode, opener func(string, int, os.FileMode) (*os.File, error)) (*os.File, error) {
 	if !component(name) {
 		return nil, ErrScope
@@ -173,12 +185,13 @@ func (d *Dir) openUsing(ctx context.Context, name string, flags int, perm os.Fil
 	}
 	create := flags&os.O_CREATE != 0
 	exclusive := create && flags&os.O_EXCL != 0
+	read := !create && flags&(os.O_WRONLY|os.O_RDWR) == 0
 	for {
 		if err := d.Validate(ctx); err != nil {
 			return nil, err
 		}
 		before, statErr := d.current().Lstat(name)
-		if statErr == nil && (!before.Mode().IsRegular() || !Owner(before) || before.Sys().(*syscall.Stat_t).Nlink != 1) {
+		if statErr == nil && (!before.Mode().IsRegular() || !Owner(before) || !unaliased(before, read)) {
 			return nil, ErrScope
 		}
 		if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
@@ -204,15 +217,18 @@ func (d *Dir) openUsing(ctx context.Context, name string, flags int, perm os.Fil
 			return nil, err
 		}
 		opened, err := f.Stat()
-		if err == nil && (!opened.Mode().IsRegular() || !Owner(opened) || opened.Sys().(*syscall.Stat_t).Nlink != 1) {
+		if err == nil && (!opened.Mode().IsRegular() || !Owner(opened) || !unaliased(opened, read)) {
 			err = ErrScope
 		}
-		if err == nil && statErr == nil && !os.SameFile(before, opened) {
-			err = ErrScope
-		}
-		after, afterErr := d.current().Lstat(name)
-		if err == nil && (afterErr != nil || !after.Mode().IsRegular() || !os.SameFile(after, opened)) {
-			err = ErrScope
+		if err == nil {
+			after, afterErr := d.current().Lstat(name)
+			if (statErr == nil && !os.SameFile(before, opened)) || afterErr != nil || !os.SameFile(after, opened) {
+				if read && (afterErr == nil || errors.Is(afterErr, os.ErrNotExist)) {
+					_ = f.Close()
+					continue
+				}
+				err = ErrScope
+			}
 		}
 		if err == nil {
 			err = d.Validate(ctx)

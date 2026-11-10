@@ -97,8 +97,8 @@ func ReadSmallWithin(ctx context.Context, root, path string, limit int64) ([]byt
 	if err != nil {
 		return nil, err
 	}
-	if !owned(st) || st.Size() > limit {
-		return nil, fmt.Errorf("unowned or oversized metadata %s", filepath.Base(path))
+	if st.Size() > limit {
+		return nil, fmt.Errorf("oversized metadata %s", filepath.Base(path))
 	}
 	b, err := io.ReadAll(io.LimitReader(f, limit+1))
 	if err != nil {

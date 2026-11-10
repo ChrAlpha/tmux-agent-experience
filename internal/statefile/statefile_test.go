@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/ChrAlpha/tmux-agent-experience/internal/ownedfs"
 )
 
 func TestAtomicPublicationAndCanceledReplacement(t *testing.T) {
@@ -33,7 +35,7 @@ func TestAtomicPublicationAndCanceledReplacement(t *testing.T) {
 	}
 }
 
-func TestUncertainAliasesAreNeitherWrittenNorRemoved(t *testing.T) {
+func TestUncertainAliasesAreNeitherReadWrittenNorRemoved(t *testing.T) {
 	for _, hard := range []bool{false, true} {
 		t.Run(map[bool]string{false: "symlink", true: "hardlink"}[hard], func(t *testing.T) {
 			dir := t.TempDir()
@@ -47,6 +49,9 @@ func TestUncertainAliasesAreNeitherWrittenNorRemoved(t *testing.T) {
 			}
 			if err := link(other, tmp); err != nil {
 				t.Fatal(err)
+			}
+			if _, err := ReadSmall(context.Background(), tmp, 64); !errors.Is(err, ownedfs.ErrScope) {
+				t.Fatalf("read through an uncertain alias: %v", err)
 			}
 			if err := Write(context.Background(), target, tmp, []byte("overwrite")); err == nil {
 				t.Fatal("wrote through an uncertain alias")
