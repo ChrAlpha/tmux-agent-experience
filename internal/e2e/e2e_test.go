@@ -58,7 +58,7 @@ func TestMain(m *testing.M) {
 	}
 	build("github.com/ChrAlpha/tmux-agent-experience/cmd/tmag", "tmag")
 	build("github.com/ChrAlpha/tmux-agent-experience/internal/e2e/fakeagent", "claude")
-	for _, agent := range []string{"codex", "pi", "omp"} {
+	for _, agent := range []string{"claude.exe", "codex", "pi", "omp"} {
 		if err := os.Link(filepath.Join(dir, "claude"), filepath.Join(dir, agent)); err != nil {
 			panic(err)
 		}
@@ -281,6 +281,24 @@ const (
 	sidD = "0d000000-0000-7000-8000-00000000000d"
 	sidE = "0e000000-0000-7000-8000-00000000000e"
 )
+
+// Claude Code's npm package runs its native executable as claude.exe: its
+// pane is proven by process and takes a prompt like claude's.
+func TestClaudeRunAsClaudeExe(t *testing.T) {
+	h := start(t)
+	out := filepath.Join(h.dir, "received")
+	pane := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_OUT": out, "FAKE_HOOKS": "1", "FAKE_TURN_MS": "300"}, filepath.Join(bin, "claude.exe"))
+	p, s := h.waitPane(pane, "idle", "process")
+	if s.ID != sidA || s.Agent != "claude" || p.Command != "claude.exe" {
+		t.Fatalf("pane %+v shows %+v", p, s)
+	}
+	if r := h.tmag("", "send", sidA[:8], "--wait", "hello"); r.code != 0 {
+		t.Fatalf("send to claude.exe: %d %s", r.code, r.out)
+	}
+	if r := h.tmag("", "read", sidA[:8], "--last"); r.code != 0 || r.out != "answered: hello\n" {
+		t.Fatalf("read --last of claude.exe: %d %q", r.code, r.out)
+	}
+}
 
 func TestClaudeInProcess(t *testing.T) {
 	h := start(t)

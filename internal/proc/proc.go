@@ -174,10 +174,11 @@ func AgentKind(p Process) string {
 	return kind
 }
 
-// programKind names the agent whose program p runs, as a client or not.
+// programKind names the agent whose program p runs, as a client or a
+// service, or returns "".
 func programKind(p Process) string {
 	switch {
-	case p.Comm == "claude":
+	case isClaude(p.Comm):
 		return Claude
 	case strings.HasPrefix(p.Comm, "codex"):
 		return Codex
@@ -254,22 +255,38 @@ var claudeServices = map[string]bool{"daemon": true, "bg-pty-host": true, "bg-sp
 
 // IsClaudeService reports whether p is part of Claude Code's background
 // supervisor rather than an interactive client. Background sessions run as a
-// worker under a pty host; the worker is named after its version, not
-// claude, and the pty host above it is what this recognises.
+// worker under a pty host; a worker looks like an interactive client, and
+// HostOf tells them apart by the worker's parent.
+//
+// A pty host or spare titles itself as one argv string, "claude bg-pty-host"
+// or "claude bg-spare", followed by the flag of the same role. The daemon and
+// a plain executable name the role in the argument after the executable; a
+// node-run package names it after the claude-code script.
 func IsClaudeService(p Process) bool {
 	argv := p.Argv
 	if argv == nil {
 		argv = strings.Fields(p.Args)
 	}
-	for i, arg := range argv {
-		base := filepath.Base(arg)
-		if base != "claude" && !strings.Contains(arg, "claude-code") {
-			continue
+	if len(argv) == 0 {
+		return false
+	}
+	if role, ok := strings.CutPrefix(argv[0], "claude "); ok && claudeServices[role] {
+		return true
+	}
+	if isClaude(filepath.Base(argv[0])) || strings.Contains(argv[0], "claude-code") {
+		return len(argv) > 1 && claudeServices[argv[1]]
+	}
+	for i, arg := range argv[1:] {
+		if strings.Contains(arg, "claude-code") {
+			return i+2 < len(argv) && claudeServices[argv[i+2]]
 		}
-		return i+1 < len(argv) && claudeServices[argv[i+1]]
 	}
 	return false
 }
+
+// isClaude reports whether name is Claude Code's native executable: claude,
+// or claude.exe, as its npm package installs it on every platform.
+func isClaude(name string) bool { return name == "claude" || name == "claude.exe" }
 
 // Role is how a hook's host process runs a session.
 type Role string
@@ -289,7 +306,10 @@ type Host struct {
 	Role    Role
 }
 
-// HostOf walks up from pid to the nearest agent client or agent service.
+// HostOf walks up from pid to the nearest agent client or agent service. A
+// Claude Code background worker looks like a client, but its parent is one of
+// its services: the walk goes on to that service, so the session stays
+// service-hosted.
 func (t *Table) HostOf(pid int) (Host, bool) {
 	for _, a := range t.Ancestors(pid) {
 		p, ok := t.Get(a)
@@ -300,10 +320,21 @@ func (t *Table) HostOf(pid int) (Host, bool) {
 			return Host{Process: p, Kind: kind, Role: Service}, true
 		}
 		if kind := AgentKind(p); kind != "" {
+			if kind == Claude && t.claudeWorker(p) {
+				continue
+			}
 			return Host{Process: p, Kind: kind, Role: Terminal}, true
 		}
 	}
 	return Host{}, false
+}
+
+// claudeWorker reports whether p is a background session's Claude Code
+// worker: a client whose parent is a Claude service. Its own argv cannot tell
+// it from an interactive client; only its parent can.
+func (t *Table) claudeWorker(p Process) bool {
+	parent, ok := t.Get(p.PPID)
+	return ok && ServiceKind(parent) == Claude
 }
 
 // Running reports whether the process with this pid still runs and, when

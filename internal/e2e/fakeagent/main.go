@@ -1,6 +1,6 @@
 // Command fakeagent impersonates an interactive coding agent in end-to-end
-// tests. Install it as "claude", "codex", "pi" or "omp"; the name selects the
-// agent, and with it the names its hooks give events (for Pi and oh-my-pi,
+// tests. Install it as "claude", "claude.exe", "codex", "pi" or "omp"; the name
+// selects the agent, and with it the names its hooks give events (for Pi and oh-my-pi,
 // those tmag's extensions report) and its transcript's format.
 //
 // Environment:
@@ -88,7 +88,8 @@ var eventNames = map[string]names{
 func piLike(agent string) bool { return agent == "pi" || agent == "omp" }
 
 func main() {
-	agent := filepath.Base(os.Args[0])
+	// Claude Code's npm package runs its native executable as claude.exe.
+	agent := strings.TrimSuffix(filepath.Base(os.Args[0]), ".exe")
 	if len(os.Args) > 1 && (os.Args[1] == "--version" || os.Args[1] == "plugin" || agent == "pi" && (os.Args[1] == "install" || os.Args[1] == "remove")) {
 		hostCLI(os.Args[1:])
 		return
