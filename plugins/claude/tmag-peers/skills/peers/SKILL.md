@@ -121,7 +121,7 @@ EOF
 
 `tmag reply` waits for the asker to be idle, until `--timeout` (one minute by
 default). If it times out, run it again only when it says nothing was
-delivered; otherwise follow its `next:` line.
+delivered; otherwise do not send it again.
 
 A prompt whose first line starts with `[tmag] Reply from` answers one you
 sent. Go on with the work it was for, and do not reply to it.
@@ -130,6 +130,7 @@ sent. Go on with the work it was for, and do not reply to it.
 
 A refused verb exits 3 with `refused (CODE): reason` and delivers nothing.
 Exit 1 is an error, such as `ended` (the peer's session ended) or `no_reply`
-(its last turn left no reply to read); exit 2 is a usage error. The line after
-the error, starting with `next:`, says what to do; do that rather than
-repeating the command. When it says only the person can, tell the user.
+(its last turn left no reply to read); exit 2 is a usage error. When tmag
+knows what to do next, the line after the error says it, starting with
+`next:`; do that rather than repeating the command. When it says only the
+person can, tell the user.

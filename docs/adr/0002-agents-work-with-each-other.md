@@ -96,8 +96,10 @@ tmag delivers; text typed into a pane by other means can say anything.
 `send --reply` and `reply` need a caller whose session tmag proves: the
 reply would have nowhere to go otherwise. `reply` waits for an asker that is
 busy, until its `--timeout` (one minute by default, inside the two minutes a
-Claude Code Bash tool waits), and prompts it once it is idle; exit 4 means
-nothing was delivered.
+Claude Code Bash tool waits), and prompts it once it is idle. It times out
+with exit 4; it says nothing was delivered, and may run again, only when its
+last try was refused, which delivers nothing. After any other error the
+delivery is unknown, and the reply is not sent again.
 
 ### Answers are read from the transcript
 

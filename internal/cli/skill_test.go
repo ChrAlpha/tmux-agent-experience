@@ -79,7 +79,7 @@ func TestPeersSkillMatchesCLI(t *testing.T) {
 		"run it again only when it says nothing was delivered",
 		fmt.Sprintf("Exit %d is an error, such as `ended`", ExitError),
 		"`no_reply` (its last turn left no reply",
-		fmt.Sprintf("starting with `%s`, says what to do", strings.TrimSpace(nextPrefix)),
+		fmt.Sprintf("the line after the error says it, starting with `%s`", strings.TrimSpace(nextPrefix)),
 		fmt.Sprintf("starting with `%s` is refused with exit %d", query.Marker, ExitUsage),
 		fmt.Sprintf("exit %d is a usage error", ExitUsage),
 		"Exit 127 with `tmag: not installed`",
