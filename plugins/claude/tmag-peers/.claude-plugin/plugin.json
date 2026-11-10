@@ -1,6 +1,6 @@
 {
   "name": "tmag-peers",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Lets Claude Code work with the other coding agents in your tmux panes through tmag: see their state, prompt them, wait for them and reply, gated and recorded. Uses the tmag binary of the tmux-agent-experience tmux plugin.",
   "author": { "name": "ChrAlpha" },
   "homepage": "https://github.com/ChrAlpha/tmux-agent-experience",
