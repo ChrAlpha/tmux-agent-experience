@@ -159,7 +159,7 @@ func AgentKind(p Process) string {
 		return ""
 	}
 	switch {
-	case p.Comm == "claude":
+	case isClaude(p.Comm):
 		if IsClaudeService(p) {
 			return ""
 		}
@@ -218,7 +218,7 @@ func IsClaudeService(p Process) bool {
 	}
 	for i, arg := range argv {
 		base := filepath.Base(arg)
-		if base != "claude" && !strings.Contains(arg, "claude-code") {
+		if !isClaude(base) && !strings.Contains(arg, "claude-code") {
 			continue
 		}
 		return i+1 < len(argv) && claudeServices[argv[i+1]]
@@ -292,6 +292,10 @@ func (t *Table) Alive(pid int, start string) bool {
 	q, ok := t.Get(pid)
 	return ok && (q.Uncertain || start == "" || q.Start == start)
 }
+
+// isClaude reports whether name is Claude Code's native executable: claude,
+// or claude.exe, as its npm package installs it on every platform.
+func isClaude(name string) bool { return name == "claude" || name == "claude.exe" }
 
 // claudeScriptRE matches the claude launcher script run by node, as in
 // "node /opt/homebrew/bin/claude" or "node /usr/local/bin/claude --resume".

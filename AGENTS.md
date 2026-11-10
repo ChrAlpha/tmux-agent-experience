@@ -187,8 +187,9 @@ claude plugin validate .      # marketplace and plugin manifests
 - Tests run tmag as a person from outside the test's process tree
   (`harness.tmag`), and as an agent from a fake agent's tool.
 - E2E tests start private servers (`tmux -L e2e` under a temporary
-  `TMUX_TMPDIR`) and run `internal/e2e/fakeagent` installed as `claude` and
-  `codex`, so process names and `pane_current_command` match real agents. Run
+  `TMUX_TMPDIR`) and run `internal/e2e/fakeagent` installed as `claude`,
+  `claude.exe` (as Claude Code's npm package runs) and `codex`, so process
+  names and `pane_current_command` match real agents. Run
   as `codex app-server …` it is a Codex daemon outside every pane that runs
   hooks for any thread and serves a control socket under `CODEX_HOME`
   (`internal/codexsvc/svctest` is its server end), replaying the approvals a

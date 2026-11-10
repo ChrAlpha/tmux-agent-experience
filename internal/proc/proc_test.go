@@ -19,6 +19,12 @@ func TestAgentKind(t *testing.T) {
 		{"node", "node /usr/local/bin/claude --model haiku", Claude},
 		{"node", "node /usr/lib/node_modules/@anthropic-ai/claude-code/cli.js", Claude},
 		{"node", "node /home/me/claudette/index.js", ""},
+		// Claude Code's npm package runs its native executable as claude.exe.
+		{"claude.exe", "/home/me/.local/share/pnpm/global/5/node_modules/@anthropic-ai/claude-code/bin/claude.exe --model haiku", Claude},
+		{"claude.exe", "claude.exe", Claude},
+		{"claude.exe", "/usr/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe daemon run --origin transient", ""},
+		{"claude.exe", "/opt/bin/claude.exe bg-spare --bg-spare /tmp/cc-daemon-1000/x/spare/1.claim.sock", ""},
+		{"claudette", "claudette", ""},
 		{"codex", "codex", Codex},
 		{"codex", "codex resume --last", Codex},
 		{"node", "node /usr/lib/node_modules/@openai/codex/bin/codex.js", Codex},

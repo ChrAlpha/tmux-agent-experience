@@ -64,7 +64,8 @@ import (
 )
 
 func main() {
-	agent := filepath.Base(os.Args[0])
+	// Claude Code's npm package runs its native executable as claude.exe.
+	agent := strings.TrimSuffix(filepath.Base(os.Args[0]), ".exe")
 	if len(os.Args) > 1 && (os.Args[1] == "--version" || os.Args[1] == "plugin") {
 		hostCLI(os.Args[1:])
 		return

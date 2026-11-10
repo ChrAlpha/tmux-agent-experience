@@ -58,8 +58,10 @@ func TestMain(m *testing.M) {
 	}
 	build("github.com/ChrAlpha/tmux-agent-experience/cmd/tmag", "tmag")
 	build("github.com/ChrAlpha/tmux-agent-experience/internal/e2e/fakeagent", "claude")
-	if err := os.Link(filepath.Join(dir, "claude"), filepath.Join(dir, "codex")); err != nil {
-		panic(err)
+	for _, name := range []string{"codex", "claude.exe"} {
+		if err := os.Link(filepath.Join(dir, "claude"), filepath.Join(dir, name)); err != nil {
+			panic(err)
+		}
 	}
 	// Never touch the developer's own tmux server.
 	os.Unsetenv("TMUX")
@@ -279,6 +281,24 @@ const (
 	sidD = "0d000000-0000-7000-8000-00000000000d"
 	sidE = "0e000000-0000-7000-8000-00000000000e"
 )
+
+func TestClaudeRunAsClaudeExe(t *testing.T) {
+	// Claude Code's npm package runs its native executable as claude.exe: its
+	// pane is proven by process and takes a prompt like claude's.
+	h := start(t)
+	out := filepath.Join(h.dir, "received")
+	pane := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_OUT": out, "FAKE_HOOKS": "1", "FAKE_TURN_MS": "300"}, filepath.Join(bin, "claude.exe"))
+	p, s := h.waitPane(pane, "idle", "process")
+	if s.ID != sidA || s.Agent != "claude" || p.Command != "claude.exe" {
+		t.Fatalf("pane %+v shows %+v", p, s)
+	}
+	if r := h.tmag("", "send", sidA[:8], "--wait", "hello"); r.code != 0 {
+		t.Fatalf("send to claude.exe: %d %s", r.code, r.out)
+	}
+	if r := h.tmag("", "read", sidA[:8], "--last"); r.code != 0 || r.out != "answered: hello\n" {
+		t.Fatalf("read --last of claude.exe: %d %q", r.code, r.out)
+	}
+}
 
 func TestClaudeInProcess(t *testing.T) {
 	h := start(t)
