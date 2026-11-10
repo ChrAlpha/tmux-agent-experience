@@ -48,14 +48,18 @@ promise is documented in the package, and changes with it.
   setup` remove the plugin whose skill description is in every session.
 - **The skill teaches the CLI as it is.** Both hosts ship the same `peers`
   text, naming only commands, flags, refusal codes and exit codes the binary
-  has (`TestPeersSkillMatchesCLI`).
+  has (`TestPeersSkillMatchesCLI`). What to do after a refusal or failure is
+  the CLI's to say, in a `next:` line on stderr that claims no more about a
+  delivery than tmag proved (`TestEveryRefusalSaysWhatNext`).
 - **tmag writes who sent a prompt.** An agent's prompt gets a first line
   `query.Send` writes from the proven caller; a person's gets none, and no
   prompt given to tmag may start with `[tmag]`. A caller never names itself.
-- **Hooks fail open.** A hook exits 0, never writes stdout and finishes
+- **Hooks fail open.** `tmag hook` exits 0, never writes stdout and finishes
   within `hook.Deadline`, also through the `tmag-peers` launcher; failures go
-  to `hook.log` as metadata. `answer-hook` prints only a decision `tmag
-  answer` delivered, and nothing on any failure, leaving the agent's dialog.
+  to `hook.log` as metadata. `answer-hook` exits 0 too and sets up within
+  that deadline, then waits for a decision within its own hook timeout: it
+  prints only a decision `tmag answer` delivered, and nothing on any
+  failure, leaving the agent's dialog, on screen meanwhile, to decide.
 - **No content is stored.** Payloads decode into `adapter.Payload`, which has
   no prompt, message or tool-input field; records, events and alerts hold
   ids, states, paths and times. `answer-hook` keeps a tool input in memory
