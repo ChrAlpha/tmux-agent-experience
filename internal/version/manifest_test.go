@@ -93,7 +93,10 @@ func TestMarketplaces(t *testing.T) {
 
 // The agent plugins run exactly binpath.HookCommand for every hook, except
 // Claude Code's PermissionRequest, which runs binpath.AnswerHookCommand.
-// Every timeout leaves the hook its whole hook.Deadline.
+// Every timeout leaves the hook its whole hook.Deadline. Codex's hooks share
+// one statusMessage: Codex's /hooks lists a hook by it, as "Unnamed hook"
+// without one, and shows it while a hook runs. Claude Code's have none, which
+// keeps its own text while one runs, the permission dialog's answer-hook too.
 func TestPluginHooksUseHookCommand(t *testing.T) {
 	for agent, path := range map[string]string{
 		"claude": "plugins/claude/tmag/hooks/hooks.json",
@@ -106,11 +109,13 @@ func TestPluginHooksUseHookCommand(t *testing.T) {
 		var doc struct {
 			Hooks map[string][]struct {
 				Hooks []struct {
-					Command string
-					Timeout int
+					Command       string
+					Timeout       int
+					StatusMessage string
 				}
 			}
 		}
+		status := map[string]string{"codex": "Reporting state to tmag"}[agent]
 		if err := json.Unmarshal(b, &doc); err != nil {
 			t.Fatal(err)
 		}
@@ -129,8 +134,8 @@ func TestPluginHooksUseHookCommand(t *testing.T) {
 					if time.Duration(timeout)*time.Second < hook.Deadline {
 						t.Errorf("%s %s: timeout %d s is shorter than hook.Deadline", path, event, timeout)
 					}
-					if h.Command != want || h.Timeout != timeout {
-						t.Errorf("%s %s: command %q, timeout %d", path, event, h.Command, h.Timeout)
+					if h.Command != want || h.Timeout != timeout || h.StatusMessage != status {
+						t.Errorf("%s %s: command %q, timeout %d, statusMessage %q", path, event, h.Command, h.Timeout, h.StatusMessage)
 					}
 				}
 			}
