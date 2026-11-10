@@ -1,14 +1,18 @@
 package cli
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/query"
 )
 
@@ -69,6 +73,26 @@ func TestPeersSkillMatchesCLI(t *testing.T) {
 		}
 	}
 
+	for _, phrase := range []string{
+		fmt.Sprintf("exits %d with `refused (CODE): reason`", ExitRefused),
+		fmt.Sprintf("A timeout exits %d, and its error says whether the prompt was delivered", ExitTimeout),
+		"run it again only when it says nothing was delivered",
+		fmt.Sprintf("Exit %d is an error, such as `ended`", ExitError),
+		"`no_reply` (its last turn left no reply",
+		fmt.Sprintf("the line after the error says it, starting with `%s`", strings.TrimSpace(nextPrefix)),
+		fmt.Sprintf("starting with `%s` is refused with exit %d", query.Marker, ExitUsage),
+		fmt.Sprintf("exit %d is a usage error", ExitUsage),
+		"Exit 127 with `tmag: not installed`",
+	} {
+		if !strings.Contains(flat, phrase) {
+			t.Errorf("the skill no longer says %q", phrase)
+		}
+	}
+}
+
+// The skill leaves what to do after each refusal to the line the CLI prints
+// after it, so every refusal reason must have one.
+func TestEveryRefusalSaysWhatNext(t *testing.T) {
 	src, err := os.ReadFile(filepath.Join("..", "query", "control.go"))
 	if err != nil {
 		t.Fatal(err)
@@ -77,30 +101,95 @@ func TestPeersSkillMatchesCLI(t *testing.T) {
 	for _, c := range regexp.MustCompile(`(?m)^\s+Refuse\w+\s+= "(\w+)"`).FindAllStringSubmatch(string(src), -1) {
 		codes = append(codes, c[1])
 	}
-	_, section, _ := strings.Cut(text, "\n## Refusals\n")
-	section, _, _ = strings.Cut(section, "\n## ")
-	var listed []string
-	for _, c := range regexp.MustCompile("(?m)^\\| `(\\w+)` \\|").FindAllStringSubmatch(section, -1) {
-		listed = append(listed, c[1])
+	if len(codes) == 0 {
+		t.Fatal("found no refusal reasons in query/control.go")
 	}
-	slices.Sort(codes)
-	slices.Sort(listed)
-	if len(codes) == 0 || !slices.Equal(codes, listed) {
-		t.Errorf("refusal table lists %v, the CLI refuses with %v", listed, codes)
+	for _, code := range codes {
+		for _, cmd := range []string{"send", "reply", "interrupt", "answer", "read"} {
+			if next(cmd, "abcd", &query.RefusedError{Reason: code}) == "" {
+				t.Errorf("%s refused %s says nothing about what to do next", cmd, code)
+			}
+		}
 	}
+	for _, err := range []error{query.ErrEnded, query.ErrNoReply, query.ErrNotFound, query.ErrAmbiguous} {
+		if next("send", "abcd", err) == "" {
+			t.Errorf("%v says nothing about what to do next", err)
+		}
+	}
+	for _, err := range []error{eventlog.ErrIntegrityLoss, eventlog.ErrHistoryUnavailable} {
+		if next("wait", "abcd", err) == "" {
+			t.Errorf("a wait ended by %v says nothing about what to do next", err)
+		}
+	}
+	if !strings.Contains(next("wait", "abcd", eventlog.ErrIntegrityLoss), "tell the user") {
+		t.Error("a damaged event log is not left to the user")
+	}
+}
 
-	for _, phrase := range []string{
-		fmt.Sprintf("exits %d with `refused (CODE): reason`", ExitRefused),
-		fmt.Sprintf("Exit %d from `send --wait` or `wait` means the wait timed out", ExitTimeout),
-		fmt.Sprintf("exit %d then means nothing was delivered", ExitTimeout),
-		fmt.Sprintf("Exit %d is an error (`ended`", ExitError),
-		"`no_reply`: its last turn left no reply",
-		fmt.Sprintf("starting with `%s` is refused with exit %d", query.Marker, ExitUsage),
-		fmt.Sprintf("exit %d is a usage error", ExitUsage),
-		"Exit 127 with `tmag: not installed`",
+// What to do after a failed delivery depends on whether the prompt went
+// out: only a proven delivery forbids sending it again, and only a proven
+// non-delivery invites running the command again. Anything else leaves the
+// error's own words, which say what is known.
+func TestNextKnowsWhetherAPromptWasDelivered(t *testing.T) {
+	after := delivered{fmt.Errorf("prompt delivered at seq 9; subsequent outcome unknown, do not repeat delivery: %w", errTimeout)}
+	for _, c := range []struct {
+		cmd  string
+		err  error
+		want string // "" for no advice
+	}{
+		{"send", after, "run tmag wait %3 --for idle,blocked, then tmag read %3 --last; do not send the prompt again"},
+		{"send", delivered{fmt.Errorf("x: %w", eventlog.ErrIntegrityLoss)}, "do not send the prompt again"},
+		{"send", errTimeout, ""},
+		{"send", context.DeadlineExceeded, ""},
+		{"reply", undelivered{errTimeout}, "nothing was delivered: run the same tmag reply again"},
+		{"reply", errTimeout, ""},
+		{"wait", errTimeout, "run the same tmag wait again"},
+		{"interrupt", &query.RefusedError{Reason: query.RefuseBusy}, "tmag wait %3 --for idle shows when it stops"},
 	} {
-		if !strings.Contains(flat, phrase) {
-			t.Errorf("the skill no longer says %q", phrase)
+		got := next(c.cmd, "%3", c.err)
+		if (c.want == "") != (got == "") || !strings.Contains(got, c.want) {
+			t.Errorf("%s after %v: next is %q, want %q", c.cmd, c.err, got, c.want)
+		}
+	}
+}
+
+// What to do next follows the error on stderr, naming the target as typed,
+// and stays out of the JSON document.
+func TestNextFollowsTheError(t *testing.T) {
+	var stdout, stderr strings.Builder
+	a := &app{stdout: &stdout, stderr: &stderr, json: true}
+	if code := a.failOn("send", "01a1", &query.RefusedError{Reason: query.RefuseBusy, Detail: "01a19fda is working"}); code != ExitRefused {
+		t.Fatalf("exit %d, want %d", code, ExitRefused)
+	}
+	want := "tmag send: refused (busy): 01a19fda is working\n" + nextPrefix + "wait until it is idle with tmag wait 01a1 --for idle, then try once more\n"
+	if stderr.String() != want {
+		t.Errorf("stderr is %q, want %q", stderr.String(), want)
+	}
+	if strings.Contains(stdout.String(), "tmag wait") {
+		t.Errorf("the JSON document carries the advice: %s", stdout.String())
+	}
+}
+
+// A reply that times out says nothing was delivered only when its last try
+// was refused, which delivers nothing; after any other error, such as an
+// agent service that took the request and did not answer, the outcome is
+// unknown and nothing invites running it again. Either way it exits 4.
+func TestReplyTimeoutClaimsNothingUnproven(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
+	defer cancel()
+	<-ctx.Done()
+	a := &app{stdout: io.Discard, stderr: io.Discard}
+	refused := a.deadline(ctx, time.Second, &query.RefusedError{Reason: query.RefuseBusy, Detail: "01a19fda is working"})
+	if !strings.Contains(refused.Error(), "nothing delivered") || !strings.Contains(next("reply", "01a1", refused), "run the same tmag reply again") {
+		t.Errorf("after a refusal: %q, next %q", refused, next("reply", "01a1", refused))
+	}
+	uncertain := a.deadline(ctx, time.Second, errors.New("logged at seq 9, but the Codex daemon did not take it: i/o timeout"))
+	if strings.Contains(uncertain.Error(), "nothing delivered") || next("reply", "01a1", uncertain) != "" {
+		t.Errorf("after an uncertain delivery: %q, next %q", uncertain, next("reply", "01a1", uncertain))
+	}
+	for _, err := range []error{refused, uncertain} {
+		if code := a.failOn("reply", "01a1", err); code != ExitTimeout {
+			t.Errorf("%v exits %d, want %d", err, code, ExitTimeout)
 		}
 	}
 }

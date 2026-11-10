@@ -212,7 +212,7 @@ func TestSendWaitHistoryLossRetainsAcceptedDeliveryOutcome(t *testing.T) {
 	watchPulse(t, context.Background(), log, 4)
 	var stdout, stderr bytes.Buffer
 	a := app{log: log, json: true, stdout: &stdout, stderr: &stderr}
-	code := a.awaitAndReportContext(context.Background(), "send", query.Session{Agent: "claude", ID: "session", State: "idle"}, query.WaitOptions{
+	code := a.awaitAndReportContext(context.Background(), "send", "%7", query.Session{Agent: "claude", ID: "session", State: "idle"}, query.WaitOptions{
 		States: []string{"idle"}, After: e.Seq, Cursor: e.Cursor(), StartGrace: time.Second,
 	}, time.Second)
 	var d struct {
@@ -224,6 +224,11 @@ func TestSendWaitHistoryLossRetainsAcceptedDeliveryOutcome(t *testing.T) {
 	}
 	if !strings.Contains(d.Error.Message, fmt.Sprintf("prompt delivered at seq %d", e.Seq)) || !strings.Contains(d.Error.Message, "do not repeat") {
 		t.Fatalf("accepted delivery was lost: %s", d.Error.Message)
+	}
+	// What to do next names the target as typed, and keeps the prompt from
+	// being sent twice.
+	if want := nextPrefix + "the prompt arrived and what became of it is unknown: run tmag wait %7 --for idle,blocked"; !strings.Contains(stderr.String(), want) {
+		t.Fatalf("stderr %q lacks %q", stderr.String(), want)
 	}
 }
 

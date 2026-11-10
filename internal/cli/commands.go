@@ -198,12 +198,12 @@ func (a *app) cmdInspect(args []string) int {
 	defer cancel()
 	t, err := a.resolve(ctx, pos[0])
 	if err != nil {
-		return a.fail("inspect", err)
+		return a.failOn("inspect", pos[0], err)
 	}
 	events := []eventlog.Event{}
 	if t.Session != nil {
 		if events, err = query.SessionEvents(ctx, a.log, t.Session.ID, *n); err != nil {
-			return a.fail("inspect", err)
+			return a.failOn("inspect", pos[0], err)
 		}
 		if events == nil {
 			events = []eventlog.Event{}
@@ -273,7 +273,7 @@ func (a *app) cmdRead(args []string) int {
 	if *last {
 		s, r, err := query.LastReply(ctx, a.store(), pos[0])
 		if err != nil {
-			return a.fail("read", err)
+			return a.failOn("read", pos[0], err)
 		}
 		if a.json {
 			a.emit(map[string]any{"session": s, "turn": r.Turn, "text": r.Text})
@@ -284,14 +284,14 @@ func (a *app) cmdRead(args []string) int {
 	}
 	t, err := a.resolve(ctx, pos[0])
 	if err != nil {
-		return a.fail("read", err)
+		return a.failOn("read", pos[0], err)
 	}
 	if t.Pane == nil {
-		return a.fail("read", fmt.Errorf("%w: %s is shown by %d panes; name one", query.ErrAmbiguous, t.Session.ID, len(t.Session.Panes)))
+		return a.failOn("read", pos[0], fmt.Errorf("%w: %s is shown by %d panes; name one", query.ErrAmbiguous, t.Session.ID, len(t.Session.Panes)))
 	}
 	text, err := tmux.Server{Socket: t.Pane.Server}.Capture(ctx, t.Pane.ID, *lines)
 	if err != nil {
-		return a.fail("read", err)
+		return a.failOn("read", pos[0], err)
 	}
 	if a.json {
 		a.emit(map[string]any{"pane": t.Pane, "lines": *lines, "text": text})
@@ -336,7 +336,7 @@ func (a *app) cmdSend(args []string) int {
 	}
 	text, err := a.promptText(pos)
 	if err != nil {
-		return a.fail("send", err)
+		return a.failOn("send", pos[0], err)
 	}
 	ask := query.AskFinal
 	if *reply {
@@ -346,13 +346,13 @@ func (a *app) cmdSend(args []string) int {
 	defer cancel()
 	d, err := query.Send(ctx, a.log, pos[0], text, ask)
 	if err != nil {
-		return a.fail("send", err)
+		return a.failOn("send", pos[0], err)
 	}
 	if !*wait {
 		a.reportDelivery("sent to", d)
 		return ExitOK
 	}
-	return a.awaitAndReport("send", d.Session, query.WaitOptions{
+	return a.awaitAndReport("send", pos[0], d.Session, query.WaitOptions{
 		States: []string{adapter.Idle, adapter.Blocked}, After: d.Seq, Cursor: d.Cursor, StartGrace: query.PendingWindow,
 	}, *timeout)
 }
@@ -373,7 +373,7 @@ func (a *app) cmdReply(args []string) int {
 	}
 	text, err := a.promptText(pos)
 	if err != nil {
-		return a.fail("reply", err)
+		return a.failOn("reply", pos[0], err)
 	}
 	ctx, cancel := a.signalContext()
 	defer cancel()
@@ -384,7 +384,7 @@ func (a *app) cmdReply(args []string) int {
 		// is then seen rather than waited for.
 		cursor, err := a.log.Head(ctx)
 		if err != nil {
-			return a.fail("reply", err)
+			return a.failOn("reply", pos[0], err)
 		}
 		d, err := query.Send(ctx, a.log, pos[0], text, query.Answering)
 		if err == nil {
@@ -393,14 +393,14 @@ func (a *app) cmdReply(args []string) int {
 		}
 		var refused *query.RefusedError
 		if !errors.As(err, &refused) || refused.Reason != query.RefuseBusy {
-			return a.fail("reply", a.deadline(ctx, *timeout, err))
+			return a.failOn("reply", pos[0], a.deadline(ctx, *timeout, err))
 		}
 		t, err := a.resolve(ctx, pos[0])
 		if err == nil {
 			_, err = needSession(t)
 		}
 		if err != nil {
-			return a.fail("reply", a.deadline(ctx, *timeout, err))
+			return a.failOn("reply", pos[0], a.deadline(ctx, *timeout, err))
 		}
 		// Wait for the peer's next idle, or a pending window at most: a
 		// prompt tmag just delivered may start no turn.
@@ -408,21 +408,27 @@ func (a *app) cmdReply(args []string) int {
 		_, err = query.Wait(wait, a.log, *t.Session, query.WaitOptions{States: []string{adapter.Idle}, After: cursor.Seq, Cursor: cursor})
 		stop()
 		if ctx.Err() != nil {
-			return a.fail("reply", a.deadline(ctx, *timeout, refused))
+			// Its last try was refused busy: nothing went out.
+			return a.failOn("reply", pos[0], a.deadline(ctx, *timeout, refused))
 		}
 		if err != nil && !errors.Is(err, context.DeadlineExceeded) {
-			return a.fail("reply", err)
+			return a.failOn("reply", pos[0], err)
 		}
 	}
 }
 
 // deadline reports err as a timeout when ctx ran out of time. It keeps
 // only err's message: a refusal it wraps would report the timeout as one.
+// A refusal delivers nothing, so after one the reply may run again; any
+// other error may have come after the reply went out.
 func (a *app) deadline(ctx context.Context, timeout time.Duration, err error) error {
-	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		return fmt.Errorf("%w after %s, nothing delivered: %s", errTimeout, timeout, err.Error())
+	if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return err
 	}
-	return err
+	if errors.As(err, new(*query.RefusedError)) {
+		return undelivered{fmt.Errorf("%w after %s, nothing delivered: %s", errTimeout, timeout, err.Error())}
+	}
+	return fmt.Errorf("%w after %s; whether the reply was delivered is unknown: %s", errTimeout, timeout, err.Error())
 }
 
 func (a *app) cmdInterrupt(args []string) int {
@@ -439,7 +445,7 @@ func (a *app) cmdInterrupt(args []string) int {
 	defer cancel()
 	d, err := query.Interrupt(ctx, a.log, pos[0])
 	if err != nil {
-		return a.fail("interrupt", err)
+		return a.failOn("interrupt", pos[0], err)
 	}
 	a.reportDelivery("interrupted", d)
 	return ExitOK
@@ -472,15 +478,15 @@ func (a *app) cmdWait(args []string) int {
 	// then replayed instead of missed.
 	cursor, err := a.log.Head(ctx)
 	if err != nil {
-		return a.fail("wait", err)
+		return a.failOn("wait", pos[0], err)
 	}
 	t, err := a.resolve(ctx, pos[0])
 	if err != nil {
-		return a.fail("wait", err)
+		return a.failOn("wait", pos[0], err)
 	}
 	s, err := needSession(t)
 	if err != nil {
-		return a.fail("wait", err)
+		return a.failOn("wait", pos[0], err)
 	}
 	if *after < 0 {
 		for _, st := range want {
@@ -495,16 +501,18 @@ func (a *app) cmdWait(args []string) int {
 	if *after == cursor.Seq {
 		o.Cursor = cursor
 	}
-	return a.awaitAndReportContext(ctx, "wait", s, o, *timeout)
+	return a.awaitAndReportContext(ctx, "wait", pos[0], s, o, *timeout)
 }
 
-func (a *app) awaitAndReport(cmd string, s query.Session, o query.WaitOptions, timeout time.Duration) int {
+func (a *app) awaitAndReport(cmd, target string, s query.Session, o query.WaitOptions, timeout time.Duration) int {
 	ctx, cancel := a.signalContext()
 	defer cancel()
-	return a.awaitAndReportContext(ctx, cmd, s, o, timeout)
+	return a.awaitAndReportContext(ctx, cmd, target, s, o, timeout)
 }
 
-func (a *app) awaitAndReportContext(ctx context.Context, cmd string, s query.Session, o query.WaitOptions, timeout time.Duration) int {
+// awaitAndReportContext waits for s as o says and reports the outcome; cmd
+// and target are the command and the target as typed, for the report.
+func (a *app) awaitAndReportContext(ctx context.Context, cmd, target string, s query.Session, o query.WaitOptions, timeout time.Duration) int {
 	ctx, cancelTimeout := context.WithTimeout(ctx, timeout)
 	defer cancelTimeout()
 	ev, err := query.Wait(ctx, a.log, s, o)
@@ -518,9 +526,9 @@ func (a *app) awaitAndReportContext(ctx context.Context, cmd string, s query.Ses
 	}
 	if err != nil {
 		if cmd == "send" {
-			err = fmt.Errorf("prompt delivered at seq %d; subsequent outcome unknown, do not repeat delivery: %w", o.After, err)
+			err = delivered{fmt.Errorf("prompt delivered at seq %d; subsequent outcome unknown, do not repeat delivery: %w", o.After, err)}
 		}
-		return a.fail(cmd, err)
+		return a.failOn(cmd, target, err)
 	}
 	a.reportWait(s, ev, true)
 	return ExitOK

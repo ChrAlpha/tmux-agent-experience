@@ -1,6 +1,7 @@
 # ADR 0002: Agents work with each other through tmag
 
-- Status: accepted
+- Status: accepted; amended 2026-11-10 (when agents look at peers, and the
+  `next:` line after refusals)
 - Date: 2026-11-04
 - Builds on: [ADR 0001](0001-agent-control-surface.md), whose verbs agents
   use here unchanged.
@@ -38,11 +39,19 @@ mailbox stores messages.
 ### Agents learn the verbs from a skill in a plugin of its own
 
 Each host gets a second plugin, `tmag-peers`, holding one skill, `peers`: when
-to act on another agent (when the person asks, or a peer's prompt asks for
-something within the person's work), the verbs, what each refusal and exit
-code means, and never to fall back to tmux. Its description names the cases
-that should load it, including a prompt that starts with `[tmag] From` or
-`[tmag] Reply from`.
+to look at and act on another agent, the verbs, and never to fall back to
+tmux. An agent looks when the person asks it to involve one, or on a signal
+that a peer shares its work: changes it did not make appear in its
+workspace, or it is about to switch, rebase or reset branches, force-push or
+stop processes others may rely on. It never checks peers routinely, which
+would spend every session's context on peers that do not matter. It acts on
+a peer when the person asks, when a peer's prompt asks for something within
+the person's work, or to settle a collision with a peer in the same
+repository, leaving that peer's changes alone. What to do after a refusal or
+an error is not in the skill: tmag prints it on the next line, starting with
+`next:`, so an agent reads it only when it meets one. The skill's description
+names the cases that should load it: those signals, and a prompt that starts
+with `[tmag] From` or `[tmag] Reply from`.
 
 - **A plugin, not a prompt injection.** Hooks may not write to stdout (they
   fail open, and the agents put hook output into the model's context), and
@@ -54,7 +63,9 @@ that should load it, including a prompt that starts with `[tmag] From` or
   update or remove the plugin, and `tmag doctor` reports it.
 - **The skill names only what the binary has.** `TestPeersSkillMatchesCLI`
   checks every command, flag, refusal code and exit code it names against the
-  CLI, and the Codex copy is the Claude copy byte for byte.
+  CLI, and the Codex copy is the Claude copy byte for byte;
+  `TestEveryRefusalSaysWhatNext` checks that every refusal has a `next:`
+  line.
 - **The binary the hooks run.** The plugin's launcher, `binpath.Launcher()`,
   runs the same binary the agent's hooks run: on `PATH` in Claude Code, which
   puts a plugin's `bin/` there, and beside the skill in Codex, which does not.
@@ -85,8 +96,10 @@ tmag delivers; text typed into a pane by other means can say anything.
 `send --reply` and `reply` need a caller whose session tmag proves: the
 reply would have nowhere to go otherwise. `reply` waits for an asker that is
 busy, until its `--timeout` (one minute by default, inside the two minutes a
-Claude Code Bash tool waits), and prompts it once it is idle; exit 4 means
-nothing was delivered.
+Claude Code Bash tool waits), and prompts it once it is idle. It times out
+with exit 4; it says nothing was delivered, and may run again, only when its
+last try was refused, which delivers nothing. After any other error the
+delivery is unknown, and the reply is not sent again.
 
 ### Answers are read from the transcript
 
@@ -149,6 +162,13 @@ This is the one transcript reader. It extends "no content is stored" as
   followed the first line with the skill's `scripts/tmag reply`, and Claude
   reported the answer; Codex used `send --wait` and `read --last` on Claude.
   `read --last` named the turn the hooks reported for both agents.
+- Claude Code 2.1.322 (Haiku 5.5), working in a repository where a fake peer
+  changed a file it was editing: with the description listing the signal
+  among the other cases, it noticed the change and kept it, but loaded the
+  skill in none of 6 runs; with the description leading with why such a
+  change matters (another agent may be editing the same repository), it
+  loaded the skill and ran `tmag list` in 4 of 6. Neither description
+  loaded it in a task without a signal.
 - Not checked: Codex in its shared daemon (the verbs go through its control
   socket, covered by the fake daemon in e2e) and Codex's sandbox, which the
   machine used could not run.
