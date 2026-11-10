@@ -1,6 +1,6 @@
 ---
 name: peers
-description: Work with the other coding agents (Claude Code, Codex) in this machine's tmux panes through tmag - see which run and whether they are idle, working or blocked, prompt one, wait for it, read its answer, reply to it, interrupt it, or see what it asks permission for. Use when the user asks you to involve, delegate to, check on, coordinate with or message another agent, when changes you did not make appear in your workspace, before switching branches, rewriting history or stopping processes in a repository other agents may share, and whenever a prompt starts with "[tmag] From" or "[tmag] Reply from", which another agent sent through tmag.
+description: If files change under you that you did not change, another agent may be editing the same repository; load this skill to find out before you touch them. Also load it before switching branches, rewriting history or stopping processes in a repository others may share, when the user asks you to involve, delegate to, check on, coordinate with or message another agent (Claude Code, Codex) in this machine's tmux panes, and whenever a prompt starts with "[tmag] From" or "[tmag] Reply from". tmag shows which agents run and whether they are idle, working or blocked, prompts one, waits for it, reads its answer, replies, interrupts, or shows what it asks permission for.
 ---
 
 # Working with peer agents through tmag

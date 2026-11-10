@@ -162,6 +162,13 @@ This is the one transcript reader. It extends "no content is stored" as
   followed the first line with the skill's `scripts/tmag reply`, and Claude
   reported the answer; Codex used `send --wait` and `read --last` on Claude.
   `read --last` named the turn the hooks reported for both agents.
+- Claude Code 2.1.322 (Haiku 5.5), working in a repository where a fake peer
+  changed a file it was editing: with the description listing the signal
+  among the other cases, it noticed the change and kept it, but loaded the
+  skill in none of 6 runs; with the description leading with why such a
+  change matters (another agent may be editing the same repository), it
+  loaded the skill and ran `tmag list` in 4 of 6. Neither description
+  loaded it in a task without a signal.
 - Not checked: Codex in its shared daemon (the verbs go through its control
   socket, covered by the fake daemon in e2e) and Codex's sandbox, which the
   machine used could not run.
