@@ -1,4 +1,4 @@
-package codexsvc
+package proc
 
 import (
 	"net"
@@ -11,8 +11,9 @@ const (
 	localPeerPID = 0x002
 )
 
-// peerPID is the process at the other end of a Unix socket (LOCAL_PEERPID).
-func peerPID(c *net.UnixConn) (int, error) {
+// PeerPID returns the process at the other end of a Unix socket
+// (LOCAL_PEERPID).
+func PeerPID(c *net.UnixConn) (int, error) {
 	raw, err := c.SyscallConn()
 	if err != nil {
 		return 0, err

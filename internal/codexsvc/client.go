@@ -20,6 +20,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/version"
 )
 
@@ -88,7 +89,7 @@ func Dial(ctx context.Context, socket string) (*Client, error) {
 		return nil, err
 	}
 	c := &Client{conn: conn, r: bufio.NewReader(conn)}
-	if c.PeerPID, err = peerPID(conn.(*net.UnixConn)); err != nil {
+	if c.PeerPID, err = proc.PeerPID(conn.(*net.UnixConn)); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("who serves %s: %w", socket, err)
 	}

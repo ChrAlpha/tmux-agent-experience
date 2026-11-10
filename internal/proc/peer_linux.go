@@ -1,12 +1,13 @@
-package codexsvc
+package proc
 
 import (
 	"net"
 	"syscall"
 )
 
-// peerPID is the process at the other end of a Unix socket (SO_PEERCRED).
-func peerPID(c *net.UnixConn) (int, error) {
+// PeerPID returns the process at the other end of a Unix socket
+// (SO_PEERCRED).
+func PeerPID(c *net.UnixConn) (int, error) {
 	raw, err := c.SyscallConn()
 	if err != nil {
 		return 0, err
