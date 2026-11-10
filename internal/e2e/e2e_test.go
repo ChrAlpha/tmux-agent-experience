@@ -2105,7 +2105,12 @@ func TestReplyWaitsForTheAsker(t *testing.T) {
 	if got, _ := os.ReadFile(outA); strings.Contains(string(got), "too soon") {
 		t.Fatalf("a reply that timed out was delivered: %q", got)
 	}
-	h.waitSession(sidA, "idle")
+	// The reply starts A's next turn, which may not have begun yet: read its
+	// answer once that turn has ended.
+	h.eventually("A's turn on the reply ends", func() bool {
+		events := h.events(sidA)
+		return slices.ContainsFunc(events[replied+1:], func(e eventlog.Event) bool { return e.Event == "Stop" })
+	})
 	if r := h.tmag("", "read", sidA[:8], "--last"); r.code != 0 || r.out != "answered: all done\n" {
 		t.Fatalf("read --last: %d %q", r.code, r.out)
 	}
