@@ -8,9 +8,20 @@ import (
 	"time"
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/adapter"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/driver"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/transcript"
 )
+
+// Reply hands a reply to the asker through its own message channel, whatever
+// its state, with the first line that says who answered. A pane-only asker
+// gets it through the pane while idle; while it is busy the refusal is busy,
+// so the caller may try again. Only an agent whose session tmag proves may
+// reply.
+func Reply(ctx context.Context, log *eventlog.Log, target, text string) (Delivery, error) {
+	return deliver(ctx, log, target, text, Answering, driver.Reply, "reply", "reply")
+}
 
 // ErrNoReply reports a session whose last turn left no reply to read.
 var ErrNoReply = errors.New("no reply")
