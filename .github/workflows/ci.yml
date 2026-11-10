@@ -194,7 +194,7 @@ jobs:
         with:
           version: v2.15
       - name: Shellcheck
-        run: shellcheck tmag.tmux scripts/install.sh scripts/tmag plugins/claude/tmag-peers/bin/tmag plugins/codex/tmag-peers/skills/peers/scripts/tmag
+        run: shellcheck tmag.tmux scripts/install.sh scripts/tmag plugins/claude/tmag-peers/bin/tmag plugins/*/tmag-peers/skills/peers/scripts/tmag
 
   vulncheck:
     needs: plan
@@ -231,7 +231,8 @@ jobs:
         run: |
           for f in .claude-plugin/marketplace.json .agents/plugins/marketplace.json \
                    plugins/claude/*/.claude-plugin/plugin.json plugins/claude/tmag/hooks/hooks.json \
-                   plugins/codex/*/.codex-plugin/plugin.json plugins/codex/tmag/hooks/hooks.json; do
+                   plugins/codex/*/.codex-plugin/plugin.json plugins/codex/tmag/hooks/hooks.json \
+                   plugins/pi/*/package.json plugins/omp/*/package.json; do
             jq empty "$f" || { echo "invalid JSON: $f"; exit 1; }
           done
 
