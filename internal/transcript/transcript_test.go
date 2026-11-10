@@ -92,6 +92,46 @@ func TestCodexLastReply(t *testing.T) {
 	}
 }
 
+// Lines shaped as Pi 1.5.0 writes its session file: a header, then one
+// entry per line with each message whole, user entries naming the turn.
+const (
+	piHeader  = `{"type":"session","version":3,"id":"01a1c47e-1703-7674-8d3d-120ac80b3d6f","timestamp":"2026-11-10T08:06:00.196Z","cwd":"/w"}`
+	piModel   = `{"type":"model_change","id":"efec07c6","parentId":null,"timestamp":"2026-11-10T08:06:00.200Z","provider":"fake","modelId":"echo"}`
+	piSystem  = `{"type":"message","id":"808781ee","parentId":"efec07c6","timestamp":"2026-11-10T08:06:24.190Z","message":{"role":"system","content":"","sections":{"preamble":"You are"},"timestamp":1794297984190}}`
+	piPrompt1 = `{"type":"message","id":"73544b94","parentId":"808781ee","timestamp":"2026-11-10T08:06:24.190Z","message":{"role":"user","content":[{"type":"text","text":"first"}],"timestamp":1794297984190}}`
+	piReply1  = `{"type":"message","id":"b77c7a19","parentId":"73544b94","timestamp":"2026-11-10T08:06:24.195Z","message":{"role":"assistant","content":[{"type":"text","text":"one"}],"stopReason":"stop","timestamp":1794297984195}}`
+	piPrompt2 = `{"type":"message","id":"8525eceb","parentId":"b77c7a19","timestamp":"2026-11-10T08:07:05.271Z","message":{"role":"user","content":"second","timestamp":1794298025271}}`
+	piCall    = `{"type":"message","id":"531fd8f6","parentId":"8525eceb","timestamp":"2026-11-10T08:07:05.300Z","message":{"role":"assistant","content":[{"type":"thinking","thinking":"hm"},{"type":"text","text":"Let me look."},{"type":"toolCall","id":"call_1","name":"bash","arguments":{"command":"ls"}}],"stopReason":"toolUse","timestamp":1794298025300}}`
+	piResult  = `{"type":"message","id":"c3d4e5f6","parentId":"531fd8f6","timestamp":"2026-11-10T08:07:05.400Z","message":{"role":"toolResult","toolCallId":"call_1","toolName":"bash","content":[{"type":"text","text":"ok"}],"isError":false,"timestamp":1794298025400}}`
+	piFinal   = `{"type":"message","id":"d4e5f6a7","parentId":"c3d4e5f6","timestamp":"2026-11-10T08:07:06.000Z","message":{"role":"assistant","content":[{"type":"text","text":"Found it."},{"type":"text","text":"It is fine."}],"stopReason":"stop","timestamp":1794298026000}}`
+	piCustom  = `{"type":"custom","id":"e5f6a7b8","parentId":"d4e5f6a7","timestamp":"2026-11-10T08:07:06.100Z","customType":"ext","data":{"role":"user"}}`
+	piAborted = `{"type":"message","id":"f6a7b8c9","parentId":"8525eceb","timestamp":"2026-11-10T08:07:06.000Z","message":{"role":"assistant","content":[],"stopReason":"aborted","errorMessage":"aborted","timestamp":1794298026000}}`
+)
+
+func TestPiLastReply(t *testing.T) {
+	ctx := context.Background()
+	for _, c := range []struct {
+		name  string
+		lines []string
+		want  Reply
+	}{
+		{"a plain turn", []string{piHeader, piModel, piSystem, piPrompt1, piReply1}, Reply{"73544b94", "one"}},
+		{"the final message after tools, whole",
+			[]string{piHeader, piSystem, piPrompt1, piReply1, piPrompt2, piCall, piResult, piFinal, piCustom},
+			Reply{"8525eceb", "Found it.\n\nIt is fine."}},
+		{"an aborted turn", []string{piHeader, piPrompt1, piReply1, piPrompt2, piAborted}, Reply{"8525eceb", ""}},
+		{"a turn with no text yet", []string{piHeader, piPrompt1, piReply1, piPrompt2}, Reply{"8525eceb", ""}},
+	} {
+		got, err := Last(ctx, write(t, c.lines...), PiJSONL)
+		if err != nil || got != c.want {
+			t.Errorf("%s: %+v, %v; want %+v", c.name, got, err, c.want)
+		}
+	}
+	if _, err := Last(ctx, write(t, piHeader, piModel, piSystem), PiJSONL); !errors.Is(err, ErrNoTurn) {
+		t.Errorf("no turn: %v", err)
+	}
+}
+
 // Lines cross chunk boundaries and outgrow a chunk; a line still being
 // written comes as it is.
 func TestBackwardAcrossChunks(t *testing.T) {

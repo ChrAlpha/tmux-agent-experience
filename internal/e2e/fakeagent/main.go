@@ -1,5 +1,7 @@
 // Command fakeagent impersonates an interactive coding agent in end-to-end
-// tests. Install it as "claude" or "codex"; the name selects the agent.
+// tests. Install it as "claude", "codex", "pi" or "omp"; the name selects the
+// agent, and with it the names its hooks give events (for Pi and oh-my-pi,
+// those tmag's extensions report) and its transcript's format.
 //
 // Environment:
 //
@@ -8,6 +10,7 @@
 //	FAKE_TITLE    terminal title to set on start (OSC 0)
 //	FAKE_HOOKS    "1" to run `tmag hook` itself, as in-process agents do
 //	FAKE_TURN_MS  how long a turn lasts (default 200)
+//	FAKE_MODE     the mode its hooks report, as Pi's and oh-my-pi's do
 //	FAKE_KEYS     "1" to read keys as a TUI does: Escape interrupts a turn
 //	FAKE_ANSWER   "1" to open "block" (Bash) and "ask" (a question) as Claude
 //	              Code does: the answer hook waits beside the dialog, and the
@@ -18,7 +21,9 @@
 // prompt of several lines is one prompt. Prompts starting with "/" behave
 // like slash commands: no turn, no hooks; "/notify" alone runs the idle
 // notification hook Claude Code sends after a while idle. The prompt "block" raises a
-// permission prompt that the next one resolves. A prompt "tmag ARGS" is a
+// permission prompt; in Pi (an extension's dialog) and oh-my-pi (a tool
+// approval) it starts a turn the next line ends, answering it in the
+// terminal ("yes" or anything else). A prompt "tmag ARGS" is a
 // turn whose Bash tool runs tmag ARGS, with the variable the agent sets for
 // its tools naming the session; FAKE_OUT gets "tool CODE OUTPUT".
 // Every prompt, and how each dialog was answered, goes to FAKE_OUT.
@@ -41,9 +46,10 @@
 // FAKE_OUT as "THREAD PROMPT"; the daemon keeps each thread's rollout in
 // its directory.
 //
-// As a host CLI it answers --version, prints FAKE_PLUGIN_LIST (default "[]")
-// for "plugin list --json", and appends any other plugin command to
-// FAKE_PLUGIN_LOG.
+// As a host CLI it answers --version, prints FAKE_PLUGIN_LIST (default "[]";
+// as omp FAKE_OMP_PLUGIN_LIST, default `{"npm":[]}`) for "plugin list
+// --json", and appends any other plugin command, or as pi any package
+// command (install, remove), to FAKE_PLUGIN_LOG.
 package main
 
 import (
@@ -63,12 +69,31 @@ import (
 	"github.com/ChrAlpha/tmux-agent-experience/internal/codexsvc/svctest"
 )
 
+// names are the names an agent's hooks give the events the fake reports:
+// a session's start and end, a prompt, a tool call's start and end, a turn's
+// end, a permission prompt and its answer in the terminal.
+type names struct {
+	start, end, prompt, toolStart, toolEnd, stop, ask, answered string
+}
+
+var eventNames = map[string]names{
+	"claude": {"SessionStart", "SessionEnd", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop", "PermissionRequest", ""},
+	"codex":  {"SessionStart", "SessionEnd", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop", "PermissionRequest", ""},
+	"pi":     {"session_start", "session_shutdown", "message_end", "tool_execution_start", "tool_execution_end", "agent_settled", "ui_prompt_start", "ui_prompt_end"},
+	"omp":    {"session_start", "session_shutdown", "message_end", "tool_execution_start", "tool_execution_end", "agent_end", "tool_approval_requested", "tool_approval_resolved"},
+}
+
+// piLike reports whether agent writes Pi's session format, and reports to
+// tmag through tmag's extensions.
+func piLike(agent string) bool { return agent == "pi" || agent == "omp" }
+
 func main() {
 	agent := filepath.Base(os.Args[0])
-	if len(os.Args) > 1 && (os.Args[1] == "--version" || os.Args[1] == "plugin") {
+	if len(os.Args) > 1 && (os.Args[1] == "--version" || os.Args[1] == "plugin" || agent == "pi" && (os.Args[1] == "install" || os.Args[1] == "remove")) {
 		hostCLI(os.Args[1:])
 		return
 	}
+	ev := eventNames[agent]
 	if agent == "codex" && len(os.Args) > 1 && os.Args[1] == "app-server" {
 		daemon()
 		return
@@ -85,6 +110,9 @@ func main() {
 	transcript := filepath.Join(cwd, session+".jsonl")
 	payloadOf := func(event string, extra map[string]any) []byte {
 		payload := map[string]any{"hook_event_name": event, "session_id": session, "cwd": cwd, "transcript_path": transcript}
+		if mode := os.Getenv("FAKE_MODE"); mode != "" {
+			payload["mode"] = mode
+		}
 		for k, v := range extra {
 			payload[k] = v
 		}
@@ -103,8 +131,21 @@ func main() {
 	if agent == "claude" {
 		turnKey = "prompt_id"
 	}
+	// stopped reports the end of a turn, how it ended when the agent says.
+	stopped := func(turn, how string) {
+		extra := map[string]any{turnKey: turn}
+		switch agent {
+		case "claude":
+			extra["last_assistant_message"] = "done"
+		case "pi":
+			extra["stop_reason"] = how
+		case "omp":
+			extra["stop_reason"] = how
+		}
+		hook(ev.stop, extra)
+	}
 
-	hook("SessionStart", map[string]any{"source": "startup"})
+	hook(ev.start, map[string]any{"source": "startup"})
 	fmt.Print("\033[?2004h")
 	fmt.Println("ready")
 
@@ -133,12 +174,12 @@ func main() {
 	// begin starts a turn of the prompt, end finishes it with its reply.
 	begin := func(line string) {
 		turn, asked = fmt.Sprintf("t%d", n), line
-		writeTurn(agent, transcript, turn, line, "")
-		hook("UserPromptSubmit", map[string]any{turnKey: turn, "prompt": line})
+		writeTurn(agent, session, transcript, turn, line, "")
+		hook(ev.prompt, map[string]any{turnKey: turn, "prompt": line})
 	}
 	end := func() {
-		writeTurn(agent, transcript, turn, "", reply(asked))
-		hook("Stop", map[string]any{turnKey: turn, "last_assistant_message": "done"})
+		writeTurn(agent, session, transcript, turn, "", reply(asked))
+		stopped(turn, "stop")
 	}
 	// ask opens a dialog like Claude Code's: the call starts, the answer
 	// hook waits beside the dialog, and whichever answers first decides.
@@ -157,9 +198,14 @@ func main() {
 	// settle ends the dialog's call, run if allowed and refused otherwise,
 	// and the turn with it.
 	settle := func(allowed bool) {
-		if allowed {
-			hook("PostToolUse", map[string]any{turnKey: turn, "tool_name": dialog.tool, "tool_use_id": dialog.call})
-		} else {
+		call := map[string]any{turnKey: turn, "tool_name": dialog.tool, "tool_use_id": dialog.call}
+		switch {
+		case piLike(agent):
+			hook(ev.answered, call)
+			hook(ev.toolEnd, call)
+		case allowed:
+			hook("PostToolUse", call)
+		default:
 			hook("PostToolBatch", map[string]any{turnKey: turn})
 		}
 		end()
@@ -186,15 +232,23 @@ func main() {
 		case line == "ask" && answering:
 			begin(line)
 			ask("AskUserQuestion", map[string]any{"questions": []map[string]any{{"question": "Pick a color", "options": []map[string]string{{"label": "red"}, {"label": "blue"}}}}})
+		case line == "block" && piLike(agent):
+			// An extension's dialog in Pi, an approval in oh-my-pi, about a
+			// call that started, open until the next line answers it.
+			begin(line)
+			dialog = &prompt{tool: "bash", call: fmt.Sprintf("u%d", n)}
+			call := map[string]any{turnKey: turn, "tool_name": dialog.tool, "tool_use_id": dialog.call}
+			hook(ev.toolStart, call)
+			hook(ev.ask, call)
 		case line == "block":
 			hook("PermissionRequest", map[string]any{turnKey: fmt.Sprintf("t%d", n), "tool_name": "Bash"})
 		case strings.HasPrefix(line, "tmag "):
 			begin(line)
-			call := fmt.Sprintf("u%d", n)
-			hook("PreToolUse", map[string]any{turnKey: turn, "tool_name": "Bash", "tool_use_id": call})
+			call := map[string]any{turnKey: turn, "tool_name": "Bash", "tool_use_id": fmt.Sprintf("u%d", n)}
+			hook(ev.toolStart, call)
 			code, out := tool(agent, session, strings.Fields(line)[1:])
 			record(fmt.Sprintf("tool %d %s", code, strings.Join(strings.Fields(out), " ")))
-			hook("PostToolUse", map[string]any{turnKey: turn, "tool_name": "Bash", "tool_use_id": call})
+			hook(ev.toolEnd, call)
 			ends = time.After(time.Duration(turnMS) * time.Millisecond)
 		default:
 			begin(line)
@@ -210,11 +264,15 @@ loop:
 			case !ok:
 				break loop
 			case in.escape && ends != nil:
-				// Claude Code reports an interrupt to no hook; Codex does.
+				// Claude Code reports an interrupt to no hook; Codex does,
+				// and Pi and oh-my-pi end the turn aborted.
 				ends = nil
 				record("interrupted")
-				if agent == "codex" {
+				switch {
+				case agent == "codex":
 					hook("Interrupt", map[string]any{turnKey: turn})
+				case piLike(agent):
+					stopped(turn, "aborted")
 				}
 			case in.escape:
 				record("escape")
@@ -262,7 +320,11 @@ loop:
 			handle(line)
 		}
 	}
-	hook("SessionEnd", map[string]any{"reason": "other"})
+	reason := "other"
+	if piLike(agent) {
+		reason = "quit"
+	}
+	hook(ev.end, map[string]any{"reason": reason})
 }
 
 // reply is the fake's answer to a prompt.
@@ -273,9 +335,21 @@ func reply(prompt string) string {
 
 // writeTurn appends a turn's start (its prompt) or its end (its reply) to
 // the transcript, in the agent's format.
-func writeTurn(agent, path, turn, prompt, answer string) {
+func writeTurn(agent, session, path, turn, prompt, answer string) {
 	var entry map[string]any
 	switch {
+	case piLike(agent) && answer == "":
+		// The session file starts with its header, after oh-my-pi's title.
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			if agent == "omp" {
+				appendLine(path, map[string]any{"type": "title", "title": ""})
+			}
+			appendLine(path, map[string]any{"type": "session", "version": 3, "id": session})
+		}
+		entry = map[string]any{"type": "message", "id": turn, "message": map[string]any{"role": "user", "content": prompt}}
+	case piLike(agent):
+		entry = map[string]any{"type": "message", "id": "r" + turn, "parentId": turn, "message": map[string]any{"role": "assistant",
+			"content": []map[string]string{{"type": "text", "text": answer}}, "stopReason": "stop"}}
 	case agent == "claude" && answer == "":
 		entry = map[string]any{"type": "user", "promptId": turn, "isSidechain": false, "message": map[string]any{"role": "user", "content": prompt}}
 	case agent == "claude":
@@ -286,6 +360,11 @@ func writeTurn(agent, path, turn, prompt, answer string) {
 	default:
 		entry = map[string]any{"type": "event_msg", "payload": map[string]any{"type": "task_complete", "turn_id": turn, "last_agent_message": answer}}
 	}
+	appendLine(path, entry)
+}
+
+// appendLine appends entry to the transcript at path as a JSON line.
+func appendLine(path string, entry map[string]any) {
 	b, _ := json.Marshal(entry)
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
@@ -296,7 +375,7 @@ func writeTurn(agent, path, turn, prompt, answer string) {
 }
 
 // toolVars are the variables each agent sets for its tools' commands.
-var toolVars = map[string]string{"claude": "CLAUDE_CODE_SESSION_ID", "codex": "CODEX_THREAD_ID"}
+var toolVars = map[string]string{"claude": "CLAUDE_CODE_SESSION_ID", "codex": "CODEX_THREAD_ID", "pi": "PI_SESSION_ID", "omp": "PI_SESSION_ID"}
 
 // tool runs tmag as a tool of the session's, a child of the agent's process.
 func tool(agent, session string, args []string) (int, string) {
@@ -626,12 +705,12 @@ func (d *fakeDaemon) answer(c *svctest.Conn, m svctest.Message) {
 		}
 		d.n++
 		thread, turn := p.ThreadID, fmt.Sprintf("turn-%d", d.n)
-		writeTurn("codex", d.rollout(thread), turn, prompt, "")
+		writeTurn("codex", thread, d.rollout(thread), turn, prompt, "")
 		d.run(map[string]any{"hook_event_name": "UserPromptSubmit", "session_id": thread, "turn_id": turn})
 		_ = c.Reply(m.ID, map[string]any{"turn": map[string]string{"id": turn}})
 		stop := func() {
 			if d.turns[thread] == turn {
-				writeTurn("codex", d.rollout(thread), turn, "", reply(prompt))
+				writeTurn("codex", thread, d.rollout(thread), turn, "", reply(prompt))
 				d.run(map[string]any{"hook_event_name": "Stop", "session_id": thread, "turn_id": turn})
 			}
 		}
@@ -687,13 +766,21 @@ func (d *fakeDaemon) decided(m svctest.Message) {
 // hostCLI imitates the agent's own command line for tmag setup and doctor.
 func hostCLI(args []string) {
 	if args[0] == "--version" {
-		fmt.Println("fake 1.0")
+		// Pi and oh-my-pi are known by their version lines.
+		version, ok := map[string]string{"pi": "1.5.0", "omp": "omp/18.18.6"}[filepath.Base(os.Args[0])]
+		if !ok {
+			version = "fake 1.0"
+		}
+		fmt.Println(version)
 		return
 	}
 	if len(args) >= 2 && args[1] == "list" {
-		list := os.Getenv("FAKE_PLUGIN_LIST")
+		list, empty := os.Getenv("FAKE_PLUGIN_LIST"), "[]"
+		if filepath.Base(os.Args[0]) == "omp" {
+			list, empty = os.Getenv("FAKE_OMP_PLUGIN_LIST"), `{"npm":[]}`
+		}
 		if list == "" {
-			list = "[]"
+			list = empty
 		}
 		fmt.Println(list)
 		return

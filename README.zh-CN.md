@@ -4,7 +4,7 @@
 
 让 tmux 知道你的 coding agents 正在做什么。
 
-照常在 tmux panes 中使用 Claude Code 和 Codex。看清谁在工作、等待回应或已经完成，也让 agents 发现彼此、发送任务并读取回复。只在熟悉的 tmux 工作流上加一层薄薄的连接，如何协作，交给 agents 自己发挥。
+照常在 tmux panes 中使用 Claude Code、Codex、Pi 和 oh-my-pi。看清谁在工作、等待回应或已经完成，也让 agents 发现彼此、发送任务并读取回复。只在熟悉的 tmux 工作流上加一层薄薄的连接，如何协作，交给 agents 自己发挥。
 
 ## Agent 动态，一目了然
 
@@ -18,11 +18,11 @@
 
 ## 安装
 
-需要 Linux 或 macOS（amd64 或 arm64）、**tmux 3.2+**、[TPM](https://github.com/tmux-plugins/tpm)、`curl`，以及 Claude Code 和/或 Codex。
+需要 Linux 或 macOS（amd64 或 arm64）、**tmux 3.2+**、[TPM](https://github.com/tmux-plugins/tpm)、`curl`，以及 Claude Code、Codex、Pi、oh-my-pi 中的任意一个或多个。
 
 ### 交给 agent 安装
 
-在 tmux 中运行的 Claude Code 或 Codex 里粘贴：
+在 tmux 中运行的 coding agent 里粘贴：
 
 > Read https://raw.githubusercontent.com/ChrAlpha/tmux-agent-experience/main/SKILL.md and follow it to install or update tmag for the AI tool I am using.
 
@@ -36,7 +36,7 @@ Agent 会先征得你同意再修改 tmux 配置，随后安装插件、接入�
    set -g @plugin 'ChrAlpha/tmux-agent-experience'
    ```
 
-2. 按 `prefix + M-a`，通过 Claude Code 和 Codex 各自的 plugin manager 接入。tmag 使用已发布的 binary，并校验 checksum。
+2. 按 `prefix + M-a`，通过已安装的各个 agent 自己的 plugin manager 接入；Pi 和 oh-my-pi 从插件目录安装 tmag 的 packages。tmag 使用已发布的 binary，并校验 checksum。
 
 3. 在 tmux 中启动新的 agent sessions。Codex 中通过 `/hooks` 批准 tmag 的 hooks，并通过 `/title` 启用 `thread-id`。Codex pane 会在第一个 prompt 后关联到对应 session。
 

@@ -222,6 +222,39 @@ func TestSetupInstallsAgentPlugins(t *testing.T) {
 	log := filepath.Join(h.dir, "plugin-commands")
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("FAKE_PLUGIN_LOG", log)
+	// Pi and oh-my-pi install tmag's packages from the tmux plugin whose
+	// tmag the hooks run; Pi lists them in its settings.
+	tpm := filepath.Join(h.dir, "tpm")
+	plugin := filepath.Join(tpm, "tmux-agent-experience")
+	copyFile(t, filepath.Join(bin, "tmag"), filepath.Join(plugin, "bin", "tmag"))
+	packages := map[string]string{}
+	for _, agent := range []string{"pi", "omp"} {
+		for _, name := range []string{"tmag", "tmag-peers"} {
+			f := filepath.Join("plugins", agent, name, "package.json")
+			copyFile(t, filepath.Join("..", "..", f), filepath.Join(plugin, f))
+			packages[agent+" "+name] = filepath.Join(plugin, "plugins", agent, name)
+		}
+	}
+	t.Setenv("TMUX_PLUGIN_MANAGER_PATH", tpm)
+	piDir := t.TempDir()
+	t.Setenv("PI_CODING_AGENT_DIR", piDir)
+	piInstalled := func(names ...string) {
+		t.Helper()
+		var paths []string
+		for _, name := range names {
+			paths = append(paths, `"`+packages["pi "+name]+`"`)
+		}
+		if err := os.WriteFile(filepath.Join(piDir, "settings.json"), []byte(`{"packages":[`+strings.Join(paths, ",")+`]}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ompInstalled := func(names ...string) string {
+		var entries []string
+		for _, name := range names {
+			entries = append(entries, fmt.Sprintf(`{"name":%q,"version":%q,"path":%q,"enabled":true}`, name, version.Version, packages["omp "+name]))
+		}
+		return `{"npm":[` + strings.Join(entries, ",") + `]}`
+	}
 
 	// Without --yes and without a terminal, setup only shows its plan.
 	if r := h.tmag("", "setup"); r.code != 0 || !strings.Contains(r.out, "tmag setup --yes") {
@@ -242,25 +275,31 @@ func TestSetupInstallsAgentPlugins(t *testing.T) {
 		"codex plugin marketplace add ChrAlpha/tmux-agent-experience --sparse .agents --sparse plugins/codex",
 		"codex plugin add tmag@tmux-agent-experience",
 		"codex plugin add tmag-peers@tmux-agent-experience",
+		"pi install " + packages["pi tmag"],
+		"pi install " + packages["pi tmag-peers"],
+		"omp plugin install " + packages["omp tmag"],
+		"omp plugin install " + packages["omp tmag-peers"],
 	}, "\n") + "\n"
 	if string(got) != want {
 		t.Fatalf("ran:\n%s\nwant:\n%s", got, want)
 	}
 
-	// Once both hosts report the current plugins, setup has nothing to do.
+	// Once every host reports the current plugins, setup has nothing to do.
 	entry := `{"id":"%[1]s@tmux-agent-experience","name":"%[1]s","installed":true,"enabled":true,"version":%[2]q}`
 	t.Setenv("FAKE_PLUGIN_LIST", "["+fmt.Sprintf(entry, "tmag", version.Version)+","+fmt.Sprintf(entry, "tmag-peers", version.Version)+"]")
+	t.Setenv("FAKE_OMP_PLUGIN_LIST", ompInstalled("tmag", "tmag-peers"))
+	piInstalled("tmag", "tmag-peers")
 	if err := os.Remove(log); err != nil {
 		t.Fatal(err)
 	}
-	if r := h.tmag("", "setup", "--yes"); r.code != 0 || strings.Count(r.out, "tmag and tmag-peers plugins "+version.Version+" are installed and enabled") != 2 {
+	if r := h.tmag("", "setup", "--yes"); r.code != 0 || strings.Count(r.out, "tmag and tmag-peers plugins "+version.Version+" are installed and enabled") != 4 {
 		t.Fatalf("setup when current: %d %s", r.code, r.out)
 	}
 	if _, err := os.Stat(log); err == nil {
-		t.Fatal("setup ran commands although both plugins are current")
+		t.Fatal("setup ran commands although every plugin is current")
 	}
 
-	// With @tmag-peers off, setup takes tmag-peers out of both hosts, and
+	// With @tmag-peers off, setup takes tmag-peers out of every host, and
 	// doctor says so until it has.
 	h.tmux("set-option", "-g", "@tmag-peers", "off")
 	if r := h.tmag("", "doctor"); !strings.Contains(r.out, "tmag-peers installed although @tmag-peers is off") {
@@ -270,12 +309,15 @@ func TestSetupInstallsAgentPlugins(t *testing.T) {
 		t.Fatalf("setup with tmag-peers off: %d %s", r.code, r.out)
 	}
 	got, _ = os.ReadFile(log)
-	want = "claude plugin uninstall tmag-peers@tmux-agent-experience\ncodex plugin remove tmag-peers@tmux-agent-experience\n"
+	want = "claude plugin uninstall tmag-peers@tmux-agent-experience\ncodex plugin remove tmag-peers@tmux-agent-experience\n" +
+		"pi remove " + packages["pi tmag-peers"] + "\nomp plugin uninstall tmag-peers\n"
 	if string(got) != want {
 		t.Fatalf("ran:\n%s\nwant:\n%s", got, want)
 	}
 	t.Setenv("FAKE_PLUGIN_LIST", "["+fmt.Sprintf(entry, "tmag", version.Version)+"]")
-	if r := h.tmag("", "setup", "--yes"); r.code != 0 || strings.Count(r.out, "tmag-peers is off (@tmag-peers)") != 2 {
+	t.Setenv("FAKE_OMP_PLUGIN_LIST", ompInstalled("tmag"))
+	piInstalled("tmag")
+	if r := h.tmag("", "setup", "--yes"); r.code != 0 || strings.Count(r.out, "tmag-peers is off (@tmag-peers)") != 4 {
 		t.Fatalf("setup when tmag-peers is gone: %d %s", r.code, r.out)
 	}
 }

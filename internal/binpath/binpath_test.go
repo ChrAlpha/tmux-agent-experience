@@ -95,6 +95,8 @@ func TestShippedLaunchers(t *testing.T) {
 	for _, path := range []string{
 		"plugins/claude/tmag-peers/bin/tmag",
 		"plugins/codex/tmag-peers/skills/peers/scripts/tmag",
+		"plugins/pi/tmag-peers/skills/peers/scripts/tmag",
+		"plugins/omp/tmag-peers/skills/peers/scripts/tmag",
 	} {
 		full := filepath.Join("..", "..", path)
 		b, err := os.ReadFile(full)

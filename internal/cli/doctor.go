@@ -38,9 +38,17 @@ func (a *app) cmdDoctor(args []string) int {
 	checks := []check{a.checkRecords(ctx), a.checkState(ctx), a.checkHookErrors(ctx), checkTmux(ctx), checkPlugin(ctx), checkBinary(), a.checkNotify(ctx), checkServe(ctx)}
 	peers, err := doctorPeers(ctx)
 	if err != nil {
-		checks = append(checks, check{"claude", "warn", "host plugin checks incomplete: tmux policy unavailable"}, check{"codex", "warn", "host plugin checks incomplete: tmux policy unavailable"})
+		for _, agent := range proc.Agents {
+			checks = append(checks, check{agent, "warn", "host plugin checks incomplete: tmux policy unavailable"})
+		}
 	} else {
-		checks = append(checks, claudeCheck(claudeHostContext(ctx), peers), codexCheck(ctx, codexHostContext(ctx), peers))
+		for _, h := range probeHosts(ctx, "") {
+			if h.CLI == "codex" {
+				checks = append(checks, codexCheck(ctx, h, peers))
+			} else {
+				checks = append(checks, hostCheck(ctx, h, peers))
+			}
+		}
 	}
 
 	failed := false
@@ -225,7 +233,7 @@ func (a *app) checkHookErrors(ctx context.Context) check {
 		}
 		count++
 		latest = "legacy record (message redacted)"
-		if len(fields) == 3 && (fields[1] == "claude" || fields[1] == "codex" || fields[1] == "notify" || fields[1] == "hook") {
+		if len(fields) == 3 && (proc.IsAgent(fields[1]) || fields[1] == "notify" || fields[1] == "hook") {
 			switch fields[2] {
 			case "failed", "timeout", "canceled", "records_unavailable", "limited":
 				latest = fields[1] + " " + fields[2]
@@ -295,6 +303,9 @@ func pluginNote(h host, peers bool) (status, note string) {
 	for _, name := range []string{pluginName, peersName} {
 		p := *h.of(name)
 		switch {
+		case len(p.Elsewhere) > 0:
+			status = "warn"
+			notes = append(notes, name+" installed from another directory than the tmux plugin's; run tmag setup to replace it")
 		case name == peersName && !peers && p.Installed:
 			status = "warn"
 			notes = append(notes, fmt.Sprintf("%s installed although %s is off; run tmag setup to remove it", name, peersOption))
@@ -303,9 +314,16 @@ func pluginNote(h host, peers bool) (status, note string) {
 		case !p.Installed:
 			status = "warn"
 			notes = append(notes, name+" plugin not installed; run tmag setup (prefix + M-a)")
+		case !p.Enabled && h.CLI == "pi":
+			status = "warn"
+			notes = append(notes, name+" package disabled in Pi's configuration; enable it with pi config")
 		case !p.Enabled:
 			status = "warn"
 			notes = append(notes, name+" plugin disabled; run tmag setup to enable it")
+		case p.outdated() && h.Packages != "":
+			// It is the tmux plugin's own, of the version the plugin check
+			// compares with the binary's.
+			notes = append(notes, name+" plugin "+p.Version+" enabled")
 		case p.outdated():
 			status = "warn"
 			notes = append(notes, fmt.Sprintf("%s plugin %s, binary %s; run tmag setup to update", name, p.Version, version.Version))
@@ -316,15 +334,19 @@ func pluginNote(h host, peers bool) (status, note string) {
 	return status, strings.Join(notes, "; ")
 }
 
-func claudeCheck(h host, peers bool) check {
-	if h.Unavailable {
-		return check{"claude", "warn", "host probe incomplete; installation status unknown"}
+// hostCheck reports tmag's plugins in Claude Code, Pi or oh-my-pi.
+func hostCheck(ctx context.Context, h host, peers bool) check {
+	if h.Unavailable || ctx.Err() != nil {
+		return check{h.CLI, "warn", "host probe incomplete; installation status unknown"}
 	}
 	if !h.Present {
-		return check{"claude", "skip", "Claude Code not installed"}
+		return check{h.CLI, "skip", h.Name + " not installed"}
+	}
+	if h.Packages == "" && (h.CLI == "pi" || h.CLI == "omp") {
+		return check{h.CLI, "warn", h.Version + "; " + noPackages}
 	}
 	status, note := pluginNote(h, peers)
-	return check{"claude", status, h.Version + "; " + note}
+	return check{h.CLI, status, h.Version + "; " + note}
 }
 
 func codexCheck(ctx context.Context, h host, peers bool) check {

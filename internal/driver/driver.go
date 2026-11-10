@@ -19,7 +19,8 @@ var Verbs = []string{Send, Interrupt, Answer}
 // Channels a verb travels by.
 const (
 	// Pane types into the one pane that shows the session: the only input of
-	// an interactive Claude Code session and of Codex run with --no-daemon.
+	// an interactive Claude Code, Pi or oh-my-pi session and of Codex run
+	// with --no-daemon.
 	Pane = "pane"
 	// Service talks to the agent service the session runs in: the Codex
 	// daemon's control socket.
@@ -56,14 +57,25 @@ func Channel(agent, runtime, verb string) string {
 			return ""
 		}
 		return Pane
+	case "pi", "omp":
+		if service || verb == Answer {
+			// A session serving a program takes input from it alone, and
+			// the dialogs these agents open belong to their extensions or
+			// their UI, which no channel decides.
+			return ""
+		}
+		return Pane
 	}
 	return ""
 }
 
 // ReportsInterrupt says whether the agent reports an interrupted turn to its
-// hooks. Codex does (Interrupt); Claude Code reports nothing, not even its
-// idle notification, so tmag records the interrupt it delivered itself.
-func ReportsInterrupt(agent string) bool { return agent == "codex" }
+// hooks. Codex does (Interrupt), and so do Pi and oh-my-pi, whose aborted
+// runs end as any other; Claude Code reports nothing, not even its idle
+// notification, so tmag records the interrupt it delivered itself.
+func ReportsInterrupt(agent string) bool {
+	return agent == "codex" || agent == "pi" || agent == "omp"
+}
 
 // Capabilities lists the verbs some channel carries to a session of agent
 // with runtime. Each verb still checks its own gate when used.

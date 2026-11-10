@@ -31,7 +31,7 @@ type Host struct {
 type Record struct {
 	// LastHookAt is accepted hook contact, independent of state age or authority.
 	LastHookAt time.Time `json:"last_hook_at,omitzero"`
-	Agent      string    `json:"agent"` // claude | codex
+	Agent      string    `json:"agent"` // one of proc.Agents
 	ID         string    `json:"id"`
 	Cwd        string    `json:"cwd,omitempty"`
 	Host       Host      `json:"host"`
@@ -178,8 +178,11 @@ func (r Record) TranscriptRef() *eventlog.Transcript {
 		return nil
 	}
 	format := "claude-jsonl"
-	if r.Agent == proc.Codex {
+	switch r.Agent {
+	case proc.Codex:
 		format = "codex-rollout"
+	case proc.Pi, proc.OMP:
+		format = "pi-jsonl"
 	}
 	return &eventlog.Transcript{Path: r.Transcript, Format: format}
 }

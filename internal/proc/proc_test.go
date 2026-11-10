@@ -39,11 +39,53 @@ func TestAgentKind(t *testing.T) {
 		{"claude", "claude attach 21352afc", Claude},
 		{"claude", "claude agents", Claude},
 		{"2.1.317", "/home/me/.local/share/claude/versions/2.1.317 --session-id s1", ""},
+		// Pi 1.5 renames its process, command line included; before it
+		// does, node runs its package's script.
+		{"pi", "pi", Pi},
+		{"node", "node /home/me/.local/share/pnpm/global/v11/x/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js", Pi},
+		{"pi-rpc", "pi-rpc", ""},
+		// oh-my-pi 18.18 names its process omp on Linux, from its compiled
+		// binary or from bun; ps shows the command it was started as.
+		{"omp", "/home/me/.local/bin/omp --model fake/fake", OMP},
+		{"omp", "/tmp/omp-linux-x64 --no-session", OMP},
+		{"bun", "bun /home/me/.bun/bin/omp", OMP},
+		{"bun", "bun /home/me/.bun/install/global/node_modules/@oh-my-pi/pi-coding-agent/dist/cli.js", OMP},
+		// Installing them is no agent.
+		{"bun", "bun install -g @oh-my-pi/pi-coding-agent", ""},
+		{"node", "node /usr/bin/npm install -g @earendil-works/pi-coding-agent", ""},
+		{"omp", "/home/me/.local/bin/omp --mode rpc", ""},
+		{"omp", "/home/me/.local/bin/omp --mode=rpc-ui", ""},
+		{"omp", "/home/me/.local/bin/omp acp", ""},
+		{"omp", "/home/me/.local/bin/omp --mode json -p hello", OMP},
+		{"omp", "/home/me/.local/bin/omp __omp_worker_daemon_broker", ""},
 		{"zsh", "-zsh", ""},
 	} {
 		if got := AgentKind(Process{Comm: c.comm, Args: c.args}); got != c.want {
 			t.Errorf("AgentKind(%q, %q) = %q, want %q", c.comm, c.args, got, c.want)
 		}
+	}
+}
+
+// Pi's and oh-my-pi's modes that serve another program host sessions no
+// person types into; their helper processes host none.
+func TestPiServices(t *testing.T) {
+	for _, c := range []struct {
+		comm, args, want string
+	}{
+		{"pi-rpc", "pi-rpc", Pi},
+		{"pi", "pi", ""},
+		{"omp", "/home/me/.local/bin/omp --mode rpc", OMP},
+		{"omp", "/home/me/.local/bin/omp acp", OMP},
+		{"omp", "/home/me/.local/bin/omp", ""},
+		{"omp", "/home/me/.local/bin/omp __omp_worker_lsp_mux", ""},
+		{"omp", "/home/me/.local/bin/omp explain acp", ""},
+	} {
+		if got := ServiceKind(Process{Comm: c.comm, Args: c.args}); got != c.want {
+			t.Errorf("ServiceKind(%q, %q) = %q, want %q", c.comm, c.args, got, c.want)
+		}
+	}
+	if !IsAgent(Pi) || !IsAgent(OMP) || IsAgent("node") || IsAgent("") {
+		t.Error("IsAgent does not name exactly the agent kinds")
 	}
 }
 
@@ -63,6 +105,11 @@ func TestHostOf(t *testing.T) {
 		// A Codex thread in the shared daemon.
 		{PID: 30, PPID: 1, Comm: "codex", Args: "codex app-server --listen unix:// --managed-daemon"},
 		{PID: 31, PPID: 30, Comm: "sh", Args: "/bin/zsh -lc tmag hook codex"},
+		// Pi's extension runs the hook; oh-my-pi's in RPC mode, for an editor.
+		{PID: 40, PPID: 10, Comm: "pi", Args: "pi"},
+		{PID: 41, PPID: 40, Comm: "tmag", Args: "tmag hook pi"},
+		{PID: 50, PPID: 1, Comm: "omp", Args: "/usr/local/bin/omp --mode rpc"},
+		{PID: 51, PPID: 50, Comm: "tmag", Args: "tmag hook omp"},
 	})
 	for _, c := range []struct {
 		pid  int
@@ -73,6 +120,8 @@ func TestHostOf(t *testing.T) {
 		{13, 11, Claude, Terminal},
 		{23, 21, Claude, Service},
 		{31, 30, Codex, Service},
+		{41, 40, Pi, Terminal},
+		{51, 50, OMP, Service},
 	} {
 		h, ok := pt.HostOf(c.pid)
 		if !ok || h.Process.PID != c.host || h.Kind != c.kind || h.Role != c.role {

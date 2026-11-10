@@ -1,12 +1,13 @@
 ---
 name: install-tmag
-description: Install, update or verify tmux-agent-experience, the tmux plugin that tracks coding agents, and connect the Claude Code or Codex session you are running in.
+description: Install, update or verify tmux-agent-experience, the tmux plugin that tracks coding agents, and connect the Claude Code, Codex, Pi or oh-my-pi session you are running in.
 ---
 
 # tmux-agent-experience install skill
 
 **Canonical URL**: `https://raw.githubusercontent.com/ChrAlpha/tmux-agent-experience/main/SKILL.md`
-**Audience**: coding agents running in Claude Code or Codex, inside tmux.
+**Audience**: coding agents running in Claude Code, Codex, Pi or oh-my-pi,
+inside tmux.
 **Purpose**: install or update the tmux plugin, connect the agent you are
 running in, and verify. Every step is safe to repeat.
 
@@ -22,8 +23,9 @@ A user typically hands you this document with a prompt such as:
 1. **Never guess.** If the operating system, the host you run in, or a path is
    unclear, ask the user one short question and wait.
 2. **Change hosts only through their own commands.** Agent plugins change
-   through `tmag setup`, which runs `claude plugin …` and `codex plugin …`.
-   Never hand-edit agent settings, hook files or `config.toml`.
+   through `tmag setup`, which runs `claude plugin …`, `codex plugin …`,
+   `pi install …` and `omp plugin …`. Never hand-edit agent settings, hook
+   files, `config.toml` or `settings.json`.
 3. **Ask before touching the user's environment.** Editing tmux.conf,
    installing TPM, and restarting the Codex daemon (it interrupts running
    Codex work) each need an explicit yes. Show the exact change first.
@@ -113,17 +115,21 @@ If it never appears, read `tmux show-messages` and see [Triage](#triage).
 | --- | --- |
 | Claude Code | You are Claude Code; `CLAUDECODE` is set in your shell. |
 | Codex | You are Codex; `CODEX_THREAD_ID` is set in your shell. |
+| Pi | You are Pi; `PI_CODING_AGENT` is `true` in your shell. |
+| oh-my-pi | You are oh-my-pi; `PI_SESSION_ID` is set and `PI_CODING_AGENT` is not. |
 
 ```sh
-"$TMAG" setup --yes --agent claude     # or --agent codex
+"$TMAG" setup --yes --agent claude     # or --agent codex, pi, omp
 ```
 
 `setup` installs or updates tmag's plugins through the agent's own plugin
 manager and prints what is left to do: `tmag`, whose hooks report the agent's
 state, and `tmag-peers`, a skill for working with the other agents through
 tmag. With `@tmag-peers` set to `off` in tmux, it leaves out `tmag-peers`, or
-removes it. If the other agent is also installed
-(`command -v claude`, `command -v codex`), ask whether to connect it as well.
+removes it. Pi and oh-my-pi install both as packages from the plugin's
+directory, so they update with the plugin. If other agents are installed too
+(`command -v claude`, `command -v codex`, `command -v pi`, `command -v omp`),
+ask whether to connect them as well.
 Other hosts are not supported: tmag still lists their panes, but cannot know
 their state.
 
@@ -148,8 +154,8 @@ their state.
 5. In the fresh session, `"$TMAG" doctor` should show the plugin loaded and the
    agent's `tmag` and `tmag-peers` plugins enabled (or `tmag-peers off`), and
    `"$TMAG" list` should show that pane with the session's id:
-   - Claude Code: state `idle` right away; `list --json` gives the pane
-     evidence `process`.
+   - Claude Code, Pi and oh-my-pi: state `idle` right away; `list --json`
+     gives the pane evidence `process`.
    - Codex: after the first prompt, evidence `title-id` (or `process` with
      `--no-daemon`). Before it the pane shows `unknown` without an id, which
      is expected.
@@ -169,7 +175,9 @@ tmag when asked to, and that `set -g @tmag-peers off` followed by
 | `doctor`: tmux plugin not loaded | `CONF` lacks the `@plugin` line, or it sits below TPM's `run` line. Fix the order and `tmux source-file CONF`. |
 | `doctor`: tmux plugin version differs from the binary | `tmux source-file CONF` to let the plugin fetch the matching binary. |
 | `doctor`: `tmux` needs 3.2 or newer | Stop; the user upgrades tmux. |
-| `setup` fails on a plugin command | Read the error verbatim. An unknown flag means an outdated host: ask the user to update Claude Code or Codex. |
+| `setup` fails on a plugin command | Read the error verbatim. An unknown flag means an outdated host: ask the user to update that agent. |
+| `setup` or `doctor`: Pi or oh-my-pi say tmag's packages come with the tmux plugin | The hooks run a tmag installed some other way. Install the tmux plugin through TPM (Steps 1 and 2), then run setup again. |
+| `doctor`: a Pi package disabled in Pi's configuration | The user enables it with `pi config`. |
 | `doctor`: Codex hooks not approved, or Codex agents stay `unknown` after a plugin update although an approval is found | Codex honours an approval only for the plugin version it was given for, even when the hooks did not change. After a restart, approve them in Codex with `/hooks`. |
 | `doctor`: hook errors recorded | Report the latest line; it names the failure. |
 | `tmag list` shows a Codex pane without an id long after a turn, and the session on its own row | The terminal title lacks the thread id. The user runs `/title` in Codex and turns on `thread-id`; the pane attaches at once. |
@@ -189,4 +197,4 @@ confirms; run `"$TMAG" uninstall --purge` first, while the binary exists.
 
 ---
 
-**Last updated**: 2026-11-06
+**Last updated**: 2026-11-10

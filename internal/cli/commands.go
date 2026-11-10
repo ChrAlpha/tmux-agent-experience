@@ -27,8 +27,8 @@ import (
 // cmdHook always exits 0 and never writes stdout: a broken tmag must not
 // disturb the agent. Failures go to <state dir>/hook.log.
 func (a *app) cmdHook(args []string) (code int) {
-	if len(args) != 1 || !query.IsAgentKind(args[0]) {
-		fmt.Fprintln(a.stderr, "usage: tmag hook <claude|codex>")
+	if len(args) != 1 || !proc.IsAgent(args[0]) {
+		fmt.Fprintln(a.stderr, "usage: tmag hook <"+strings.Join(proc.Agents, "|")+">")
 		return ExitOK
 	}
 	ctx, cancel := a.hookContext()

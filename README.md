@@ -4,10 +4,10 @@
 
 A tmux plugin that knows what your coding agents are doing.
 
-Keep Claude Code and Codex in your usual panes. See who is working, waiting
-or done—and let agents discover each other, send work and read replies. A thin
-layer over the tmux workflow you already use, leaving agents to work out how
-to collaborate.
+Keep Claude Code, Codex, Pi and oh-my-pi in your usual panes. See who is
+working, waiting or done—and let agents discover each other, send work and
+read replies. A thin layer over the tmux workflow you already use, leaving
+agents to work out how to collaborate.
 
 ## Your agents, at a glance
 
@@ -32,11 +32,12 @@ are read from the agent's own transcript when requested. Defaults are
 ## Install
 
 Requires **tmux 3.2+** on Linux or macOS (amd64 or arm64),
-[TPM](https://github.com/tmux-plugins/tpm), `curl`, and Claude Code and/or Codex.
+[TPM](https://github.com/tmux-plugins/tpm), `curl`, and any of Claude Code,
+Codex, Pi or oh-my-pi.
 
 ### Ask your agent
 
-Paste this into Claude Code or Codex running inside tmux:
+Paste this into your coding agent running inside tmux:
 
 > Read https://raw.githubusercontent.com/ChrAlpha/tmux-agent-experience/main/SKILL.md and follow it to install or update tmag for the AI tool I am using.
 
@@ -52,8 +53,10 @@ connects its own host and verifies the result. Use the same prompt to update.
    set -g @plugin 'ChrAlpha/tmux-agent-experience'
    ```
 
-2. Press `prefix + M-a` to connect Claude Code and Codex through their plugin
-   managers. tmag downloads a released binary and verifies its checksum.
+2. Press `prefix + M-a` to connect the agents you have through their own
+   plugin managers; Pi and oh-my-pi install tmag's packages from the
+   plugin's directory. tmag downloads a released binary and verifies its
+   checksum.
 
 3. Start fresh agent sessions in tmux. In Codex, approve tmag's hooks with
    `/hooks` and use `/title` to enable `thread-id`. Codex panes attach after

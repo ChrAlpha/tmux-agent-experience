@@ -20,6 +20,7 @@ import (
 const (
 	ClaudeJSONL  = "claude-jsonl"
 	CodexRollout = "codex-rollout"
+	PiJSONL      = "pi-jsonl"
 )
 
 // ErrNoTurn reports a transcript that holds no turn yet.
@@ -46,6 +47,8 @@ func Last(ctx context.Context, path, format string) (Reply, error) {
 		r = &claude{}
 	case CodexRollout:
 		r = &codex{}
+	case PiJSONL:
+		r = &pi{}
 	default:
 		return Reply{}, fmt.Errorf("unknown transcript format %q", format)
 	}
@@ -172,6 +175,64 @@ func (c *codex) reply() (Reply, error) {
 		return Reply{}, ErrNoTurn
 	}
 	return c.r, nil
+}
+
+// pi reads Pi's session file: a header, then one entry per line, each
+// message whole. A turn starts with a user message, whose entry id names it;
+// its reply is the text of the last assistant message with any after it.
+// Other entries (tool results, system prompts, model changes, extensions'
+// messages) belong to the turn they follow.
+type pi struct {
+	r     Reply
+	found bool
+	have  bool // the reply's message is found
+}
+
+func (p *pi) line(b []byte) bool {
+	var e struct {
+		Type    string `json:"type"`
+		ID      string `json:"id"`
+		Message struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		} `json:"message"`
+	}
+	if json.Unmarshal(b, &e) != nil || e.Type != "message" {
+		return false
+	}
+	switch e.Message.Role {
+	case "user":
+		p.r.Turn, p.found = e.ID, true
+		return true
+	case "assistant":
+		if p.have {
+			return false
+		}
+		var blocks []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		}
+		if json.Unmarshal(e.Message.Content, &blocks) != nil {
+			return false
+		}
+		var texts []string
+		for _, b := range blocks {
+			if b.Type == "text" && b.Text != "" {
+				texts = append(texts, b.Text)
+			}
+		}
+		if len(texts) > 0 {
+			p.r.Text, p.have = strings.Join(texts, "\n\n"), true
+		}
+	}
+	return false
+}
+
+func (p *pi) reply() (Reply, error) {
+	if !p.found {
+		return Reply{}, ErrNoTurn
+	}
+	return p.r, nil
 }
 
 // chunk is how much of the file backward reads at a time.

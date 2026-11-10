@@ -29,13 +29,15 @@ which version.
 
 ## Releasing
 
-1. Set the new version in `internal/version/version.go` and the four plugin
-   manifests, `plugins/{claude,codex}/{tmag,tmag-peers}/` (`.claude-plugin/`
-   or `.codex-plugin/plugin.json`).
+1. Set the new version in `internal/version/version.go` and the eight plugin
+   manifests, `plugins/{claude,codex,pi,omp}/{tmag,tmag-peers}/`
+   (`.claude-plugin/plugin.json`, `.codex-plugin/plugin.json` or
+   `package.json`).
 2. Merge to `main`, then tag it: `git tag v0.2.0 && git push origin v0.2.0`.
 3. The release workflow checks the tag against the version, builds Linux and
    macOS binaries and publishes the release with checksums and build
    provenance.
 4. Check the install paths users take, on Linux and macOS: the TPM install
-   (`prefix + I` downloads the new binary, `prefix + M-a` connects the agents),
+   (`prefix + I` downloads the new binary, `prefix + M-a` connects the agents,
+   Pi's and oh-my-pi's packages included),
    the steps in `SKILL.md`, and `mise use -g github:ChrAlpha/tmux-agent-experience`.

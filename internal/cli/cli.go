@@ -57,11 +57,11 @@ Usage:
   tmag auth     issue|pair LABEL [--ttl D] [--json]
                 list [--json] | revoke ID|--all [--json]
                                                manage owner client credentials
-  tmag setup    [--yes] [--dry-run] [--agent claude|codex]
+  tmag setup    [--yes] [--dry-run] [--agent claude|codex|pi|omp]
                                                install or update the agent plugins
   tmag doctor   [--json]                       check the installation
   tmag uninstall [--purge]                     print removal steps; --purge clears tmag state
-  tmag hook     <claude|codex>                 agent hook entry point (reads stdin)
+  tmag hook     <claude|codex|pi|omp>          agent hook entry point (reads stdin)
   tmag answer-hook <claude>                    Claude's PermissionRequest hook: waits for answer
   tmag version
 

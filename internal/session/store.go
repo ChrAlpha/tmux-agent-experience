@@ -24,18 +24,16 @@ type Store struct {
 }
 
 // idRE bounds what an agent may use as a session id, which becomes a file
-// name: Claude Code and Codex use UUIDs.
+// name: every agent tmag knows uses UUIDs.
 var idRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 
 // ValidID reports whether id can name a session.
 func ValidID(id string) bool { return idRE.MatchString(id) }
 
-func validAgent(agent string) bool { return agent == proc.Claude || agent == proc.Codex }
-
 func (s Store) root() string { return filepath.Join(s.Dir, "sessions") }
 
 func (s Store) path(agent, id string) (string, error) {
-	if !validAgent(agent) || !ValidID(id) {
+	if !proc.IsAgent(agent) || !ValidID(id) {
 		return "", fmt.Errorf("invalid session %s/%q", agent, id)
 	}
 	return filepath.Join(s.root(), agent, id+".json"), nil

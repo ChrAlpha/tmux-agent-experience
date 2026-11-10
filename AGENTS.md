@@ -12,13 +12,14 @@ layers, in order of importance:
 1. **The tmux plugin** (`tmag.tmux`, `scripts/`) is the product: installed with
    TPM, it keeps the `tmag` binary in its own directory and gives tmux users
    alerts, key bindings and status placeholders by default.
-2. **Agent plugins** (`plugins/<host>/`), two for each of Claude Code and
-   Codex. `tmag` is the sensor: hooks that report state by calling
-   `tmag hook`, and for Claude Code's permission prompts `tmag answer-hook`,
-   which also carries a decision made with `tmag answer`. `tmag-peers` is
-   what an agent knows of tmag: the `peers` skill, which tells the model when
-   and how to use tmag's verbs on other agents, and a launcher that runs the
-   hooks' binary.
+2. **Agent plugins** (`plugins/<host>/`), two for each of Claude Code,
+   Codex, Pi and oh-my-pi. `tmag` is the sensor: hooks that report state by
+   calling `tmag hook` (in Pi and oh-my-pi, which have no hooks, an
+   extension that runs it), and for Claude Code's permission prompts
+   `tmag answer-hook`, which also carries a decision made with `tmag answer`.
+   `tmag-peers` is what an agent knows of tmag: the `peers` skill, which
+   tells the model when and how to use tmag's verbs on other agents, and a
+   launcher that runs the hooks' binary.
 3. **The `tmag` binary** is the substrate: sessions and their state, which
    panes show them, the event log and a versioned JSON contract (`tmag/v2`)
    for agents, scripts and remote clients.
@@ -46,7 +47,7 @@ promise is documented in the package, and changes with it.
 - **Defaults are visible and switchable.** Every default has an option that
   turns it off, the agents' context included: `@tmag-peers off` makes `tmag
   setup` remove the plugin whose skill description is in every session.
-- **The skill teaches the CLI as it is.** Both hosts ship the same `peers`
+- **The skill teaches the CLI as it is.** Every host ships the same `peers`
   text, naming only commands, flags, refusal codes and exit codes the binary
   has (`TestPeersSkillMatchesCLI`). What to do after a refusal or failure is
   the CLI's to say, in a `next:` line on stderr that claims no more about a
@@ -56,14 +57,17 @@ promise is documented in the package, and changes with it.
   prompt given to tmag may start with `[tmag]`. A caller never names itself.
 - **Hooks fail open.** `tmag hook` exits 0, never writes stdout and finishes
   within `hook.Deadline`, also through the `tmag-peers` launcher; failures go
-  to `hook.log` as metadata. `answer-hook` exits 0 too and sets up within
-  that deadline, then waits for a decision within its own hook timeout: it
-  prints only a decision `tmag answer` delivered, and nothing on any
-  failure, leaving the agent's dialog, on screen meanwhile, to decide.
+  to `hook.log` as metadata. Pi's and oh-my-pi's extensions run it in the
+  order of the events without holding up the agent, and nothing they do
+  reaches it. `answer-hook` exits 0 too and sets up within that deadline,
+  then waits for a decision within its own hook timeout: it prints only a
+  decision `tmag answer` delivered, and nothing on any failure, leaving the
+  agent's dialog, on screen meanwhile, to decide.
 - **No content is stored.** Payloads decode into `adapter.Payload`, which has
-  no prompt, message or tool-input field; records, events and alerts hold
-  ids, states, paths and times. `answer-hook` keeps a tool input in memory
-  only, and `read --last` prints a reply and keeps nothing.
+  no prompt, message or tool-input field, and tmag's extensions send none;
+  records, events and alerts hold ids, states, paths and times.
+  `answer-hook` keeps a tool input in memory only, and `read --last` prints a
+  reply and keeps nothing.
 - **What tmag accepts is bounded where it is read.** `adapter.Decode` bounds
   every field it keeps and records cap their lists, so state stays small
   whatever an agent sends. A new field comes with its bound.
@@ -99,7 +103,8 @@ promise is documented in the package, and changes with it.
   `$XDG_STATE_HOME/tmag/auth`) keeps credentials as digests and metadata;
   each is revocable, and invitations expire and redeem once.
 - **Nothing edits user configuration.** Install and uninstall go through each
-  host's own mechanism (`claude plugin`, `codex plugin`, TPM).
+  host's own mechanism (`claude plugin`, `codex plugin`, `pi install`,
+  `omp plugin`, TPM).
 - **The contract is versioned.** Changing a JSON field's meaning or removing
   one requires a new schema name; adding optional fields does not.
 
@@ -123,15 +128,15 @@ promise is documented in the package, and changes with it.
 | `internal/driver` | Which channel (pane, service, hook) carries each verb for each agent and runtime |
 | `internal/codexsvc` | One-command client of the Codex daemon's control socket (JSON-RPC over WebSocket) |
 | `internal/answer` | The answer hook's socket, under `/tmp/tmag-<uid>`, its protocol, and the decision it prints for Claude Code |
-| `internal/transcript` | A turn's reply, read backward from Claude Code's JSONL transcript or Codex's rollout |
+| `internal/transcript` | A turn's reply, read backward from Claude Code's JSONL transcript, Codex's rollout or Pi's session file |
 | `internal/eventlog` | Append-only, sequence-numbered event log, and tails that know when they missed events |
 | `internal/tmux` | tmux CLI wrapper; sanitises every free-text field |
 | `internal/proc` | Process table, agent clients and services, hook hosts |
 | `internal/lockfile` | flock bounded by a context, and the fixed pools of pane and session locks |
 | `internal/binpath` | Where hooks look for the binary; the hook command and the agents' launcher |
 | `internal/e2e` | End-to-end tests with real tmux and a fake agent |
-| `plugins/<host>/tmag` | Agent plugins for Claude Code and Codex: hooks only; Claude's `PermissionRequest` runs `tmag answer-hook` |
-| `plugins/<host>/tmag-peers` | The `peers` skill and the `tmag` launcher (`bin/` in Claude Code, which puts it on `PATH`; the skill's `scripts/` in Codex) |
+| `plugins/<host>/tmag` | Agent plugins: hooks for Claude Code and Codex, where Claude's `PermissionRequest` runs `tmag answer-hook`; for Pi and oh-my-pi a package whose extension runs `tmag hook` |
+| `plugins/<host>/tmag-peers` | The `peers` skill and the `tmag` launcher (`bin/` in Claude Code, which puts it on `PATH`; the skill's `scripts/` elsewhere) |
 | `.claude-plugin/`, `.agents/plugins/` | Marketplace manifests |
 | `SKILL.md` | Install and update procedure that agents follow from its raw URL |
 
@@ -142,7 +147,7 @@ go build ./...
 go test ./...                 # unit + e2e; e2e needs tmux >= 3.2 and skips without it
 go test -race ./...
 golangci-lint run             # v2, config in .golangci.yml
-shellcheck tmag.tmux scripts/install.sh scripts/tmag plugins/claude/tmag-peers/bin/tmag plugins/codex/tmag-peers/skills/peers/scripts/tmag
+shellcheck tmag.tmux scripts/install.sh scripts/tmag plugins/claude/tmag-peers/bin/tmag plugins/*/tmag-peers/skills/peers/scripts/tmag
 govulncheck ./...
 claude plugin validate .      # marketplace and plugin manifests
 ```
@@ -163,13 +168,16 @@ claude plugin validate .      # marketplace and plugin manifests
 - What the state directory holds is its layout (`eventlog.Layout`). A change
   to it renames the layout, which gives it a default directory of its own:
   tmag never reads or migrates another layout's state.
-- The version lives in `internal/version/version.go` and the four plugin
+- The version lives in `internal/version/version.go` and the eight plugin
   manifests; `TestManifestVersions` keeps them equal.
-- The launchers are `binpath.Launcher()`, and the Codex copy of the skill is
-  the Claude copy; tests compare them byte for byte, so change the generator
-  or the Claude copy and copy it over.
-- Plugins stay under `plugins/claude` and `plugins/codex`: marketplaces added
-  by `tmag setup` check out only those paths.
+- The launchers are `binpath.Launcher()`, the other copies of the skill are
+  the Claude copy, and oh-my-pi's `report.ts` is Pi's; tests compare them
+  byte for byte, so change the generator or the first copy and copy it
+  over. The extensions run `binpath.HookCommand`, which a test checks.
+- Claude Code's and Codex's plugins stay under `plugins/claude` and
+  `plugins/codex`: marketplaces added by `tmag setup` check out only those
+  paths. Pi and oh-my-pi install `plugins/pi` and `plugins/omp` by path from
+  the tmux plugin's directory, so a package matches the binary it runs.
 - Install and update steps live in `SKILL.md` (for agents) and the GitHub Wiki's
   Installation and Updates page (for people), with a quick start in README.md.
   Keep them consistent, and run every command you write there: they are executed
@@ -187,8 +195,9 @@ claude plugin validate .      # marketplace and plugin manifests
 - Tests run tmag as a person from outside the test's process tree
   (`harness.tmag`), and as an agent from a fake agent's tool.
 - E2E tests start private servers (`tmux -L e2e` under a temporary
-  `TMUX_TMPDIR`) and run `internal/e2e/fakeagent` installed as `claude` and
-  `codex`, so process names and `pane_current_command` match real agents. Run
+  `TMUX_TMPDIR`) and run `internal/e2e/fakeagent` installed as `claude`,
+  `codex`, `pi` and `omp`, so process names and `pane_current_command` match
+  real agents; as `pi` and `omp` it reports what tmag's extensions report. Run
   as `codex app-server …` it is a Codex daemon outside every pane that runs
   hooks for any thread and serves a control socket under `CODEX_HOME`
   (`internal/codexsvc/svctest` is its server end), replaying the approvals a
@@ -203,6 +212,10 @@ claude plugin validate .      # marketplace and plugin manifests
   tool, so tmag sees an agent calling. The same binary answers `--version` and `plugin …` as
   a fake host CLI. Plugin tests lay out a TPM directory and serve a local
   release over `file://`.
+- `TestExtensionsReport` runs Pi's and oh-my-pi's extensions on Node.js 22.6
+  or later, which strips TypeScript types (skipped without it), through each
+  host's events against a fake host, and reads what they ran `tmag hook`
+  with.
 - Control scenarios also run a `follower`: it rebuilds sessions and panes
   from `tmag watch` as the contract tells a client to, and `agrees` checks
   them against `tmag list --json` at the test's checkpoints. A change that
@@ -248,10 +261,26 @@ an adapter or the Codex title rules, observe the real thing:
   hooks in its own environment, so in the private server an installed `tmag`
   plugin's hooks run the scratch build, and the skill loads from the
   project's `.agents/skills/peers`, a copy of the Codex plugin's.
+- Pi: `pi -e ./plugins/pi/tmag -e ./plugins/pi/tmag-peers` loads the
+  packages without installing them; give it scratch `PI_CODING_AGENT_DIR`,
+  `TMAG_STATE_DIR` and `TMUX_PLUGIN_MANAGER_PATH`. tmag reads the events of
+  Pi 1.5.0's extensions. No credentials are needed for a turn: an extension
+  in the scratch agent directory can register a provider whose
+  `streamSimple` answers in process (`pi --provider NAME --model ID`).
+- oh-my-pi: run its release binary (`omp`, Bun inside) with a scratch `HOME`
+  (its configuration is `~/.omp`) and `omp plugin install ./plugins/omp/tmag`,
+  which links the package. tmag reads oh-my-pi 18.18.6's events, which differ
+  from Pi's; its subagents run the extension too. A local OpenAI-compatible
+  server in `~/.omp/agent/models.yml` serves as its model. Started with
+  `env -i`, keep `TMUX_TMPDIR` in its environment: its hooks would otherwise
+  reconcile the developer's tmux server against the scratch state.
 - Transcripts: `internal/transcript` reads Claude Code 2.1.318's JSONL (a
   line per content block, each user entry's `promptId` the hooks'
-  `prompt_id`) and Codex 0.166's rollout (`task_complete` with `turn_id` and
-  `last_agent_message`). Before changing it, run a turn and check that
-  `tmag read ID --last` names the turn `tmag list --json` reports.
+  `prompt_id`), Codex 0.166's rollout (`task_complete` with `turn_id` and
+  `last_agent_message`), and Pi 1.5.0's and oh-my-pi 18.18.6's session files
+  (an entry per message, a user message's entry id naming its turn). Before
+  changing it, run a turn and check that `tmag read ID --last` names the turn
+  `tmag list --json` reports.
 - Clean up afterwards: test threads (`codex delete --force <id>`), session
-  transcripts, scratch servers and directories.
+  transcripts, Pi's and oh-my-pi's scratch homes, scratch servers and
+  directories.
