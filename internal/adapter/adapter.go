@@ -8,6 +8,7 @@ package adapter
 import (
 	"encoding/json"
 	"fmt"
+	"unicode/utf8"
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
 )
@@ -56,7 +57,20 @@ type Task struct {
 	ID string `json:"id"`
 }
 
-// Decode parses a hook payload.
+// Bounds of what tmag keeps of a payload. Agents send far less; these keep
+// whatever they send from growing a session's record or an event beyond a
+// small size, so that nothing downstream has to admit or refuse a change.
+const (
+	// MaxPath is PATH_MAX: a longer path names no file, and is dropped.
+	MaxPath = 4096
+	// MaxName bounds names and ids, which are cut, so that a value cut once
+	// is cut the same in every hook that reports it.
+	MaxName = 256
+	// MaxTasks bounds the background tasks a Stop lists.
+	MaxTasks = 64
+)
+
+// Decode parses a hook payload and bounds what it keeps of it.
 func Decode(data []byte) (Payload, error) {
 	var p Payload
 	if err := json.Unmarshal(data, &p); err != nil {
@@ -65,7 +79,38 @@ func Decode(data []byte) (Payload, error) {
 	if p.SessionID == "" || p.HookEventName == "" {
 		return p, fmt.Errorf("hook payload lacks session_id or hook_event_name")
 	}
+	for _, f := range []*string{&p.Cwd, &p.TranscriptPath} {
+		if len(*f) > MaxPath {
+			*f = ""
+		}
+	}
+	for _, f := range []*string{&p.HookEventName, &p.SessionID, &p.Source, &p.PromptID, &p.TurnID, &p.AgentID, &p.ToolName, &p.ToolUseID, &p.NotificationType} {
+		*f = cut(*f)
+	}
+	if p.BackgroundTasks != nil {
+		tasks := *p.BackgroundTasks
+		if len(tasks) > MaxTasks {
+			tasks = tasks[:MaxTasks]
+		}
+		bounded := make([]Task, len(tasks))
+		for i, t := range tasks {
+			bounded[i] = Task{ID: cut(t.ID)}
+		}
+		p.BackgroundTasks = &bounded
+	}
 	return p, nil
+}
+
+// cut shortens s to at most MaxName bytes, at a character boundary.
+func cut(s string) string {
+	if len(s) <= MaxName {
+		return s
+	}
+	n := MaxName
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
 }
 
 // Action says what a transition does to the session.

@@ -35,10 +35,9 @@ func (e *RefusedError) Error() string { return fmt.Sprintf("refused (%s): %s", e
 // Delivery is where a verb went.
 type Delivery struct {
 	Session Session
-	Pane    *Pane           // the pane typed into; nil for other channels
-	Via     string          // the channel (see package driver)
-	Seq     int64           // the event logged for it
-	Cursor  eventlog.Cursor // in-process continuation from this delivery
+	Pane    *Pane  // the pane typed into; nil for other channels
+	Via     string // the channel (see package driver)
+	Seq     int64  // the event logged for it
 }
 
 // prepare stores what the world proves, so that an attachment checked
@@ -122,9 +121,7 @@ type paneVerb struct {
 // the verb's own gate. All of it is checked again under the pane's lock and
 // then the session's, right before typing, and the event is logged before
 // the locks are released: the session's hooks wait for the same session lock,
-// so what the verb causes is logged after it. Everything the verb publishes
-// is admitted before the mark is: a change too large to record is refused
-// before the pane is touched.
+// so what the verb causes is logged after it.
 func throughPane(ctx context.Context, log *eventlog.Log, v View, s Session, named *Pane, gate stateGate, verb paneVerb) (Delivery, error) {
 	p, err := paneOf(s, named, v)
 	if err != nil {
@@ -160,39 +157,28 @@ func throughPane(ctx context.Context, log *eventlog.Log, v View, s Session, name
 			if err := gate(fs, fresh, time.Now()); err != nil {
 				return err
 			}
-			rec, ok, err := store.Current(ctx, log, s.Agent, s.ID)
+			rec, ok, err := store.Get(ctx, s.Agent, s.ID)
 			if err != nil || !ok {
 				return &RefusedError{RefuseChanged, fmt.Sprintf("%s has ended", s.ID)}
 			}
 			mark, ev, after := verb.plan(fs, fp, rec)
 			ev.Agent, ev.Session, ev.Via = fs.Agent, fs.ID, driver.Pane
 			ev.Pane = &eventlog.PaneRef{Server: fp.Server, ID: fp.ID}
-			var report session.Prepared
-			if after != nil {
-				if report, err = session.PrepareReport(*after, ev); err != nil {
-					return err
-				}
-			} else if err := session.AdmitEvent(ev); err != nil {
-				return err
-			}
-			if err := store.PutContext(ctx, mark); err != nil {
+			if err := store.Put(ctx, mark); err != nil {
 				return err
 			}
 			if err := verb.press(ctx, fs, fp); err != nil {
 				return err
 			}
 			if after != nil {
-				var logged eventlog.Event
-				if _, logged, err = store.Publish(ctx, log, report); err == nil {
-					ev = logged
-				}
+				err = store.Report(ctx, log, *after, &ev)
 			} else {
 				err = log.Append(ctx, &ev)
 			}
 			if err != nil {
 				return fmt.Errorf("%s delivered to %s but not logged; do not repeat it: %w", ev.Event, fp.ID, err)
 			}
-			d = Delivery{Session: fs, Pane: &fp, Via: driver.Pane, Seq: ev.Seq, Cursor: ev.Cursor()}
+			d = Delivery{Session: fs, Pane: &fp, Via: driver.Pane, Seq: ev.Seq}
 			return nil
 		})
 	})

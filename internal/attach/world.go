@@ -11,6 +11,7 @@ import (
 	"context"
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/tmux"
 )
 
@@ -51,6 +52,13 @@ type Client struct {
 	Pane    tmux.Pane
 	Agent   string
 	Process proc.Process
+}
+
+// Shows reports whether the client's pane holds the attachment a hook of
+// the client's own process makes to rec.
+func (c Client) Shows(rec session.Record) bool {
+	a, ok := FromPane(c.Pane)
+	return ok && a == Attachment{Agent: rec.Agent, Session: rec.ID, PID: c.Process.PID, Start: c.Process.Start, Evidence: Process}
 }
 
 // Foreground reports whether the client holds its pane's terminal, so that

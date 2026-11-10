@@ -13,7 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ChrAlpha/tmux-agent-experience/internal/coord"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/lockfile"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
 )
@@ -99,9 +98,6 @@ func TestRunAlertDescribesAFailure(t *testing.T) {
 func TestExternalExecutionLimitIsLocalAndDoesNotQueue(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
-	if _, err := coord.Current(ctx, root); err != nil {
-		t.Fatal(err)
-	}
 	var held []*lockfile.Held
 	defer func() {
 		for _, l := range held {
@@ -109,7 +105,7 @@ func TestExternalExecutionLimitIsLocalAndDoesNotQueue(t *testing.T) {
 		}
 	}()
 	for i := range Executions {
-		l, err := lockfile.AcquireWithin(ctx, root, fmt.Sprintf("notify-%d.lock", i), false, false)
+		l, err := lockfile.Acquire(ctx, filepath.Join(root, fmt.Sprintf("notify-%d.lock", i)), false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -139,10 +135,10 @@ func TestNotifierFirstKeepsOrdinarySessionUseAvailable(t *testing.T) {
 		t.Fatalf("first notifier: %q %v", out, err)
 	}
 	store := session.Store{Dir: root}
-	if err := store.Put(session.Record{Agent: "claude", ID: "thread", Main: "idle"}); err != nil {
-		t.Fatal("notifier poisoned fresh state admission", err)
+	if err := store.Put(context.Background(), session.Record{Agent: "claude", ID: "thread", Main: "idle"}); err != nil {
+		t.Fatal("notifier poisoned fresh state", err)
 	}
-	if records, err := store.All(); err != nil || len(records) != 1 {
+	if records, _, err := store.All(context.Background()); err != nil || len(records) != 1 {
 		t.Fatalf("session use after notification: %+v %v", records, err)
 	}
 }

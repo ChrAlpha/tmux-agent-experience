@@ -15,7 +15,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/ChrAlpha/tmux-agent-experience/internal/coord"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/helper"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/lockfile"
 )
@@ -155,12 +154,9 @@ var ErrLimit = errors.New("notification execution limit reached")
 func Run(parent context.Context, root, command string, env []string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(parent, Timeout)
 	defer cancel()
-	if _, err := coord.Current(ctx, root); err != nil {
-		return nil, err
-	}
 	var lease *lockfile.Held
 	for i := range Executions {
-		held, err := lockfile.AcquireWithin(ctx, root, fmt.Sprintf("notify-%d.lock", i), false, false)
+		held, err := lockfile.Acquire(ctx, filepath.Join(root, fmt.Sprintf("notify-%d.lock", i)), false)
 		if errors.Is(err, lockfile.ErrBusy) {
 			continue
 		}

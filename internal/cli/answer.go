@@ -149,7 +149,7 @@ func (a *app) answerHook() error {
 		return err
 	}
 	// Wait only for a prompt the session now names this way.
-	if rec, ok, err := (session.Store{Dir: a.log.Dir}).GetContext(setup, proc.Claude, p.SessionID); err != nil || !ok {
+	if rec, ok, err := (session.Store{Dir: a.log.Dir}).Get(setup, proc.Claude, p.SessionID); err != nil || !ok {
 		return err
 	} else if _, open := rec.Request(in.Request); !open {
 		return nil

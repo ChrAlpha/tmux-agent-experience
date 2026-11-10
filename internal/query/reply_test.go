@@ -38,7 +38,7 @@ func TestLastReplyWaitsForTheReplyToBeWritten(t *testing.T) {
 		write(`{"type":"user","promptId":"t1","message":{"role":"user","content":"hi"}}`)
 		store := session.Store{Dir: t.TempDir()}
 		rec := session.Record{Agent: "claude", ID: "session-1", Main: "idle", Turn: "t1", Transcript: path}
-		if err := store.Lock(context.Background(), rec.Agent, rec.ID, func() error { return store.PutContext(context.Background(), rec) }); err != nil {
+		if err := store.Put(context.Background(), rec); err != nil {
 			t.Fatal(err)
 		}
 		return store, write

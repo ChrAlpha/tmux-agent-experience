@@ -4,10 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
-	"github.com/ChrAlpha/tmux-agent-experience/internal/adapter"
-	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
 )
@@ -16,105 +15,72 @@ import (
 // period, e.g. because it was a slash command.
 var ErrNoTurn = errors.New("no turn started")
 
-// livenessInterval is how often Wait checks that the session still exists.
-const livenessInterval = 2 * time.Second
+// waitPoll is how often Wait reads the session's record, and livenessInterval
+// how often it checks that the session's process still runs.
+const (
+	waitPoll         = 200 * time.Millisecond
+	livenessInterval = 2 * time.Second
+)
 
 // WaitOptions tune Wait.
 type WaitOptions struct {
 	States []string
-	After  int64
-	// Cursor anchors an in-process observation or delivery against recreation.
-	// An unset cursor preserves the numeric v1 After interface.
-	Cursor eventlog.Cursor
-	// StartGrace, when positive, waits for a turn that starts after o.After:
-	// states logged before the session starts working or blocks do not count,
-	// and Wait fails with ErrNoTurn if no turn starts within StartGrace.
-	StartGrace time.Duration
+	// Prompted, when set, waits for the turn of a prompt tmag delivered to
+	// the session while it was in this turn ("" for none): only a turn that
+	// prompt started counts, and Wait fails with ErrNoTurn if none starts
+	// within Grace.
+	Prompted *string
+	// Grace is how long a prompt may take to start a turn; PendingWindow
+	// when 0.
+	Grace time.Duration
 }
 
-// Wait blocks until an event of session s with seq > o.After reaches one of
-// o.States, and returns it. It fails with ErrEnded when the session ends,
+// Wait blocks until session s is in one of o.States, as its record says,
+// and returns its record then. It fails with ErrEnded when the session ends,
 // wherever it runs; a pane that stops showing it does not end the wait.
-func Wait(ctx context.Context, log *eventlog.Log, s Session, o WaitOptions) (eventlog.Event, error) {
-	cursor := o.Cursor
-	if !cursor.IsSet() {
-		cursor = eventlog.Cursor{Seq: o.After}
-	} else if cursor.Seq != o.After {
-		return eventlog.Event{}, errors.New("wait cursor differs from After")
+//
+// It reads the record, where every change lands first, rather than the
+// event log, so it misses no state the session stays in. A turn a prompt
+// started shows there once its hooks report it: they clear the prompt's
+// Sent mark, or report another turn.
+func Wait(ctx context.Context, store session.Store, s Session, o WaitOptions) (session.Record, error) {
+	started := o.Prompted == nil
+	if o.Grace == 0 {
+		o.Grace = PendingWindow
 	}
-	want := map[string]bool{}
-	for _, state := range o.States {
-		want[state] = true
-	}
-	started := o.StartGrace <= 0
-	graceAt := time.Now().Add(o.StartGrace)
-	var grace <-chan time.Time
-	if !started {
-		timer := time.NewTimer(o.StartGrace)
-		defer timer.Stop()
-		grace = timer.C
-	}
-	tick := time.NewTicker(200 * time.Millisecond)
-	defer tick.Stop()
+	grace := time.Now().Add(o.Grace)
 	nextLive := time.Now().Add(livenessInterval)
-	store := session.Store{Dir: log.Dir}
+	tick := time.NewTicker(waitPoll)
+	defer tick.Stop()
 	for {
-		// A grace expiry is only evidence after a certified replay captured at
-		// or after that deadline. Timer cancellation cannot hide history loss.
-		replayStarted := time.Now()
-		batch, err := log.Replay(ctx, cursor)
-		if err != nil {
-			return eventlog.Event{}, err
+		rec, ok, err := store.Get(ctx, s.Agent, s.ID)
+		if err != nil && ctx.Err() != nil {
+			return session.Record{}, ctx.Err()
 		}
-		if err := ctx.Err(); err != nil {
-			return eventlog.Event{}, err
+		if err == nil && !ok {
+			return session.Record{}, fmt.Errorf("%w: %s", ErrEnded, s.ID)
 		}
-		for _, e := range batch.Events {
-			if e.Session != s.ID || e.Agent != s.Agent {
-				continue
+		if err == nil {
+			if !started && (rec.Sent.IsZero() || rec.Turn != *o.Prompted) {
+				started = true
 			}
-			if e.Ended() {
-				return eventlog.Event{}, ErrEnded
+			if started && slices.Contains(o.States, rec.State()) {
+				return rec, nil
 			}
-			if e.State == "" {
-				continue
+			if !started && !time.Now().Before(grace) {
+				return rec, ErrNoTurn
 			}
-			if !started {
-				if e.State != adapter.Working && e.State != adapter.Blocked {
-					continue
-				}
-				started, grace = true, nil
-			}
-			if want[e.State] {
-				return e, nil
-			}
-		}
-		cursor = batch.Cursor
-		if !started && !replayStarted.Before(graceAt) {
-			return eventlog.Event{}, ErrNoTurn
-		}
-		now := time.Now()
-		if !now.Before(nextLive) {
-			nextLive = now.Add(livenessInterval)
-			rec, ok, err := store.GetContext(ctx, s.Agent, s.ID)
-			if err == nil {
-				if !ok || rec.Ended != "" {
-					return eventlog.Event{}, fmt.Errorf("%w: %s", ErrEnded, s.ID)
-				}
+			if now := time.Now(); !now.Before(nextLive) {
+				nextLive = now.Add(livenessInterval)
 				if rec.Host.PID > 0 && !proc.RunningContext(ctx, rec.Host.PID, rec.Host.Start) {
-					return eventlog.Event{}, fmt.Errorf("%w: the process of %s exited", ErrEnded, s.ID)
+					return session.Record{}, fmt.Errorf("%w: the process of %s exited", ErrEnded, s.ID)
 				}
 			}
-		}
-		if !started && !time.Now().Before(graceAt) {
-			continue
 		}
 		select {
 		case <-ctx.Done():
-			return eventlog.Event{}, ctx.Err()
+			return session.Record{}, ctx.Err()
 		case <-tick.C:
-		case <-grace:
-			grace = nil
 		}
 	}
 }

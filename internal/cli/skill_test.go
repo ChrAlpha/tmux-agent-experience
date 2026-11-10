@@ -12,7 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/query"
 )
 
@@ -116,14 +115,6 @@ func TestEveryRefusalSaysWhatNext(t *testing.T) {
 			t.Errorf("%v says nothing about what to do next", err)
 		}
 	}
-	for _, err := range []error{eventlog.ErrIntegrityLoss, eventlog.ErrHistoryUnavailable} {
-		if next("wait", "abcd", err) == "" {
-			t.Errorf("a wait ended by %v says nothing about what to do next", err)
-		}
-	}
-	if !strings.Contains(next("wait", "abcd", eventlog.ErrIntegrityLoss), "tell the user") {
-		t.Error("a damaged event log is not left to the user")
-	}
 }
 
 // What to do after a failed delivery depends on whether the prompt went
@@ -138,7 +129,7 @@ func TestNextKnowsWhetherAPromptWasDelivered(t *testing.T) {
 		want string // "" for no advice
 	}{
 		{"send", after, "run tmag wait %3 --for idle,blocked, then tmag read %3 --last; do not send the prompt again"},
-		{"send", delivered{fmt.Errorf("x: %w", eventlog.ErrIntegrityLoss)}, "do not send the prompt again"},
+		{"send", delivered{fmt.Errorf("x: %w", query.ErrEnded)}, "the prompt arrived, but its session ended"},
 		{"send", errTimeout, ""},
 		{"send", context.DeadlineExceeded, ""},
 		{"reply", undelivered{errTimeout}, "nothing was delivered: run the same tmag reply again"},

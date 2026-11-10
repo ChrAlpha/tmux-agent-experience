@@ -146,7 +146,7 @@ func Load(ctx context.Context, store session.Store) (View, *attach.World, error)
 	if err := ctx.Err(); err != nil {
 		return View{}, nil, err
 	}
-	recs, err := store.AllContext(ctx)
+	recs, _, err := store.All(ctx)
 	if err != nil {
 		return View{}, nil, err
 	}
@@ -156,24 +156,29 @@ func Load(ctx context.Context, store session.Store) (View, *attach.World, error)
 	return Build(w, recs), w, nil
 }
 
-// Snapshot is a current image with replay overlap. Seq precedes the scan;
-// Backlog certifies the interval through its Cursor. The scan can already
-// contain newer pending state, so this is not an atomic cross-resource view.
+// Snapshot is every session and pane as they are, after the event Seq: a
+// follower applies the events after Seq to it. Events logged while the view
+// was read may already be in it; they report sessions in full, so applying
+// one again changes nothing.
 type Snapshot struct {
 	Seq    int64  `json:"seq"`
 	Caller Caller `json:"caller"`
 	View
-	Backlog eventlog.Batch `json:"-"`
 }
 
-// TakeSnapshot validates and copies the replay overlap before publishing an
-// image. A stream emits the image, then Backlog, then follows Backlog.Cursor.
-// Pending records and pane markers are repaired by normal reconciliation;
-// complete state events (including Since) converge even when replay overlaps.
+// TakeSnapshot reads the log's head, then the view.
 func TakeSnapshot(ctx context.Context, log *eventlog.Log) (Snapshot, error) {
-	return takeSnapshot(ctx, log, func(ctx context.Context) (View, *attach.World, error) {
-		return Load(ctx, session.Store{Dir: log.Dir})
-	})
+	ctx, cancel := context.WithTimeout(ctx, eventlog.ReadTimeout)
+	defer cancel()
+	seq, err := log.Head(ctx)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	v, w, err := Load(ctx, session.Store{Dir: log.Dir})
+	if err != nil {
+		return Snapshot{}, err
+	}
+	return Snapshot{Seq: seq, Caller: callerFor(ctx, v, w), View: v}, ctx.Err()
 }
 
 // Errors returned by target resolution and waiting.

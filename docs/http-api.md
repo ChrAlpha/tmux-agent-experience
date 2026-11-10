@@ -1,9 +1,9 @@
-# tmag HTTP contract: tmag/http/v1
+# tmag HTTP contract: tmag/http/v2
 
 This contract is independent of client UI and release cadence. Paths start with
-`/v1/`; responses carry `Tmag-API-Schema: tmag/http/v1`. A breaking HTTP change
+`/v2/`; responses carry `Tmag-API-Schema: tmag/http/v2`. A breaking HTTP change
 requires a new path/schema version. Additive fields are allowed. State and CLI
-operation documents retain their own `schema: tmag/v1` and existing semantics.
+operation documents retain their own `schema: tmag/v2` and its semantics.
 
 ## Admission and deployment
 
@@ -26,25 +26,25 @@ and storage. Tokens are delivered only at issuance and are never put in URLs.
 - Disallowed host or origin: 403.
 - Unreadable authorization store: 503, distinct from invalid credentials.
 - Body errors: 400; a non-JSON content type: 415.
-- Control refusal: 409, with the original `tmag/v1` refusal code.
+- Control refusal: 409, with the original `tmag/v2` refusal code.
 - Local command usage: 400; timeout: 504; other command error: 422.
 - A local runner returning no valid JSON: 502.
 
-HTTP-layer errors have `{schema:"tmag/http/v1",error:{code,message}}`.
-Successful commands and command failures preserve their `tmag/v1` documents.
+HTTP-layer errors have `{schema:"tmag/http/v2",error:{code,message}}`.
+Successful commands and command failures preserve their `tmag/v2` documents.
 
 ## Resources
 
 | Method/path | Input | Result |
 | --- | --- | --- |
-| GET /v1/info | none | HTTP schema, state schema, binary version, stable instance id, supported operation names |
-| GET /v1/list | none | `list --json` |
-| GET /v1/inspect | target | `inspect --json` |
-| GET /v1/request | target, request | `request --json` |
-| GET /v1/read | target and either last=1 or lines=1..2000 | `read --json` |
-| GET /v1/watch | optional since cursor, otherwise Last-Event-ID; optional resync=1 | event stream |
-| POST /v1/act | JSON action | send, interrupt, or answer result |
-| POST /v1/pair | JSON `{code}`; no bearer needed | `{schema,credential:{id,label,created,expires?,token}}` |
+| GET /v2/info | none | HTTP schema, state schema, binary version, stable instance id, supported operation names |
+| GET /v2/list | none | `list --json` |
+| GET /v2/inspect | target | `inspect --json` |
+| GET /v2/request | target, request | `request --json` |
+| GET /v2/read | target and either last=1 or lines=1..2000 | `read --json` |
+| GET /v2/watch | optional since cursor, otherwise Last-Event-ID | event stream |
+| POST /v2/act | JSON action | send, interrupt, or answer result |
+| POST /v2/pair | JSON `{code}`; no bearer needed | `{schema,credential:{id,label,created,expires?,token}}` |
 
 Actions contain `verb` and `target`. A send carries `text`; an answer carries
 `request` and `decision` (`allow` or `deny`), with optional `message` and
@@ -58,27 +58,22 @@ A local `tmag auth pair LABEL` invitation expires after ten minutes and can be
 redeemed once. Its optional `--ttl` controls the issued credential's lifetime.
 Invalid, consumed or expired invitations return 403 `pairing`. Issuance returns
 the secret exactly once; listing returns only metadata. CLI issuance/listing
-use the existing `tmag/v1` CLI envelope; the HTTP pairing envelope is HTTP v1.
+use the `tmag/v2` CLI envelope; the HTTP pairing envelope is HTTP v2.
 
 ## Streaming and cancellation
 
-SSE `event: doc` carries exactly one unchanged `tmag/v1` watch document in data.
+SSE `event: doc` carries exactly one unchanged `tmag/v2` watch document in data.
 Snapshot and event frames also carry an SSE id equal to their sequence number.
 Pane-list frames do not advance the cursor. `event: ping` with data `1` is a
-keepalive, not state. Reconnect with the last snapshot/event cursor. The local
-watch contract replays missed events or starts a fresh snapshot after rotation.
-Clients should tolerate duplicate state events, as the CLI contract requires.
-If a running watch loses retained history, it sends the existing error document
-with code `history_unavailable` and ends the subscription. Start a fresh watch
-without a cursor and replace local state from its snapshot. `integrity_loss`
-reports a malformed complete log record and requires explicit maintenance.
-Neither error permits treating a retained suffix as a complete continuation.
-`resync=1` opts into replacement snapshots during that subscription. Each
-snapshot replaces both sessions and panes, including when either is empty.
-At most three replacement attempts are allowed in thirty seconds; sustained
-churn ends with the same terminal error document. Without this parameter,
-midstream history loss remains terminal. SSE ids stay numeric, and snapshots
-retain the CLI's replay-overlap semantics rather than claiming an atomic view.
+keepalive, not state. Reconnect with the last snapshot/event cursor: the local
+watch replays the events after it when the log still holds every one of them,
+and otherwise starts with a fresh snapshot. A running subscription likewise
+sends a fresh snapshot whenever it cannot vouch that it sent every event since
+the last, because events rotated away or the log was recreated. Each snapshot
+replaces both sessions and panes, including when either is empty. Events
+report a session in full, so clients tolerate events they already applied,
+including those a snapshot already shows; a snapshot is not an atomic view
+across sessions and panes.
 
 Disconnecting ends that subscription and its local watch. Every second, serve
 checks the persisted authorization store: revocation, expiry or a failed check

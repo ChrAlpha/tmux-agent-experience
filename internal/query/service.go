@@ -67,7 +67,7 @@ func throughService(outer context.Context, log *eventlog.Log, v View, s Session,
 		return Delivery{}, err
 	}
 	store := session.Store{Dir: log.Dir}
-	rec, ok, err := store.GetContext(outer, s.Agent, s.ID)
+	rec, ok, err := store.Get(outer, s.Agent, s.ID)
 	if err != nil || !ok {
 		return Delivery{}, &RefusedError{RefuseChanged, fmt.Sprintf("%s has ended", s.ID)}
 	}
@@ -95,24 +95,19 @@ func throughService(outer context.Context, log *eventlog.Log, v View, s Session,
 		if err := verb.gate(fs, fresh, time.Now()); err != nil {
 			return err
 		}
-		rec, ok, err := store.Current(ctx, log, s.Agent, s.ID)
+		rec, ok, err := store.Get(ctx, s.Agent, s.ID)
 		if err != nil || !ok {
 			return &RefusedError{RefuseChanged, fmt.Sprintf("%s has ended", s.ID)}
 		}
 		ev := verb.mark(&rec)
 		ev.Agent, ev.Session, ev.Via = fs.Agent, fs.ID, driver.Service
-		// Admitted before the mark is published: a verb too large to record
-		// leaves no mark, and is never delivered.
-		if err := session.AdmitEvent(ev); err != nil {
-			return err
-		}
-		if err := store.PutContext(ctx, rec); err != nil {
+		if err := store.Put(ctx, rec); err != nil {
 			return err
 		}
 		if err := log.Append(ctx, &ev); err != nil {
 			return err
 		}
-		d = Delivery{Session: fs, Via: driver.Service, Seq: ev.Seq, Cursor: ev.Cursor()}
+		d = Delivery{Session: fs, Via: driver.Service, Seq: ev.Seq}
 		return nil
 	})
 	if err != nil {

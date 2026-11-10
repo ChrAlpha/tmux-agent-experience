@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -18,11 +19,9 @@ import (
 	"github.com/ChrAlpha/tmux-agent-experience/internal/answer"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/attach"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/contextio"
-	"github.com/ChrAlpha/tmux-agent-experience/internal/coord"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/lockfile"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/notify"
-	"github.com/ChrAlpha/tmux-agent-experience/internal/ownedfs"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/tmux"
@@ -35,6 +34,11 @@ const Deadline = 3 * time.Second
 // maxPayload bounds how much hook input is read; Stop payloads embed the last
 // assistant message, which is decoded away but must still be consumed.
 const maxPayload = 64 << 20
+
+// ContactInterval is how often a hook that changes nothing else records its
+// contact with the session (last_hook_at). Contact alone is logged as no
+// event; views show it as of the record.
+const ContactInterval = 10 * time.Second
 
 // Input is one hook invocation.
 type Input struct {
@@ -110,7 +114,17 @@ func RunContext(parent context.Context, in Input) error {
 	contact := now().UTC()
 	ev := eventlog.Event{Agent: in.Agent, Session: p.SessionID, Event: p.HookEventName, Cwd: p.Cwd, LastHookAt: contact}
 
-	get := func() (session.Record, bool, error) { return env.Store.Current(ctx, in.Log, in.Agent, p.SessionID) }
+	// A record that cannot be read is the hook's to replace: the session's
+	// state comes from its hooks, and this one reports it anew.
+	get := func() (session.Record, bool, error) {
+		rec, found, err := env.Store.Get(ctx, in.Agent, p.SessionID)
+		var fault *session.RecordError
+		if errors.As(err, &fault) {
+			RecordErrorContext(ctx, in.Log.Dir, in.Agent, err)
+			return session.Record{}, false, nil
+		}
+		return rec, found, err
+	}
 
 	if tr.Action == adapter.End {
 		err := env.Store.Lock(ctx, in.Agent, p.SessionID, func() error {
@@ -119,7 +133,7 @@ func RunContext(parent context.Context, in Input) error {
 				return err
 			}
 			if !found {
-				return in.Log.Append(ctx, &ev)
+				cur = session.Record{Agent: in.Agent, ID: p.SessionID}
 			}
 			return env.Store.End(ctx, in.Log, cur, ev)
 		})
@@ -130,6 +144,7 @@ func RunContext(parent context.Context, in Input) error {
 	}
 
 	var prev, rec session.Record
+	wrote := false
 	err = env.Store.Lock(ctx, in.Agent, p.SessionID, func() error {
 		cur, found, err := get()
 		if err != nil {
@@ -149,23 +164,32 @@ func RunContext(parent context.Context, in Input) error {
 			base.Transcript = p.TranscriptPath
 		}
 		next, changed := session.Apply(base, tr, now())
+		moved := base.Cwd != cur.Cwd || base.Host != cur.Host || base.Transcript != cur.Transcript
+		if found && !changed && !moved && contact.Sub(cur.LastHookAt) < ContactInterval {
+			prev, rec = cur, cur // nothing to write
+			return nil
+		}
 		if contact.After(next.LastHookAt) {
 			next.LastHookAt = contact
 		}
-		if found && !changed && base.Cwd == cur.Cwd && base.Host == cur.Host && base.Transcript == cur.Transcript && next.LastHookAt.Equal(cur.LastHookAt) {
-			return nil
-		}
 		// Calls and other background work change without an event; whatever
 		// an event reports of the session (session.Report) is logged.
-		saved, err := env.Store.Save(ctx, in.Log, next, ev.Event)
-		if err != nil {
+		if err := env.Store.Save(ctx, in.Log, cur, next, ev); err != nil {
 			return err
 		}
-		prev, rec = cur, saved
+		prev, rec, wrote = cur, next, true
 		return nil
 	})
 	if err != nil || rec.ID == "" {
 		return err
+	}
+	if !wrote {
+		// Nothing changed, but the hook still proves its pane shows the
+		// session: an earlier hook may have died before attaching it.
+		if c, ok := w.ClientOf(host); hostKnown && ok && !c.Shows(rec) {
+			return env.Attach(ctx, w, c, rec, attach.Process)
+		}
+		return nil
 	}
 	// An answer hook whose prompt closed (answered in the terminal, the call
 	// ran, the turn ended) would otherwise wait on: the agent ignores what it
@@ -317,10 +341,6 @@ func RecordErrorContext(parent context.Context, dir, agent string, err error) {
 	}
 	ctx, cancel := context.WithTimeout(parent, 100*time.Millisecond)
 	defer cancel()
-	// Diagnostics may be the first writer; admit the layout before any file.
-	if _, err := coord.Current(ctx, dir); err != nil {
-		return
-	}
 	switch agent {
 	case "claude", "codex", "notify":
 	default:
@@ -337,21 +357,12 @@ func RecordErrorContext(parent context.Context, dir, agent string, err error) {
 		category = "limited"
 	case errors.As(err, &record):
 		category = "records_unavailable"
-	case errors.As(err, new(*session.LimitError)), errors.As(err, new(*eventlog.LimitError)):
-		category = "limit_exceeded"
-	case errors.As(err, new(*attach.MarkerError)):
-		category = "attachment_unavailable"
 	}
 	// The line contains fixed categories only, never err.Error(), command output
 	// or hook input. Exclusion covers the ceiling check, truncation and append.
 	line := []byte(fmt.Sprintf("%s %s %s\n", time.Now().UTC().Format(time.RFC3339), agent, category))
-	_ = lockfile.Within(ctx, dir, "hook-log.lock", false, false, func() error {
-		d, err := ownedfs.Open(ctx, dir, ".", false)
-		if err != nil {
-			return err
-		}
-		defer d.Close()
-		f, err := d.OpenFile(ctx, "hook.log", os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o600)
+	_ = lockfile.With(ctx, filepath.Join(dir, "hook-log.lock"), func() error {
+		f, err := contextio.OpenRegular(ctx, filepath.Join(dir, "hook.log"), os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o600)
 		if err != nil {
 			return err
 		}

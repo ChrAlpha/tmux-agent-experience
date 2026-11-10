@@ -3,14 +3,12 @@ package attach
 import (
 	"context"
 	"crypto/sha256"
-	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/ChrAlpha/tmux-agent-experience/internal/coord"
-	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/lockfile"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/tmux"
@@ -43,36 +41,15 @@ type Attachment struct {
 	PID      int
 	Start    string
 	Evidence string
-	// Change is the event (Attach or Detach) the attachment is in the middle
-	// of: written to the pane before it is logged, cleared once it is. An
-	// attachment being detached no longer holds.
-	Change string
-	// Replaced is the attachment an Attach replaced, "agent session", whose
-	// Detach is logged before the Attach.
-	Replaced string
 }
 
-// same reports whether a and b are the same attachment, whatever event
-// either is in the middle of.
-func (a Attachment) same(b Attachment) bool {
-	a.Change, b.Change, a.Replaced, b.Replaced = "", "", "", ""
-	return a == b
-}
-
-// client reports whether a and b attach one session to one client process.
-func (a Attachment) client(b Attachment) bool {
-	return a.Agent == b.Agent && a.Session == b.Session && a.PID == b.PID && a.Start == b.Start
-}
-
-// keeps reports whether a stands against b: it is the same attachment, or a
-// process proof b would replace with a title inference. A process proof lasts
-// as long as its client does.
+// keeps reports whether a stands against b: it is the same attachment, or
+// a process proof of the client and session b names, which a title
+// inference never replaces: a process proof lasts as long as its client.
 func (a Attachment) keeps(b Attachment) bool {
-	return a.client(b) && (a.Evidence == b.Evidence || a.Evidence == Process)
+	return a.Agent == b.Agent && a.Session == b.Session && a.PID == b.PID && a.Start == b.Start &&
+		(a.Evidence == b.Evidence || a.Evidence == Process)
 }
-
-// holds reports whether the attachment is not being detached.
-func (a Attachment) holds() bool { return a.Change != eventlog.Detach }
 
 // Pane options. The attachment and the display projection share the pane,
 // and both vanish with it. The projection (state, kind, since, cmd) is a
@@ -87,8 +64,6 @@ const (
 	optKind     = "kind"
 	optSince    = "since"
 	optCmd      = "cmd"
-	optChange   = "change"
-	optReplaced = "replaced"
 )
 
 // FromPane reads the attachment stored on a pane: only one tmag could have
@@ -97,20 +72,10 @@ const (
 // is no attachment.
 func FromPane(p tmux.Pane) (Attachment, bool) {
 	o := p.Options
-	a := Attachment{Agent: o[optAgent], Session: o[optSession], Start: o[optStart], Evidence: o[optEvidence], Change: o[optChange], Replaced: o[optReplaced]}
+	a := Attachment{Agent: o[optAgent], Session: o[optSession], Start: o[optStart], Evidence: o[optEvidence]}
 	a.PID, _ = strconv.Atoi(o[optPID])
 	if !named(a.Agent, a.Session) || a.PID <= 0 || (a.Evidence != Process && a.Evidence != TitleID) {
 		return Attachment{}, false
-	}
-	switch a.Change {
-	case "", eventlog.Attach, eventlog.Detach:
-	default:
-		return Attachment{}, false
-	}
-	if a.Replaced != "" {
-		if agent, id, ok := strings.Cut(a.Replaced, " "); !ok || !named(agent, id) {
-			return Attachment{}, false
-		}
 	}
 	return a, true
 }
@@ -119,28 +84,6 @@ func FromPane(p tmux.Pane) (Attachment, bool) {
 func named(agent, id string) bool {
 	return (agent == proc.Claude || agent == proc.Codex) && session.ValidID(id)
 }
-
-// unreadable reports whether a pane's options mark an attachment change in
-// progress, an Attach or Detach a writer did not get to log, that FromPane
-// cannot read: what they mark is unknown, and must not be cleared as broken.
-func unreadable(p tmux.Pane) bool {
-	if _, ok := FromPane(p); ok {
-		return false
-	}
-	return p.Options[optChange] != "" || p.Options[optReplaced] != ""
-}
-
-// MarkerError reports a pane whose options mark an attachment change tmag
-// cannot read. The pane is left as it is and nothing is logged for it: the
-// first one stops reconciliation, as an unreadable session record does, until
-// its options are repaired or cleared. It names the pane, never the options.
-type MarkerError struct{ Server, Pane string }
-
-func (e *MarkerError) Error() string {
-	return fmt.Sprintf("attachment_unavailable: pane %s of %s marks an attachment change tmag cannot read; its @tmag_ options are left as they are", e.Pane, e.Server)
-}
-
-func markerError(p tmux.Pane) error { return &MarkerError{Server: p.Server, Pane: p.ID} }
 
 // Projection is what tmux displays for an attached pane.
 type Projection struct {
@@ -180,8 +123,6 @@ func write(ctx context.Context, srv tmux.Server, pane, cmd string, a Attachment,
 		}
 	}
 	opt(optStart, a.Start)
-	opt(optChange, a.Change)
-	opt(optReplaced, a.Replaced)
 	opt(optKind, pr.Kind)
 	since := ""
 	if !pr.Since.IsZero() {
@@ -207,12 +148,13 @@ func writeProjection(ctx context.Context, srv tmux.Server, pane string, pr Proje
 	return srv.SetPaneOptions(ctx, pane, set, unset)
 }
 
-// Lock runs fn holding the pane's lock, a file under stateDir shared by
-// every tmag process. A pane's attachment and projection change only under
-// it, and a sender takes it before the session's lock.
+// Lock runs fn holding the pane's lock, a stripe of the state directory's
+// lock pool shared by every tmag process. A pane's attachment and projection
+// change only under it, and whoever also takes a session's lock takes the
+// pane's first.
 func Lock(ctx context.Context, stateDir, server, pane string, fn func() error) error {
 	sum := sha256.Sum256([]byte(server + "\x00" + pane))
-	return coord.With(ctx, stateDir, coord.Pane, sum, fn)
+	return lockfile.Stripe(ctx, stateDir, "p", sum, fn)
 }
 
 // titleIDLen is how many leading characters of a thread id the Codex 0.166

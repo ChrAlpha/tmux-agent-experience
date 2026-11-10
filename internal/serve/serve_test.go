@@ -48,7 +48,7 @@ func TestAdmissionAndIndependentContract(t *testing.T) {
 		if query.OwnerGrant(ctx).ID() == "" {
 			t.Error("owner grant lost")
 		}
-		_, _ = io.WriteString(out, `{"schema":"tmag/v1","sessions":[]}`)
+		_, _ = io.WriteString(out, `{"schema":"tmag/v2","sessions":[]}`)
 		return 0
 	})
 	for _, v := range []struct {
@@ -59,7 +59,7 @@ func TestAdmissionAndIndependentContract(t *testing.T) {
 		{c.Token, "localhost", "https://localhost", 403},
 		{c.Token, "box.example", "https://client.example", 200}, {c.Token, "localhost", "", 200},
 	} {
-		res := call(s, "GET", "/v1/list", "", v.token, v.host, v.origin)
+		res := call(s, "GET", "/v2/list", "", v.token, v.host, v.origin)
 		if res.Code != v.status {
 			t.Errorf("admission = %d, want %d", res.Code, v.status)
 		}
@@ -67,7 +67,7 @@ func TestAdmissionAndIndependentContract(t *testing.T) {
 	if calls != 2 {
 		t.Fatalf("unauthorized request reached the runner (%d)", calls)
 	}
-	info := call(s, "GET", "/v1/info", "", c.Token, "", "")
+	info := call(s, "GET", "/v2/info", "", c.Token, "", "")
 	if !strings.Contains(info.Body.String(), Schema) || !strings.Contains(info.Body.String(), "instance") {
 		t.Fatal("missing public contract discovery")
 	}
@@ -76,7 +76,7 @@ func TestAdmissionAndIndependentContract(t *testing.T) {
 			t.Errorf("client route %s is still served", path)
 		}
 	}
-	preflight := call(s, "OPTIONS", "/v1/act", "", "", "box.example", "https://client.example")
+	preflight := call(s, "OPTIONS", "/v2/act", "", "", "box.example", "https://client.example")
 	if preflight.Code != 204 || preflight.Header().Get("Access-Control-Allow-Origin") != "https://client.example" {
 		t.Fatal("explicit client origin cannot preflight")
 	}
@@ -90,16 +90,16 @@ func TestActionsPreserveArgumentsAndGates(t *testing.T) {
 			b, _ := io.ReadAll(in)
 			text = string(b)
 		}
-		_, _ = io.WriteString(out, `{"schema":"tmag/v1","error":{"code":"refused:changed","message":"changed"}}`)
+		_, _ = io.WriteString(out, `{"schema":"tmag/v2","error":{"code":"refused:changed","message":"changed"}}`)
 		return 3
 	})
-	r := call(s, "POST", "/v1/act", `{"verb":"send","target":"--json","text":"hello"}`, c.Token, "", "")
+	r := call(s, "POST", "/v2/act", `{"verb":"send","target":"--json","text":"hello"}`, c.Token, "", "")
 	if r.Code != 409 || strings.Join(got, " ") != "send --json -- --json -" || text != "hello" {
 		t.Fatal("control arguments or refusal changed")
 	}
 	got = nil
 	for _, b := range []string{`{"verb":"shell","target":"a"}`, `{"verb":"send","target":"a","machine":"remote"}`, `{"verb":"send","target":"a"} {}`} {
-		if res := call(s, "POST", "/v1/act", b, c.Token, "", ""); res.Code != 400 {
+		if res := call(s, "POST", "/v2/act", b, c.Token, "", ""); res.Code != 400 {
 			t.Error("non-contract action accepted")
 		}
 	}
@@ -114,7 +114,7 @@ func TestPairingIssuesIndependentCredentials(t *testing.T) {
 		t.Fatal(err)
 	}
 	b, _ := json.Marshal(map[string]string{"code": p.Code})
-	res := call(s, "POST", "/v1/pair", string(b), "", "box.example", "")
+	res := call(s, "POST", "/v2/pair", string(b), "", "box.example", "")
 	var d struct{ Credential auth.Issued }
 	if res.Code != 200 || json.Unmarshal(res.Body.Bytes(), &d) != nil || d.Credential.ID == c.ID {
 		t.Fatal("pairing did not issue its own credential")
@@ -122,7 +122,7 @@ func TestPairingIssuesIndependentCredentials(t *testing.T) {
 	if _, err = store.Authenticate(context.Background(), d.Credential.Token); err != nil {
 		t.Fatal(err)
 	}
-	if res = call(s, "POST", "/v1/pair", string(b), "", "box.example", ""); res.Code != 403 {
+	if res = call(s, "POST", "/v2/pair", string(b), "", "box.example", ""); res.Code != 403 {
 		t.Fatal("pairing code reused")
 	}
 }
@@ -133,13 +133,13 @@ func TestRevocationClosesAnExistingSubscription(t *testing.T) {
 		if strings.Join(args, " ") != "watch --since 17" {
 			t.Error("cursor not relayed")
 		}
-		_, _ = io.WriteString(out, "{\"schema\":\"tmag/v1\",\"type\":\"snapshot\",\"seq\":18}\n")
+		_, _ = io.WriteString(out, "{\"schema\":\"tmag/v2\",\"type\":\"snapshot\",\"seq\":18}\n")
 		<-ctx.Done()
 		return 0
 	})
 	hs := httptest.NewServer(s)
 	defer hs.Close()
-	req, _ := http.NewRequest(http.MethodGet, hs.URL+"/v1/watch?since=17", nil)
+	req, _ := http.NewRequest(http.MethodGet, hs.URL+"/v2/watch?since=17", nil)
 	req.Header.Set("Authorization", "Bearer "+c.Token)
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -166,31 +166,22 @@ func TestRevocationClosesAnExistingSubscription(t *testing.T) {
 	}
 }
 
-func TestWatchResyncNegotiationPreservesNumericSSEAndTerminalError(t *testing.T) {
+// A watch relays each document of the local watch as one SSE frame, with
+// the snapshot's or event's sequence number as its id, so that a client
+// reconnects with Last-Event-ID; a replacement snapshot is one more frame.
+func TestWatchRelaysSnapshotsAndEventsWithNumericIDs(t *testing.T) {
 	s, _, c := fixture(t, func(ctx context.Context, args []string, in io.Reader, out, stderr io.Writer) int {
-		if strings.Join(args, " ") != "watch --resync --since 17" {
-			t.Errorf("negotiated runner args = %q", args)
+		if strings.Join(args, " ") != "watch --since 17" {
+			t.Errorf("runner args = %q", args)
 		}
-		_, _ = io.WriteString(out, "{\"schema\":\"tmag/v1\",\"type\":\"snapshot\",\"seq\":18,\"sessions\":[],\"panes\":[]}\n")
-		_, _ = io.WriteString(out, "{\"schema\":\"tmag/v1\",\"type\":\"snapshot\",\"seq\":29,\"sessions\":[],\"panes\":[]}\n")
-		_, _ = io.WriteString(out, "{\"schema\":\"tmag/v1\",\"error\":{\"code\":\"history_unavailable\",\"message\":\"resync limit\"}}\n")
-		return 1
-	})
-	res := call(s, "GET", "/v1/watch?since=17&resync=1", "", c.Token, "box.example", "")
-	data := res.Body.String()
-	if res.Code != 200 || !strings.Contains(data, "id: 18\nevent: doc") || !strings.Contains(data, "id: 29\nevent: doc") ||
-		strings.Count(data, "id:") != 2 || !strings.Contains(data, `"code":"history_unavailable"`) {
-		t.Fatalf("resync SSE changed the v1 envelope: %d %s", res.Code, data)
-	}
-}
-
-func TestWatchRejectsInvalidResyncBeforeStartingRunner(t *testing.T) {
-	s, _, c := fixture(t, func(context.Context, []string, io.Reader, io.Writer, io.Writer) int {
-		t.Fatal("invalid negotiation started a watch")
+		_, _ = io.WriteString(out, "{\"schema\":\"tmag/v2\",\"type\":\"event\",\"event\":{\"seq\":18}}\n")
+		_, _ = io.WriteString(out, "{\"schema\":\"tmag/v2\",\"type\":\"snapshot\",\"seq\":29,\"sessions\":[],\"panes\":[]}\n")
 		return 0
 	})
-	if res := call(s, "GET", "/v1/watch?resync=true", "", c.Token, "box.example", ""); res.Code != 400 {
-		t.Fatalf("invalid resync = %d %s", res.Code, res.Body.String())
+	res := call(s, "GET", "/v2/watch?since=17", "", c.Token, "box.example", "")
+	data := res.Body.String()
+	if res.Code != 200 || !strings.Contains(data, "id: 18\nevent: doc") || !strings.Contains(data, "id: 29\nevent: doc") || strings.Count(data, "id:") != 2 {
+		t.Fatalf("watch frames: %d %s", res.Code, data)
 	}
 }
 func TestAcceptedActionOutlivesDisconnect(t *testing.T) {
@@ -203,14 +194,14 @@ func TestAcceptedActionOutlivesDisconnect(t *testing.T) {
 		if ctx.Err() != nil {
 			t.Error("accepted action canceled by disconnect")
 		}
-		_, _ = io.WriteString(out, `{"schema":"tmag/v1"}`)
+		_, _ = io.WriteString(out, `{"schema":"tmag/v2"}`)
 		close(finished)
 		return 0
 	})
 	hs := httptest.NewServer(s)
 	defer hs.Close()
 	ctx, cancel := context.WithCancel(context.Background())
-	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, hs.URL+"/v1/act", strings.NewReader(`{"verb":"interrupt","target":"session"}`))
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, hs.URL+"/v2/act", strings.NewReader(`{"verb":"interrupt","target":"session"}`))
 	req.Header.Set("Authorization", "Bearer "+c.Token)
 	req.Header.Set("Content-Type", "application/json")
 	go func() {
@@ -249,7 +240,7 @@ func TestRevocationBeforeBodyCompletionPreventsAdmission(t *testing.T) {
 	ran := false
 	s, store, c := fixture(t, func(context.Context, []string, io.Reader, io.Writer, io.Writer) int { ran = true; return 0 })
 	body := &stalledBody{Reader: strings.NewReader(`{"verb":"interrupt","target":"session"}`), started: make(chan struct{}), release: make(chan struct{})}
-	r := httptest.NewRequest(http.MethodPost, "http://localhost/v1/act", body)
+	r := httptest.NewRequest(http.MethodPost, "http://localhost/v2/act", body)
 	r.Header.Set("Authorization", "Bearer "+c.Token)
 	r.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()

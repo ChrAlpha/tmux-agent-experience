@@ -37,7 +37,7 @@ func archive(t *testing.T, version string, kind byte) []byte {
 	var b bytes.Buffer
 	gz := gzip.NewWriter(&b)
 	tw := tar.NewWriter(gz)
-	image := []byte("#!/bin/sh\nprintf 'tmag " + version + " (tmag/v1)\\n'\n")
+	image := []byte("#!/bin/sh\nprintf 'tmag " + version + " (tmag/v2)\\n'\n")
 	h := &tar.Header{Name: "tmag", Mode: 0755, Size: int64(len(image)), Typeflag: kind}
 	if kind == tar.TypeSymlink {
 		h.Linkname = "outside"
@@ -285,7 +285,7 @@ if [ -n "${TMAG_TEST_ENTERED:-}" ]; then
  printf ready >"$TMAG_TEST_ENTERED"
  while [ ! -f "$TMAG_TEST_PUBLISH" ]; do sleep 0.02; done
 fi
-printf 'tmag 0.3.0 (tmag/v1)\n'
+printf 'tmag 0.3.0 (tmag/v2)\n'
 `)
 	var b bytes.Buffer
 	gz := gzip.NewWriter(&b)

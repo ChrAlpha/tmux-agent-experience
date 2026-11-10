@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/query"
 )
 
@@ -37,10 +36,7 @@ func next(cmd, target string, err error) string {
 		target = "ID"
 	}
 	if errors.As(err, new(delivered)) {
-		switch {
-		case errors.Is(err, eventlog.ErrIntegrityLoss):
-			return "the prompt arrived, but tmag can no longer trust its event log: tell the user (tmag doctor shows the damage); do not send the prompt again"
-		case errors.Is(err, query.ErrEnded):
+		if errors.Is(err, query.ErrEnded) {
 			return "the prompt arrived, but its session ended: tmag list shows the agents that run"
 		}
 		return fmt.Sprintf("the prompt arrived and what became of it is unknown: run tmag wait %s --for idle,blocked, then tmag read %s --last; do not send the prompt again", target, target)
@@ -53,10 +49,6 @@ func next(cmd, target string, err error) string {
 		return nextAfterRefusal(cmd, target, refused.Reason)
 	}
 	switch {
-	case errors.Is(err, eventlog.ErrIntegrityLoss):
-		return "tmag can no longer trust its event log: tell the user (tmag doctor shows the damage)"
-	case errors.Is(err, eventlog.ErrHistoryUnavailable):
-		return "what it waited for is no longer recorded: see the agent's state with tmag list"
 	case cmd == "wait" && (errors.Is(err, errTimeout) || errors.Is(err, context.DeadlineExceeded)):
 		return "the state did not come in time: run the same tmag wait again"
 	case errors.Is(err, query.ErrEnded), errors.Is(err, query.ErrNotFound):

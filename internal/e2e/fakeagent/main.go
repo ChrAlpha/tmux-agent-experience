@@ -16,7 +16,8 @@
 //
 // It turns on bracketed paste as the agents' TUIs do, so that a pasted
 // prompt of several lines is one prompt. Prompts starting with "/" behave
-// like slash commands: no turn, no hooks. The prompt "block" raises a
+// like slash commands: no turn, no hooks; "/notify" alone runs the idle
+// notification hook Claude Code sends after a while idle. The prompt "block" raises a
 // permission prompt that the next one resolves. A prompt "tmag ARGS" is a
 // turn whose Bash tool runs tmag ARGS, with the variable the agent sets for
 // its tools naming the session; FAKE_OUT gets "tool CODE OUTPUT".
@@ -173,6 +174,10 @@ func main() {
 			// The person answers the dialog in the terminal.
 			record("terminal:" + line)
 			settle(line == "yes")
+		case line == "/notify":
+			// The notification Claude Code sends once it has been idle a
+			// while: a hook that changes nothing.
+			hook("Notification", map[string]any{turnKey: turn, "notification_type": "idle_prompt"})
 		case strings.HasPrefix(line, "/"):
 			// slash commands start no turn
 		case line == "block" && answering:

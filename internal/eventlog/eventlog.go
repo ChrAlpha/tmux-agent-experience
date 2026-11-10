@@ -1,21 +1,32 @@
-// Package eventlog is the append-only, sequence-numbered record of agent events.
+// Package eventlog is the append-only, sequence-numbered record of agent
+// events, which tells watchers what changed.
 //
-// Writers and replay capture share an exclusive flock; callbacks run outside
-// it. The log holds ids, states and timestamps only — never content.
+// The log is told of a change after it is made, best effort: a writer makes
+// the change where it lives (a session's record, a pane's options) and then
+// logs it, so a writer that dies in between leaves that change unlogged until
+// the session's next event reports it. Sequence numbers run without gaps
+// through the retained files, so a reader can always tell when it missed
+// events, because they rotated away or the log was recreated, and then takes
+// a fresh snapshot of the state instead (Tail). Writers append under one
+// lock; readers take none. The log holds ids, states, paths and timestamps
+// only, never content.
 package eventlog
 
 import (
+	"bufio"
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
-	"fmt"
-	"math"
+	"errors"
+	"hash"
+	"io"
 	"os"
 	"path/filepath"
-	"strconv"
+	"syscall"
 	"time"
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/contextio"
-	"github.com/ChrAlpha/tmux-agent-experience/internal/coord"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/lockfile"
 )
 
@@ -60,6 +71,8 @@ type Request struct {
 // Cwd, Runtime, Transcript, Subagents, Capabilities and Requests are then what
 // the session is, and a field left out is empty.
 type Event struct {
+	// LastHookAt is the session's last hook contact when the event was
+	// logged.
 	LastHookAt time.Time `json:"last_hook_at,omitzero"`
 	Seq        int64     `json:"seq"`
 	Time       time.Time `json:"time"`
@@ -68,8 +81,7 @@ type Event struct {
 	Event      string    `json:"event"`
 	State      string    `json:"state,omitempty"`
 	Kind       string    `json:"kind,omitempty"`
-	// Since is when the reported state/kind last changed. Older records may
-	// omit it; Time remains when this event was appended, including repair.
+	// Since is when the reported state/kind last changed.
 	Since *time.Time `json:"since,omitempty"`
 	Turn  string     `json:"turn,omitempty"`
 	Cwd   string     `json:"cwd,omitempty"`
@@ -99,12 +111,7 @@ type Event struct {
 	// deny.
 	Request  string `json:"request,omitempty"`
 	Decision string `json:"decision,omitempty"`
-	cursor   Cursor
 }
-
-// Cursor is the exact checkpoint assigned by a successful Append. It is not
-// serialized and is unset for events read from disk or an unsuccessful append.
-func (e Event) Cursor() Cursor { return e.cursor }
 
 // Events tmag itself records, beside those named after agent hooks.
 const (
@@ -123,12 +130,20 @@ func (e Event) Ended() bool { return e.Event == End || e.Event == Exit }
 const (
 	currentName = "events.jsonl"
 	rotatedName = "events.1.jsonl"
-	seqName     = "seq"
 	lockName    = "lock"
 )
 
 // DefaultMaxBytes is the size at which the current file is rotated.
 const DefaultMaxBytes = 8 << 20
+
+// ReadTimeout bounds one read of the log, or of the state it reports on,
+// rather than a stream's whole lifetime.
+const ReadTimeout = 5 * time.Second
+
+// maxLine bounds a line readers decode. What an event can hold is bounded far
+// below it where hook input is read (adapter.Decode), so a longer line is
+// damage, skipped like any line that does not decode.
+const maxLine = 1 << 20
 
 // Log is a directory holding the current and one rotated event file.
 type Log struct {
@@ -143,87 +158,41 @@ func Open(dir string) *Log {
 
 func (l *Log) path(name string) string { return filepath.Join(l.Dir, name) }
 
-// WithLock runs fn while holding the log's exclusive lock. Waiting for the lock
-// ends with ctx, so a stuck holder cannot stall a hook.
+// WithLock runs fn while holding the log's lock, which every writer takes.
+// Waiting for it ends with ctx, so a stuck holder cannot stall a hook.
 func (l *Log) WithLock(ctx context.Context, fn func() error) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if _, err := coord.Current(ctx, l.Dir); err != nil {
-		return err
-	}
-	return lockfile.With(ctx, l.path(lockName), func() error {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if err := fn(); err != nil {
-			return err
-		}
-		return ctx.Err()
-	})
+	return lockfile.With(ctx, l.path(lockName), fn)
 }
 
-// MaxRecordBytes bounds one line of the log, its newline included. Readers
-// refuse a longer one, so Append admits none.
-const MaxRecordBytes = 64 << 20
-
-// LimitError refuses an event whose line would exceed MaxRecordBytes. It
-// carries sizes only, never what the event holds.
-type LimitError struct{ Size, Limit int }
-
-func (e *LimitError) Error() string {
-	return fmt.Sprintf("limit_exceeded: event line encodes to %d bytes, over %d", e.Size, e.Limit)
-}
-
-// widestTime encodes to the longest UTC timestamp Append can assign.
-var widestTime = time.Date(9999, 12, 31, 23, 59, 59, 999999999, time.UTC)
-
-// Admit returns the length of the line Append would write for e, newline
-// included, with what Append assigns at its widest: the sequence number, and
-// the time when e has none. A time e has is counted as it encodes. Above
-// MaxRecordBytes it returns a *LimitError, and Append refuses exactly the
-// events Admit refuses, before reserving anything.
-func Admit(e Event) (int, error) {
-	e.Seq = math.MaxInt64
-	if e.Time.IsZero() {
-		e.Time = widestTime
-	}
-	line, err := json.Marshal(e)
-	if err != nil {
-		return 0, err
-	}
-	n := len(line) + 1
-	if n > MaxRecordBytes {
-		return n, &LimitError{Size: n, Limit: MaxRecordBytes}
-	}
-	return n, nil
-}
-
-// Append reserves a sequence before writing a complete record. An interrupted
-// reservation leaves an unused number; recovery never reuses that number. An
-// event Admit refuses is refused before the lock is taken.
+// Append logs e with the next sequence number, and the time now unless e
+// has one. A fresh log numbers from the current time in microseconds, so its
+// numbers follow those of a log it replaces. A line a writer that died left
+// unfinished is ended first, so that readers skip it whole; its number is
+// used again, keeping the numbers readers see without gaps.
 func (l *Log) Append(ctx context.Context, e *Event) error {
-	e.cursor = Cursor{}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if _, err := Admit(*e); err != nil {
-		return err
-	}
-	err := l.WithLock(ctx, func() error {
-		h, err := l.history(ctx)
+	return l.WithLock(ctx, func() error {
+		f, err := l.openAppend(ctx)
 		if err != nil {
 			return err
 		}
-		if h.Origin == 0 && h.Allocated == 0 {
-			h.Origin = baseSeq(time.Now())
+		defer func() { f.Close() }()
+		st, err := f.Stat()
+		if err != nil {
+			return err
 		}
-		last := max(h.Allocated, h.Origin)
-		if last == math.MaxInt64 {
-			return fmt.Errorf("%w: sequence numbers exhausted", ErrIntegrityLoss)
+		last, at, err := lastLine(ctx, f, st.Size())
+		if err != nil {
+			return err
 		}
-		h.Allocated = last + 1
-		e.Seq = h.Allocated
+		if last == 0 {
+			if last, err = l.lastRotated(ctx); err != nil {
+				return err
+			}
+		}
+		if last == 0 {
+			last = time.Now().UnixMicro()
+		}
+		e.Seq = last + 1
 		if e.Time.IsZero() {
 			e.Time = time.Now().UTC()
 		}
@@ -232,94 +201,462 @@ func (l *Log) Append(ctx context.Context, e *Event) error {
 			return err
 		}
 		line = append(line, '\n')
-		// Reserve through the legacy sequence file first, so an older writer
-		// cannot reuse a number if this process dies before checkpointing it.
-		if err := l.writeSeq(ctx, e.Seq); err != nil {
-			return err
-		}
-		if err := l.saveHistory(ctx, h); err != nil {
-			return err
-		}
-		if h.Current.Size > 0 && h.Current.Size+int64(len(line)) > l.MaxBytes {
-			// The old rotated segment is about to disappear. Persist the retention
-			// fence first, so death at any rename boundary cannot certify lost history.
-			h.Floor = max(h.Floor, h.Rotated.Last)
-			h.Dirty = true
-			if err := l.saveHistory(ctx, h); err != nil {
-				return err
-			}
-			if err := ctx.Err(); err != nil {
-				return err
-			}
+		if st.Size() > 0 && st.Size()+int64(len(line)) > l.MaxBytes {
+			f.Close()
 			if err := os.Rename(l.path(currentName), l.path(rotatedName)); err != nil {
 				return err
 			}
-			h.Rotated, h.Current = h.Current, segment{}
-			h.Dirty = false
-			if err := l.saveHistory(ctx, h); err != nil {
+			if f, err = l.openAppend(ctx); err != nil {
 				return err
 			}
+		} else if at.end != st.Size() {
+			line = append([]byte{'\n'}, line...)
 		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		f, err := contextio.OpenRegular(ctx, l.path(currentName), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
-		if err != nil {
-			return err
-		}
-		if err := contextio.WriteAll(ctx, f, line); err != nil {
-			_ = f.Close()
-			return err
-		}
-		if err := f.Close(); err != nil {
-			return err
-		}
-		// If publication of the checkpoint fails, leave the caller's pending
-		// marker intact. The next reader verifies the complete record from disk.
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		st, err := os.Lstat(l.path(currentName))
-		if err != nil {
-			return err
-		}
-		if !st.Mode().IsRegular() {
-			return &IntegrityError{File: currentName}
-		}
-		first := h.Current.First
-		if first == 0 {
-			first = e.Seq
-		}
-		h.Current = segmentOf(st)
-		h.Current.First, h.Current.Last = first, e.Seq
-		h.Committed = e.Seq
-		if err := l.saveHistory(ctx, h); err != nil {
-			return err
-		}
-		e.cursor = h.cursor()
-		return nil
+		return contextio.WriteAll(ctx, f, line)
 	})
-	if err != nil {
-		e.cursor = Cursor{}
+}
+
+func (l *Log) openAppend(ctx context.Context) (*os.File, error) {
+	if err := os.MkdirAll(l.Dir, 0o700); err != nil {
+		return nil, err
 	}
+	return contextio.OpenRegular(ctx, l.path(currentName), os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o600)
+}
+
+// lastRotated is the last sequence number of the rotated file, or 0.
+func (l *Log) lastRotated(ctx context.Context) (int64, error) {
+	f, err := contextio.OpenRegular(ctx, l.path(rotatedName), os.O_RDONLY, 0)
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return 0, err
+	}
+	last, _, err := lastLine(ctx, f, st.Size())
+	return last, err
+}
+
+// scanBack reads the first size bytes of f from their end, in windows that
+// double until fn, given a window and where it starts, is satisfied, or the
+// window reaches the start of the file: a line may be as long as readers
+// accept, so no fixed window is enough. The first window holds the last
+// line of a healthy log.
+func scanBack(ctx context.Context, f *os.File, size int64, fn func(buf []byte, base int64) bool) error {
+	for window := int64(4 << 10); ; window *= 2 {
+		n := min(size, window)
+		buf := make([]byte, n)
+		if _, err := f.ReadAt(buf, size-n); err != nil && !errors.Is(err, io.EOF) {
+			return err
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if fn(buf, size-n) || n == size {
+			return nil
+		}
+	}
+}
+
+// mark is where a reader stands in a file: after the line from start to
+// end, whose bytes hash to sum. The zero mark stands at the file's start.
+type mark struct {
+	start, end int64
+	sum        [32]byte
+}
+
+// on reports whether f still holds, where m found it, the line m stands
+// after: false once the file was emptied, or written again, under the
+// reader.
+func (m mark) on(f *os.File) (bool, error) {
+	if m.end == 0 {
+		return true, nil
+	}
+	buf := make([]byte, m.end-m.start)
+	if _, err := f.ReadAt(buf, m.start); errors.Is(err, io.EOF) {
+		return false, nil // the file is shorter now
+	} else if err != nil {
+		return false, err
+	}
+	return sha256.Sum256(buf) == m.sum, nil
+}
+
+// lastLine returns the sequence number of the last line of f that decodes,
+// 0 when none does, and the mark after its last complete line, the zero
+// mark when it has none: a reader that has read every complete line stands
+// there, and f ends a line when the mark is at its size. Both come from one
+// read of f's end, which holds them in a healthy log.
+func lastLine(ctx context.Context, f *os.File, size int64) (int64, mark, error) {
+	var seq int64
+	var at mark
+	if size == 0 {
+		return 0, at, nil
+	}
+	err := scanBack(ctx, f, size, func(buf []byte, base int64) bool {
+		seq, at = lastSeqIn(buf), mark{}
+		if i := bytes.LastIndexByte(buf, '\n'); i >= 0 {
+			j := bytes.LastIndexByte(buf[:i], '\n')
+			if j >= 0 || base == 0 { // else the line starts before the window
+				at = mark{start: base + int64(j) + 1, end: base + int64(i) + 1, sum: sha256.Sum256(buf[j+1 : i+1])}
+			}
+		}
+		return seq > 0 && at.end > 0
+	})
+	return seq, at, err
+}
+
+// lastSeqIn returns the sequence number of the last line in buf that
+// decodes, or 0.
+func lastSeqIn(buf []byte) int64 {
+	end := len(buf)
+	for end > 0 {
+		start := end - 1
+		for start > 0 && buf[start-1] != '\n' {
+			start--
+		}
+		if seq := seqOf(buf[start:end]); seq > 0 {
+			return seq
+		}
+		end = start
+		for end > 0 && buf[end-1] == '\n' {
+			end--
+		}
+	}
+	return 0
+}
+
+func seqOf(line []byte) int64 {
+	var e struct {
+		Seq int64 `json:"seq"`
+	}
+	if json.Unmarshal(line, &e) != nil {
+		return 0
+	}
+	return e.Seq
+}
+
+// Head is the sequence number of the last event, or 0 for an empty log.
+func (l *Log) Head(ctx context.Context) (int64, error) {
+	f, err := contextio.OpenRegular(ctx, l.path(currentName), os.O_RDONLY, 0)
+	if errors.Is(err, os.ErrNotExist) {
+		return l.lastRotated(ctx)
+	}
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return 0, err
+	}
+	last, _, err := lastLine(ctx, f, st.Size())
+	if err == nil && last == 0 {
+		return l.lastRotated(ctx)
+	}
+	return last, err
+}
+
+// Since returns the retained events after seq after, oldest first, and
+// whether they are all of them: false when some rotated away, the log was
+// recreated or damaged since, or after is ahead of it. After 0 asks for
+// everything retained, which is complete by definition.
+func (l *Log) Since(ctx context.Context, after int64) ([]Event, bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, ReadTimeout)
+	defer cancel()
+	var all []Event
+	for _, name := range []string{rotatedName, currentName} {
+		events, err := l.read(ctx, name)
+		if err != nil {
+			return nil, false, err
+		}
+		all = append(all, events...)
+	}
+	out, last := after1(after, all)
+	if after == 0 {
+		return out, true, nil
+	}
+	return out, continues(after, out) && (len(out) > 0 || last == after), nil
+}
+
+// after1 keeps the events after seq after, and returns the last sequence
+// number among all of them.
+func after1(after int64, events []Event) ([]Event, int64) {
+	var out []Event
+	last := int64(0)
+	for _, e := range events {
+		last = max(last, e.Seq)
+		if e.Seq > after {
+			out = append(out, e)
+		}
+	}
+	return out, last
+}
+
+// continues reports whether events follow seq after without a gap; after
+// 0 asks only that they follow one another.
+func continues(after int64, events []Event) bool {
+	prev := after
+	for i, e := range events {
+		if (i > 0 || after != 0) && e.Seq != prev+1 {
+			return false
+		}
+		prev = e.Seq
+	}
+	return true
+}
+
+// read decodes the complete lines of the named file, skipping those that
+// do not decode.
+func (l *Log) read(ctx context.Context, name string) ([]Event, error) {
+	f, _, err := l.openRead(ctx, name)
+	if err != nil || f == nil {
+		return nil, err
+	}
+	defer f.Close()
+	events, _, err := readFrom(ctx, f, mark{})
+	return events, err
+}
+
+// openRead opens the named file for reading and identifies it, or returns a
+// nil file when there is none.
+func (l *Log) openRead(ctx context.Context, name string) (*os.File, fileID, error) {
+	f, err := contextio.OpenRegular(ctx, l.path(name), os.O_RDONLY, 0)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, fileID{}, nil
+	}
+	if err != nil {
+		return nil, fileID{}, err
+	}
+	st, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, fileID{}, err
+	}
+	return f, identity(st), nil
+}
+
+func identity(st os.FileInfo) fileID {
+	if s, ok := st.Sys().(*syscall.Stat_t); ok {
+		return fileID{dev: uint64(s.Dev), ino: s.Ino} //nolint:unconvert // Darwin Dev is int32; Linux uses uint64.
+	}
+	return fileID{}
+}
+
+// readFrom decodes the complete lines of f after mark at, skipping those
+// that do not decode, and returns the mark after the last of them.
+func readFrom(ctx context.Context, f *os.File, at mark) ([]Event, mark, error) {
+	if _, err := f.Seek(at.end, io.SeekStart); err != nil {
+		return nil, at, err
+	}
+	r := bufio.NewReaderSize(f, 64<<10)
+	h := sha256.New()
+	var events []Event
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, at, err
+		}
+		h.Reset()
+		line, n, err := readLine(r, h)
+		if errors.Is(err, io.EOF) {
+			return events, at, nil // the end, or an unfinished last line
+		}
+		if err != nil {
+			return nil, at, err
+		}
+		at = mark{start: at.end, end: at.end + n}
+		copy(at.sum[:], h.Sum(nil))
+		if line == nil {
+			continue // longer than maxLine
+		}
+		var e Event
+		if json.Unmarshal(line, &e) == nil && e.Seq > 0 {
+			events = append(events, e)
+		}
+	}
+}
+
+// readLine returns the next complete line and how many bytes it took, or a
+// nil line for one longer than maxLine, which it consumes whole. Every byte
+// it takes also goes to h.
+func readLine(r *bufio.Reader, h hash.Hash) ([]byte, int64, error) {
+	var line []byte
+	var n int64
+	long := false
+	for {
+		part, err := r.ReadSlice('\n')
+		n += int64(len(part))
+		h.Write(part)
+		if !long {
+			if len(line)+len(part) > maxLine {
+				long, line = true, nil
+			} else {
+				line = append(line, part...)
+			}
+		}
+		if errors.Is(err, bufio.ErrBufferFull) {
+			continue
+		}
+		if err != nil {
+			return nil, 0, err
+		}
+		if long {
+			return nil, n, nil
+		}
+		return line, n, nil
+	}
+}
+
+// Tail follows the log, reading only what each file gained since it last
+// looked. It holds the file it reads open, so that the file's inode stays
+// its own whatever rotation does to its name, and it can read the rest of
+// it after the file is rotated away. It also keeps a hash of the last line
+// it read, of the bytes as it read them, so that a file emptied and written
+// again under it, which keeps its inode, is noticed rather than read from
+// the middle, also while it reads. Close releases the file.
+type Tail struct {
+	log  *Log
+	seq  int64
+	file *os.File // the file it reads; nil before the first look
+	at   mark     // where it stands in that file
+}
+
+// Tail returns a tail that delivers the events after seq after, which it
+// vouches for by their numbers alone: 0 asks for everything retained.
+func (l *Log) Tail(after int64) *Tail { return &Tail{log: l, seq: after} }
+
+// Follow returns a tail at the log's end, which delivers the events logged
+// after the call; Seq is the last before them, 0 for an empty log. It holds
+// the current file, which it creates for an empty log, so that it vouches
+// for every event written to it since, the first events of a log too.
+func (l *Log) Follow(ctx context.Context) (*Tail, error) {
+	if err := os.MkdirAll(l.Dir, 0o700); err != nil {
+		return nil, err
+	}
+	f, err := contextio.OpenRegular(ctx, l.path(currentName), os.O_CREATE|os.O_RDONLY, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	t := &Tail{log: l, file: f}
+	if err := t.start(ctx); err != nil {
+		f.Close()
+		return nil, err
+	}
+	return t, nil
+}
+
+func (t *Tail) start(ctx context.Context) error {
+	st, err := t.file.Stat()
+	if err != nil {
+		return err
+	}
+	if t.seq, t.at, err = lastLine(ctx, t.file, st.Size()); err != nil || t.seq != 0 {
+		return err
+	}
+	t.seq, err = t.log.lastRotated(ctx)
 	return err
 }
 
-// baseSeq starts numbering from microseconds, below JSON's exact integer limit.
-// Persisted fences handle retention and repair; internal cursors also identify
-// the incarnation, without assuming the wall clock always moves forward.
-func baseSeq(now time.Time) int64 { return now.UnixMicro() }
+// Seq is the sequence number of the last event the tail delivered, or the
+// one it started after.
+func (t *Tail) Seq() int64 { return t.seq }
 
-// writeSeq is called only under the log lock. Its fixed temporary pathname is
-// owned by that lock, including after a writer dies.
-func (l *Log) writeSeq(ctx context.Context, seq int64) error {
-	return l.publish(ctx, seqName, []byte(strconv.FormatInt(seq, 10)))
+// Close releases the file the tail holds.
+func (t *Tail) Close() error {
+	if t.file == nil {
+		return nil
+	}
+	err := t.file.Close()
+	t.file = nil
+	return err
 }
 
-// Seq is a bounded compatibility helper for diagnostics and tests. It returns
-// the allocation high-water mark, including unused reservations. Production
-// operations pass their context to Head instead.
-func (l *Log) Seq() (int64, error) {
-	c, err := l.Head(context.Background())
-	return c.Seq, err
+// read reads the file the tail holds from where it stands.
+func (t *Tail) read(ctx context.Context) ([]Event, error) {
+	events, at, err := readFrom(ctx, t.file, t.at)
+	if err != nil {
+		return nil, err
+	}
+	t.at = at
+	return events, nil
 }
+
+// Next returns the events logged since the last call, oldest first, and
+// false when it cannot vouch that they are all of them: some rotated away
+// unread, the log was recreated, emptied or damaged, or it went back behind
+// the tail. The caller then starts over from a snapshot and a new tail.
+func (t *Tail) Next(ctx context.Context) ([]Event, bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, ReadTimeout)
+	defer cancel()
+	cur, curID, err := t.log.openRead(ctx, currentName)
+	if err != nil {
+		return nil, false, err
+	}
+	held := false
+	defer func() {
+		if cur != nil && !held {
+			cur.Close()
+		}
+	}()
+	before, whole, same := t.seq, t.file == nil, false
+	var events []Event
+	if t.file != nil {
+		st, err := t.file.Stat()
+		if err != nil {
+			return nil, false, err
+		}
+		if on, err := t.at.on(t.file); err != nil || !on {
+			return nil, false, err // emptied, or written again, under the tail
+		}
+		// The rest of the file the tail holds; once rotated, then any file
+		// between it and the current one.
+		if events, err = t.read(ctx); err != nil {
+			return nil, false, err
+		}
+		same = cur != nil && identity(st) == curID
+		if !same {
+			rotated, rotatedID, err := t.log.openRead(ctx, rotatedName)
+			if err != nil {
+				return nil, false, err
+			}
+			if rotated != nil {
+				if rotatedID != identity(st) {
+					var between []Event
+					between, _, err = readFrom(ctx, rotated, mark{})
+					events = append(events, between...)
+				}
+				rotated.Close()
+			}
+			if err != nil {
+				return nil, false, err
+			}
+		}
+	} else if events, err = t.log.read(ctx, rotatedName); err != nil {
+		return nil, false, err
+	}
+	if !same {
+		t.Close()
+		t.file, t.at, held = cur, mark{}, cur != nil
+		if cur != nil {
+			var more []Event
+			if more, err = t.read(ctx); err != nil {
+				return nil, false, err
+			}
+			events = append(events, more...)
+		}
+	}
+	out, last := after1(before, events)
+	complete := continues(before, out)
+	if whole && before != 0 && len(out) == 0 && last != before {
+		complete = false // the log holds nothing after the tail, and not the tail
+	}
+	if len(out) > 0 {
+		t.seq = out[len(out)-1].Seq
+	}
+	return out, complete, nil
+}
+
+type fileID struct{ dev, ino uint64 }

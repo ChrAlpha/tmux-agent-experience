@@ -82,7 +82,7 @@ func (a *app) cmdServe(args []string) int {
 			_, _ = srv.Run(quick, "set-option", "-gu", serveAddressOption)
 		}()
 	}
-	fmt.Fprintf(a.stdout, "tmag serve %s (%s)\nhttp://%s/v1/info\nUse tmag auth issue or tmag auth pair to authorize a client.\nPress Ctrl-C, or close this window, to stop.\n", version.Version, serve.Schema, ln.Addr())
+	fmt.Fprintf(a.stdout, "tmag serve %s (%s)\nhttp://%s/v2/info\nUse tmag auth issue or tmag auth pair to authorize a client.\nPress Ctrl-C, or close this window, to stop.\n", version.Version, serve.Schema, ln.Addr())
 	hs := http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second, BaseContext: func(net.Listener) context.Context { return ctx }}
 	done := make(chan struct{})
 	go func() {

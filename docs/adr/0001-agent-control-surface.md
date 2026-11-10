@@ -1,7 +1,8 @@
 # ADR 0001: One control surface, a driver per agent and runtime
 
 - Status: accepted; its "Remote access" section is superseded by
-  [ADR 0003](0003-remote-access.md)
+  [ADR 0003](0003-remote-access.md); amended 2026-11-10: a delivery's effect
+  is recorded, then logged, best effort, and the contract is `tmag/v2`
 - Date: 2026-11-03
 - Evidence: [Claude Code control channels](../research/claude-control-channels.md)
   (2.1.317), [Codex control channels](../research/codex-control-channels.md)
@@ -163,9 +164,8 @@ process tree or type into a pane with tmux itself.
 A request is one prompt for the person that tmag can answer. It is a
 `Pending` prompt of the session with an id tmag assigns:
 
-Every pending prompt has a request. A hook that opens a prompt names it
-with a fresh id; a prompt that has none (one a tmag 0.1.0 record left) is
-named when the session is next settled. Requests are not events of their
+Every pending prompt has a request: a hook that opens a prompt names it
+with a fresh id. Requests are not events of their
 own: every event that reports the session lists its open `requests`, so a
 request opens and closes in the state events that report it, whoever
 answered it. A request closes with its prompt.
@@ -229,14 +229,10 @@ events that follow, as a turn does for `send`.
 Hooks report what the agent does, but not everything tmag's own deliveries
 do: Claude reports nothing after an interrupt, and nothing when a hook's
 decision closes its dialog. tmag records those effects itself, through
-`session.Store.Report`, which stores the record and logs the delivery's
-event reporting it, under the session's lock like every change. Like `Save`
-it marks the change first, and it keeps the delivery's event with the mark,
-so that a writer that dies before logging leaves the event to be logged
-whole by the next holder of the lock. A record keeping a delivery is
-unsettled even when what it reports did not change, and every writer reads
-a session under its lock through `session.Store.Current`, which logs such a
-leftover first, so no later write drops it.
+`session.Store.Report`, which stores the record and then logs the
+delivery's event reporting it, under the session's lock like every change.
+The record is the truth: a writer that dies before logging leaves the
+effect in it, for the session's next event and the next snapshot to report.
 
 ### Reaching the Codex daemon
 
@@ -284,9 +280,6 @@ leftover first, so no later write drops it.
   `Answer` too) and `by` (see [Callers](#callers)).
 - Errors: `refused:unsupported`, `refused:idle`, `refused:self`,
   `refused:agent`.
-
-A record written by tmag 0.1.0 reports less than the session is, so the next
-tmag to settle it logs it once in full, naming its open prompts.
 
 Content stays where the agent writes it. A client on the same host reads the
 transcript at `transcript.path`; tmag relays none of it, apart from the one

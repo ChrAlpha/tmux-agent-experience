@@ -19,7 +19,8 @@ an opaque validated grant into the same query implementation; public input can
 never set that identity. Control events record an optional credential id while
 preserving `by` as the proven agent identity.
 
-`tmag/http/v1` versions the transport independently of `tmag/v1` state documents.
+The HTTP contract (`tmag/http/v2` since 2026-11-10) versions the transport
+independently of the state documents (`tmag/v2`).
 The service listens on loopback and accepts explicit public hosts and browser
 origins. Credentials authenticate requests independently of any tunnel vendor.
 External deployment supplies encrypted remote transport and any extra identity
