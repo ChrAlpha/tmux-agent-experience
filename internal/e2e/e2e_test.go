@@ -90,7 +90,13 @@ func start(t *testing.T) *harness {
 	t.Setenv("TMAG_STATE_DIR", h.state)
 	t.Setenv("TMAG_AUTH_DIR", filepath.Join(h.dir, "auth"))
 	t.Setenv("CODEX_HOME", filepath.Join(h.dir, "codex-home"))
-	if out, err := exec.Command("tmux", "-L", h.name, "-f", "/dev/null", "new-session", "-d", "-s", "main", "-x", "200", "-y", "50").CombinedOutput(); err != nil {
+	// Hermetic panes: /bin/sh is the server's default shell for any pane
+	// created without a command, and this first pane runs /bin/sh directly
+	// rather than as a login shell that would read the developer's profile.
+	// No test starts the developer's shell or its rc files.
+	server := exec.Command("tmux", "-L", h.name, "-f", "/dev/null", "new-session", "-d", "-s", "main", "-x", "200", "-y", "50", "/bin/sh")
+	server.Env = append(os.Environ(), "SHELL=/bin/sh")
+	if out, err := server.CombinedOutput(); err != nil {
 		t.Fatalf("start tmux: %v %s", err, out)
 	}
 	t.Cleanup(func() {
@@ -120,6 +126,10 @@ func (h *harness) spawn(cwd string, env map[string]string, argv ...string) strin
 	for k, v := range env {
 		args = append(args, "-e", k+"="+v)
 	}
+	// tmux runs a one-word command through a shell and leaves it in the pane's
+	// foreground, where the tests expect the agent; exec it instead, as the
+	// person's shell does when it runs the agent.
+	argv = append([]string{"/bin/sh", "-c", `exec "$@"`, "sh"}, argv...)
 	return h.tmux(append(args, argv...)...)
 }
 
