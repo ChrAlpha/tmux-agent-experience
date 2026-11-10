@@ -9,6 +9,11 @@
 *.prof
 /coverage*
 
+# Core dumps, wherever a crashing child writes them. The bare name is anchored
+# so a package directory named core stays visible.
+/core
+core.[0-9]*
+
 # Local worktrees for parallel work
 /.worktrees/
 

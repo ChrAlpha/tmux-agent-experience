@@ -35,6 +35,11 @@ import (
 var bin string // directory holding tmag and the fake claude, codex, pi and omp
 
 func TestMain(m *testing.M) {
+	// A crashing child (a pane shell, the tmux server, an agent) would write
+	// a core file into this package's directory; children inherit the limit.
+	if err := syscall.Setrlimit(syscall.RLIMIT_CORE, &syscall.Rlimit{Cur: 0, Max: 0}); err != nil {
+		panic(err)
+	}
 	// Children must not spend their budgets in the race runtime's
 	// artificial exit sleep.
 	if err := os.Setenv("GORACE", os.Getenv("GORACE")+" atexit_sleep_ms=0"); err != nil {
@@ -90,7 +95,13 @@ func start(t *testing.T) *harness {
 	t.Setenv("TMAG_STATE_DIR", h.state)
 	t.Setenv("TMAG_AUTH_DIR", filepath.Join(h.dir, "auth"))
 	t.Setenv("CODEX_HOME", filepath.Join(h.dir, "codex-home"))
-	if out, err := exec.Command("tmux", "-L", h.name, "-f", "/dev/null", "new-session", "-d", "-s", "main", "-x", "200", "-y", "50").CombinedOutput(); err != nil {
+	// Hermetic panes: /bin/sh is the server's default shell for any pane
+	// created without a command, and this first pane runs /bin/sh directly
+	// rather than as a login shell that would read the developer's profile.
+	// No test starts the developer's shell or its rc files.
+	server := exec.Command("tmux", "-L", h.name, "-f", "/dev/null", "new-session", "-d", "-s", "main", "-x", "200", "-y", "50", "/bin/sh")
+	server.Env = append(os.Environ(), "SHELL=/bin/sh")
+	if out, err := server.CombinedOutput(); err != nil {
 		t.Fatalf("start tmux: %v %s", err, out)
 	}
 	t.Cleanup(func() {
@@ -120,6 +131,10 @@ func (h *harness) spawn(cwd string, env map[string]string, argv ...string) strin
 	for k, v := range env {
 		args = append(args, "-e", k+"="+v)
 	}
+	// tmux runs a one-word command through a shell and leaves it in the pane's
+	// foreground, where the tests expect the agent; exec it instead, as the
+	// person's shell does when it runs the agent.
+	argv = append([]string{"/bin/sh", "-c", `exec "$@"`, "sh"}, argv...)
 	return h.tmux(append(args, argv...)...)
 }
 
@@ -235,9 +250,23 @@ func (h *harness) waitSession(id, state string) query.Session {
 	h.eventually(fmt.Sprintf("session %s to be %s", id, state), func() bool {
 		s, ok := h.sessionOf(id)
 		got = s
-		return ok && s.State == state
+		return ok && s.State == state && h.loggedState(id) == state
 	})
 	return got
+}
+
+// loggedState is the state the session's latest event that reports one has,
+// as the follower applies the log: events without a state leave it as it was.
+// waitSession needs it because a record changes before its event is logged.
+func (h *harness) loggedState(session string) string {
+	h.t.Helper()
+	state := ""
+	for _, e := range h.events(session) {
+		if e.State != "" {
+			state = e.State
+		}
+	}
+	return state
 }
 
 func (h *harness) events(session string) []eventlog.Event {
