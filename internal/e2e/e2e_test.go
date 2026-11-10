@@ -967,11 +967,12 @@ func eventOf(doc map[string]any) map[string]any {
 // with a state reports its session in full, SessionEnd and Exit remove it),
 // and the pane list of the latest panes document.
 type follower struct {
-	t        *testing.T
-	lines    chan []byte
-	seq      int64
-	sessions map[string]query.Session
-	panes    []query.Pane
+	t         *testing.T
+	lines     chan []byte
+	seq       int64
+	sessions  map[string]query.Session
+	panes     []query.Pane
+	snapshots int
 }
 
 func (h *harness) follow() *follower {
@@ -1014,6 +1015,7 @@ func (f *follower) apply(line []byte) {
 	}
 	switch doc.Type {
 	case "snapshot":
+		f.snapshots++
 		f.seq, f.panes = doc.Seq, doc.Panes
 		f.sessions = map[string]query.Session{}
 		for _, s := range doc.Sessions {
@@ -1163,6 +1165,26 @@ func TestWatchResumes(t *testing.T) {
 	// A cursor the log cannot vouch for restarts from a snapshot.
 	if doc := h.watch("--since", "1").next(); doc["type"] != "snapshot" {
 		t.Fatalf("stale cursor line = %v", doc)
+	}
+}
+
+func TestWatchSendsASnapshotWhenItsHistoryIsGone(t *testing.T) {
+	// The log goes away under a running watch and starts again: the stream
+	// cannot vouch for what it missed, so it sends a new snapshot, and a
+	// follower of that one stream still agrees with list.
+	h := start(t)
+	f := h.follow()
+	h.externalHook(map[string]any{"hook_event_name": "Stop", "session_id": sidA, "cwd": h.dir})
+	f.agrees(h)
+	for _, name := range []string{"events.jsonl", "events.1.jsonl"} {
+		if err := os.Remove(filepath.Join(h.state, name)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			t.Fatal(err)
+		}
+	}
+	h.externalHook(map[string]any{"hook_event_name": "UserPromptSubmit", "session_id": sidA, "cwd": h.dir, "prompt_id": "p2"})
+	f.agrees(h)
+	if f.snapshots != 2 || f.sessions["claude/"+sidA].State != "working" {
+		t.Fatalf("after its history went away the follower took %d snapshots and holds %+v", f.snapshots, f.sessions)
 	}
 }
 
