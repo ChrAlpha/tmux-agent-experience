@@ -94,6 +94,20 @@ var eventNames = map[string]names{
 // tmag through tmag's extensions.
 func piLike(agent string) bool { return agent == "pi" || agent == "omp" }
 
+// note records why an optional fake facility is absent. FAKE_OUT is what the
+// tests read; stderr reaches the pane when no out file is set.
+func note(format string, args ...any) {
+	msg := fmt.Sprintf(format, args...)
+	if out := os.Getenv("FAKE_OUT"); out != "" {
+		if f, err := os.OpenFile(out, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600); err == nil {
+			fmt.Fprintln(f, msg)
+			f.Close()
+			return
+		}
+	}
+	fmt.Fprintln(os.Stderr, msg)
+}
+
 func main() {
 	// Claude Code's npm package runs its native executable as claude.exe.
 	agent := strings.TrimSuffix(filepath.Base(os.Args[0]), ".exe")
@@ -116,21 +130,27 @@ func main() {
 		fmt.Printf("\033]0;%s\007", title)
 	}
 	// The inbox is served for the session's whole life, before its first hook
-	// can name it, and receives one line per send.
+	// can name it, and receives one line per send. Like Codex, listen on a
+	// short path: the harness keeps $TMUX_TMPDIR short, and a test's temporary
+	// directory can exceed the platform's Unix socket limit.
 	var inbox string
 	messages := make(chan message, 8)
 	if os.Getenv("FAKE_INBOX") == "1" {
-		if dir, err := os.MkdirTemp(cwd, "inbox"); err == nil {
+		dir, err := os.MkdirTemp(os.Getenv("TMUX_TMPDIR"), "fake-inbox")
+		if err != nil {
+			note("inbox: %v", err)
+		} else {
 			path := filepath.Join(dir, agent+".sock")
-			if ln, err := net.Listen("unix", path); err == nil {
+			if ln, err := net.Listen("unix", path); err != nil {
+				note("inbox %s: %v", path, err)
+				os.RemoveAll(dir)
+			} else {
 				inbox = path
 				defer func() {
 					ln.Close()
 					os.RemoveAll(dir)
 				}()
 				go serveInbox(ln, agent, messages)
-			} else {
-				os.RemoveAll(dir)
 			}
 		}
 	}
