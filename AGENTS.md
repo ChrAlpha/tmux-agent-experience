@@ -20,143 +20,80 @@ layers, in order of importance:
    and how to use tmag's verbs on other agents, and a launcher that runs the
    hooks' binary.
 3. **The `tmag` binary** is the substrate: sessions and their state, which
-   panes show them, the event log and a versioned JSON contract (`tmag/v1`)
+   panes show them, the event log and a versioned JSON contract (`tmag/v2`)
    for agents, scripts and remote clients.
 
 ## Invariants
 
-Every change must keep these. Tests guard most of them; treat a failing one as
-a design problem, not a test problem.
+Every change must keep these promises. Tests guard most of them; treat a
+failing one as a design problem, not a test problem. How a package keeps a
+promise is documented in the package, and changes with it.
 
-- **tmux stays the entry point.** No daemon, no wrapper around agents, no
-  second session model, and nothing resident outside tmux: `tmag serve`, the
-  one command that runs until stopped, runs in a tmux window the person opens
-  and ends with it. A tmag command may connect to an agent's own service for
-  its duration and no longer.
-- **Users only ever get released binaries.** The plugin downloads the archive
-  for its own version and verifies its checksum; there is no build-from-source
-  fallback. To try an unreleased checkout, a developer builds `bin/tmag`
-  themselves (`go build -o bin/tmag ./cmd/tmag`).
-- **The plugin owns one directory.** Its binary lives in
-  `$TMUX_PLUGIN_MANAGER_PATH/tmux-agent-experience/bin/`; hooks and the
-  `tmag-peers` launcher find it through `internal/binpath`, whose shell
-  commands and Go resolution must agree. Removing the plugin directory
-  removes tmag, apart from its state directory.
-- **Defaults are visible and switchable.** Installing the plugin is consent to
-  its defaults; each one has an option that turns it off. The agents' context
-  is one of them: `tmag-peers` puts its skill's description in every session,
-  and `@tmag-peers off` makes `tmag setup` remove the plugin. Neither host
-  turns off one skill of a plugin reliably, so the skill has a plugin of its
-  own.
+- **tmux stays the entry point.** No daemon, no wrapper around agents,
+  nothing resident outside tmux: `tmag serve` runs in a tmux window the
+  person opens and ends with it. A command may connect to an agent's own
+  service for its duration only.
+- **Lean on tmux and the OS.** Truth lives in session records and pane
+  options; tmag adds no journal, repair, admission or migration over what
+  tmux, the kernel and an atomic rename give. A mechanism that guards tmag
+  against itself needs a failure no smaller rule fixes.
+- **Users only ever get released binaries.** The plugin installs the
+  checksummed archive of its own version, never a build from source; a
+  developer builds `bin/tmag` themselves (`go build -o bin/tmag ./cmd/tmag`).
+- **The plugin owns one directory.** The binary lives in the plugin's
+  `bin/`, found through `internal/binpath`; removing the plugin removes tmag,
+  apart from its state directory.
+- **Defaults are visible and switchable.** Every default has an option that
+  turns it off, the agents' context included: `@tmag-peers off` makes `tmag
+  setup` remove the plugin whose skill description is in every session.
 - **The skill teaches the CLI as it is.** Both hosts ship the same `peers`
   text, naming only commands, flags, refusal codes and exit codes the binary
   has (`TestPeersSkillMatchesCLI`).
-- **tmag writes who sent a prompt.** When an agent sends one, `query.Send`
-  writes its first line from the proven caller: the agent, its session and
-  how to answer (`send`, `send --reply`, `reply`). A person's prompt gets
-  none, and no prompt given to tmag may start with the `[tmag]` marker, so
-  a first line that does is tmag's. Never let a caller name the sender.
-- **Hooks fail open.** `tmag hook` always exits 0, never writes stdout (agents
-  inject hook stdout into the model context), finishes within `hook.Deadline`,
-  and records failures only in `<state dir>/hook.log`. CLI entry starts the
-  whole budget before discovery/input, cancels cooperatively early and installs
-  a final fail-open cutoff. Reusable APIs and HTTP handlers never exit the
-  process; process suspension and uninterruptible kernel operations remain
-  outside a normal-scheduling deadline guarantee. `tmag answer-hook`
-  also always exits 0, writes to stdout only a decision delivered by
-  `tmag answer`, and on any failure, timeout, close or signal prints nothing,
-  leaving the decision to the agent's own dialog, which is on screen
-  meanwhile. Its short setup budget is separate from its intentional waiting
-  lifetime. Owned input/output and helper processes must actually cancel and
-  close; a reader goroutine abandoned behind a timeout is not containment. A hook command that reaches the `tmag-peers` launcher on `PATH`
-  fails open the same way when no binary exists. A hook that alerts the
-  person starts `tmag notify` detached and does not wait for it; that process
-  runs `@tmag-notify` for at most `notify.Timeout` and records a failure in
-  `hook.log` too. Failure logging is bounded and metadata-only. Notification
-  work is bounded while preserving hook and external-command deadlines.
-- **No content is stored.** Hook payloads decode into `adapter.Payload`, which
-  declares no prompt, message or tool-input fields. Never add one. Session
-  files and event log records hold ids, states, paths and timestamps only.
-  `tmag answer-hook` is the one reader of a tool input: it keeps it in memory
-  to show it to `tmag request` and to hand it back to the agent, and writes
-  it nowhere. `tmag read --last` is the one reader of a transcript
-  (`internal/transcript`): it prints the reply it asked for and keeps
-  nothing. An alert's variables (`notify.Alert`) are ids, states, tool names,
-  paths, never content: a notification may leave the
-  machine.
-- **State belongs to one process table.** tmag proves everything from the
-  processes it sees, so the default state directory is the realm's
-  (`proc.Realm`: the PID namespace and boot on Linux, the boot on macOS)
-  under `$XDG_STATE_HOME/tmag`: containers sharing a home would otherwise end
-  each other's sessions. `TMAG_STATE_DIR` names the directory itself.
-- **Hook contact is separate from state age.** Optional `last_hook_at` is
-  published through complete session events. Contact-only updates preserve
-  `since`; actual state transitions still change it. Contact time never
-  grants state/control authority or cleanup permission. Complete record reads
-  return the first exact metadata fault; reconciliation preserves unknown
-  resources and pending markers rather than treating unreadable state as absent.
+- **tmag writes who sent a prompt.** An agent's prompt gets a first line
+  `query.Send` writes from the proven caller; a person's gets none, and no
+  prompt given to tmag may start with `[tmag]`. A caller never names itself.
+- **Hooks fail open.** A hook exits 0, never writes stdout and finishes
+  within `hook.Deadline`, also through the `tmag-peers` launcher; failures go
+  to `hook.log` as metadata. `answer-hook` prints only a decision `tmag
+  answer` delivered, and nothing on any failure, leaving the agent's dialog.
+- **No content is stored.** Payloads decode into `adapter.Payload`, which has
+  no prompt, message or tool-input field; records, events and alerts hold
+  ids, states, paths and times. `answer-hook` keeps a tool input in memory
+  only, and `read --last` prints a reply and keeps nothing.
+- **What tmag accepts is bounded where it is read.** `adapter.Decode` bounds
+  every field it keeps and records cap their lists, so state stays small
+  whatever an agent sends. A new field comes with its bound.
+- **State belongs to one process table.** The default state directory is the
+  realm's (`proc.Realm`) under `$XDG_STATE_HOME/tmag/<layout>`, so containers
+  sharing a home never end each other's sessions.
+- **Records are the truth; the log tells what changed.** A change lands in
+  its record or pane, then in the log, best effort; gap-free numbering lets
+  a follower know what it missed and take a snapshot. Waits read records;
+  hook contact is never logged alone and grants nothing.
 - **A session's state never depends on a pane.** Hooks apply to the session
-  (`internal/session`) wherever it runs: the Codex daemon and Claude's
-  background supervisor run sessions no terminal owns.
-- **A pane shows a session only on proof.** Attachments come from the evidence
-  in `internal/attach`: process ancestry, or the Codex `thread-id` title item.
-  Never trust `$TMUX_PANE`: daemons and supervisors keep a stale environment.
-  Names, directories and other title text are no evidence. Ambiguity means no
-  attachment.
-- **tmux surfaces show only proven attachments.** Bells, the pane border, the
-  picker, the status line and `jump` act on attached panes; a pane tmag cannot
-  prove anything about shows `unknown`.
+  wherever it runs, in daemons and background supervisors too.
+- **A pane shows a session only on proof.** Process ancestry or the Codex
+  `thread-id` title item, never `$TMUX_PANE`, names or directories;
+  ambiguity is no attachment. Bells, borders, the picker, the status line and
+  `jump` show only proven attachments; anything else is `unknown`.
 - **Control is gated.** `send`, `interrupt` and `answer` act only through a
-  channel proven to reach the session: its one attached pane (by `process` or
-  `title-id`, showing the main agent, holding its terminal's foreground), the
-  agent service it runs in (a socket whose peer is the session's host or an
-  ancestor of it), or the answer hook waiting on the request. Each checks the
-  state it needs (`send` idle, `interrupt` working or blocked, `answer` its
-  request open), checks all of it again under the pane's lock and the
-  session's, admits everything it will record before delivering anything,
-  and logs its event before releasing them. `internal/driver` alone decides
-  which channel carries a verb. `wait` refuses a pane that shows no session.
+  channel proven to reach the session, after checking the state they need
+  again under the pane's and the session's locks; `internal/driver` alone
+  picks the channel.
 - **Callers are proven too.** Who runs a verb comes from process ancestry
-  (`query.Caller`), like an attachment: a command below an agent's process is
-  that agent's, and its session is one that process hosts, told apart by the
-  agent's own tool variable, never named by it alone. People and agents use
-  the same verbs, and every control event records `from` and `by`. An agent
-  never acts on its own session, and answers for the person only when
-  `@tmag-answer` is `agents`. Tests run tmag as a person outside the test's
-  process tree (`harness.tmag`), and as an agent from a fake agent's tool.
-- **Locks.** A session changes only under its session lock (hooks, control
-  verbs); a pane's attachment and projection only under its pane lock (hooks,
-  reconciliation, control verbs through a pane). Whoever takes both takes the
-  pane's first. Every change is decided again under the lock against fresh
-  state, a session's read through `session.Store.Current`, which first logs
-  whatever a writer that died left unlogged, and its event is appended
-  before the lock is released, so the log
-  orders events as they happened. Sessions change only through
-  `session.Store.Save`, `Report` (what a delivery of tmag's did, which the
-  agent does not report) and `End`, or a change prepared as they prepare it
-  (`session.Prepare*`) and made with `Publish`, and attachments only through
-  `attach.Env`, which mark a change (`@tmag_change` on a pane) before logging
-  it, so a writer that dies leaves it for the next one to log rather than
-  unreported. Every record and event a change publishes is admitted within
-  its readers' limits (4 MiB per session record, 64 MiB per log line) before
-  the first is published, and derived as the repair of a writer that died
-  derives it, so a marked change always settles. A marker tmag cannot read,
-  on a pane or in a record, is left as it is and reported.
+  (`query.Caller`), never from a variable alone, and every control event
+  records it. An agent never acts on its own session, and answers for the
+  person only when `@tmag-answer` is `agents`.
+- **Locks.** A session changes under its lock, a pane under its own; whoever
+  takes both takes the pane's first. Each change is decided again under the
+  lock and logged before it is released.
 - **The HTTP API is local and owner-authorized.** `tmag serve` exposes one
-  instance through `tmag/http/v1`, with no UI, machine inventory or outbound
-  gateway. Each data request validates an independent bearer credential.
-  Only a validated `auth.Grant` establishes owner authority in the common
-  query path; CLI callers still derive their identity from process ancestry.
-  No public flag, environment variable or request field can claim an owner
-  or agent identity. Owner authority preserves every state and delivery gate.
-  `credential` in a control event identifies the admitted owner credential;
-  `by` continues to mean a proven agent.
-- **Authorization survives realms.** `TMAG_AUTH_DIR`, defaulting to
-  `$XDG_STATE_HOME/tmag/auth`, is a deployment's persistent authorization
-  store. Deployments sharing a home select separate stores. Credentials have
-  equal owner authority, can be individually revoked, and persist only as
-  digests plus metadata. Invitations expire and are redeemed once. A revoked
-  or expired credential loses its subscriptions; accepted actions finish.
+  instance through `tmag/http/v2`. Each request proves a bearer credential;
+  no request field, flag or variable can claim an owner or agent identity,
+  and owner authority keeps every gate.
+- **Authorization survives realms.** `TMAG_AUTH_DIR` (default
+  `$XDG_STATE_HOME/tmag/auth`) keeps credentials as digests and metadata;
+  each is revocable, and invitations expire and redeem once.
 - **Nothing edits user configuration.** Install and uninstall go through each
   host's own mechanism (`claude plugin`, `codex plugin`, TPM).
 - **The contract is versioned.** Changing a JSON field's meaning or removing
@@ -177,20 +114,16 @@ a design problem, not a test problem.
 | `internal/serve` | Local HTTP/SSE contract, admission and allowlisted in-process CLI operations |
 | `internal/adapter` | Hook payload → state transition, per agent |
 | `internal/session` | Session records, the state machine, the per-session file store and lock |
-| `internal/statefile` | Owned atomic metadata publication through fixed, creator-excluded temporaries |
-| `internal/ownedfs` | Runtime pinned directory scopes, no-follow ownership checks and dedicated reserved names |
-| `internal/socketbind` | Short-lived executable helper: bind within an inherited directory FD, pass socket FD, reap |
 | `internal/attach` | Clients, attachments and their evidence, the `@tmag_*` pane projection, reconciliation |
 | `internal/query` | list / send / wait / snapshot over sessions and panes; the control verbs' gates |
 | `internal/driver` | Which channel (pane, service, hook) carries each verb for each agent and runtime |
 | `internal/codexsvc` | One-command client of the Codex daemon's control socket (JSON-RPC over WebSocket) |
-| `internal/answer` | The answer hook's socket protocol and the decision it prints for Claude Code |
+| `internal/answer` | The answer hook's socket, under `/tmp/tmag-<uid>`, its protocol, and the decision it prints for Claude Code |
 | `internal/transcript` | A turn's reply, read backward from Claude Code's JSONL transcript or Codex's rollout |
-| `internal/eventlog` | Append-only, sequence-numbered event log |
+| `internal/eventlog` | Append-only, sequence-numbered event log, and tails that know when they missed events |
 | `internal/tmux` | tmux CLI wrapper; sanitises every free-text field |
 | `internal/proc` | Process table, agent clients and services, hook hosts |
-| `internal/lockfile` | flock bounded by a context |
-| `internal/coord` | Fixed pane/session lock pools and explicit quiescent migration |
+| `internal/lockfile` | flock bounded by a context, and the fixed pools of pane and session locks |
 | `internal/binpath` | Where hooks look for the binary; the hook command and the agents' launcher |
 | `internal/e2e` | End-to-end tests with real tmux and a fake agent |
 | `plugins/<host>/tmag` | Agent plugins for Claude Code and Codex: hooks only; Claude's `PermissionRequest` runs `tmag answer-hook` |
@@ -212,9 +145,8 @@ claude plugin validate .      # marketplace and plugin manifests
 
 ## Conventions
 
-- Go 1.25 or later is required for descriptor-relative `os.Root.Rename`; CI
-  and releases select the latest stable patched toolchain, independently of
-  the module minimum.
+- Go 1.25 or later is required (`sync.WaitGroup.Go`); CI and releases select
+  the latest stable patched toolchain, independently of the module minimum.
 - Go standard library only. A dependency needs a reason that outweighs one more
   thing to audit in a binary every agent hook runs.
 - tmux baseline is 3.2; Linux and macOS. Read the process table through
@@ -224,15 +156,9 @@ claude plugin validate .      # marketplace and plugin manifests
   `:`.
 - Every operation that may run on a hook path takes a `context.Context` and
   respects its deadline.
-- `coord` pool-v2 keeps 256 slots per class, selected by the first byte of the
-  existing resource SHA-256. Its pane/session class names, hash inputs and
-  stable gate/pool pathnames must remain compatible across cooperating versions.
-  Request endpoint positions use separate `r-XX` locks and fixed `req/` names;
-  their metadata, rather than a hash assumption, binds each request to its slot.
-- Unix bind and connect must stay inside a pinned directory on Linux and macOS. The
-  executable dispatches `socketbind.RunChild` before CLI setup; only that
-  short-lived child changes cwd, inherits creator exclusion and passes an FD.
-  Library/HTTP paths never exit or change their parent's cwd.
+- What the state directory holds is its layout (`eventlog.Layout`). A change
+  to it renames the layout, which gives it a default directory of its own:
+  tmag never reads or migrates another layout's state.
 - The version lives in `internal/version/version.go` and the four plugin
   manifests; `TestManifestVersions` keeps them equal.
 - The launchers are `binpath.Launcher()`, and the Codex copy of the skill is
@@ -254,6 +180,8 @@ claude plugin validate .      # marketplace and plugin manifests
 
 - Unit tests build worlds from `proc.NewTable` and literal `tmux.Pane`s; no
   tmux needed.
+- Tests run tmag as a person from outside the test's process tree
+  (`harness.tmag`), and as an agent from a fake agent's tool.
 - E2E tests start private servers (`tmux -L e2e` under a temporary
   `TMUX_TMPDIR`) and run `internal/e2e/fakeagent` installed as `claude` and
   `codex`, so process names and `pane_current_command` match real agents. Run
