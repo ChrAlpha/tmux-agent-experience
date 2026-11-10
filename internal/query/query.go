@@ -13,7 +13,6 @@ import (
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/attach"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
-	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/tmux"
 )
@@ -268,6 +267,3 @@ func SessionEvents(ctx context.Context, log *eventlog.Log, id string, limit int)
 	}
 	return out, nil
 }
-
-// IsAgentKind reports whether s names a supported agent.
-func IsAgentKind(s string) bool { return s == proc.Claude || s == proc.Codex }

@@ -82,7 +82,7 @@ func FromPane(p tmux.Pane) (Attachment, bool) {
 
 // named reports whether agent and id name a session as the store does.
 func named(agent, id string) bool {
-	return (agent == proc.Claude || agent == proc.Codex) && session.ValidID(id)
+	return proc.IsAgent(agent) && session.ValidID(id)
 }
 
 // Projection is what tmux displays for an attached pane.

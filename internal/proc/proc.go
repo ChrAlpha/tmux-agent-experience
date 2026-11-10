@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -149,46 +150,78 @@ func (t *Table) Descendants(root int) []Process {
 const (
 	Claude = "claude"
 	Codex  = "codex"
+	Pi     = "pi"
+	OMP    = "omp" // oh-my-pi
 )
 
+// Agents lists every agent kind, in the order tmag reports them.
+var Agents = []string{Claude, Codex, Pi, OMP}
+
+// IsAgent reports whether kind names an agent tmag supports.
+func IsAgent(kind string) bool { return slices.Contains(Agents, kind) }
+
 // AgentKind classifies an interactive coding-agent process, a client the user
-// works in, or returns "". Background services of either agent are not
-// clients; see ServiceKind.
+// works in, or returns "". Background services of an agent are not clients;
+// see ServiceKind.
 func AgentKind(p Process) string {
 	if p.Uncertain {
 		return ""
 	}
+	kind := programKind(p)
+	if kind == "" || serves(kind, p) || isOMPWorker(p) {
+		return ""
+	}
+	return kind
+}
+
+// programKind names the agent whose program p runs, as a client or not.
+func programKind(p Process) string {
 	switch {
 	case p.Comm == "claude":
-		if IsClaudeService(p) {
-			return ""
-		}
 		return Claude
 	case strings.HasPrefix(p.Comm, "codex"):
-		if IsCodexService(p) {
-			return ""
-		}
 		return Codex
+	case p.Comm == "pi" || p.Comm == piRPC:
+		return Pi
+	case p.Comm == "omp" || filepath.Base(argv0(p)) == "omp":
+		// oh-my-pi names its process omp on Linux; elsewhere ps shows the
+		// command it was started as.
+		return OMP
 	case p.Comm == "node" || p.Comm == "bun":
 		switch {
 		case strings.Contains(p.Args, "claude-code") || claudeScriptRE.MatchString(p.Args):
-			if IsClaudeService(p) {
-				return ""
-			}
 			return Claude
 		case strings.Contains(p.Args, codexPackage):
-			if IsCodexService(p) {
-				return ""
-			}
 			return Codex
+		case strings.Contains(p.Args, ompScript) || ompScriptRE.MatchString(p.Args):
+			return OMP
+		case strings.Contains(p.Args, piScript):
+			return Pi
 		}
 	}
 	return ""
 }
 
+// serves reports whether p, a program of agent kind, is one of its services
+// rather than a client.
+func serves(kind string, p Process) bool {
+	switch kind {
+	case Claude:
+		return IsClaudeService(p)
+	case Codex:
+		return IsCodexService(p)
+	case Pi:
+		return p.Comm == piRPC
+	case OMP:
+		return isOMPService(p)
+	}
+	return false
+}
+
 // ServiceKind names the agent whose background service p is, or returns "":
-// a shared Codex app-server, or Claude's supervisor and the per-session
-// hosts it runs background sessions in.
+// a shared Codex app-server, Claude's supervisor and the per-session hosts it
+// runs background sessions in, or Pi or oh-my-pi serving another program
+// over their standard input instead of a person at a terminal.
 func ServiceKind(p Process) string {
 	if p.Uncertain {
 		return ""
@@ -199,7 +232,19 @@ func ServiceKind(p Process) string {
 	case IsCodexService(p):
 		return Codex
 	}
+	if kind := programKind(p); (kind == Pi || kind == OMP) && serves(kind, p) {
+		return kind
+	}
 	return ""
+}
+
+// argv0 is the command p was started as.
+func argv0(p Process) string {
+	if len(p.Argv) > 0 {
+		return p.Argv[0]
+	}
+	first, _, _ := strings.Cut(p.Args, " ")
+	return first
 }
 
 // claudeServices are the Claude Code subcommands of its background
@@ -299,6 +344,69 @@ var claudeScriptRE = regexp.MustCompile(`/claude(\s|$)`)
 
 // codexPackage marks Codex run through its npm launcher.
 const codexPackage = "@openai/codex"
+
+// Pi 1.5 names its process pi, and piRPC when started from its RPC entry
+// point, which programs embedding it run; before it does, node runs its
+// package's script (piScript). Its CLI names the process pi in every mode:
+// tmag's extension reports the mode instead.
+const (
+	piRPC    = "pi-rpc"
+	piScript = "pi-coding-agent/dist/"
+)
+
+// ompScript marks oh-my-pi run by bun from its npm package, which shares
+// Pi's package name under its own scope; ompScriptRE matches the omp
+// launcher script bun runs, as in "bun /home/me/.bun/bin/omp".
+const ompScript = "@oh-my-pi/pi-coding-agent/dist/"
+
+var ompScriptRE = regexp.MustCompile(`/omp(\s|$)`)
+
+// ompServiceModes are the modes of oh-my-pi 18.18 in which another program
+// drives it over its standard input.
+var ompServiceModes = map[string]bool{"rpc": true, "rpc-ui": true, "acp": true}
+
+// arguments returns p's arguments after the command, split as the platform
+// keeps them (on spaces without boundaries).
+func arguments(p Process) []string {
+	argv := p.Argv
+	if argv == nil {
+		argv = strings.Fields(p.Args)
+	}
+	if len(argv) == 0 {
+		return nil
+	}
+	return argv[1:]
+}
+
+// isOMPWorker reports whether p is one of the helper processes oh-my-pi
+// starts by running itself again with a worker argument (__omp_worker_*):
+// they share its name and serve no session.
+func isOMPWorker(p Process) bool {
+	args := arguments(p)
+	for _, a := range args[:min(len(args), 2)] {
+		if strings.HasPrefix(a, "__omp_worker_") {
+			return true
+		}
+	}
+	return false
+}
+
+// isOMPService reports whether p is oh-my-pi run for another program: in an
+// RPC or ACP mode, or as its acp command.
+func isOMPService(p Process) bool {
+	args := arguments(p)
+	for i, a := range args {
+		switch {
+		case a == "--mode" && i+1 < len(args):
+			return ompServiceModes[args[i+1]]
+		case strings.HasPrefix(a, "--mode="):
+			return ompServiceModes[strings.TrimPrefix(a, "--mode=")]
+		case a == "acp" && i == 0:
+			return true
+		}
+	}
+	return false
+}
 
 // codexServices are the Codex subcommands that run a background service
 // rather than an interactive client.

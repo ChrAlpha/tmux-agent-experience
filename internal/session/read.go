@@ -77,7 +77,7 @@ func (s Store) Get(ctx context.Context, agent, id string) (Record, bool, error) 
 func (s Store) All(ctx context.Context) ([]Record, []*RecordError, error) {
 	var recs []Record
 	var faults []*RecordError
-	for _, agent := range []string{proc.Claude, proc.Codex} {
+	for _, agent := range proc.Agents {
 		err := contextio.Entries(ctx, filepath.Join(s.root(), agent), func(e os.DirEntry) error {
 			id, ok := strings.CutSuffix(e.Name(), ".json")
 			if !ok || !ValidID(id) {

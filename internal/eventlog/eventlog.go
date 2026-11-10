@@ -50,7 +50,7 @@ type Actor struct {
 // own format.
 type Transcript struct {
 	Path   string `json:"path"`
-	Format string `json:"format"` // claude-jsonl or codex-rollout
+	Format string `json:"format"` // claude-jsonl, codex-rollout or pi-jsonl
 }
 
 // Request is a prompt a session waits on the user for, under the id tmag

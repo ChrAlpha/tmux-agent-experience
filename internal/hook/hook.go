@@ -69,7 +69,7 @@ func RunContext(parent context.Context, in Input) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if in.Agent != proc.Claude && in.Agent != proc.Codex {
+	if !proc.IsAgent(in.Agent) {
 		return fmt.Errorf("unknown agent %q", in.Agent)
 	}
 	data, err := contextio.ReadAll(ctx, in.Payload, maxPayload)
@@ -341,9 +341,7 @@ func RecordErrorContext(parent context.Context, dir, agent string, err error) {
 	}
 	ctx, cancel := context.WithTimeout(parent, 100*time.Millisecond)
 	defer cancel()
-	switch agent {
-	case "claude", "codex", "notify":
-	default:
+	if !proc.IsAgent(agent) && agent != "notify" {
 		agent = "hook"
 	}
 	category := "failed"
