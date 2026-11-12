@@ -87,4 +87,4 @@ $ tmag read 01a19fda --last
 
 [MIT](LICENSE)
 
-<!-- Translation source: README.md @ 9ae794f3e7d0136866be776399f14f203ce7781b -->
+<!-- Translation source: README.md @ 5f11a3ec35bfe9a2d32fb548bd5eba56bdd7bfa6 -->
