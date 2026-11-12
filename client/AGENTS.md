@@ -25,10 +25,13 @@ adapters, machine configuration and aggregation.
   keeps only digests, push subscriptions and metadata, in files its owner
   alone can read.
 - No content is stored: the page reads replies, pane text and request input
-  on demand, and keeps ids, names and times. Seen turns are ids and turn ids
-  in `seen.json`; push payloads carry metadata only. The service worker keeps
-  tags, routes and times of recent alerts, and the route a tap names, in
-  IndexedDB for minutes, so a reloaded page can open one it missed.
+  on demand, and keeps ids, names and times. Push payloads carry metadata
+  only. The service worker keeps tags, routes and times of recent alerts, and
+  the route a tap names, in IndexedDB for minutes, so a reloaded page can
+  open one it missed.
+- The gateway keeps no session state of its own: a session's seen turn is
+  the machine's record, in session documents and `Seen` events; marking one
+  runs `tmag seen` there.
 - Both credentials and tunnel proofs admit the owner; a tunnel's check never
   replaces the gateway's own.
 - The gateway follows each machine once, for every page. Events are relayed

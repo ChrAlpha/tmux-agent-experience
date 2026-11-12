@@ -59,6 +59,10 @@ The two transports may be mixed. Names must be unique. HTTP credentials
 belong to the respective tmag instances and can be revoked independently
 there.
 
+Both transports need tmag 0.7.0 or later on each machine for push and seen:
+an older tmag reports no `Alert` or `Seen` events, so its finished turns stay
+in the inbox and marking one fails with that tmag's error.
+
 ## Devices
 
 Each device pairs with the gateway and holds a credential of its own. The
@@ -85,9 +89,8 @@ running gateway notices within a moment. They use the same
 
 The state directory, `$XDG_STATE_HOME/tmag-client` by default, holds
 `credentials.json` with credential digests, push subscriptions and metadata,
-`seen.json` with the turns the person has seen, `vapid.json` with the
-gateway's Web Push keys, and `lock`; its files are readable by its owner only.
-The seen file holds session ids, turn ids and times, nothing else.
+`vapid.json` with the gateway's Web Push keys, and `lock`; its files are
+readable by its owner only.
 
 To reach the page through a tunnel, use `--tailscale HOSTS --owner LOGIN`, or
 `--access HOSTS --access-team TEAM --access-aud AUDIENCE --owner EMAIL`. A
@@ -96,13 +99,18 @@ accounts and deployment are supplied externally.
 
 ## Inbox
 
-Sessions sort into the inbox (blocked, and idle whose last turn has not been
-opened), working, settled (idle and seen, or idle without a turn), then
+Sessions sort into the inbox (blocked, and idle on a turn the person has not
+seen), working, settled (idle on a seen turn, or idle without a turn), then
 sessions whose state is unknown; longest waiting first inside each group.
-Opening a session whose turn has finished marks that turn seen for every
-device; a turn that ends while its session view is visible is marked the same
-way. The gateway keeps seen turns in `seen.json`, forgets sessions no machine
-has shown for a week, and keeps at most 4096.
+
+A turn is seen when the person watches it at the terminal, when the plugin's
+tmux hooks see its pane come into view, or when `tmag seen` marks it. Opening
+a session whose turn has finished runs `tmag seen` on that machine for the
+turn the view shows, and a turn that ends while its view is open is marked
+the same way; the `Seen` event that follows settles it on every device, and
+a failure shows on the page. The seen turn belongs to the session's record,
+so the gateway keeps no session state of its own and a restart changes
+nothing.
 
 The page's routes are `#/` for the inbox, `#/s/<session id>` for one session,
 and `#/s/<session id>/r/<request id>` for one request.
