@@ -165,50 +165,10 @@ func binaryCheck(self string, found []string) check {
 	if len(found) == 0 {
 		return check{"tmag", "fail", fmt.Sprintf("%s at %s, but agent hooks find no tmag: neither the tmux plugin's bin/tmag nor tmag on PATH", version.Version, self)}
 	}
-	if shim, ok := viaMiseShim(found); ok {
-		return check{"tmag", "ok", fmt.Sprintf("%s via mise shim %s", version.Version, shim)}
-	}
-	first := found[0]
-	if inMiseInstalls(first) {
-		return check{"tmag", "warn", fmt.Sprintf("%s is inside mise's versioned install directory; "+
-			"long-running agents such as the Codex daemon lose it after an upgrade. Put mise's shims directory on PATH", first)}
-	}
-	if canonical(first) != canonical(self) {
+	if first := found[0]; canonical(first) != canonical(self) {
 		return check{"tmag", "warn", fmt.Sprintf("running %s, but hooks will run %s", canonical(self), canonical(first))}
 	}
-	return check{"tmag", "ok", fmt.Sprintf("%s at %s", version.Version, first)}
-}
-
-// viaMiseShim reports whether tmag is reached through a mise shim. When a shim
-// runs a tool, mise puts the tool's versioned directory first on PATH, so the
-// shim shows up behind it.
-func viaMiseShim(found []string) (string, bool) {
-	if len(found) == 0 || (!isMiseShim(found[0]) && !inMiseInstalls(found[0])) {
-		return "", false
-	}
-	for _, p := range found {
-		if isMiseShim(p) {
-			return p, true
-		}
-	}
-	return "", false
-}
-
-// isMiseShim reports whether p is a mise shim, a link to the mise binary.
-func isMiseShim(p string) bool {
-	return filepath.Base(canonical(p)) == "mise"
-}
-
-// inMiseInstalls reports whether p lies in a mise data directory's versioned
-// installs/ tree, recognised by the shims/ directory next to it.
-func inMiseInstalls(p string) bool {
-	for dir := filepath.Dir(p); dir != filepath.Dir(dir); dir = filepath.Dir(dir) {
-		if filepath.Base(dir) == "installs" {
-			st, err := os.Stat(filepath.Join(filepath.Dir(dir), "shims"))
-			return err == nil && st.IsDir()
-		}
-	}
-	return false
+	return check{"tmag", "ok", fmt.Sprintf("%s at %s", version.Version, found[0])}
 }
 
 func canonical(p string) string {
@@ -419,15 +379,8 @@ func daemonBinaryProblem(pid int) string {
 	if !readable {
 		return ""
 	}
-	found := hookBinaries(func(k string) string { return env[k] })
-	const restart = "restart it from a shell inside tmux: codex app-server daemon restart (this interrupts running Codex work)"
-	switch {
-	case len(found) == 0:
-		return "the daemon cannot find tmag, so its hooks cannot run; " + restart
-	case !inPluginDir(found[0]) && inMiseInstalls(found[0]):
-		if _, shim := viaMiseShim(found); !shim {
-			return "the daemon reaches tmag through mise's versioned install directory and loses it after an upgrade; " + restart
-		}
+	if len(hookBinaries(func(k string) string { return env[k] })) == 0 {
+		return "the daemon cannot find tmag, so its hooks cannot run; restart it from a shell inside tmux: codex app-server daemon restart (this interrupts running Codex work)"
 	}
 	return ""
 }

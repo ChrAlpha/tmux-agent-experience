@@ -39,5 +39,4 @@ which version.
    provenance.
 4. Check the install paths users take, on Linux and macOS: the TPM install
    (`prefix + I` downloads the new binary, `prefix + M-a` connects the agents,
-   Pi's and oh-my-pi's packages included),
-   the steps in `SKILL.md`, and `mise use -g github:ChrAlpha/tmux-agent-experience`.
+   Pi's and oh-my-pi's packages included) and the steps in `SKILL.md`.

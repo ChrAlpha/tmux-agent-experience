@@ -23,7 +23,7 @@ jobs:
           want="${GITHUB_REF_NAME#v}"
           grep -q "Version = \"$want\"" internal/version/version.go || { echo "tag $GITHUB_REF_NAME does not match internal/version"; exit 1; }
       - name: Build
-        # Archives hold tmag at the root, the layout mise, aqua and eget expect.
+        # Archives hold tmag at the root, where scripts/install.sh reads it.
         run: |
           mkdir dist
           for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do

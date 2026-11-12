@@ -37,59 +37,24 @@ func TestParseInterleaved(t *testing.T) {
 	}
 }
 
-func TestRemoveBinary(t *testing.T) {
-	data := t.TempDir()
-	installed := filepath.Join(data, "installs", "github-x", "0.1.0", "tmag")
-	for _, dir := range []string{filepath.Dir(installed), filepath.Join(data, "shims")} {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if got := removeBinary(installed); got != "mise unuse -g "+miseTool {
-		t.Errorf("mise install: %q", got)
-	}
-	if got := removeBinary("/home/me/.local/bin/tmag"); got != "rm /home/me/.local/bin/tmag" {
-		t.Errorf("plain install: %q", got)
-	}
-}
-
 func TestBinaryCheck(t *testing.T) {
-	// A mise data directory with a shim (a link to the mise binary) and a
-	// versioned install of tmag.
-	data := t.TempDir()
-	mise := filepath.Join(t.TempDir(), "mise")
-	installed := filepath.Join(data, "installs", "github-x", "0.1.0", "tmag")
-	shim := filepath.Join(data, "shims", "tmag")
+	self := filepath.Join(t.TempDir(), "tmag")
 	other := filepath.Join(t.TempDir(), "tmag")
-	for _, f := range []string{mise, installed, other} {
-		if err := os.MkdirAll(filepath.Dir(f), 0o755); err != nil {
-			t.Fatal(err)
-		}
+	for _, f := range []string{self, other} {
 		if err := os.WriteFile(f, []byte("#!/bin/sh\n"), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := os.MkdirAll(filepath.Dir(shim), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(mise, shim); err != nil {
-		t.Fatal(err)
-	}
-
 	for _, c := range []struct {
 		name   string
-		self   string
 		found  []string
 		status string
 	}{
-		{"missing", installed, nil, "fail"},
-		{"shim first", installed, []string{shim}, "ok"},
-		{"run through a shim", installed, []string{installed, shim}, "ok"},
-		{"versioned dir only", installed, []string{installed}, "warn"},
-		{"same binary", other, []string{other}, "ok"},
-		{"other binary", other, []string{installed + "-nope", other}, "warn"},
+		{"missing", nil, "fail"},
+		{"same binary", []string{self}, "ok"},
+		{"other binary first", []string{other, self}, "warn"},
 	} {
-		if got := binaryCheck(c.self, c.found); got.Status != c.status {
+		if got := binaryCheck(self, c.found); got.Status != c.status {
 			t.Errorf("%s: status %s (%s), want %s", c.name, got.Status, got.Detail, c.status)
 		}
 	}
