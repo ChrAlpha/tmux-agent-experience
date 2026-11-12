@@ -265,7 +265,7 @@ an adapter, the Codex title rules or an inbox, observe the real thing:
   writes Claude Code's cross-session envelope there and reads EOF. Check that
   the socket's peer is the session's process, that an idle session starts a
   turn, and that a working one reads it at its next step.
-- Codex: `tmag` reads the `thread-id` title item of Codex 0.166 (the id's
+- Codex: `tmag` reads the `thread-id` title item of Codex 0.167 (the id's
   first 29 characters and `...`). Hooks load from a project's
   `.codex/hooks.json` once the project and its hooks are trusted; Codex writes
   both trusts into the user's `config.toml`, so remove those entries, and only
@@ -297,7 +297,7 @@ an adapter, the Codex title rules or an inbox, observe the real thing:
 - Transcripts: `internal/transcript` reads Claude Code 2.1.319's JSONL (a
   line per content block, each user entry's `promptId` the hooks'
   `prompt_id`; a peer message is a meta entry whose `origin.kind` is
-  `peer`), Codex 0.166's rollout (`task_complete` with `turn_id` and
+  `peer`), Codex 0.167's rollout (`task_complete` with `turn_id` and
   `last_agent_message`), and Pi 1.5.0's and oh-my-pi 18.18.6's session files
   (an entry per message, a user message's entry id naming its turn). Before
   changing it, run a turn and check that `tmag read ID --last` names the turn
