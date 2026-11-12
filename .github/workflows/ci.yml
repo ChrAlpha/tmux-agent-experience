@@ -112,30 +112,7 @@ jobs:
         with:
           go-version: ${{ needs.plan.outputs.go }}
           build-cache: race-${{ matrix.suite.name == 'unit' && 'unit' || 'e2e' }}
-      # Homebrew takes about fifteen seconds to pour tmux and its
-      # dependencies, and pours the same files on the same image: they are
-      # kept per image. Ubuntu images come with tmux.
-      - id: image
-        if: runner.os == 'macOS'
-        run: echo "version=$ImageOS-$ImageVersion" >> "$GITHUB_OUTPUT"
-      - if: runner.os == 'macOS'
-        uses: actions/cache@v6
-        with:
-          path: ${{ runner.temp }}/tmux.tar
-          key: tmux-${{ steps.image.outputs.version }}-${{ runner.arch }}
-      - name: Install tmux
-        run: |
-          if [ "$RUNNER_OS" = macOS ]; then
-            archive=$RUNNER_TEMP/tmux.tar prefix=$(brew --prefix)
-            if ! { [ -f "$archive" ] && tar -xf "$archive" -C "$prefix" && tmux -V; }; then
-              brew install tmux
-              # shellcheck disable=SC2046 # one path per formula
-              tar -cf "$archive" -C "$prefix" bin/tmux $(for f in tmux $(brew deps tmux); do echo "Cellar/$f opt/$f"; done)
-            fi
-          elif ! command -v tmux > /dev/null; then
-            sudo apt-get update && sudo apt-get install -y tmux
-          fi
-          tmux -V
+      - uses: ./.github/actions/setup-tmux
       # The unit suite runs tmag's extensions for Pi and oh-my-pi, on a
       # Node.js that runs TypeScript as it is.
       - if: matrix.suite.name == 'unit'
@@ -182,6 +159,34 @@ jobs:
           path: e2e-durations
           key: e2e-durations-${{ github.run_id }}-${{ github.run_attempt }}-${{ strategy.job-index }}
 
+  # The remote companion is a module of its own, which follows tmag's
+  # contracts: its end-to-end tests build tmag from this commit.
+  client:
+    needs: plan
+    if: needs.plan.outputs.code == 'true'
+    name: client (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: client
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-go
+        with:
+          go-version: ${{ needs.plan.outputs.go }}
+          build-cache: client
+      - uses: ./.github/actions/setup-tmux
+      - name: Check the module requires nothing
+        run: |
+          go vet ./...
+          [ "$(go list -m all)" = "$(go list -m)" ] || { echo "::error::the client requires another module"; go list -m all; exit 1; }
+      - name: Test
+        run: go test -race -count=1 ./...
+
   lint:
     needs: plan
     if: needs.plan.outputs.code == 'true'
@@ -194,6 +199,12 @@ jobs:
       - uses: golangci/golangci-lint-action@v9
         with:
           version: v2.15
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.15
+          working-directory: client
+      - name: Check the page's scripts
+        run: for f in client/internal/gateway/assets/*.js; do node --check "$f"; done
       - name: Shellcheck
         run: shellcheck tmag.tmux scripts/install.sh scripts/tmag plugins/claude/tmag-peers/bin/tmag plugins/*/tmag-peers/skills/peers/scripts/tmag
 
@@ -220,7 +231,9 @@ jobs:
         name: Build govulncheck
         run: go install "golang.org/x/vuln/cmd/govulncheck@${{ steps.govulncheck.outputs.version }}"
       - name: Govulncheck
-        run: govulncheck ./...
+        run: |
+          govulncheck ./...
+          (cd client && govulncheck ./...)
 
   manifests:
     needs: plan
@@ -242,7 +255,7 @@ jobs:
   # runs in a cancelled run too, failing there: a skipped check would pass.
   ci:
     if: always()
-    needs: [plan, test, lint, vulncheck, manifests]
+    needs: [plan, test, client, lint, vulncheck, manifests]
     runs-on: ubuntu-latest
     steps:
       - env:

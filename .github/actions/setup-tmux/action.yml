@@ -1,0 +1,32 @@
+name: Set up tmux
+description: Install tmux for the end-to-end tests; on macOS from a copy kept per runner image.
+
+runs:
+  using: composite
+  steps:
+    # Homebrew takes about fifteen seconds to pour tmux and its
+    # dependencies, and pours the same files on the same image: they are
+    # kept per image. Ubuntu images come with tmux.
+    - id: image
+      if: runner.os == 'macOS'
+      shell: bash
+      run: echo "version=$ImageOS-$ImageVersion" >> "$GITHUB_OUTPUT"
+    - if: runner.os == 'macOS'
+      uses: actions/cache@v6
+      with:
+        path: ${{ runner.temp }}/tmux.tar
+        key: tmux-${{ steps.image.outputs.version }}-${{ runner.arch }}
+    - name: Install tmux
+      shell: bash
+      run: |
+        if [ "$RUNNER_OS" = macOS ]; then
+          archive=$RUNNER_TEMP/tmux.tar prefix=$(brew --prefix)
+          if ! { [ -f "$archive" ] && tar -xf "$archive" -C "$prefix" && tmux -V; }; then
+            brew install tmux
+            # shellcheck disable=SC2046 # one path per formula
+            tar -cf "$archive" -C "$prefix" bin/tmux $(for f in tmux $(brew deps tmux); do echo "Cellar/$f opt/$f"; done)
+          fi
+        elif ! command -v tmux > /dev/null; then
+          sudo apt-get update && sudo apt-get install -y tmux
+        fi
+        tmux -V
