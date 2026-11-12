@@ -1,6 +1,6 @@
 {
   "name": "tmag-peers",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "description": "Lets Pi work with the other coding agents in your tmux panes through tmag: see their state, prompt them, wait for them and reply, gated and recorded. Uses the tmag binary of the tmux-agent-experience tmux plugin.",
   "private": true,
   "author": "ChrAlpha",
