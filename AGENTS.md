@@ -75,10 +75,11 @@ promise is documented in the package, and changes with it.
   agent's dialog, on screen meanwhile, to decide.
 - **No content is stored.** Payloads decode into `adapter.Payload`, which has
   no prompt, message or tool-input field, and tmag's extensions send none;
-  records, events and alerts hold ids, states, paths and times. A prompt
-  sent through an inbox is written to the agent's channel and kept nowhere.
-  `answer-hook` keeps a tool input in memory only, and `read --last` prints a
-  reply and keeps nothing.
+  records and events hold ids, states, paths and times, and the turn the person
+  has seen, from the terminal's view or a person's command, never an agent's;
+  alerts hold the ids and states they name. A prompt sent through an inbox is
+  written to the agent's channel and kept nowhere. `answer-hook` keeps a tool
+  input in memory only, and `read --last` prints a reply and keeps nothing.
 - **What tmag accepts is bounded where it is read.** `adapter.Decode` bounds
   every field it keeps and records cap their lists, so state stays small
   whatever an agent sends. A new field comes with its bound.
@@ -126,7 +127,7 @@ promise is documented in the package, and changes with it.
 
 | Path | Role |
 | --- | --- |
-| `tmag.tmux` | TPM entry: binary install, options, key bindings, placeholders |
+| `tmag.tmux` | TPM entry: binary install, options, key bindings, status placeholders and the tmux hooks that record seen turns |
 | `scripts/install.sh` | Installs the matching released binary into `bin/`, checksum verified |
 | `scripts/tmag` | Runs the plugin's binary, for key bindings and status jobs |
 | `cmd/tmag` | Entry point |

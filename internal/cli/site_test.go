@@ -1,8 +1,10 @@
 package cli
 
 import (
+	"encoding/json"
 	"html"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -105,7 +107,7 @@ func TestSiteTeachesTmagAsItIs(t *testing.T) {
 	}
 	requestLine := regexp.MustCompile("^" + strings.ReplaceAll(regexp.QuoteMeta(request[1]), "%s", ".+") + "$")
 
-	summary := Summary([]query.Session{{State: adapter.Blocked}, {State: adapter.Working}, {State: adapter.Idle}}, false)
+	summary := Summary([]query.Session{{State: adapter.Blocked}, {State: adapter.Working}, {State: adapter.Idle, Turn: "turn"}}, false)
 
 	prompt := regexp.MustCompile(`(?m)^> (Read https://\S+/SKILL\.md .+)$`)
 	readmePrompts := map[string]bool{}
@@ -203,6 +205,72 @@ func TestSiteTeachesTmagAsItIs(t *testing.T) {
 		}
 		if !strings.Contains(siteText(page), summary) {
 			t.Errorf("%s does not show tmag status as it reads: %q", path, summary)
+		}
+	}
+}
+
+// The demo settles a finished agent its jump visits: the next jump leaves it,
+// and the status line counts it idle. site.js exposes that logic to Node
+// without changing the page.
+func TestSiteDemoSettlesVisitedTurns(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not installed")
+	}
+	site, err := filepath.Abs(filepath.Join("..", "..", "site", "site.js"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const script = `
+const { jumpNext, jumpVisit, jumpCounts } = require(process.env.SITE);
+const agents = [
+  { window: 0, state: "blocked", since: -12 },
+  { window: 1, state: "working", since: -60 },
+  { window: 2, state: "finished", since: -180 },
+];
+let current = 1;
+const visits = [];
+for (let i = 0; i < 4; i++) {
+  const target = jumpVisit(agents, current);
+  visits.push(target ? target.window : null);
+  if (target) current = target.window;
+}
+const next = jumpNext(agents, current);
+console.log(JSON.stringify({ visits, counts: jumpCounts(agents), next: next ? next.window : null }));
+`
+	cmd := exec.Command(node, "-e", script)
+	cmd.Env = append(os.Environ(), "SITE="+site)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("site demo: %v\n%s", err, out)
+	}
+	var got struct {
+		Visits []*int         `json:"visits"`
+		Counts map[string]int `json:"counts"`
+		Next   *int           `json:"next"`
+	}
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("site demo output %q: %v", out, err)
+	}
+	want := []int{0, 2, 0, -1}
+	if len(got.Visits) != len(want) {
+		t.Fatalf("visits = %v, want %v", got.Visits, want)
+	}
+	for i, w := range want {
+		n := -1
+		if got.Visits[i] != nil {
+			n = *got.Visits[i]
+		}
+		if n != w {
+			t.Fatalf("visits = %v, want %v", got.Visits, want)
+		}
+	}
+	if got.Next != nil {
+		t.Fatalf("jump after the visits still takes %d", *got.Next)
+	}
+	for state, n := range map[string]int{"blocked": 1, "finished": 0, "working": 1, "idle": 1} {
+		if got.Counts[state] != n {
+			t.Fatalf("counts = %v, want blocked 1, finished 0, working 1, idle 1", got.Counts)
 		}
 	}
 }

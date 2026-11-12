@@ -33,15 +33,16 @@ machine, the hub. It follows each machine once, through a command such as
 `ssh box tmag` or `docker exec -i dev tmag`, or through an HTTP endpoint of
 `tmag serve`, and serves a mobile-first web app for triage and action:
 
-- an inbox of the sessions that need the person: blocked ones, and idle ones
-  whose last turn the person has not seen; then working ones; then settled
-  ones (idle, seen);
+- an inbox of the sessions that need the person, as
+  [ADR 0005](0005-seen-turns.md) defines them: blocked ones, then finished ones
+  whose turn the person has not seen, then working ones, then settled ones;
 - for each session: its last reply, its pane's recent text, an open request's
   tool input, and answer, send and interrupt;
 - Web Push alerts to paired devices.
 
 The client offers no terminal and runs no arbitrary command. It stores no
-content: what it remembers of sessions is ids and turn ids. A new task starts
+content and keeps no session state: sessions, their turns and what the person
+has seen arrive in the contract's documents and events. A new task starts
 by prompting an agent, which starts peers as the peers skill teaches. Machines
 reached through a command need no `tmag serve`; `tmag serve` serves
 integrations and machines no command reaches. Agents working across machines

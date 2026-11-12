@@ -14,10 +14,12 @@ between them.
 - **Know when you are needed.** Blocked and finished agents flag their tmux
   windows with a bell. Use tmux's `prefix + M-n` / `M-p` to visit them.
 - **Jump straight to the next agent.** `prefix + A` takes you to the agent
-  waiting longest, with blocked agents first. `prefix + a` opens the agent tree.
+  waiting longest, blocked agents first, then agents whose finished turn you
+  have not read. `prefix + a` opens the agent tree.
 - **See progress where you work.** Add `#{tmag_status}` to your status line
-  for `2 blocked · 1 working`, or `#{E:@tmag-pane-status}` to pane borders
-  for labels such as `codex blocked permission`.
+  for `1 blocked · 2 finished · 1 working · 1 idle`, or `#{E:@tmag-pane-status}`
+  to pane borders for labels such as `codex blocked permission`. The pane you
+  are looking at settles its turn; `@tmag-seen off` leaves only `tmag seen`.
 - **Let agents work together.** Agents can discover peers, check their state,
   send prompts and read replies. Ask one to bring another into the task.
 - **Reach agents beyond the terminal.** Answer permission requests, send prompts

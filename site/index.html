@@ -80,12 +80,12 @@ work:2.0  %3    pi      idle                  3m   5c2e90b1  ~/src/cli
         </div>
         <div class="tmux-status">
           <span class="ts-left">[work] <span class="ts-win" data-window="0">0:api!</span> <span class="ts-win" data-window="1">1:web*</span> <span class="ts-win" data-window="2">2:cli!</span></span>
-          <span class="ts-right"><b class="ts-blocked">1 blocked</b> · 1 working · 1 idle | 14:20</span>
+          <span class="ts-right"><span class="ts-counts"><b class="ts-blocked">1 blocked</b> · 1 finished · 1 working</span> | 14:20</span>
         </div>
       </div>
       <figcaption>
-        <span class="sr-only">A tmux session with three agents: claude waits for approval in window 0, codex works in window 1, which you are watching, and pi is idle in window 2.</span>
-        <p class="jump" hidden data-to0="claude in 0:api: blocked agents come first." data-to2="pi in 2:cli: then the idle one waiting longest." data-again0="claude again, still blocked." data-again2="pi again. Answer claude to end the round."><button type="button" id="jump"><kbd>prefix</kbd> <kbd>A</kbd></button> <span id="jump-said" aria-live="polite">Jump to the agent waiting longest.</span></p>
+        <span class="sr-only">A tmux session with three agents: claude waits for approval in window 0, codex works in window 1, which you are watching, and pi finished a turn in window 2.</span>
+        <p class="jump" hidden data-to0="claude in 0:api: blocked agents come first." data-to2="pi in 2:cli: the finished one; now settled." data-again0="claude again, still blocked." data-none="no other agent is waiting; claude is blocked."><button type="button" id="jump"><kbd>prefix</kbd> <kbd>A</kbd></button> <span id="jump-said" aria-live="polite">Jump to the agent waiting longest.</span></p>
       </figcaption>
     </figure>
   </div>
@@ -143,7 +143,7 @@ work:2.0  %3    pi      idle                  3m   5c2e90b1  ~/src/cli
         <p>Set options above TPM's <code>run</code> line: the plugin reads them when it loads.</p>
       </div>
       <div class="snippet">
-        <pre id="conf"><code><span class="c"># "1 blocked · 1 working · 1 idle" in the status line</span>
+        <pre id="conf"><code><span class="c"># "1 blocked · 1 finished · 1 working" in the status line</span>
 set -g status-right '#{tmag_status} | %H:%M'
 set -g status-right-length 60
 
@@ -160,7 +160,7 @@ run '~/.tmux/plugins/tpm/tpm'</code></pre>
     <article class="practice">
       <div class="practice-text">
         <h4><span class="n">02</span> Let alerts come to you</h4>
-        <p>An agent that blocks or finishes in a pane you are not looking at rings its window's bell. <span class="keys"><kbd>prefix</kbd> <kbd>A</kbd></span> takes you to the agent waiting longest, blocked ones first; tmux's <span class="keys"><kbd>prefix</kbd> <kbd>M-n</kbd></span> and <kbd>M-p</kbd> visit flagged windows.</p>
+        <p>An agent that blocks or finishes in a pane you are not looking at rings its window's bell. <span class="keys"><kbd>prefix</kbd> <kbd>A</kbd></span> takes you to the agent waiting longest, blocked ones first, then finished ones you have not read; tmux's <span class="keys"><kbd>prefix</kbd> <kbd>M-n</kbd></span> and <kbd>M-p</kbd> visit flagged windows.</p>
         <p>Away from the terminal, <code>@tmag-notify</code> runs your own command with the alert in <code>TMAG_*</code> variables, unless you typed on a server showing that agent in the last minute. <code>tmag notify</code> sends a test alert.</p>
       </div>
       <div class="snippet">
@@ -290,7 +290,7 @@ prefix + M-a    <span class="c">update tmag's plugins in every agent</span>
     <li><strong>Your words.</strong> Records hold ids, states, paths and times. A reply is read from the agent's own transcript when asked, and kept nowhere.</li>
     <li><strong>Guesswork.</strong> A pane shows a session only when the process table, or Codex's <code>thread-id</code> title, proves it. Anything else is <code>unknown</code>.</li>
     <li><strong>Your configuration.</strong> Agent plugins install through each agent's own plugin manager; tmag never edits their settings.</li>
-    <li><strong>Your choices.</strong> Every default has an off switch: <code>@tmag-alert off</code>, a key option set to <code>off</code>, or <code>@tmag-peers off</code> then <span class="keys"><kbd>prefix</kbd> <kbd>M-a</kbd></span> to keep tmag out of the agents' context.</li>
+    <li><strong>Your choices.</strong> Every default has an off switch: <code>@tmag-alert off</code>, <code>@tmag-seen off</code>, a key option set to <code>off</code>, or <code>@tmag-peers off</code> then <span class="keys"><kbd>prefix</kbd> <kbd>M-a</kbd></span> to keep tmag out of the agents' context.</li>
   </ul>
 </section>
 

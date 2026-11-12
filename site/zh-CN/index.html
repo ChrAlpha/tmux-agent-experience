@@ -81,12 +81,12 @@ work:2.0  %3    pi      idle                  3m   5c2e90b1  ~/src/cli
         </div>
         <div class="tmux-status">
           <span class="ts-left">[work] <span class="ts-win" data-window="0">0:api!</span> <span class="ts-win" data-window="1">1:web*</span> <span class="ts-win" data-window="2">2:cli!</span></span>
-          <span class="ts-right"><b class="ts-blocked">1 blocked</b> · 1 working · 1 idle | 14:20</span>
+          <span class="ts-right"><span class="ts-counts"><b class="ts-blocked">1 blocked</b> · 1 finished · 1 working</span> | 14:20</span>
         </div>
       </div>
       <figcaption>
-        <span class="sr-only">一个有三个 agents 的 tmux session：claude 在 window 0 等待批准，codex 在你正看着的 window 1 中工作，pi 在 window 2 中 idle。</span>
-        <p class="jump" hidden data-to0="0:api 的 claude：blocked 优先。" data-to2="2:cli 的 pi：其次是等待最久的 idle agent。" data-again0="又是 claude，它仍是 blocked。" data-again2="又是 pi。回应 claude 才能结束这一轮。"><button type="button" id="jump"><kbd>prefix</kbd> <kbd>A</kbd></button> <span id="jump-said" aria-live="polite">跳到等待最久的 agent。</span></p>
+        <span class="sr-only">一个有三个 agents 的 tmux session：claude 在 window 0 等待批准，codex 在你正看着的 window 1 中工作，pi 在 window 2 中已完成一个 turn。</span>
+        <p class="jump" hidden data-to0="0:api 的 claude：blocked 优先。" data-to2="2:cli 的 pi：已完成的 turn，现在已读。" data-again0="又是 claude，它仍是 blocked。" data-none="没有其他 agent 在等待了；claude 仍是 blocked。"><button type="button" id="jump"><kbd>prefix</kbd> <kbd>A</kbd></button> <span id="jump-said" aria-live="polite">跳到等待最久的 agent。</span></p>
       </figcaption>
     </figure>
   </div>
@@ -144,7 +144,7 @@ work:2.0  %3    pi      idle                  3m   5c2e90b1  ~/src/cli
         <p>在 TPM 的 <code>run</code> 行之上设置选项：插件在加载时读取它们。</p>
       </div>
       <div class="snippet">
-        <pre id="conf"><code><span class="c"># 状态栏显示 "1 blocked · 1 working · 1 idle"</span>
+        <pre id="conf"><code><span class="c"># 状态栏显示 "1 blocked · 1 finished · 1 working"</span>
 set -g status-right '#{tmag_status} | %H:%M'
 set -g status-right-length 60
 
@@ -161,7 +161,7 @@ run '~/.tmux/plugins/tpm/tpm'</code></pre>
     <article class="practice">
       <div class="practice-text">
         <h4><span class="n">02</span> 让提醒来找你</h4>
-        <p>Agent 在你没在看的 pane 中进入 blocked 或完成任务时，会响起所在 window 的 bell。<span class="keys"><kbd>prefix</kbd> <kbd>A</kbd></span> 带你去等待最久的 agent，blocked 优先；tmux 自带的 <span class="keys"><kbd>prefix</kbd> <kbd>M-n</kbd></span> 和 <kbd>M-p</kbd> 在带标记的 windows 之间跳转。</p>
+        <p>Agent 在你没在看的 pane 中进入 blocked 或完成任务时，会响起所在 window 的 bell。<span class="keys"><kbd>prefix</kbd> <kbd>A</kbd></span> 带你去等待最久的 agent，先处理 blocked，再处理你还没读过的已完成 turn；tmux 自带的 <span class="keys"><kbd>prefix</kbd> <kbd>M-n</kbd></span> 和 <kbd>M-p</kbd> 在带标记的 windows 之间跳转。</p>
         <p>离开终端时，<code>@tmag-notify</code> 会运行你自己的命令，提醒内容放在 <code>TMAG_*</code> 变量中；如果你最近一分钟在显示该 agent 的 server 上有过输入，则不运行。<code>tmag notify</code> 发送一条测试提醒。</p>
       </div>
       <div class="snippet">
@@ -291,7 +291,7 @@ prefix + M-a    <span class="c">更新每个 agent 中的 tmag 插件</span>
     <li><strong>你的内容。</strong>记录只保存 ids、状态、路径和时间。回复在被请求时从 agent 自己的 transcript 中读取，不做任何保存。</li>
     <li><strong>猜测。</strong>只有进程表或 Codex 的 <code>thread-id</code> 标题证实时，pane 才会显示对应的 session；其余一律为 <code>unknown</code>。</li>
     <li><strong>你的配置。</strong>Agent 插件通过各个 agent 自己的 plugin manager 安装；tmag 从不修改它们的设置。</li>
-    <li><strong>你的选择。</strong>每个默认行为都有关闭开关：<code>@tmag-alert off</code>、设为 <code>off</code> 的按键选项，或者 <code>@tmag-peers off</code> 后按 <span class="keys"><kbd>prefix</kbd> <kbd>M-a</kbd></span>，让 tmag 不进入 agents 的上下文。</li>
+    <li><strong>你的选择。</strong>每个默认行为都有关闭开关：<code>@tmag-alert off</code>、<code>@tmag-seen off</code>、设为 <code>off</code> 的按键选项，或者 <code>@tmag-peers off</code> 后按 <span class="keys"><kbd>prefix</kbd> <kbd>M-a</kbd></span>，让 tmag 不进入 agents 的上下文。</li>
   </ul>
 </section>
 
