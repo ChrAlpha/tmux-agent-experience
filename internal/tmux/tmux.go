@@ -137,6 +137,25 @@ func (s Server) Panes(ctx context.Context) ([]Pane, error) {
 	return panes, nil
 }
 
+// PaneID resolves a target-pane the way tmux's own commands do (a session,
+// session:window.pane, a window name, {last}, {marked}, ...) and returns the
+// pane's id. display-message alone would name the current pane for a target
+// it cannot find, so capture-pane resolves it first, strictly: with -P it
+// captures only an unfinished escape sequence, usually nothing, and no line
+// of the pane.
+func (s Server) PaneID(ctx context.Context, target string) (string, error) {
+	out, err := s.Run(ctx, "capture-pane", "-p", "-P", "-t", target, ";", "display-message", "-p", "-t", target, "#{pane_id}")
+	if err != nil {
+		return "", err
+	}
+	lines := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
+	id := lines[len(lines)-1]
+	if !paneIDRE.MatchString(id) {
+		return "", fmt.Errorf("target %s: unexpected tmux output", target)
+	}
+	return id, nil
+}
+
 // Pane reads one pane afresh.
 func (s Server) Pane(ctx context.Context, id string) (Pane, error) {
 	out, err := s.Run(ctx, "display-message", "-p", "-t", id, paneFormat)

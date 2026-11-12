@@ -199,55 +199,98 @@ type Target struct {
 	Pane    *Pane
 }
 
-// Resolve finds what target names: a pane id (%N, on the caller's server),
-// server:%N where server is a socket name or path, or a session id or a
-// unique prefix of one. A session shown by exactly one pane resolves to both.
-func Resolve(v View, target string) (Target, error) {
+// Resolve finds what target names: a session id or a unique prefix of one,
+// a pane id (%N, on the caller's server), server:%N where server is a socket
+// name or path, or any other target-pane tmux takes (work:1.0, a window
+// name, {last}, ...), which tmux resolves on the caller's server as its own
+// commands would. A session shown by exactly one pane resolves to both.
+func Resolve(ctx context.Context, v View, target string) (Target, error) {
 	if m := paneSpec.FindStringSubmatch(target); m != nil {
-		server := tmux.DefaultServer().Socket
-		if m[1] != "" {
-			server = tmux.ServerByName(m[1]).Socket
-		}
-		for i := range v.Panes {
-			p := &v.Panes[i]
-			if p.Server != server || p.ID != m[2] {
-				continue
+		return paneTarget(v, eventlog.PaneRef{Server: paneServer(m[1]), ID: m[2]}, target)
+	}
+	if len(target) >= minIDPrefix {
+		var matches []int
+		for i, s := range v.Sessions {
+			if strings.HasPrefix(s.ID, target) {
+				matches = append(matches, i)
 			}
-			t := Target{Pane: p}
-			if p.Session != "" {
-				if s, ok := v.Session(p.Agent, p.Session); ok {
-					t.Session = &s
+		}
+		switch len(matches) {
+		case 0:
+			// No session's: a pane, as tmux names it.
+		case 1:
+			s := v.Sessions[matches[0]]
+			t := Target{Session: &s}
+			if len(s.Panes) == 1 {
+				for i := range v.Panes {
+					if v.Panes[i].Server == s.Panes[0].Server && v.Panes[i].ID == s.Panes[0].ID {
+						t.Pane = &v.Panes[i]
+					}
 				}
 			}
 			return t, nil
-		}
-		return Target{}, fmt.Errorf("%w in pane %s", ErrNotFound, target)
-	}
-	if len(target) < minIDPrefix {
-		return Target{}, fmt.Errorf("%w: id prefix %q is shorter than %d characters", ErrNotFound, target, minIDPrefix)
-	}
-	var matches []int
-	for i, s := range v.Sessions {
-		if strings.HasPrefix(s.ID, target) {
-			matches = append(matches, i)
+		default:
+			return Target{}, fmt.Errorf("%w: %s matches %d sessions", ErrAmbiguous, target, len(matches))
 		}
 	}
-	switch len(matches) {
-	case 0:
-		return Target{}, fmt.Errorf("%w: %s", ErrNotFound, target)
-	case 1:
-		s := v.Sessions[matches[0]]
-		t := Target{Session: &s}
-		if len(s.Panes) == 1 {
-			for i := range v.Panes {
-				if v.Panes[i].Server == s.Panes[0].Server && v.Panes[i].ID == s.Panes[0].ID {
-					t.Pane = &v.Panes[i]
-				}
+	ref, err := tmuxTarget(ctx, target)
+	if err != nil {
+		return Target{}, err
+	}
+	return paneTarget(v, ref, target)
+}
+
+// PaneOf returns the pane target names as a pane: a pane id, server:%N, or
+// a target-pane tmux resolves. The pane need not run an agent.
+func PaneOf(ctx context.Context, target string) (eventlog.PaneRef, error) {
+	if m := paneSpec.FindStringSubmatch(target); m != nil {
+		return eventlog.PaneRef{Server: paneServer(m[1]), ID: m[2]}, nil
+	}
+	return tmuxTarget(ctx, target)
+}
+
+// paneServer is the socket of server:%N, or the caller's server.
+func paneServer(name string) string {
+	if name == "" {
+		return tmux.DefaultServer().Socket
+	}
+	return tmux.ServerByName(name).Socket
+}
+
+// tmuxTarget asks the caller's tmux server which pane target names.
+func tmuxTarget(ctx context.Context, target string) (eventlog.PaneRef, error) {
+	srv := tmux.DefaultServer()
+	id, err := srv.PaneID(ctx, target)
+	if err != nil {
+		if ctx.Err() != nil {
+			return eventlog.PaneRef{}, ctx.Err()
+		}
+		return eventlog.PaneRef{}, fmt.Errorf("%w: %s is no session id, and tmux finds no pane by that target", ErrNotFound, target)
+	}
+	return eventlog.PaneRef{Server: srv.Socket, ID: id}, nil
+}
+
+// paneTarget is what a pane shows, as the view has it; typed is the target
+// as given.
+func paneTarget(v View, ref eventlog.PaneRef, typed string) (Target, error) {
+	for i := range v.Panes {
+		p := &v.Panes[i]
+		if p.Server != ref.Server || p.ID != ref.ID {
+			continue
+		}
+		t := Target{Pane: p}
+		if p.Session != "" {
+			if s, ok := v.Session(p.Agent, p.Session); ok {
+				t.Session = &s
 			}
 		}
 		return t, nil
 	}
-	return Target{}, fmt.Errorf("%w: %s matches %d sessions", ErrAmbiguous, target, len(matches))
+	where := ref.ID
+	if typed != ref.ID {
+		where = typed + " (" + ref.ID + ")"
+	}
+	return Target{}, fmt.Errorf("%w in pane %s", ErrNotFound, where)
 }
 
 // SessionEvents returns the most recent events of one session, oldest first.

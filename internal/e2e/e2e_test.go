@@ -771,7 +771,7 @@ func TestPaneWithoutProofIsVisibleButNotControllable(t *testing.T) {
 	if r := h.tmag("", "send", h.target(pane), "hello"); r.code != 3 || !strings.Contains(r.out, "unbound") {
 		t.Fatalf("send to a pane that shows no session: %d %s", r.code, r.out)
 	}
-	if r := h.tmag("", "wait", h.target(pane)); r.code != 3 || !strings.Contains(r.out, "unbound") {
+	if r := h.tmag("", "wait", h.target(pane), "--timeout", "1s"); r.code != 4 || !strings.Contains(r.out, "shows no session tmag can prove") || !strings.Contains(r.out, "next: it still shows no session") {
 		t.Fatalf("wait on a pane that shows no session: %d %s", r.code, r.out)
 	}
 	if r := h.tmag("", "read", h.target(pane), "--lines", "5"); r.code != 0 || !strings.Contains(r.out, "ready") {

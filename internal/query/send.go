@@ -138,7 +138,7 @@ func deliver(ctx context.Context, log *eventlog.Log, target, text string, ask As
 	if line != "" {
 		text = line + "\n" + text
 	}
-	s, named, err := controlled(v, target)
+	s, named, err := controlled(ctx, v, target)
 	if err != nil {
 		return Delivery{}, err
 	}

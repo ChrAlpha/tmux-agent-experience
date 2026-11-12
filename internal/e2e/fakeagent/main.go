@@ -201,6 +201,10 @@ func main() {
 		hook(ev.stop, extra)
 	}
 
+	// An agent takes a moment to start before its first hook.
+	if ms, err := strconv.Atoi(os.Getenv("FAKE_START_MS")); err == nil {
+		time.Sleep(time.Duration(ms) * time.Millisecond)
+	}
 	hook(ev.start, map[string]any{"source": "startup"})
 	fmt.Print("\033[?2004h")
 	fmt.Println("ready")

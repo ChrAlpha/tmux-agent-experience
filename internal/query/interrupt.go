@@ -38,7 +38,7 @@ func Interrupt(ctx context.Context, log *eventlog.Log, target string) (Delivery,
 	if err != nil {
 		return Delivery{}, err
 	}
-	s, named, err := controlled(v, target)
+	s, named, err := controlled(ctx, v, target)
 	if err != nil {
 		return Delivery{}, err
 	}
