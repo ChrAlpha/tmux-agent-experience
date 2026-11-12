@@ -251,12 +251,18 @@ tmag watch</code></pre>
     <article class="practice">
       <div class="practice-text">
         <h4><span class="n">07</span> Reach agents from elsewhere, on your terms</h4>
-        <p><span class="keys"><kbd>prefix</kbd> <kbd>M-r</kbd></span> opens <code>tmag serve</code> in a tmux window, on <code>127.0.0.1:7777</code>; closing the window stops it. Pair each client with its own single-use invitation and revoke any one later. A tunnel or reverse proxy of your choice reaches it from elsewhere, named with <code>--host</code>.</p>
+        <p>To reach agents from elsewhere, use the remote companion, <code>tmag-client</code>. On one machine, the hub, <code>tmag-client serve</code> runs in a tmux window and follows the machines it is given; closing the window stops it. Each device pairs with its own single-use invitation, and any one is revoked later. A tunnel of your choice, <code>--tailscale</code> or <code>--access</code>, reaches it from elsewhere, and push needs one; on iOS, add the page to the home screen to receive notifications.</p>
+        <p>The client comes from its own releases, installed as the wiki's <a href="https://github.com/ChrAlpha/tmux-agent-experience/wiki/Installation-and-Updates">Installation &amp; Updates</a> page shows. <span class="keys"><kbd>prefix</kbd> <kbd>M-r</kbd></span> still opens <code>tmag serve</code> in a tmux window, for integrations and machines no command reaches.</p>
       </div>
       <div class="snippet">
-        <pre><code>tmag auth pair phone     <span class="c"># one use, valid for ten minutes</span>
-tmag auth list
-tmag auth revoke ID</code></pre>
+        <pre><code><span class="c"># on the hub: a tmux window that follows another machine</span>
+tmag-client serve --machine box='ssh box tmag' \
+  --tailscale hub.example.ts.net --owner me@example.com
+
+<span class="c"># each device pairs once; revoke one later</span>
+tmag-client auth pair phone
+tmag-client auth list
+tmag-client auth revoke ID</code></pre>
       </div>
     </article>
 

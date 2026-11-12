@@ -21,8 +21,9 @@ between them.
 - **Let agents work together.** Agents can discover peers, check their state,
   send prompts and read replies. Ask one to bring another into the task.
 - **Reach agents beyond the terminal.** Answer permission requests, send prompts
-  and stop turns through an optional owner-authorized local HTTP API. Connect
-  alerts to your own notification command.
+  and stop turns through an optional owner-authorized local HTTP API. Follow
+  the same agents from a phone with the [remote companion](client/README.md),
+  `tmag-client`. Connect alerts to your own notification command.
 
 No daemon, no wrapper. A prompt is never typed into a busy agent. An agent's
 prompt carries its proven sender. Prompts and output are never stored. A

@@ -39,16 +39,30 @@ func siteText(fragment string) string {
 }
 
 // siteCode is a page's code: its preformatted blocks without their
-// comments, which a translation may change, and all of its code as one text.
-func siteCode(page string) (blocks []string, all string) {
+// comments, which a translation may change, its inline code, and all of it as
+// one text.
+func siteCode(page string) (blocks, inline []string, all string) {
 	for _, m := range sitePre.FindAllStringSubmatch(page, -1) {
 		blocks = append(blocks, siteText(siteComment.ReplaceAllString(m[1], "")))
 	}
 	all = strings.Join(blocks, "\n")
 	for _, m := range siteInline.FindAllStringSubmatch(sitePre.ReplaceAllString(page, ""), -1) {
-		all += "\n" + siteText(m[1])
+		text := siteText(m[1])
+		inline = append(inline, text)
+		all += "\n" + text
 	}
-	return blocks, all
+	return blocks, inline, all
+}
+
+// clientUsage is tmag-client's usage, as its entry point prints it.
+func clientUsage(t *testing.T) string {
+	t.Helper()
+	src := readRepo(t, "client/cmd/tmag-client/main.go")
+	m := regexp.MustCompile("(?s)const usage = `(.*?)`").FindStringSubmatch(src)
+	if m == nil {
+		t.Fatal("found no tmag-client usage in client/cmd/tmag-client/main.go")
+	}
+	return m[1]
 }
 
 // The landing page teaches tmag as it is, like the peers skill: the
@@ -58,6 +72,11 @@ func siteCode(page string) (blocks []string, all string) {
 func TestSiteTeachesTmagAsItIs(t *testing.T) {
 	plugin := readRepo(t, "tmag.tmux") + readRepo(t, "scripts/install.sh")
 	commands := usageCommands()
+	client := clientUsage(t)
+	clientCommands := map[string]bool{}
+	for _, m := range regexp.MustCompile(`(?m)^  tmag-client ((?:auth )?[a-z][a-z-]*)`).FindAllStringSubmatch(client, -1) {
+		clientCommands[m[1]] = true
+	}
 
 	// The plugin's default keys, TPM's install and update, and tmux's keys to
 	// the next and previous window with an alert.
@@ -104,7 +123,7 @@ func TestSiteTeachesTmagAsItIs(t *testing.T) {
 	var source []string
 	for i, path := range sitePages {
 		page := readRepo(t, path)
-		blocks, code := siteCode(page)
+		blocks, inline, code := siteCode(page)
 		if i == 0 {
 			source = blocks
 		} else if !slices.Equal(blocks, source) {
@@ -121,9 +140,9 @@ func TestSiteTeachesTmagAsItIs(t *testing.T) {
 				t.Errorf("%s names tmag %s, which the CLI does not have", path, c[1])
 			}
 		}
-		for _, f := range regexp.MustCompile(`(?:^|[\s(])(--[a-z][a-z-]*)`).FindAllStringSubmatch(code, -1) {
-			if !regexp.MustCompile(regexp.QuoteMeta(f[1]) + `\b`).MatchString(usage) {
-				t.Errorf("%s names %s, which no command takes", path, f[1])
+		for _, c := range regexp.MustCompile(`\btmag-client ((?:auth )?[a-z][a-z-]*)`).FindAllStringSubmatch(code, -1) {
+			if !clientCommands[c[1]] {
+				t.Errorf("%s names tmag-client %s, which the client does not have", path, c[1])
 			}
 		}
 		for _, o := range regexp.MustCompile(`@tmag-[a-z]+(?:-[a-z]+)*`).FindAllString(siteText(page), -1) {
@@ -139,6 +158,37 @@ func TestSiteTeachesTmagAsItIs(t *testing.T) {
 			}
 		}
 
+		clientLine := false
+		previous := ""
+		for _, raw := range strings.Split(strings.Join(blocks, "\n"), "\n") {
+			line := strings.TrimSpace(raw)
+			switch {
+			case strings.HasPrefix(line, "tmag-client"):
+				clientLine = true
+			case !clientLine, !strings.HasSuffix(previous, `\`):
+				clientLine = false
+			}
+			// A client command names the client's flags, continued lines included;
+			// every other line names tmag's.
+			taken := usage
+			if clientLine {
+				taken = client
+			}
+			for _, f := range regexp.MustCompile(`(?:^|[\s(])(--[a-z][a-z-]*)`).FindAllStringSubmatch(line, -1) {
+				if !regexp.MustCompile(regexp.QuoteMeta(f[1]) + `\b`).MatchString(taken) {
+					t.Errorf("%s names %s, which no command takes", path, f[1])
+				}
+			}
+			previous = line
+		}
+		// Inline code names a command or a flag from either tool.
+		for _, fragment := range inline {
+			for _, f := range regexp.MustCompile(`(?:^|[\s(])(--[a-z][a-z-]*)`).FindAllStringSubmatch(fragment, -1) {
+				if !regexp.MustCompile(regexp.QuoteMeta(f[1])+`\b`).MatchString(usage) && !regexp.MustCompile(regexp.QuoteMeta(f[1])+`\b`).MatchString(client) {
+					t.Errorf("%s names %s, which no command takes", path, f[1])
+				}
+			}
+		}
 		for _, line := range strings.Split(code, "\n") {
 			line = strings.TrimSpace(line)
 			if strings.HasPrefix(line, query.Marker) && !slices.ContainsFunc(firstLines, func(re *regexp.Regexp) bool { return re.MatchString(line) }) {
