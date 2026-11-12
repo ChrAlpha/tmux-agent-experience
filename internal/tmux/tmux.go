@@ -54,10 +54,9 @@ func (p Pane) Target() string {
 const OptionPrefix = "@tmag_"
 
 // OptionKeys lists every pane option tmag reads or writes, without the
-// prefix: the attachment (agent, session, pid, start, evidence, and the
-// change in progress: change, replaced) and the display projection (state,
-// kind, since, cmd).
-var OptionKeys = []string{"agent", "session", "pid", "start", "evidence", "change", "replaced", "state", "kind", "since", "cmd"}
+// prefix: the attachment (agent, session, pid, start, evidence) and the
+// display projection (state, kind, since, cmd).
+var OptionKeys = []string{"agent", "session", "pid", "start", "evidence", "state", "kind", "since", "cmd"}
 
 // sep separates the fields of a pane line. It must be a byte every tmux
 // prints as is: tmux 3.4 writes other control characters in -F output as
