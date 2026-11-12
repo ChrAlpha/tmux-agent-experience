@@ -27,6 +27,37 @@ function takeInvitation() {
   return decodeURIComponent(m[1]);
 }
 
+// A route is the inbox, one session, or one request; anything else opens the
+// inbox.
+const ROUTE = /^#\/(?:s\/[^/?#]+(?:\/r\/[^/?#]+)?)?$/;
+const validRoute = route => typeof route === "string" && ROUTE.test(route);
+const decodePart = value => { try { return decodeURIComponent(value); } catch { return value; } };
+
+// openRoute shows a route a notification names. WebKit does not reliably
+// carry out WindowClient.navigate, so the service worker posts the route here.
+function openRoute(route) {
+  if (validRoute(route) && location.hash !== route) location.hash = route;
+}
+
+// takeOpenRoute moves the open parameter an opened window carries into the
+// hash, and removes it from the address and history.
+function takeOpenRoute() {
+  const params = new URLSearchParams(location.search);
+  if (!params.has("open")) return "";
+  const route = params.get("open");
+  params.delete("open");
+  const search = params.toString();
+  const hash = validRoute(route) ? route : location.hash;
+  history.replaceState(null, "", location.pathname + (search ? "?" + search : "") + hash);
+  return validRoute(route) ? route : "";
+}
+
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.addEventListener("message", event => {
+    if (event.data && event.data.type === "tmag-route") openRoute(event.data.route);
+  });
+}
+
 function setCredential(token) {
   credential = token;
   localStorage.setItem(CREDENTIAL_KEY, token);
@@ -525,8 +556,9 @@ let mounted = { route: null, parts: new Map() };
 let focusedOnce = "";
 
 function route() {
-  const r = location.hash.match(/^#\/s\/([^/]+)(?:\/r\/([^/]+))?/);
-  return r ? { view: "session", id: decodeURIComponent(r[1]), request: r[2] ? decodeURIComponent(r[2]) : "" } : { view: "home" };
+  if (!validRoute(location.hash)) return { view: "home" };
+  const r = location.hash.match(/^#\/s\/([^/]+)(?:\/r\/([^/]+))?$/);
+  return r ? { view: "session", id: decodePart(r[1]), request: r[2] ? decodePart(r[2]) : "" } : { view: "home" };
 }
 
 window.addEventListener("hashchange", () => { render(); window.scrollTo(0, 0); });
@@ -1003,6 +1035,7 @@ function toast(text, error) {
 // ---- start ----
 
 async function start() {
+  takeOpenRoute();
   const invitation = takeInvitation();
   credential = localStorage.getItem(CREDENTIAL_KEY) || "";
   if (invitation) {
