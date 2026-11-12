@@ -25,7 +25,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -139,53 +138,18 @@ type Subscription struct {
 // ErrGone is a subscription the push service no longer has.
 var ErrGone = errors.New("push subscription is gone")
 
-// nonPublic are the address ranges a push endpoint must never name, beyond
-// what net.IP already reports.
-var nonPublic = func() []*net.IPNet {
-	// The special-purpose registries: shared, protocol, documentation,
-	// benchmarking, reserved and multicast IPv4, and IPv6 unique-local,
-	// documentation, NAT64 and other non-global forms.
-	cidrs := []string{
-		"0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8",
-		"169.254.0.0/16", "172.16.0.0/12", "192.0.0.0/24", "192.0.2.0/24",
-		"192.88.99.0/24", "192.168.0.0/16", "198.18.0.0/15", "198.51.100.0/24",
-		"203.0.113.0/24", "224.0.0.0/4", "240.0.0.0/4",
-		"64:ff9b::/96", "64:ff9b:1::/48", "100::/64", "2001::/23",
-		"2001:db8::/32", "2002::/16", "3fff::/20", "fc00::/7", "fe80::/10", "ff00::/8",
-	}
-	out := make([]*net.IPNet, 0, len(cidrs))
-	for _, c := range cidrs {
-		_, n, _ := net.ParseCIDR(c)
-		out = append(out, n)
-	}
-	return out
-}()
-
-// publicAddr reports whether an address is globally routable.
-func publicAddr(ip net.IP) bool {
-	if v4 := ip.To4(); v4 != nil {
-		ip = v4
-	}
-	for _, n := range nonPublic {
-		if n.Contains(ip) {
-			return false
-		}
-	}
-	return ip.IsGlobalUnicast()
-}
-
-// ValidateEndpoint accepts only HTTPS endpoints whose host is public.
+// ValidateEndpoint accepts an HTTPS endpoint whose host is a DNS name. It
+// does not resolve the name: a host that resolves to a reserved address is
+// allowed, while an IP literal, localhost and a single-label name are not.
 func ValidateEndpoint(raw string) (*url.URL, error) {
 	u, err := url.Parse(raw)
 	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.Fragment != "" {
 		return nil, errors.New("a push endpoint must be an HTTPS URL without userinfo or fragment")
 	}
-	host := strings.ToLower(u.Hostname())
-	if host == "localhost" || strings.HasSuffix(host, ".localhost") || strings.HasSuffix(host, ".local") {
-		return nil, errors.New("a push endpoint must not be local")
-	}
-	if ip := net.ParseIP(host); ip != nil && !publicAddr(ip) {
-		return nil, errors.New("a push endpoint must be globally routable, not loopback, private, link-local or otherwise reserved")
+	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	if host == "" || net.ParseIP(host) != nil || host == "localhost" || strings.HasSuffix(host, ".localhost") ||
+		strings.HasPrefix(host, ".") || strings.Contains(host, "..") || !strings.Contains(host, ".") {
+		return nil, errors.New("a push endpoint must name a DNS host, not an IP address, localhost or a single-label name")
 	}
 	return u, nil
 }
@@ -247,8 +211,8 @@ type Message struct {
 
 // Client sends messages to push services.
 type Client struct {
-	// HTTP overrides the push client for tests. Nil uses the guarded
-	// transport below.
+	// HTTP overrides the push client for tests. Nil uses the transport
+	// below.
 	HTTP    *http.Client
 	Keys    *Keys
 	Subject string
@@ -306,13 +270,13 @@ func (c *Client) Send(ctx context.Context, s Subscription, msg Message) error {
 	if client == nil {
 		client = &http.Client{
 			Timeout:       10 * time.Second,
-			Transport:     guardedTransport,
+			Transport:     pushTransport,
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		}
 	} else {
 		copied := *client
 		if copied.Transport == nil {
-			copied.Transport = guardedTransport
+			copied.Transport = pushTransport
 		}
 		copied.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 		client = &copied
@@ -336,42 +300,18 @@ func (c *Client) Send(ctx context.Context, s Subscription, msg Message) error {
 	return nil
 }
 
-// guardedTransport dials a push service directly, never a proxy, and refuses
-// an address a name resolved to that must stay on the machine or its network.
-var guardedTransport = func() *http.Transport {
+// pushTransport follows the environment's proxy settings and refuses
+// redirects; the client bounds each request in time.
+var pushTransport = func() *http.Transport {
 	t, ok := http.DefaultTransport.(*http.Transport)
 	if ok {
 		t = t.Clone()
 	} else {
 		t = &http.Transport{}
 	}
-	t.Proxy = nil
-	t.DialContext = (&net.Dialer{
-		Timeout:   30 * time.Second,
-		KeepAlive: 30 * time.Second,
-		Control:   dialControl,
-	}).DialContext
+	t.Proxy = http.ProxyFromEnvironment
 	return t
 }()
-
-// dialControl refuses the addresses a push endpoint must never reach.
-func dialControl(_, address string, _ syscall.RawConn) error {
-	host, _, err := net.SplitHostPort(address)
-	if err != nil {
-		return err
-	}
-	if i := strings.LastIndexByte(host, '%'); i >= 0 {
-		host = host[:i]
-	}
-	ip := net.ParseIP(host)
-	if ip == nil {
-		return errors.New("push endpoint address is not an IP")
-	}
-	if !publicAddr(ip) {
-		return errors.New("a push endpoint must be globally routable, not loopback, private, link-local or otherwise reserved")
-	}
-	return nil
-}
 
 // encrypt builds one aes128gcm record, as RFC 8188 and RFC 8291 define it.
 func encrypt(s Subscription, msg Message) ([]byte, error) {

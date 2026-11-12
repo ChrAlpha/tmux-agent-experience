@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -191,61 +192,39 @@ func TestGone(t *testing.T) {
 	}
 }
 
-func TestDialControlRefusesRestrictedAddresses(t *testing.T) {
-	for _, address := range []string{
-		"127.0.0.1:443", "10.0.0.1:443", "192.168.1.2:443", "172.16.0.1:443",
-		"169.254.169.254:443", "0.0.0.0:443", "224.0.0.1:443",
-		"0.1.2.3:443", "100.64.0.1:443", "100.127.255.254:443", "192.0.0.1:443",
-		"192.0.2.1:443", "192.88.99.1:443", "198.18.0.1:443", "198.19.255.255:443",
-		"198.51.100.1:443", "203.0.113.1:443", "240.0.0.1:443", "255.255.255.255:443",
-		"[::1]:443", "[::]:443", "[ffff::1]:443", "[fe80::1]:443", "[ff02::1]:443",
-		"[::ffff:127.0.0.1]:443", "[::ffff:10.0.0.1]:443", "[::ffff:100.64.0.1]:443",
-		"[64:ff9b::1]:443", "[64:ff9b:1::1]:443", "[100::1]:443", "[2001::1]:443",
-		"[2001:db8::1]:443", "[2002::1]:443", "[3fff::1]:443", "[fc00::1]:443", "[fd00::1]:443",
-	} {
-		if err := dialControl("tcp", address, nil); err == nil {
-			t.Errorf("%s was not refused", address)
-		}
-	}
-	for _, address := range []string{"8.8.8.8:443", "1.1.1.1:443", "[2606:4700:4700::1111]:443"} {
-		if err := dialControl("tcp", address, nil); err != nil {
-			t.Fatalf("a public address %s: %v", address, err)
-		}
-	}
-}
-
-func TestSendRefusesLocalAtDial(t *testing.T) {
-	ua, _ := ecdh.P256().GenerateKey(rand.Reader)
-	authSecret := make([]byte, 16)
-	_, _ = rand.Read(authSecret)
-	c := &Client{Keys: keys(t), Subject: "https://tmag.example.com", Endpoint: url.Parse}
-	err := c.Send(context.Background(), Subscription{
-		Endpoint: "https://127.0.0.1:1/push",
-		P256DH:   base64.RawURLEncoding.EncodeToString(ua.PublicKey().Bytes()),
-		Auth:     base64.RawURLEncoding.EncodeToString(authSecret),
-	}, Message{Title: "t"})
-	if err == nil || !strings.Contains(err.Error(), "loopback") {
-		t.Fatalf("local push endpoint: %v", err)
+func TestPushTransportFollowsTheEnvironmentProxy(t *testing.T) {
+	got := reflect.ValueOf(pushTransport.Proxy).Pointer()
+	want := reflect.ValueOf(http.ProxyFromEnvironment).Pointer()
+	if got != want {
+		t.Fatal("the push transport does not use the environment's proxy settings")
 	}
 }
 
 func TestValidateEndpoint(t *testing.T) {
 	for _, bad := range []string{
-		"http://push.example.com/x", "https://localhost/x", "https://127.0.0.1/x", "https://[::1]/x",
-		"https://10.0.0.1/x", "https://192.168.1.2/x", "https://169.254.1.1/x", "https://0.0.0.0/x",
-		"https://0.1.2.3/x", "https://100.64.0.1/x", "https://192.0.0.1/x", "https://192.0.2.1/x",
-		"https://198.18.0.1/x", "https://198.51.100.1/x", "https://203.0.113.1/x",
-		"https://240.0.0.1/x", "https://255.255.255.255/x",
-		"https://[64:ff9b::1]/x", "https://[64:ff9b:1::1]/x", "https://[2001:db8::1]/x",
-		"https://[3fff::1]/x", "https://[fc00::1]/x", "https://[fd00::1]/x", "https://[fe80::1]/x",
+		"http://push.example.com/x",
+		"https://localhost/x", "https://push.localhost/x",
+		"https://127.0.0.1/x", "https://[::1]/x",
+		"https://10.0.0.1/x", "https://169.254.1.1/x", "https://198.18.0.1/x",
+		"https://8.8.8.8/x", "https://[2606:4700:4700::1111]/x",
+		"https://push/x", "https://intranet/x",
+		"https://.example.com/x", "https://push..example.com/x",
 		"https://user:pass@push.example.com/x", "https://push.example.com/x#fragment",
 	} {
 		if _, err := ValidateEndpoint(bad); err == nil {
 			t.Errorf("%q accepted", bad)
 		}
 	}
-	if _, err := ValidateEndpoint("https://push.example.com/send/abc"); err != nil {
-		t.Fatalf("a public endpoint: %v", err)
+}
+
+func TestValidateEndpointAcceptsAReservedName(t *testing.T) {
+	// A name is not resolved when the device subscribes; one that DNS
+	// answers with a reserved address is as valid as any other name.
+	if _, err := ValidateEndpoint("https://push.198.18.0.1.example.com/send/abc"); err != nil {
+		t.Fatalf("a name at a reserved address: %v", err)
+	}
+	if _, err := ValidateEndpoint("https://push.example.com./send/abc"); err != nil {
+		t.Fatalf("a fully qualified name: %v", err)
 	}
 }
 

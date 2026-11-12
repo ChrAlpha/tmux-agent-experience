@@ -793,7 +793,7 @@ func TestPushValidation(t *testing.T) {
 	bin, _ := fakeTmag(t, `echo '{"schema":"tmag/v2","type":"snapshot","seq":1,"sessions":[],"panes":[]}'; sleep 30`)
 	s, hs := newServer(t, Config{Machines: []Machine{{Name: "here", Argv: []string{bin}}}})
 	issued := signIn(t, s)
-	for _, endpoint := range []string{"http://push.example.com/x", "https://127.0.0.1/x", "https://10.0.0.1/x"} {
+	for _, endpoint := range []string{"http://push.example.com/x", "https://127.0.0.1/x", "https://10.0.0.1/x", "https://198.18.0.1/x", "https://8.8.8.8/x", "https://push/x"} {
 		res := call(t, http.MethodPost, hs.URL+"/api/push", issued.Token, `{"endpoint":"`+endpoint+`","keys":{"p256dh":"`+testP256(t)+`","auth":"`+testAuth()+`"}}`, nil)
 		if res.StatusCode != http.StatusBadRequest {
 			t.Fatalf("%s accepted: %s", endpoint, res.Status)

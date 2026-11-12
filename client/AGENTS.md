@@ -32,7 +32,9 @@ adapters, machine configuration and aggregation.
 - The gateway follows each machine once, for every page. Events are relayed
   from that state; a page never starts its own watch.
 - Push is Web Push with VAPID and aes128gcm from the standard library. A push
-  endpoint is HTTPS and public; failures stay metadata.
+  endpoint is an HTTPS URL whose host is a DNS name; the transport follows the
+  environment's proxy, refuses redirects and is bounded in time. Failures stay
+  metadata.
 
 ## Commands
 
