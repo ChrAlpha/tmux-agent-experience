@@ -26,6 +26,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // Keys are the gateway's VAPID signing keys. The pair is generated once and
@@ -332,14 +333,87 @@ func (c *Client) Send(ctx context.Context, s Subscription, msg Message) error {
 		return fmt.Errorf("push request failed: %w", err)
 	}
 	defer res.Body.Close()
-	_, _ = io.Copy(io.Discard, io.LimitReader(res.Body, 4<<10))
+	answer, _ := io.ReadAll(io.LimitReader(res.Body, 4<<10))
 	switch {
 	case res.StatusCode == http.StatusNotFound || res.StatusCode == http.StatusGone:
 		return ErrGone
 	case res.StatusCode/100 != 2:
-		return fmt.Errorf("push service answered %s", res.Status)
+		return errors.New(pushFailure(res.Status, answer))
 	}
 	return nil
+}
+
+// maxReason bounds a push service's own error text in one log line.
+const maxReason = 200
+
+// pushFailure names why a push service refused a message, with the service's
+// own reason when its body carries one. It is the service's metadata, never
+// the payload.
+func pushFailure(status string, body []byte) string {
+	reason := serviceReason(body)
+	if reason == "" {
+		reason = oneLine(string(body))
+	}
+	if reason == "" {
+		return "push service answered " + status
+	}
+	return "push service answered " + status + ": " + reason
+}
+
+// serviceReason reads the reason, message or error field a push service's
+// JSON error body carries.
+func serviceReason(body []byte) string {
+	var doc map[string]json.RawMessage
+	if json.Unmarshal(body, &doc) != nil {
+		return ""
+	}
+	for _, key := range []string{"reason", "message"} {
+		if text := jsonText(doc[key]); text != "" {
+			return oneLine(text)
+		}
+	}
+	var nested map[string]json.RawMessage
+	if json.Unmarshal(doc["error"], &nested) == nil {
+		for _, key := range []string{"message", "reason"} {
+			if text := jsonText(nested[key]); text != "" {
+				return oneLine(text)
+			}
+		}
+	}
+	if text := jsonText(doc["error"]); text != "" {
+		return oneLine(text)
+	}
+	return ""
+}
+
+func jsonText(raw json.RawMessage) string {
+	var text string
+	if len(raw) > 0 && json.Unmarshal(raw, &text) == nil {
+		return text
+	}
+	return ""
+}
+
+// oneLine folds a service's error text onto one bounded line: control
+// characters and runs of whitespace become one space.
+func oneLine(s string) string {
+	var b strings.Builder
+	space := false
+	for _, r := range s {
+		if r <= ' ' || r == 0x7f {
+			space = b.Len() > 0
+			continue
+		}
+		if space {
+			b.WriteByte(' ')
+			space = false
+		}
+		if b.Len()+utf8.RuneLen(r) > maxReason {
+			break
+		}
+		b.WriteRune(r)
+	}
+	return strings.TrimSpace(b.String())
 }
 
 // pushTransport follows the environment's proxy settings and refuses

@@ -192,6 +192,56 @@ func TestGone(t *testing.T) {
 	}
 }
 
+func TestSendNamesTheServiceReason(t *testing.T) {
+	vapid := keys(t)
+	ua, _ := ecdh.P256().GenerateKey(rand.Reader)
+	authSecret := make([]byte, 16)
+	_, _ = rand.Read(authSecret)
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, `{"reason":"BadWebPushTopic"}`)
+	}))
+	defer server.Close()
+	c := &Client{HTTP: server.Client(), Keys: vapid, Subject: "https://tmag.example.com", Endpoint: url.Parse}
+	err := c.Send(context.Background(), Subscription{
+		Endpoint: server.URL + "/push",
+		P256DH:   base64.RawURLEncoding.EncodeToString(ua.PublicKey().Bytes()),
+		Auth:     base64.RawURLEncoding.EncodeToString(authSecret),
+	}, Message{Title: "t"})
+	if err == nil || !strings.Contains(err.Error(), "400 Bad Request") || !strings.Contains(err.Error(), "BadWebPushTopic") {
+		t.Fatalf("a refused push: %v", err)
+	}
+	if strings.ContainsAny(err.Error(), "\r\n") {
+		t.Fatalf("the refusal is not one line: %q", err)
+	}
+}
+
+func TestPushFailureIsBoundedMetadata(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+		want string
+	}{
+		{"Apple's reason", `{"reason":"BadWebPushTopic"}`, "BadWebPushTopic"},
+		{"Mozilla's message", `{"message":"Requested entity was not found."}`, "Requested entity was not found."},
+		{"FCM's error", `{"error":{"message":"The request is invalid."}}`, "The request is invalid."},
+		{"FCM's legacy error", `{"error":"InvalidRegistration"}`, "InvalidRegistration"},
+		{"a plain body", "bad\nline\twith\x00controls", "bad line with controls"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := pushFailure("400 Bad Request", []byte(tc.body))
+			if got != "push service answered 400 Bad Request: "+tc.want {
+				t.Fatalf("failure %q, want %q", got, tc.want)
+			}
+		})
+	}
+	long := pushFailure("500 Internal Server Error", []byte(strings.Repeat("x", 300)))
+	if want := "push service answered 500 Internal Server Error: " + strings.Repeat("x", maxReason); long != want {
+		t.Fatalf("a long body: %q", long)
+	}
+}
+
 func TestPushTransportFollowsTheEnvironmentProxy(t *testing.T) {
 	got := reflect.ValueOf(pushTransport.Proxy).Pointer()
 	want := reflect.ValueOf(http.ProxyFromEnvironment).Pointer()
