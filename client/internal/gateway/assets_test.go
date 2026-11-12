@@ -69,3 +69,19 @@ func TestPairingOnIOSStartsFromHomeScreen(t *testing.T) {
 		t.Fatal("the pairing view does not send iOS to the home screen first")
 	}
 }
+
+// The worker caches nothing, so a new one takes over before every iOS window
+// closes.
+func TestNewWorkerTakesOverAtOnce(t *testing.T) {
+	sw := readAsset(t, "sw.js")
+	for _, want := range []string{
+		`self.addEventListener("install", event => {`,
+		`event.waitUntil(self.skipWaiting());`,
+		`self.addEventListener("activate", event => {`,
+		`event.waitUntil(clients.claim());`,
+	} {
+		if !strings.Contains(sw, want) {
+			t.Errorf("sw.js: no %s", want)
+		}
+	}
+}
