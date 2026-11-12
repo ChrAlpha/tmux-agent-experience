@@ -20,7 +20,6 @@ type machineState struct {
 	seq      int64
 	sessions map[string]Session
 	panes    []Pane
-	loaded   bool
 	up       bool
 	err      string
 }
@@ -31,25 +30,16 @@ func newMachineState(name string) *machineState {
 
 func sessionKey(agent, id string) string { return agent + "/" + id }
 
-// replace takes a snapshot as the machine's whole state, and returns the
-// sessions the snapshot no longer shows.
-func (m *machineState) replace(seq int64, sessions []Session, panes []Pane) (removed []Session) {
+// replace takes a snapshot as the machine's whole state.
+func (m *machineState) replace(seq int64, sessions []Session, panes []Pane) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.seq = seq
-	m.loaded = true
-	next := make(map[string]Session, len(sessions))
+	m.sessions = make(map[string]Session, len(sessions))
 	for _, s := range sessions {
-		next[sessionKey(s.Agent, s.ID)] = s
+		m.sessions[sessionKey(s.Agent, s.ID)] = s
 	}
-	for k, s := range m.sessions {
-		if _, ok := next[k]; !ok {
-			removed = append(removed, s)
-		}
-	}
-	m.sessions = next
 	m.panes = append([]Pane(nil), panes...)
-	return removed
 }
 
 // setPanes takes the latest pane list.
@@ -89,13 +79,6 @@ func (m *machineState) apply(e Event) {
 			Subagents: e.Subagents, Capabilities: e.Capabilities, Requests: e.Requests,
 		}
 	}
-}
-
-// known reports whether the machine has shown its state.
-func (m *machineState) known() bool {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.loaded
 }
 
 // setStatus records whether the machine's watch is up.
@@ -206,10 +189,9 @@ func (s *Server) follow(m Machine) {
 			applied := true
 			switch d.Type {
 			case "snapshot":
-				removed := machine.replace(d.Seq, d.Sessions, d.Panes)
+				s.seen.observe(m.Name, d.Sessions)
+				machine.replace(d.Seq, d.Sessions, d.Panes)
 				since = d.Seq
-				s.seen.leave(m.Name, removed)
-				s.track(m.Name, d.Sessions)
 			case "panes":
 				machine.setPanes(d.Panes)
 				s.trackPanes(m.Name, d.Panes)
@@ -217,15 +199,16 @@ func (s *Server) follow(m Machine) {
 				if d.Event == nil {
 					continue
 				}
-				machine.apply(*d.Event)
-				if d.Event.ended() {
-					s.seen.leave(m.Name, []Session{{Agent: d.Event.Agent, ID: d.Event.Session}})
+				session := []Session{{Agent: d.Event.Agent, ID: d.Event.Session}}
+				switch {
+				case d.Event.ended():
+					s.seen.leave(m.Name, session)
+				case d.Event.State != "":
+					s.track(m.Name, session)
 				}
+				machine.apply(*d.Event)
 				if d.Event.Seq > since {
 					since = d.Event.Seq
-				}
-				if d.Event.State != "" {
-					s.track(m.Name, []Session{{Agent: d.Event.Agent, ID: d.Event.Session}})
 				}
 				if d.Event.Alert != nil {
 					s.alert(m.Name, *d.Event)
@@ -377,23 +360,6 @@ func frame(event string, v any) string {
 
 // track says the machine still shows these sessions.
 func (s *Server) track(machine string, sessions []Session) { s.seen.touch(machine, sessions) }
-
-// live names every session a machine shows now, or is nil until every
-// machine has shown its state.
-func (s *Server) live() map[string]bool {
-	out := map[string]bool{}
-	for _, m := range s.cfg.Machines {
-		state := s.states[m.Name]
-		if !state.known() {
-			return nil
-		}
-		_, sessions, _, _, _ := state.snapshot()
-		for _, session := range sessions {
-			out[sessionID(m.Name, session.Agent, session.ID)] = true
-		}
-	}
-	return out
-}
 
 // trackPanes says the machine still shows the sessions its panes show.
 func (s *Server) trackPanes(machine string, panes []Pane) {

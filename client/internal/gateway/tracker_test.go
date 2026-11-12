@@ -78,19 +78,23 @@ func TestSeenBounds(t *testing.T) {
 	if got := len(tr.snapshot()); got != seenLimit {
 		t.Fatalf("remembered %d turns, want %d", got, seenLimit)
 	}
-	// A session no machine shows for a week leaves a trace no longer.
+	// A present session stays however quiet it is.
 	tr = newTracker()
 	tr.setNow(func() time.Time { return at })
 	tr.mark("box", "claude", "s1", "t1")
-	at = at.Add(3 * 24 * time.Hour)
-	tr.touch("box", []Session{{Agent: "claude", ID: "s1"}})
-	at = at.Add(5 * 24 * time.Hour)
+	at = at.Add(8 * 24 * time.Hour)
 	if got := tr.snapshot(); len(got) != 1 {
-		t.Fatalf("a touched session was forgotten: %v", got)
+		t.Fatalf("a present session was forgotten: %v", got)
 	}
-	at = at.Add(3 * 24 * time.Hour)
+	// When it leaves, absence starts there.
+	tr.leave("box", []Session{{Agent: "claude", ID: "s1"}})
+	at = at.Add(6 * 24 * time.Hour)
+	if got := tr.snapshot(); len(got) != 1 {
+		t.Fatalf("an absent session was forgotten early: %v", got)
+	}
+	at = at.Add(24*time.Hour + time.Hour)
 	if got := tr.snapshot(); len(got) != 0 {
-		t.Fatalf("a session shown 8 days ago remains: %v", got)
+		t.Fatalf("a session absent for a week remains: %v", got)
 	}
 	// A new turn is not seen until it is marked.
 	at = time.Now()
@@ -102,5 +106,56 @@ func TestSeenBounds(t *testing.T) {
 	}
 	if tr.isSeen("box", Session{Agent: "claude", ID: "s1", Turn: "t2"}) {
 		t.Fatal("a later turn is seen")
+	}
+}
+
+func TestSeenPresenceSurvivesAnotherMachinesPrune(t *testing.T) {
+	tr := newTracker()
+	at := time.Now()
+	tr.setNow(func() time.Time { return at })
+	tr.mark("a", "claude", "s1", "t1")
+	at = at.Add(8 * 24 * time.Hour)
+	// Another machine's follower prunes before a records the removal.
+	tr.touch("b", nil)
+	if got := tr.snapshot(); got["a/claude/s1"] != "t1" {
+		t.Fatalf("a present marker was pruned by another machine: %v", got)
+	}
+	tr.leave("a", []Session{{Agent: "claude", ID: "s1"}})
+	if got := tr.snapshot(); got["a/claude/s1"] != "t1" {
+		t.Fatalf("a marker was lost when it left: %v", got)
+	}
+	at = at.Add(7*24*time.Hour + time.Hour)
+	if got := tr.snapshot(); len(got) != 0 {
+		t.Fatalf("an absent marker remained: %v", got)
+	}
+}
+
+func TestSeenFirstSnapshotMarksMissingSessionsAbsent(t *testing.T) {
+	dir := t.TempDir()
+	first, err := loadTracker(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.mark("box", "claude", "s1", "t1")
+	second, err := loadTracker(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Now()
+	second.setNow(func() time.Time { return at })
+	// The gateway restarts and the machine's first snapshot lacks the session.
+	second.observe("box", nil)
+	if got := second.snapshot(); got["box/claude/s1"] != "t1" {
+		t.Fatalf("a marker was lost on the first snapshot: %v", got)
+	}
+	second.flush()
+	third, err := loadTracker(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at = at.Add(7*24*time.Hour + time.Hour)
+	third.setNow(func() time.Time { return at })
+	if got := third.snapshot(); len(got) != 0 {
+		t.Fatalf("a marker absent since the first snapshot remained: %v", got)
 	}
 }

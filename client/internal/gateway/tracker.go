@@ -14,7 +14,7 @@ import (
 // more sessions than this in a week.
 const seenLimit = 4096
 
-// seenForget is how long a session no machine has shown leaves a trace.
+// seenForget is how long an absent session leaves a trace.
 const seenForget = 7 * 24 * time.Hour
 
 // seenFile is where the gateway keeps seen turns between runs.
@@ -37,9 +37,6 @@ type tracker struct {
 	mu   sync.Mutex
 	now  func() time.Time
 	seen map[string]seenTurn
-	// live names every session a machine shows now, or is nil until every
-	// machine has shown its state.
-	live func() map[string]bool
 
 	path  string
 	saved time.Time
@@ -52,14 +49,16 @@ type seenTurn struct {
 	id      string
 	turn    string
 	shown   time.Time
+	absent  time.Time // zero while present, or when absence was never marked
 }
 
 type seenRecord struct {
-	Machine string    `json:"machine"`
-	Agent   string    `json:"agent"`
-	ID      string    `json:"id"`
-	Turn    string    `json:"turn"`
-	Shown   time.Time `json:"shown"`
+	Machine string     `json:"machine"`
+	Agent   string     `json:"agent"`
+	ID      string     `json:"id"`
+	Turn    string     `json:"turn"`
+	Shown   time.Time  `json:"shown"`
+	Absent  *time.Time `json:"absent,omitempty"`
 }
 
 type seenDocument struct {
@@ -101,9 +100,11 @@ func loadTracker(dir string) (*tracker, error) {
 		if r.Turn == "" {
 			continue
 		}
-		t.seen[sessionID(r.Machine, r.Agent, r.ID)] = seenTurn{
-			machine: r.Machine, agent: r.Agent, id: r.ID, turn: r.Turn, shown: r.Shown,
+		v := seenTurn{machine: r.Machine, agent: r.Agent, id: r.ID, turn: r.Turn, shown: r.Shown}
+		if r.Absent != nil {
+			v.absent = *r.Absent
 		}
+		t.seen[sessionID(r.Machine, r.Agent, r.ID)] = v
 	}
 	if t.trimLocked() {
 		t.dirty = true
@@ -123,6 +124,37 @@ func (t *tracker) touch(machine string, sessions []Session) {
 		k := sessionID(machine, s.Agent, s.ID)
 		if v, ok := t.seen[k]; ok {
 			v.shown = now
+			v.absent = time.Time{}
+			t.seen[k] = v
+			t.dirty = true
+		}
+	}
+	if t.pruneLocked(now) {
+		t.dirty = true
+	}
+	t.saveLocked(false)
+}
+
+// observe says a machine's snapshot shows exactly these sessions. A marker
+// of this machine, for a session the snapshot lacks, becomes absent now.
+func (t *tracker) observe(machine string, sessions []Session) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	now := t.now()
+	live := make(map[string]bool, len(sessions))
+	for _, s := range sessions {
+		k := sessionID(machine, s.Agent, s.ID)
+		live[k] = true
+		if v, ok := t.seen[k]; ok {
+			v.shown = now
+			v.absent = time.Time{}
+			t.seen[k] = v
+			t.dirty = true
+		}
+	}
+	for k, v := range t.seen {
+		if v.machine == machine && !live[k] && v.absent.IsZero() {
+			v.absent = now
 			t.seen[k] = v
 			t.dirty = true
 		}
@@ -141,11 +173,14 @@ func (t *tracker) leave(machine string, sessions []Session) {
 	now := t.now()
 	for _, s := range sessions {
 		k := sessionID(machine, s.Agent, s.ID)
-		if v, ok := t.seen[k]; ok {
-			v.shown = now
+		if v, ok := t.seen[k]; ok && v.absent.IsZero() {
+			v.absent = now
 			t.seen[k] = v
 			t.dirty = true
 		}
+	}
+	if t.pruneLocked(now) {
+		t.dirty = true
 	}
 	t.saveLocked(true)
 }
@@ -158,7 +193,12 @@ func (t *tracker) mark(machine, agent, id, turn string) string {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	now := t.now()
-	t.seen[sessionID(machine, agent, id)] = seenTurn{machine: machine, agent: agent, id: id, turn: turn, shown: now}
+	k := sessionID(machine, agent, id)
+	v := seenTurn{machine: machine, agent: agent, id: id, turn: turn, shown: now}
+	if old, ok := t.seen[k]; ok {
+		v.absent = old.absent
+	}
+	t.seen[k] = v
 	t.dirty = true
 	t.pruneLocked(now)
 	t.saveLocked(true)
@@ -187,28 +227,13 @@ func (t *tracker) flush() {
 	t.saveLocked(true)
 }
 
-// pruneLocked refreshes the last-shown time of every session a machine
-// shows, drops old turns no machine shows and keeps the newest seenLimit of
-// them. While the machines' state is unknown, only the limit applies.
+// pruneLocked drops turns absent for a week and keeps the newest seenLimit
+// of them. A present marker, or one never marked absent, stays.
 func (t *tracker) pruneLocked(now time.Time) (changed bool) {
-	live := map[string]bool{}
-	if t.live != nil {
-		live = t.live()
-	}
-	if live != nil {
-		for k, v := range t.seen {
-			if live[k] {
-				if !v.shown.Equal(now) {
-					v.shown = now
-					t.seen[k] = v
-					changed = true
-				}
-				continue
-			}
-			if now.Sub(v.shown) > seenForget {
-				delete(t.seen, k)
-				changed = true
-			}
+	for k, v := range t.seen {
+		if !v.absent.IsZero() && now.Sub(v.absent) > seenForget {
+			delete(t.seen, k)
+			changed = true
 		}
 	}
 	return t.trimLocked() || changed
@@ -246,7 +271,12 @@ func (t *tracker) saveLocked(force bool) {
 	}
 	doc := seenDocument{Version: 1, Seen: make([]seenRecord, 0, len(t.seen))}
 	for _, v := range t.seen {
-		doc.Seen = append(doc.Seen, seenRecord{Machine: v.machine, Agent: v.agent, ID: v.id, Turn: v.turn, Shown: v.shown})
+		r := seenRecord{Machine: v.machine, Agent: v.agent, ID: v.id, Turn: v.turn, Shown: v.shown}
+		if !v.absent.IsZero() {
+			at := v.absent
+			r.Absent = &at
+		}
+		doc.Seen = append(doc.Seen, r)
 	}
 	b, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {

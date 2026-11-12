@@ -172,7 +172,6 @@ func New(cfg Config) (*Server, error) {
 	for _, m := range cfg.Machines {
 		s.states[m.Name] = newMachineState(m.Name)
 	}
-	s.seen.live = s.live
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", s.asset)
 	mux.HandleFunc("GET /app.js", s.asset)
@@ -423,7 +422,6 @@ func (s *Server) watch(w http.ResponseWriter, r *http.Request) {
 	for _, m := range s.cfg.Machines {
 		state := s.states[m.Name]
 		seq, sessions, panes, up, why := state.snapshot()
-		s.seen.touch(m.Name, sessions)
 		if _, err := io.WriteString(w, frame("machine", map[string]any{"machine": m.Name, "up": up, "error": why})); err != nil {
 			return
 		}
