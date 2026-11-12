@@ -96,11 +96,10 @@ SHA-256 and puts it at `${PLUGINS}tmux-agent-experience/bin/tmag`. It runs in
 the background. Curl is required; each download has a 10-second connection
 limit and a 25-second total transfer limit, without retries. Local tools,
 filesystems and version probes have no whole-attempt deadline. Checksums and the
-candidate's version are verified before atomic replacement inside `bin/`. A busy
-or interrupted `bin/.install.lock` fails clearly: after all installers finish,
-the person must inspect and recover it. Never steal a lock because of age or
-remove a replacement owner's lock. Keep older installers stopped while upgrading.
-Poll for the binary under normal local-tool operation:
+candidate's version are verified before one atomic rename inside `bin/`:
+installers that run at once each publish the same release, and one that was
+interrupted leaves nothing that stops the next. Poll for the binary under
+normal local-tool operation:
 
 ```sh
 TMAG="${PLUGINS}tmux-agent-experience/bin/tmag"
