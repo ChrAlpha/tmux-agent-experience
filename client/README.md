@@ -63,7 +63,10 @@ there.
 
 Each device pairs with the gateway and holds a credential of its own. The
 credential lives in the page's `localStorage` and goes with every request in
-the `Authorization: Bearer` header, never in a URL or a cookie.
+the `Authorization: Bearer` header, never in a URL or a cookie. On iOS, add the
+page to the home screen before pairing and pair from there: a home-screen web
+app keeps its own storage, so a device paired in Safari is not paired in the
+app.
 
 ```sh
 bin/tmag-client auth pair LABEL [--ttl D] [--json]
@@ -127,8 +130,8 @@ Alerts come from tmag's `Alert` events. The gateway discards one whose current
 state contradicts it, and sends metadata only: kind, machine, agent, session,
 request, tool and the directory's base name, in a title and body worded like
 tmag's own notification. The service worker shows it tagged by session and
-opens the session or request when tapped; it caches nothing. On iOS, add the
-page to the home screen to receive notifications.
+opens the session or request when tapped; it caches nothing. On iOS, the
+home-screen app is also the one that receives notifications.
 
 ## Test
 

@@ -61,3 +61,11 @@ func TestNotificationTapCarriesTheRoute(t *testing.T) {
 		}
 	}
 }
+
+// A home-screen web app keeps its own storage, so iOS pairs from there.
+func TestPairingOnIOSStartsFromHomeScreen(t *testing.T) {
+	page := readAsset(t, "app.js")
+	if !strings.Contains(page, `IOS && !STANDALONE ? el("p", { class: "note", text: "On iOS, add this page to the home screen first, then pair from there: the home-screen app keeps its own storage." }) : null`) {
+		t.Fatal("the pairing view does not send iOS to the home screen first")
+	}
+}

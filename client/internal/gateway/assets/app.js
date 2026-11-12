@@ -12,6 +12,8 @@ const SECTION_ORDER = { inbox: 0, working: 1, settled: 2, unknown: 3 };
 const STALE = 45000; // a stream silent this long is presumed dead
 const AUTHORIZATION = "Authorization";
 const CREDENTIAL_KEY = "tmag-credential";
+const IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+const STANDALONE = window.matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
 
 // The credential admits this device. It lives in this origin's storage, never
 // in a cookie, and goes with each request as a header: no other page, and no
@@ -653,6 +655,7 @@ function pairParts() {
       return el("form", { class: "pair", onsubmit: submit },
         el("h1", { text: "Pair this device" }),
         el("p", { class: "empty", text: "Enter the code tmag-client auth pair prints. A code pairs one device." }),
+        IOS && !STANDALONE ? el("p", { class: "note", text: "On iOS, add this page to the home screen first, then pair from there: the home-screen app keeps its own storage." }) : null,
         input,
         el("div", { class: "actions single" }, el("button", { class: "btn primary", type: "submit", disabled: p.busy }, p.busy ? "Pairing" : "Pair")),
         p.error ? el("p", { class: "note error", text: p.error }) : null);
@@ -701,8 +704,6 @@ function row(x) {
 
 // ---- push ----
 
-const IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
-const STANDALONE = window.matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
 const canPush = () => "Notification" in window && "serviceWorker" in navigator && "PushManager" in window;
 
 function pushAdvice() {

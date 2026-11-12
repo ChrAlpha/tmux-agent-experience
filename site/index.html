@@ -251,7 +251,7 @@ tmag watch</code></pre>
     <article class="practice">
       <div class="practice-text">
         <h4><span class="n">07</span> Reach agents from elsewhere, on your terms</h4>
-        <p>To reach agents from elsewhere, use the remote companion, <code>tmag-client</code>. On one machine, the hub, <code>tmag-client serve</code> runs in a tmux window and follows the machines it is given; closing the window stops it. Each device pairs with its own single-use invitation, and any one is revoked later. A tunnel of your choice, <code>--tailscale</code> or <code>--access</code>, reaches it from elsewhere, and push needs one; on iOS, add the page to the home screen to receive notifications.</p>
+        <p>To reach agents from elsewhere, use the remote companion, <code>tmag-client</code>. On one machine, the hub, <code>tmag-client serve</code> runs in a tmux window and follows the machines it is given; closing the window stops it. Each device pairs with its own single-use invitation, and any one is revoked later. A tunnel of your choice, <code>--tailscale</code> or <code>--access</code>, reaches it from elsewhere, and push needs one. On iOS, add the page to the home screen before pairing and pair from there: the home-screen app keeps its own storage, so pairing done in Safari does not carry over, and it is the app that receives notifications.</p>
         <p>The client comes from its own releases, installed as the wiki's <a href="https://github.com/ChrAlpha/tmux-agent-experience/wiki/Installation-and-Updates">Installation &amp; Updates</a> page shows. <span class="keys"><kbd>prefix</kbd> <kbd>M-r</kbd></span> still opens <code>tmag serve</code> in a tmux window, for integrations and machines no command reaches.</p>
       </div>
       <div class="snippet">
