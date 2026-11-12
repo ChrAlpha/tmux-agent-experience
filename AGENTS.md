@@ -146,7 +146,7 @@ promise is documented in the package, and changes with it.
 | `plugins/<host>/tmag-peers` | The `peers` skill and the `tmag` launcher (`bin/` in Claude Code, which puts it on `PATH`; the skill's `scripts/` elsewhere) |
 | `.claude-plugin/`, `.agents/plugins/` | Marketplace manifests |
 | `SKILL.md` | Install and update procedure that agents follow from its raw URL |
-| `site/` | The landing page, in English and `zh-CN/`, as static files |
+| `site/` | The landing page, in English and `zh-CN/`: static files that `.github/workflows/pages.yml` publishes from each release |
 
 ## Commands
 

@@ -36,7 +36,8 @@ which version.
 2. Merge to `main`, then tag it: `git tag v0.2.0 && git push origin v0.2.0`.
 3. The release workflow checks the tag against the version, builds Linux and
    macOS binaries and publishes the release with checksums and build
-   provenance.
+   provenance. Once it succeeds, the pages workflow publishes the landing page
+   from the tagged commit.
 4. Check the install paths users take, on Linux and macOS: the TPM install
    (`prefix + I` downloads the new binary, `prefix + M-a` connects the agents,
    Pi's and oh-my-pi's packages included),
