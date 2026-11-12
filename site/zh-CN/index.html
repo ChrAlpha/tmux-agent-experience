@@ -16,7 +16,7 @@
 <meta property="og:url" content="https://chralpha.github.io/tmux-agent-experience/zh-CN/">
 <meta property="og:image" content="https://chralpha.github.io/tmux-agent-experience/og.png">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="theme-color" content="#5fce55">
+<meta name="theme-color" content="#f5f8f3">
 <link rel="icon" href="../favicon.svg" type="image/svg+xml">
 <link rel="preload" href="../fonts/overpass.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="../style.css">
@@ -27,18 +27,11 @@
 
 <header class="hero" id="start">
   <div class="hero-grid">
-    <p class="kicker">tmux-agent-experience <span aria-hidden="true">·</span> <code>tmag</code></p>
-    <h1>让 tmux 知道你的 coding agents 正在做什么。</h1>
     <div class="hero-copy">
-      <p class="lede">照常在 tmux panes 中使用 Claude Code、Codex、Pi 和 oh-my-pi。看清谁在工作、等待回应或已经完成，直接跳到需要你的 agent，也让 agents 互相交接工作。</p>
-      <div class="install" id="install">
-        <p class="install-label">把这段话粘贴给你在 tmux 中运行的 coding agent：</p>
-        <div class="prompt">
-          <p id="install-prompt">Read https://raw.githubusercontent.com/ChrAlpha/tmux-agent-experience/main/SKILL.md and follow it to install or update tmag for the AI tool I am using.</p>
-          <button type="button" class="copy" data-copy="install-prompt" data-copied="已复制">复制</button>
-        </div>
-        <p class="install-note">Agent 会先征得你同意再修改 tmux 配置，随后接入它所在的 agent 宿主，并验证结果。需要 Linux 或 macOS 上的 tmux 3.2+、TPM 和 curl。<a href="#by-hand">手动安装</a></p>
-      </div>
+      <p class="kicker">tmux-agent-experience <span aria-hidden="true">·</span> <code>tmag</code></p>
+      <h1>让&nbsp;tmux&nbsp;知道<wbr>你的 coding&nbsp;agents 正在做什么。</h1>
+      <p class="lede">Claude Code、Codex、Pi 和 oh-my-pi 照常留在你的 tmux panes 中。看清谁需要你，一键跳过去，也让 agents 互相交接工作。</p>
+      <p class="cta"><a class="button" href="#install">一段 prompt 完成安装</a> <a class="button quiet" href="https://github.com/ChrAlpha/tmux-agent-experience">GitHub</a></p>
     </div>
 
     <figure class="tmux" data-session="work">
@@ -92,8 +85,8 @@ work:2.0  %3    pi      idle                  3m   5c2e90b1  ~/src/cli
         </div>
       </div>
       <figcaption>
-        <p>一个 tmux session，三个 agents。你看着别处时，blocked 或已完成的 agent 所在 window 会带上 <code>!</code> 标记；状态栏统计它们，每个 pane 边框标出所属 agent 及其状态。</p>
-        <p class="jump" hidden data-to0="0:api 里的 claude 在等你批准：blocked agents 优先。再按一次。" data-to2="接下来是 2:cli 里的 pi：blocked 之后，轮到等待最久的 idle agent。你一到，它的 window 标记就清除了。" data-again0="0:api 里的 claude 仍是 blocked，所以又排在最前。" data-again2="又是 2:cli 里的 pi。回应 claude 之后，它就退出这一轮。"><button type="button" id="jump"><kbd>prefix</kbd> <kbd>A</kbd></button> <span id="jump-said" aria-live="polite">你正看着 <code>1:web</code> 里的 codex 工作。按下即可跳到等待最久的 agent。</span></p>
+        <span class="sr-only">一个有三个 agents 的 tmux session：claude 在 window 0 等待批准，codex 在你正看着的 window 1 中工作，pi 在 window 2 中 idle。</span>
+        <p class="jump" hidden data-to0="0:api 的 claude：blocked 优先。" data-to2="2:cli 的 pi：其次是等待最久的 idle agent。" data-again0="又是 claude，它仍是 blocked。" data-again2="又是 pi。回应 claude 才能结束这一轮。"><button type="button" id="jump"><kbd>prefix</kbd> <kbd>A</kbd></button> <span id="jump-said" aria-live="polite">跳到等待最久的 agent。</span></p>
       </figcaption>
     </figure>
   </div>
@@ -104,12 +97,17 @@ work:2.0  %3    pi      idle                  3m   5c2e90b1  ~/src/cli
 <section class="onboard" id="onboard" aria-labelledby="onboard-title">
   <div class="section-head">
     <h2 id="onboard-title">从安装到第一次交接</h2>
-    <p>大约十分钟。每一步都可以放心重复，之后更新 tmag 也是同样的步骤。</p>
+    <p>需要 Linux 或 macOS 上的 tmux 3.2+、TPM 和 curl，大约十分钟。每一步都可以放心重复，之后更新 tmag 也是同样的步骤。</p>
   </div>
   <ol class="steps">
-    <li id="by-hand">
+    <li id="install">
       <h3>安装插件</h3>
-      <p>上面的 prompt 会替你完成这一切。手动安装：在 TPM 的 <code>run</code> 行之上加入插件，然后按 <span class="keys"><kbd>prefix</kbd> <kbd>I</kbd></span>。插件会下载与其版本匹配的已发布 <code>tmag</code> binary，校验 SHA-256，并保存在插件自己的目录中。</p>
+      <p>把这段话粘贴给你在 tmux 中运行的 coding agent。它会先征得你同意再修改 tmux 配置，随后接入它所在的 agent 宿主，并验证结果。</p>
+      <div class="prompt">
+        <p id="install-prompt">Read https://raw.githubusercontent.com/ChrAlpha/tmux-agent-experience/main/SKILL.md and follow it to install or update tmag for the AI tool I am using.</p>
+        <button type="button" class="copy" data-copy="install-prompt" data-copied="已复制">复制</button>
+      </div>
+      <p>手动安装：在 TPM 的 <code>run</code> 行之上加入插件，然后按 <span class="keys"><kbd>prefix</kbd> <kbd>I</kbd></span>。插件会下载与其版本匹配的已发布 <code>tmag</code> binary，校验 SHA-256，并保存在插件自己的目录中。</p>
       <pre><code>set -g @plugin 'ChrAlpha/tmux-agent-experience'</code></pre>
     </li>
     <li>

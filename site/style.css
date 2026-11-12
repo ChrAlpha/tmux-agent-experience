@@ -20,12 +20,12 @@
 :root {
   --paper: oklch(97.6% 0.008 135);
   --paper-deep: oklch(93.8% 0.014 135);
+  --paper-raised: oklch(99.2% 0.004 135);
   --ink: oklch(21% 0.025 150);
   --ink-soft: oklch(42% 0.02 150);
   --rule: oklch(85% 0.02 140);
   --green: oklch(76% 0.19 142);
   --green-deep: oklch(48% 0.13 145);
-  --on-green-soft: oklch(30% 0.03 150);
   --status-red: oklch(40% 0.15 28);
   --term: oklch(20% 0.012 150);
   --term-raised: oklch(30% 0.014 150);
@@ -129,80 +129,65 @@ pre .c { color: var(--term-dim); }
 }
 .skip:focus { top: 1rem; }
 
-/* Hero: the surface is tmux's status line, blown up. */
+/* Hero: the page's own paper. The green stays where tmux keeps it, in the
+   status lines. */
 
 .hero {
-  padding: clamp(2rem, 4.5vw, 4rem) var(--gutter) clamp(3rem, 6vw, 5rem);
-  background: var(--green);
-  color: var(--ink);
+  display: grid;
+  align-content: center;
+  min-height: calc(100svh - var(--bar));
+  padding: clamp(2.5rem, 6vw, 5rem) var(--gutter);
 }
-
-.hero a { color: var(--ink); }
-.hero code { background: color-mix(in oklch, var(--ink) 11%, transparent); }
 
 .hero-grid {
   display: grid;
-  grid-template-columns: repeat(12, minmax(0, 1fr));
-  column-gap: clamp(1.5rem, 3vw, 3rem);
-  align-items: start;
+  grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+  gap: 2.5rem clamp(2rem, 5vw, 4.5rem);
+  align-items: center;
 }
 
 .kicker {
-  grid-column: 1 / -1;
-  margin: 0 0 1.25rem;
+  margin: 0 0 1.1rem;
+  color: var(--ink-soft);
   font-family: var(--mono);
-  font-size: 0.9rem;
+  font-size: 0.85rem;
   font-weight: 600;
 }
 
 .kicker code { padding: 0; background: none; font-size: 1em; }
 
 h1 {
-  grid-column: 1 / span 11;
-  max-width: 20ch;
-  margin: 0 0 clamp(1.75rem, 3vw, 2.75rem);
-  font-size: clamp(2.5rem, 1.1rem + 4.6vw, 5.1rem);
+  margin: 0 0 1.25rem;
+  font-size: clamp(2.3rem, 1.2rem + 2.5vw, 3.5rem);
   font-weight: 800;
-  line-height: 0.98;
-  letter-spacing: -0.035em;
+  line-height: 1.03;
+  letter-spacing: -0.03em;
   text-wrap: balance;
 }
 
-.hero-copy { grid-column: 1 / span 5; }
-
 .lede {
-  max-width: 36ch;
+  max-width: 34ch;
   margin: 0 0 2rem;
-  font-size: clamp(1.15rem, 1rem + 0.5vw, 1.35rem);
-  line-height: 1.5;
+  color: var(--ink-soft);
+  font-size: clamp(1.08rem, 1rem + 0.3vw, 1.2rem);
+  line-height: 1.55;
 }
 
-.install-label { margin: 0 0 0.6rem; font-weight: 700; }
+.cta { display: flex; flex-wrap: wrap; gap: 0.75rem; margin: 0; }
 
-.prompt {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 0.75rem;
-  align-items: start;
-  padding: 0.85rem 0.85rem 0.85rem 1rem;
+.button {
+  padding: 0.7rem 1.2rem;
   border: 1.5px solid var(--ink);
   border-radius: 6px;
-  background: var(--paper);
-}
-
-.prompt p {
-  margin: 0;
-  font-size: 0.98rem;
-  line-height: 1.5;
-  overflow-wrap: anywhere;
-}
-
-.prompt p::before, .ask::before {
-  content: "> ";
-  font-family: var(--mono);
+  background: var(--ink);
+  color: var(--paper);
   font-weight: 700;
-  color: var(--green-deep);
+  line-height: 1.3;
+  text-decoration: none;
 }
+.button:hover { border-color: var(--green-deep); background: var(--green-deep); color: var(--paper); }
+.button.quiet { background: transparent; color: var(--ink); }
+.button.quiet:hover { border-color: var(--ink); background: var(--paper-deep); color: var(--ink); }
 
 .copy {
   padding: 0.4em 0.8em;
@@ -215,17 +200,21 @@ h1 {
 }
 .copy:hover { background: var(--green-deep); }
 
-.install-note {
-  margin: 0.8rem 0 0;
-  font-size: 0.92rem;
-  color: var(--on-green-soft);
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
 }
-.install-note a { white-space: nowrap; }
 
 /* The tmux mock. Sized in columns, so 74 of them always fit its width. */
 
 .tmux {
-  grid-column: 6 / -1;
   margin: 0;
   container-type: inline-size;
 }
@@ -292,9 +281,9 @@ h1 {
 .ts-blocked { color: var(--status-red); font-weight: 700; }
 
 .tmux figcaption {
-  margin-top: 1.1rem;
+  margin-top: 1rem;
   font-size: 0.92rem;
-  color: var(--on-green-soft);
+  color: var(--ink-soft);
 }
 
 .tmux figcaption p { margin: 0; max-width: 60ch; }
@@ -320,7 +309,7 @@ h1 {
 #jump kbd { border-color: var(--term-rule); background: var(--term-raised); color: var(--term-ink); }
 #jump:hover kbd { border-color: var(--term-green); }
 
-#jump-said { flex: 1 1 18rem; color: var(--ink); }
+#jump-said { flex: 1 1 14rem; }
 
 /* Sections */
 
@@ -378,6 +367,32 @@ h3, h4 { text-wrap: balance; }
 .steps h3 { margin: 0 0 0.6rem; font-size: 1.45rem; font-weight: 800; line-height: 1.2; letter-spacing: -0.01em; }
 .steps p { margin: 0.6rem 0 0; max-width: 62ch; }
 .steps pre { margin-top: 1rem; }
+
+.prompt {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.75rem;
+  align-items: start;
+  margin-top: 1rem;
+  padding: 0.85rem 0.85rem 0.85rem 1rem;
+  border: 1.5px solid var(--ink);
+  border-radius: 6px;
+  background: var(--paper-raised);
+}
+
+.steps .prompt p {
+  margin: 0;
+  font-size: 0.98rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.prompt p::before, .ask::before {
+  content: "> ";
+  font-family: var(--mono);
+  font-weight: 700;
+  color: var(--green-deep);
+}
 
 .ask {
   margin: 1rem 0 !important;
@@ -531,9 +546,9 @@ h3, h4 { text-wrap: balance; }
 /* Narrow screens: one column, the mock under the copy. */
 
 @media (max-width: 64rem) {
-  h1, .hero-copy, .tmux { grid-column: 1 / -1; }
+  .hero { min-height: 0; }
+  .hero-grid { grid-template-columns: minmax(0, 1fr); }
   .hero-copy { max-width: 40rem; }
-  .tmux { margin-top: clamp(2.5rem, 6vw, 3.5rem); }
   .section-head, .practice { grid-template-columns: minmax(0, 1fr); }
   .steps { grid-template-columns: minmax(0, 1fr); }
 }
@@ -547,13 +562,12 @@ h3, h4 { text-wrap: balance; }
    negative tracking. */
 
 :lang(zh-CN) body { line-height: 1.8; }
-:lang(zh-CN) h1 { font-size: clamp(2.2rem, 1rem + 4.6vw, 4.9rem); line-height: 1.12; letter-spacing: 0; max-width: 13em; }
+:lang(zh-CN) h1 { font-size: clamp(2.1rem, 1.1rem + 2.3vw, 3.2rem); line-height: 1.18; letter-spacing: 0; word-break: keep-all; }
 :lang(zh-CN) h2 { line-height: 1.15; letter-spacing: 0; }
 :lang(zh-CN) .group-title, :lang(zh-CN) .steps h3 { letter-spacing: 0; }
 
 @media print {
   .statusline, .copy, .jump, .skip { display: none !important; }
   body { padding-bottom: 0; }
-  .hero { background: none; }
   .tmux-screen { box-shadow: none; }
 }

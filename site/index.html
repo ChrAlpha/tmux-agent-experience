@@ -15,7 +15,7 @@
 <meta property="og:url" content="https://chralpha.github.io/tmux-agent-experience/">
 <meta property="og:image" content="https://chralpha.github.io/tmux-agent-experience/og.png">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="theme-color" content="#5fce55">
+<meta name="theme-color" content="#f5f8f3">
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
 <link rel="preload" href="fonts/overpass.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="style.css">
@@ -26,18 +26,11 @@
 
 <header class="hero" id="start">
   <div class="hero-grid">
-    <p class="kicker">tmux-agent-experience <span aria-hidden="true">·</span> <code>tmag</code></p>
-    <h1>A tmux plugin that knows what your coding agents are doing.</h1>
     <div class="hero-copy">
-      <p class="lede">Keep Claude Code, Codex, Pi and oh-my-pi in your usual panes. See who is working, waiting or done, jump to the one that needs you, and let agents hand work to each other.</p>
-      <div class="install" id="install">
-        <p class="install-label">Paste this into the coding agent you run in tmux:</p>
-        <div class="prompt">
-          <p id="install-prompt">Read https://raw.githubusercontent.com/ChrAlpha/tmux-agent-experience/main/SKILL.md and follow it to install or update tmag for the AI tool I am using.</p>
-          <button type="button" class="copy" data-copy="install-prompt" data-copied="Copied">Copy</button>
-        </div>
-        <p class="install-note">It asks before it edits your tmux configuration, connects the agent it runs in, and checks the result. Needs tmux 3.2+ on Linux or macOS, TPM and curl. <a href="#by-hand">Install by hand</a></p>
-      </div>
+      <p class="kicker">tmux-agent-experience <span aria-hidden="true">·</span> <code>tmag</code></p>
+      <h1>A tmux plugin that knows what your coding agents are doing.</h1>
+      <p class="lede">Claude Code, Codex, Pi and oh-my-pi in your usual panes. See who needs you, jump there, and let agents hand work to each other.</p>
+      <p class="cta"><a class="button" href="#install">Install in one prompt</a> <a class="button quiet" href="https://github.com/ChrAlpha/tmux-agent-experience">GitHub</a></p>
     </div>
 
     <figure class="tmux" data-session="work">
@@ -91,8 +84,8 @@ work:2.0  %3    pi      idle                  3m   5c2e90b1  ~/src/cli
         </div>
       </div>
       <figcaption>
-        <p>One tmux session, three agents. <code>!</code> flags the windows of agents that are blocked or finished while you look elsewhere, the status line counts them, and each pane border names its agent and state.</p>
-        <p class="jump" hidden data-to0="claude in 0:api waits for your approval: blocked agents come first. Press again." data-to2="pi in 2:cli is next: after blocked agents, the idle one that has waited longest. Its window flag cleared as you arrived." data-again0="claude in 0:api is still blocked, so it comes first again." data-again2="pi in 2:cli again. Answer claude, and it drops out of the round."><button type="button" id="jump"><kbd>prefix</kbd> <kbd>A</kbd></button> <span id="jump-said" aria-live="polite">You are watching codex work in <code>1:web</code>. Press to jump to the agent waiting longest.</span></p>
+        <span class="sr-only">A tmux session with three agents: claude waits for approval in window 0, codex works in window 1, which you are watching, and pi is idle in window 2.</span>
+        <p class="jump" hidden data-to0="claude in 0:api: blocked agents come first." data-to2="pi in 2:cli: then the idle one waiting longest." data-again0="claude again, still blocked." data-again2="pi again. Answer claude to end the round."><button type="button" id="jump"><kbd>prefix</kbd> <kbd>A</kbd></button> <span id="jump-said" aria-live="polite">Jump to the agent waiting longest.</span></p>
       </figcaption>
     </figure>
   </div>
@@ -103,12 +96,17 @@ work:2.0  %3    pi      idle                  3m   5c2e90b1  ~/src/cli
 <section class="onboard" id="onboard" aria-labelledby="onboard-title">
   <div class="section-head">
     <h2 id="onboard-title">From install to first handoff</h2>
-    <p>About ten minutes. Every step is safe to repeat, and the same steps update tmag later.</p>
+    <p>About ten minutes with tmux 3.2+ on Linux or macOS, TPM and curl. Every step is safe to repeat, and the same steps update tmag later.</p>
   </div>
   <ol class="steps">
-    <li id="by-hand">
+    <li id="install">
       <h3>Install the plugin</h3>
-      <p>The prompt above does all of this for you. By hand: add the plugin above TPM's <code>run</code> line and press <span class="keys"><kbd>prefix</kbd> <kbd>I</kbd></span>. The plugin downloads the released <code>tmag</code> binary for its version, checks its SHA-256 and keeps it in its own directory.</p>
+      <p>Paste this into the coding agent you run in tmux. It asks before it edits your tmux configuration, connects the agent it runs in, and checks the result.</p>
+      <div class="prompt">
+        <p id="install-prompt">Read https://raw.githubusercontent.com/ChrAlpha/tmux-agent-experience/main/SKILL.md and follow it to install or update tmag for the AI tool I am using.</p>
+        <button type="button" class="copy" data-copy="install-prompt" data-copied="Copied">Copy</button>
+      </div>
+      <p>By hand: add the plugin above TPM's <code>run</code> line and press <span class="keys"><kbd>prefix</kbd> <kbd>I</kbd></span>. The plugin downloads the released <code>tmag</code> binary for its version, checks its SHA-256 and keeps it in its own directory.</p>
       <pre><code>set -g @plugin 'ChrAlpha/tmux-agent-experience'</code></pre>
     </li>
     <li>
