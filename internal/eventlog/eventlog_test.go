@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -352,5 +355,52 @@ func TestLongEventsKeepTheNumbering(t *testing.T) {
 			t.Fatalf("rotate=%v: after the long event: %v %v %v", rotate, evs, complete, err)
 		}
 		tail.Close()
+	}
+}
+
+// An Alert event reports the change and presence alone: a client pushes from
+// it without reading anything else of the session.
+func TestAlertEventHasTheContractFields(t *testing.T) {
+	l := Open(t.TempDir())
+	events := []*Event{
+		{Agent: "claude", Session: "1787a44e", Event: Alert,
+			Alert: &AlertInfo{Kind: "finished", Turn: "00161c25"}},
+		{Agent: "claude", Session: "1787a44e", Event: Alert,
+			Alert: &AlertInfo{Kind: "blocked", Present: true,
+				Request: &AlertRequest{ID: "3f9c2a01b6d4", Kind: "permission", Tool: "Bash"}}},
+	}
+	for _, e := range events {
+		if err := l.Append(bg, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	data, err := os.ReadFile(filepath.Join(l.Dir, currentName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) != len(events) {
+		t.Fatalf("log holds %d lines", len(lines))
+	}
+	want := []map[string]any{
+		{"kind": "finished", "turn": "00161c25", "present": false},
+		{"kind": "blocked", "present": true,
+			"request": map[string]any{"id": "3f9c2a01b6d4", "kind": "permission", "tool": "Bash"}},
+	}
+	for i, line := range lines {
+		var doc map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(line), &doc); err != nil {
+			t.Fatalf("line %d: %v", i, err)
+		}
+		if keys := slices.Sorted(maps.Keys(doc)); !slices.Equal(keys, []string{"agent", "alert", "event", "seq", "session", "time"}) {
+			t.Fatalf("line %d holds %v", i, keys)
+		}
+		var alert map[string]any
+		if err := json.Unmarshal(doc["alert"], &alert); err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(alert, want[i]) {
+			t.Fatalf("line %d alert = %v, want %v", i, alert, want[i])
+		}
 	}
 }

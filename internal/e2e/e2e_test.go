@@ -356,7 +356,7 @@ func TestClaudeInProcess(t *testing.T) {
 	if got, _ := os.ReadFile(out); string(got) != "review the diff\n" {
 		t.Fatalf("agent received %q", got)
 	}
-	if got, want := h.eventNames(sidA), "SessionStart:idle Attach:idle Send: UserPromptSubmit:working Stop:idle"; got != want {
+	if got, want := h.eventNames(sidA), "SessionStart:idle Attach:idle Send: UserPromptSubmit:working Stop:idle Alert:"; got != want {
 		t.Fatalf("events = %s, want %s", got, want)
 	}
 	f.agrees(h)
@@ -376,7 +376,7 @@ func TestClaudeInProcess(t *testing.T) {
 		t.Fatalf("busy send: %d %s", r.code, r.out)
 	}
 	h.eventually("the delivered prompt finishes a turn", func() bool {
-		return strings.HasSuffix(h.eventNames(sidA), "Send: UserPromptSubmit:working Stop:idle")
+		return strings.HasSuffix(h.eventNames(sidA), "Send: UserPromptSubmit:working Stop:idle Alert:")
 	})
 	if r := h.tmag("", "wait", h.target(pane), "--json"); r.code != 0 || !strings.Contains(r.out, `"idle"`) {
 		t.Fatalf("wait on idle agent: %d %s", r.code, r.out)
@@ -437,7 +437,7 @@ func TestPiAndOhMyPi(t *testing.T) {
 			if r := h.tmag("", "read", sidA[:8], "--last", "--json"); r.code != 0 || !strings.Contains(r.out, `"turn":"t1"`) || !strings.Contains(r.out, `"text":"answered: review the diff"`) {
 				t.Fatalf("read --last: %d %s", r.code, r.out)
 			}
-			if got, want := h.eventNames(sidA), "session_start:idle Attach:idle Send: message_end:working "+stop+":idle"; got != want {
+			if got, want := h.eventNames(sidA), "session_start:idle Attach:idle Send: message_end:working "+stop+":idle Alert:"; got != want {
 				t.Fatalf("events = %s, want %s", got, want)
 			}
 			f.agrees(h)
@@ -468,7 +468,7 @@ func TestPiAndOhMyPi(t *testing.T) {
 				t.Fatalf("interrupt: %d %s", r.code, r.out)
 			}
 			h.waitSession(sidA, "idle")
-			if got := h.eventNames(sidA); !strings.HasSuffix(got, "Send: message_end:working Halt: "+stop+":idle") {
+			if got := h.eventNames(sidA); !strings.HasSuffix(got, "Send: message_end:working Halt: "+stop+":idle Alert:") {
 				t.Fatalf("events = %s", got)
 			}
 			f.agrees(h)
@@ -581,7 +581,7 @@ func TestInterruptThroughThePane(t *testing.T) {
 		t.Fatalf("interrupt codex: %d %s", r.code, r.out)
 	}
 	h.waitPane(codex, "idle", "process")
-	if got := h.eventNames(sidB); !strings.HasSuffix(got, "Halt: Interrupt:idle") {
+	if got := h.eventNames(sidB); !strings.HasSuffix(got, "Halt: Interrupt:idle Alert:") {
 		t.Fatalf("codex events = %s", got)
 	}
 	f.agrees(h)
@@ -641,7 +641,7 @@ func TestClaudeAnswersThroughTheHook(t *testing.T) {
 	received("hook:allow")
 	h.waitSession(sidA, "idle")
 	// The answer closes the request at once; the call runs on.
-	if got := h.eventNames(sidA); !strings.HasSuffix(got, "UserPromptSubmit:working PermissionRequest:blocked Answer:working Stop:idle") {
+	if got := h.eventNames(sidA); !strings.HasSuffix(got, "UserPromptSubmit:working PermissionRequest:blocked Alert: Answer:working Stop:idle Alert:") {
 		t.Fatalf("events = %s", got)
 	}
 	f.agrees(h)
@@ -889,7 +889,7 @@ func TestCodexDaemonSessions(t *testing.T) {
 		t.Fatalf("send to a daemon's thread: %d %s", r.code, r.out)
 	}
 	h.eventually("the daemon's turn", func() bool {
-		return strings.HasSuffix(h.eventNames(sidB), "Send: UserPromptSubmit:working Stop:idle")
+		return strings.HasSuffix(h.eventNames(sidB), "Send: UserPromptSubmit:working Stop:idle Alert:")
 	})
 
 	// Watching a subagent: still the session's pane, but it takes no input.
@@ -978,7 +978,7 @@ func TestCodexDaemonCarriesSendAndInterrupt(t *testing.T) {
 	if rec, ok, err := (session.Store{Dir: h.state}).Get(context.Background(), "codex", sidC); err != nil || !ok || !rec.Queued.IsZero() {
 		t.Fatalf("the interrupt left the second prompt queued: %+v %v", rec, err)
 	}
-	if got := h.eventNames(sidC); !strings.Contains(got, "Send: UserPromptSubmit:working") || !strings.HasSuffix(got, "Send: Halt: Interrupt:idle") {
+	if got := h.eventNames(sidC); !strings.Contains(got, "Send: UserPromptSubmit:working") || !strings.HasSuffix(got, "Send: Halt: Interrupt:idle Alert:") {
 		t.Fatalf("events = %s", got)
 	}
 	f.agrees(h)
@@ -1025,7 +1025,7 @@ func TestCodexDaemonCarriesAnswers(t *testing.T) {
 		t.Fatalf("answer: %d %s", r.code, r.out)
 	}
 	h.waitSession(sidC, "working")
-	if got := h.eventNames(sidC); !strings.HasSuffix(got, "PermissionRequest:blocked Answer:blocked PostToolUse:working") {
+	if got := h.eventNames(sidC); !strings.HasSuffix(got, "PermissionRequest:blocked Alert: Answer:blocked PostToolUse:working") {
 		t.Fatalf("events = %s", got)
 	}
 	f.agrees(h)
@@ -1619,10 +1619,65 @@ func TestAlertsRunTheNotifyCommand(t *testing.T) {
 	if got := len(lines("finished|" + sidA)); got != before {
 		t.Fatalf("notified while the person typed at the terminal: %d lines", got-before)
 	}
+	// The alert event reports the same presence, for clients that push it.
+	h.eventually("an alert at the terminal", func() bool {
+		return slices.ContainsFunc(h.events(sidA), func(e eventlog.Event) bool {
+			return e.Event == eventlog.Alert && e.Alert != nil && e.Alert.Present
+		})
+	})
 	// A session no pane shows rings no bell anywhere: it notifies all the same.
 	d.hook(map[string]any{"hook_event_name": "PostToolUse", "session_id": sidC, "turn_id": "t1", "tool_name": "Bash"})
 	d.hook(map[string]any{"hook_event_name": "PermissionRequest", "session_id": sidC, "turn_id": "t1", "tool_name": "Bash"})
 	notified("blocked|" + sidC)
+}
+
+// Every alerting change is logged as an Alert event, whether or not
+// @tmag-alert or @tmag-notify are set: clients push from these events, and a
+// follower of the log rebuilds the same sessions with them.
+func TestAlertsAreLogged(t *testing.T) {
+	h := start(t)
+	// Neither option is set: the event is the log's, not the bell's or the
+	// command's.
+	if got := h.tmux("show-option", "-gqv", "@tmag-alert") + h.tmux("show-option", "-gqv", "@tmag-notify"); got != "" {
+		t.Fatalf("alerts or notify are configured: %q", got)
+	}
+	f := h.follow()
+	w := h.watch()
+	alertIn := func(doc map[string]any, session string) map[string]any {
+		ev := eventOf(doc)
+		if ev == nil || ev["session"] != session || ev["event"] != eventlog.Alert {
+			return nil
+		}
+		a, _ := ev["alert"].(map[string]any)
+		return a
+	}
+
+	// A turn that ends in a pane nobody watches.
+	pane := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_HOOKS": "1"}, filepath.Join(bin, "claude"))
+	h.waitPane(pane, "idle", "process")
+	if r := h.tmag("", "send", sidA[:8], "--wait", "the plan"); r.code != 0 {
+		t.Fatalf("send: %d %s", r.code, r.out)
+	}
+	doc := w.until("a finished alert", func(doc map[string]any) bool { return alertIn(doc, sidA) != nil })
+	want := map[string]any{"kind": "finished", "turn": "t1", "present": false}
+	if got := alertIn(doc, sidA); !reflect.DeepEqual(got, want) {
+		t.Fatalf("finished alert = %v, want %v", got, want)
+	}
+	f.agrees(h)
+
+	// A request that opens in a session no pane shows.
+	d := h.daemon()
+	d.hook(map[string]any{"hook_event_name": "PermissionRequest", "session_id": sidC, "cwd": h.dir, "turn_id": "t1", "tool_name": "Bash"})
+	s := h.waitSession(sidC, "blocked")
+	req := s.Requests[0]
+	doc = w.until("a blocked alert", func(doc map[string]any) bool { return alertIn(doc, sidC) != nil })
+	want = map[string]any{"kind": "blocked", "present": false,
+		"request": map[string]any{"id": req.ID, "kind": "permission", "tool": "Bash"}}
+	if got := alertIn(doc, sidC); !reflect.DeepEqual(got, want) {
+		t.Fatalf("blocked alert = %v, want %v", got, want)
+	}
+	f.agrees(h)
+	w.stop()
 }
 
 func TestRestartedAgentDoesNotInheritTheSession(t *testing.T) {
@@ -2235,7 +2290,7 @@ func TestUnchangedHookRestoresItsPanesAttachment(t *testing.T) {
 	pane := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_HOOKS": "1"}, filepath.Join(bin, "claude"))
 	h.waitPane(pane, "idle", "process")
 	h.tmux("send-keys", "-t", pane, "hello", "Enter")
-	h.eventually("the turn ends", func() bool { return strings.HasSuffix(h.eventNames(sidA), "Stop:idle") })
+	h.eventually("the turn ends", func() bool { return strings.HasSuffix(h.eventNames(sidA), "Stop:idle Alert:") })
 	before := h.eventNames(sidA)
 	s, _ := h.sessionOf(sidA)
 	// Lose the attachment, as a hook that died before attaching leaves it.

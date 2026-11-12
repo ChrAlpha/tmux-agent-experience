@@ -61,9 +61,27 @@ type Request struct {
 	Since time.Time `json:"since"`
 }
 
+// AlertInfo is what an Alert event reports: the change worth telling the
+// person about, and whether they were at a terminal that showed the session
+// when it happened.
+type AlertInfo struct {
+	Kind    string        `json:"kind"`              // blocked or finished
+	Turn    string        `json:"turn,omitempty"`    // the turn that ended
+	Request *AlertRequest `json:"request,omitempty"` // the request that just opened
+	Present bool          `json:"present"`
+}
+
+// AlertRequest is the request a blocked alert reports, as the notify command
+// is given it: the prompt that just opened.
+type AlertRequest struct {
+	ID   string `json:"id"`
+	Kind string `json:"kind"`
+	Tool string `json:"tool,omitempty"`
+}
+
 // Event is one line of the log: a session's state changed (Event names the
-// hook), tmag sent it a prompt, a pane started or stopped showing it, or it
-// ended.
+// hook), tmag sent it a prompt, a pane started or stopped showing it, a
+// change was worth telling the person about, or it ended.
 //
 // An event that carries State reports the session in full: State, Kind, Turn,
 // Cwd, Runtime, Transcript, Subagents, Capabilities and Requests are then what
@@ -92,6 +110,8 @@ type Event struct {
 	Capabilities []string `json:"capabilities,omitempty"`
 	// Requests are the prompts the session waits on the user for.
 	Requests []Request `json:"requests,omitempty"`
+	// Alert is the change an Alert event tells the person about.
+	Alert *AlertInfo `json:"alert,omitempty"`
 	// Pane is the pane an Attach, Detach, Send or Halt is about.
 	Pane *PaneRef `json:"pane,omitempty"`
 	// Evidence is what an Attach rests on.
@@ -120,6 +140,7 @@ const (
 	Detach = "Detach" // a pane stopped showing the session
 	Exit   = "Exit"   // the session's process ended without SessionEnd
 	End    = "SessionEnd"
+	Alert  = "Alert" // a change worth telling the person about
 )
 
 // Ended reports whether e ends its session.
