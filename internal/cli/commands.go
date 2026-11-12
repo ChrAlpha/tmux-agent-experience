@@ -80,10 +80,9 @@ func (a *app) printView(v query.View, caller query.Caller) {
 		fmt.Fprintln(a.stdout, "no agents")
 		return
 	}
-	servers := map[string]bool{}
-	for _, p := range v.Panes {
-		servers[p.Server] = true
-	}
+	// Targets resolve on the caller's tmux server; a pane on another is
+	// named server:%N.
+	here := tmux.DefaultServer().Socket
 	home, _ := os.UserHomeDir()
 	short := func(path string) string {
 		if home != "" && strings.HasPrefix(path, home) {
@@ -100,9 +99,9 @@ func (a *app) printView(v query.View, caller query.Caller) {
 	tw := tabwriter.NewWriter(a.stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(tw, "TARGET\tPANE\tAGENT\tSTATE\tFOR\tID\tCWD")
 	for _, p := range v.Panes {
-		target := p.Target
-		if len(servers) > 1 {
-			target = filepath.Base(p.Server) + "/" + target
+		target, pane := p.Target, p.ID
+		if p.Server != here {
+			target, pane = filepath.Base(p.Server)+"/"+target, serverName(p.Server)+":"+p.ID
 		}
 		state, since, id := adapter.Unknown, (*time.Time)(nil), "-"
 		if s, ok := v.Session(p.Agent, p.Session); ok {
@@ -111,7 +110,7 @@ func (a *app) printView(v query.View, caller query.Caller) {
 				state += " [subagent]"
 			}
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", target, p.ID, p.Agent, state, age(since), id, short(p.Cwd))
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", target, pane, p.Agent, state, age(since), id, short(p.Cwd))
 	}
 	for _, s := range v.Sessions {
 		if len(s.Panes) == 0 {
@@ -119,6 +118,15 @@ func (a *app) printView(v query.View, caller query.Caller) {
 		}
 	}
 	tw.Flush()
+}
+
+// serverName names a tmux server as targets take it: its socket's name when
+// it is in tmux's socket directory, else its path.
+func serverName(socket string) string {
+	if filepath.Dir(socket) == tmux.SocketDir() {
+		return filepath.Base(socket)
+	}
+	return socket
 }
 
 // codexHint explains how to let Codex panes show their sessions, when some
@@ -169,19 +177,10 @@ func (a *app) resolve(ctx context.Context, target string) (query.Target, error) 
 	if err != nil {
 		return query.Target{}, err
 	}
-	return query.Resolve(v, target)
+	return query.Resolve(ctx, v, target)
 }
 
 func (a *app) store() session.Store { return session.Store{Dir: a.log.Dir} }
-
-// needSession returns the session a target names, or a refusal for a pane
-// that shows none.
-func needSession(t query.Target) (query.Session, error) {
-	if t.Session != nil {
-		return *t.Session, nil
-	}
-	return query.Session{}, &query.RefusedError{Reason: query.RefuseUnbound, Detail: fmt.Sprintf("%s in %s shows no session tmag can prove", t.Pane.Agent, t.Pane.ID)}
-}
 
 func (a *app) cmdInspect(args []string) int {
 	fs := flag.NewFlagSet("inspect", flag.ContinueOnError)
@@ -460,15 +459,42 @@ func (a *app) cmdWait(args []string) int {
 	defer cancel()
 	ctx, cancelTimeout := context.WithTimeout(ctx, *timeout)
 	defer cancelTimeout()
-	t, err := a.resolve(ctx, pos[0])
-	if err != nil {
-		return a.failOn("wait", pos[0], err)
-	}
-	s, err := needSession(t)
+	s, err := a.shown(ctx, pos[0], *timeout)
 	if err != nil {
 		return a.failOn("wait", pos[0], err)
 	}
 	return a.awaitAndReportContext(ctx, "wait", pos[0], s, 0, query.WaitOptions{States: want}, *timeout)
+}
+
+// shown is the session target names. A pane that shows none yet, its agent
+// just started there or not yet running, is waited on until it shows one,
+// within ctx.
+func (a *app) shown(ctx context.Context, target string, timeout time.Duration) (query.Session, error) {
+	v, _, err := query.Load(ctx, a.store())
+	if err != nil {
+		return query.Session{}, err
+	}
+	t, err := query.Resolve(ctx, v, target)
+	var ref eventlog.PaneRef
+	switch {
+	case err == nil && t.Session != nil:
+		return *t.Session, nil
+	case err == nil:
+		ref = eventlog.PaneRef{Server: t.Pane.Server, ID: t.Pane.ID}
+	case errors.Is(err, query.ErrNotFound):
+		// A pane whose agent does not run yet.
+		var perr error
+		if ref, perr = query.PaneOf(ctx, target); perr != nil {
+			return query.Session{}, err
+		}
+	default:
+		return query.Session{}, err
+	}
+	s, err := query.WaitShown(ctx, a.store(), ref)
+	if errors.Is(err, context.DeadlineExceeded) {
+		err = notShown{fmt.Errorf("%w after %s: %s shows no session tmag can prove", errTimeout, timeout, target)}
+	}
+	return s, err
 }
 
 func (a *app) awaitAndReport(cmd, target string, s query.Session, sent int64, o query.WaitOptions, timeout time.Duration) int {

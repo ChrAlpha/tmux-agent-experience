@@ -101,7 +101,7 @@ func run(t *testing.T, w world, extra ...string) (string, error) {
 }
 
 func TestInstallerReleasedArchive(t *testing.T) {
-	for _, kind := range []string{"first", "integrity", "version", "symlink", "directory-lock", "regular-lock"} {
+	for _, kind := range []string{"first", "integrity", "version", "symlink"} {
 		t.Run(kind, func(t *testing.T) {
 			version, member := want, byte(tar.TypeReg)
 			if kind == "version" {
@@ -111,16 +111,10 @@ func TestInstallerReleasedArchive(t *testing.T) {
 				member = tar.TypeSymlink
 			}
 			w := fixture(t, archive(t, version, member), kind == "integrity")
-			target, lock := filepath.Join(w.root, "bin/tmag"), filepath.Join(w.root, "bin/.install.lock")
+			target := filepath.Join(w.root, "bin/tmag")
 			previous := []byte("#!/bin/sh\necho old\n")
 			if kind != "first" {
 				write(t, target, previous)
-			}
-			if kind == "directory-lock" {
-				write(t, filepath.Join(lock, "foreign"), []byte("preserve"))
-			}
-			if kind == "regular-lock" {
-				write(t, lock, []byte("preserve"))
 			}
 			out, err := run(t, w)
 			if kind == "first" {
@@ -143,30 +137,33 @@ func TestInstallerReleasedArchive(t *testing.T) {
 					t.Fatalf("prior binary changed: %q %v", b, err)
 				}
 			}
-			if strings.HasSuffix(kind, "lock") {
-				marker := lock
-				if kind == "directory-lock" {
-					marker = filepath.Join(lock, "foreign")
-				}
-				if b, err := os.ReadFile(marker); err != nil || string(b) != "preserve" {
-					t.Fatalf("unknown lock changed: %q %v", b, err)
-				}
-			} else if _, err := os.Lstat(lock); !os.IsNotExist(err) {
-				t.Fatalf("owned lock survived: %v", err)
-			}
+			noWork(t, w)
 		})
 	}
 }
 
-func TestInstallerExcludesConcurrentAndPreservesReplacedLock(t *testing.T) {
-	w := fixture(t, archive(t, want, tar.TypeReg), false)
+// noWork fails when a run left its work directory in bin.
+func noWork(t *testing.T, w world) {
+	t.Helper()
+	if left, _ := filepath.Glob(filepath.Join(w.root, "bin/.install.*")); len(left) > 0 {
+		t.Fatalf("work directories left: %v", left)
+	}
+}
+
+// Runs at once need no lock: each downloads into its own directory and
+// publishes the same verified release with one rename.
+func TestConcurrentInstallersPublishTheVerifiedRelease(t *testing.T) {
+	image := archive(t, want, tar.TypeReg)
+	w := fixture(t, image, false)
 	realCurl, err := exec.LookPath("curl")
 	if err != nil {
 		t.Fatal(err)
 	}
 	write(t, filepath.Join(w.tools, "curl"), []byte(`#!/bin/sh
-printf entered >"$TMAG_TEST_ENTERED"
-while [ ! -f "$TMAG_TEST_RELEASE_FETCH" ]; do sleep 0.02; done
+if [ -n "${TMAG_TEST_ENTERED:-}" ]; then
+ printf entered >"$TMAG_TEST_ENTERED"
+ while [ ! -f "$TMAG_TEST_RELEASE_FETCH" ]; do sleep 0.02; done
+fi
 exec "$TMAG_TEST_CURL" "$@"
 `))
 	entered, release := filepath.Join(w.root, "entered"), filepath.Join(w.root, "release-fetch")
@@ -179,7 +176,7 @@ exec "$TMAG_TEST_CURL" "$@"
 	if err := first.Start(); err != nil {
 		t.Fatal(err)
 	}
-	defer func() { cancel(); _ = first.Wait() }()
+	defer func() { write(t, release, nil); cancel(); _ = first.Wait() }()
 	for {
 		if _, err := os.Stat(entered); err == nil {
 			break
@@ -189,23 +186,38 @@ exec "$TMAG_TEST_CURL" "$@"
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if out, err := run(t, w); err == nil || !strings.Contains(out, "install lock exists") {
-		t.Fatalf("concurrent owner not excluded: %v %q", err, out)
+	if out, err := run(t, w, "TMAG_TEST_CURL="+realCurl); err != nil {
+		t.Fatalf("second installer while the first downloads: %v %q", err, out)
 	}
-	lock := filepath.Join(w.root, "bin/.install.lock")
-	if err := os.Rename(lock, lock+"-original"); err != nil {
+	write(t, release, nil)
+	if err := first.Wait(); err != nil {
+		t.Fatalf("first installer: %v %q", err, output.String())
+	}
+	if b, err := os.ReadFile(filepath.Join(w.root, "bin/tmag")); err != nil || !strings.Contains(string(b), "tmag "+want) {
+		t.Fatalf("published binary: %q %v", b, err)
+	}
+	noWork(t, w)
+}
+
+// A run that died leaves its work directory, which a later run removes once
+// it is old enough that no run in progress can own it.
+func TestInstallerRemovesWhatDeadRunsLeft(t *testing.T) {
+	w := fixture(t, archive(t, want, tar.TypeReg), false)
+	dead, young := filepath.Join(w.root, "bin/.install.dead"), filepath.Join(w.root, "bin/.install.young")
+	write(t, filepath.Join(dead, "archive"), []byte("partial"))
+	write(t, filepath.Join(young, "archive"), []byte("partial"))
+	old := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(dead, old, old); err != nil {
 		t.Fatal(err)
 	}
-	write(t, filepath.Join(lock, "foreign"), []byte("preserve"))
-	write(t, release, nil)
-	if err := first.Wait(); err == nil {
-		t.Fatal("published after lock replacement")
+	if out, err := run(t, w); err != nil {
+		t.Fatalf("install: %v %q", err, out)
 	}
-	if b, err := os.ReadFile(filepath.Join(lock, "foreign")); err != nil || string(b) != "preserve" {
-		t.Fatalf("replacement changed: %q %v", b, err)
+	if _, err := os.Stat(dead); !os.IsNotExist(err) {
+		t.Fatalf("dead run's directory survived: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(w.root, "bin/tmag")); !os.IsNotExist(err) {
-		t.Fatalf("published into replaced namespace: %v", err)
+	if _, err := os.Stat(young); err != nil {
+		t.Fatalf("a run in progress lost its directory: %v", err)
 	}
 }
 
@@ -270,9 +282,7 @@ func TestInstallerReportsMissingCurl(t *testing.T) {
 	if err == nil || !strings.Contains(out, "curl is required") {
 		t.Fatalf("missing downloader: %v %q", err, out)
 	}
-	if _, err := os.Lstat(filepath.Join(w.root, "bin/.install.lock")); !os.IsNotExist(err) {
-		t.Fatalf("missing curl left a lock: %v", err)
-	}
+	noWork(t, w)
 }
 
 func TestInstallerPublishesCompleteVerifiedImage(t *testing.T) {

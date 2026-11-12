@@ -40,7 +40,7 @@ func LastReply(ctx context.Context, store session.Store, target string) (Session
 	if err != nil {
 		return Session{}, transcript.Reply{}, err
 	}
-	s, _, err := controlled(v, target)
+	s, _, err := controlled(ctx, v, target)
 	if err != nil {
 		return Session{}, transcript.Reply{}, err
 	}

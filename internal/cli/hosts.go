@@ -30,7 +30,6 @@ const (
 	marketplace = "tmux-agent-experience"
 	pluginName  = "tmag"       // the hooks
 	peersName   = "tmag-peers" // the skill for working with other agents
-	miseTool    = "github:" + repo
 )
 
 // pluginID names a plugin of tmag's marketplace in a host's plugin commands.

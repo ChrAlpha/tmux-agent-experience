@@ -27,8 +27,8 @@ type Asked struct {
 }
 
 // request finds the open request id of the session target names.
-func request(v View, target, id string) (Session, error) {
-	s, _, err := controlled(v, target)
+func request(ctx context.Context, v View, target, id string) (Session, error) {
+	s, _, err := controlled(ctx, v, target)
 	if err != nil {
 		return Session{}, err
 	}
@@ -56,7 +56,7 @@ func Show(ctx context.Context, log *eventlog.Log, target, id string) (Asked, err
 	if err != nil {
 		return Asked{}, err
 	}
-	s, err := request(v, target, id)
+	s, err := request(ctx, v, target, id)
 	if err != nil {
 		return Asked{}, err
 	}
@@ -96,7 +96,7 @@ func Answer(ctx context.Context, log *eventlog.Log, target, id string, d answer.
 	if err != nil {
 		return Delivery{}, err
 	}
-	s, err := request(v, target, id)
+	s, err := request(ctx, v, target, id)
 	if err != nil {
 		return Delivery{}, err
 	}

@@ -1,6 +1,6 @@
 ---
 name: peers
-description: If files change under you that you did not change, another agent may be editing the same repository; load this skill to find out before you touch them. Also load it before switching branches, rewriting history or stopping processes in a repository others may share, when the user asks you to involve, delegate to, check on, coordinate with or message another agent (Claude Code, Codex, Pi, oh-my-pi) in this machine's tmux panes, and whenever a prompt starts with "[tmag] From" or "[tmag] Reply from". tmag shows which agents run and whether they are idle, working or blocked, prompts one now, with an answer later, or in a turn of its own, waits for it, reads its answer, replies, interrupts, or shows what it asks permission for.
+description: If files change under you that you did not change, another agent may be editing the same repository; load this skill to find out before you touch them. Also load it before switching branches, rewriting history or stopping processes in a repository others may share, when the user asks you to start, involve, delegate to, check on, coordinate with or message another agent (Claude Code, Codex, Pi, oh-my-pi) in this machine's tmux panes, and whenever a prompt starts with "[tmag] From" or "[tmag] Reply from". tmag shows which agents run and whether they are idle, working or blocked, prompts one now, with an answer later, or in a turn of its own, waits for it, reads its answer, replies, interrupts, or shows what it asks permission for.
 ---
 
 # Working with peer agents through tmag
@@ -38,10 +38,12 @@ command again with the permissions it needs.
    Read it (`tmag inspect`, `tmag read`) only as far as you need to, and
    send it one short message (`tmag send ID -`) only if that settles the
    collision. Never delegate to or interrupt a peer on your own.
-4. Only through tmag. Never use `tmux send-keys`, `paste-buffer` or
-   `capture-pane` to drive or read an agent's pane, and never judge its state
-   from its screen: typing through tmux skips tmag's checks, can submit twice
-   or into a shell, and leaves no record.
+4. Talk to agents only through tmag, and use tmux for the rest: it opens
+   windows, a new peer's too, and runs what is no agent. Never use `tmux
+   send-keys`, `paste-buffer` or `capture-pane` to drive or read an agent's
+   pane, and never judge its state from its screen: typing through tmux
+   skips tmag's checks, can submit twice or into a shell, and leaves no
+   record.
 5. Your own session is the `(you)` row of `tmag list`. tmag refuses verbs on
    it.
 6. A permission request is the user's decision. Answer one only when the user
@@ -66,7 +68,7 @@ command again with the permissions it needs.
 | `tmag answer ID REQ allow` | decide an open request, or `deny --message M` (rule 6) |
 
 `ID` is a session id or a unique prefix of at least 4 characters, as `tmag
-list` shows it; a pane id `%N` works too. States: `idle` takes a prompt;
+list` shows it; a pane works too, as tmux names it (`%N`, `work:1.0`). States: `idle` takes a prompt;
 `working` runs a turn; `blocked` waits on a request, whose id `inspect`
 shows; `unknown` means tmag cannot prove what the pane shows, so it cannot be
 prompted.
@@ -111,6 +113,26 @@ Keep `--timeout` under your shell tool's own time limit. A timeout exits 4,
 and its error says whether the prompt was delivered: after `send --wait`
 reports a delivery, run `tmag wait` again rather than sending the prompt
 twice. Send a prompt again only when tmag says nothing was delivered.
+
+## Starting a peer
+
+When the user asks for an agent that does not run yet, start it yourself in a
+tmux window of its own, where the user can watch it and take it over, and
+work with it through tmag like any other peer:
+
+```sh
+pane=$(tmux new-window -d -P -F '#{pane_id}' -c "$PWD" claude)
+tmag wait "$pane" --for idle --timeout 2m
+tmag send "$pane" --reply - <<'EOF'
+Review the parser in internal/parse.go and list the bugs you find.
+EOF
+```
+
+`tmag wait` on a pane lasts until its agent shows its session, as Claude
+Code, Pi and oh-my-pi do once they start. Codex shows its session only from
+its first prompt: start it with the task (`codex 'TASK'` in place of
+`claude`), then `tmag wait "$pane" --for idle` and `tmag read "$pane"
+--last`.
 
 ## Receiving
 

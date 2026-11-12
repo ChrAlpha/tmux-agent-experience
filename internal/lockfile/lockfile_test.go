@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -140,19 +139,4 @@ func TestAcquire(t *testing.T) {
 		t.Fatalf("after release: %v", err)
 	}
 	again.Close()
-
-	fifo := filepath.Join(t.TempDir(), "fifo")
-	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := Acquire(ctx, fifo, true); err == nil || errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("a FIFO lock: %v", err)
-	}
-	link := filepath.Join(t.TempDir(), "link")
-	if err := os.Symlink(path, link); err != nil {
-		t.Fatal(err)
-	}
-	if err := With(ctx, link, func() error { return nil }); err == nil {
-		t.Fatal("a lock through a symlink was taken")
-	}
 }

@@ -25,6 +25,12 @@ type undelivered struct{ err error }
 func (e undelivered) Error() string { return e.err.Error() }
 func (e undelivered) Unwrap() error { return e.err }
 
+// notShown marks a wait that ran out while its pane still showed no session.
+type notShown struct{ err error }
+
+func (e notShown) Error() string { return e.err.Error() }
+func (e notShown) Unwrap() error { return e.err }
+
 // next says what to do after err ended cmd on target, for the outcomes a
 // person or an agent meets when working with another agent; "" when the
 // error says it all, including whenever it cannot tell whether a prompt was
@@ -48,11 +54,16 @@ func next(cmd, target string, err error) string {
 	if errors.As(err, new(undelivered)) {
 		return fmt.Sprintf("nothing was delivered: run the same tmag %s again", cmd)
 	}
+	if errors.As(err, new(*query.UnshownError)) {
+		return fmt.Sprintf("an agent shows its session from its first hook: tmag wait %s --for idle waits for it, then try once more; tmag list shows what runs there", target)
+	}
 	var refused *query.RefusedError
 	if errors.As(err, &refused) {
 		return nextAfterRefusal(cmd, target, refused.Reason)
 	}
 	switch {
+	case errors.As(err, new(notShown)):
+		return "it still shows no session: tmag list shows what runs there. An agent at a trust dialog waits for the person; Codex shows its session from its first prompt, and in its shared daemon only with the thread-id title item"
 	case cmd == "wait" && (errors.Is(err, errTimeout) || errors.Is(err, context.DeadlineExceeded)):
 		return "the state did not come in time: run the same tmag wait again"
 	case errors.Is(err, query.ErrEnded), errors.Is(err, query.ErrNotFound):

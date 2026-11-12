@@ -54,10 +54,9 @@ func (p Pane) Target() string {
 const OptionPrefix = "@tmag_"
 
 // OptionKeys lists every pane option tmag reads or writes, without the
-// prefix: the attachment (agent, session, pid, start, evidence, and the
-// change in progress: change, replaced) and the display projection (state,
-// kind, since, cmd).
-var OptionKeys = []string{"agent", "session", "pid", "start", "evidence", "change", "replaced", "state", "kind", "since", "cmd"}
+// prefix: the attachment (agent, session, pid, start, evidence) and the
+// display projection (state, kind, since, cmd).
+var OptionKeys = []string{"agent", "session", "pid", "start", "evidence", "state", "kind", "since", "cmd"}
 
 // sep separates the fields of a pane line. It must be a byte every tmux
 // prints as is: tmux 3.4 writes other control characters in -F output as
@@ -136,6 +135,25 @@ func (s Server) Panes(ctx context.Context) ([]Pane, error) {
 		}
 	}
 	return panes, nil
+}
+
+// PaneID resolves a target-pane the way tmux's own commands do (a session,
+// session:window.pane, a window name, {last}, {marked}, ...) and returns the
+// pane's id. display-message alone would name the current pane for a target
+// it cannot find, so capture-pane resolves it first, strictly: with -P it
+// captures only an unfinished escape sequence, usually nothing, and no line
+// of the pane.
+func (s Server) PaneID(ctx context.Context, target string) (string, error) {
+	out, err := s.Run(ctx, "capture-pane", "-p", "-P", "-t", target, ";", "display-message", "-p", "-t", target, "#{pane_id}")
+	if err != nil {
+		return "", err
+	}
+	lines := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
+	id := lines[len(lines)-1]
+	if !paneIDRE.MatchString(id) {
+		return "", fmt.Errorf("target %s: unexpected tmux output", target)
+	}
+	return id, nil
 }
 
 // Pane reads one pane afresh.

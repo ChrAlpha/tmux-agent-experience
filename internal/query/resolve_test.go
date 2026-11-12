@@ -1,6 +1,7 @@
 package query
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -26,7 +27,7 @@ func TestResolve(t *testing.T) {
 	}
 	ok := func(target, session, pane, server string) {
 		t.Helper()
-		got, err := Resolve(v, target)
+		got, err := Resolve(context.Background(), v, target)
 		if err != nil {
 			t.Fatalf("Resolve(%q): %v", target, err)
 		}
@@ -48,7 +49,7 @@ func TestResolve(t *testing.T) {
 	for target, want := range map[string]error{
 		"abcd": ErrAmbiguous, "abc": ErrNotFound, "eeee": ErrNotFound, "%9": ErrNotFound,
 	} {
-		if _, err := Resolve(v, target); !errors.Is(err, want) {
+		if _, err := Resolve(context.Background(), v, target); !errors.Is(err, want) {
 			t.Errorf("Resolve(%q) err = %v, want %v", target, err, want)
 		}
 	}
