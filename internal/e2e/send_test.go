@@ -58,8 +58,9 @@ func TestSendClaudeThroughItsChannels(t *testing.T) {
 	h.waitPane(a, "idle", "process")
 	h.waitPane(b, "idle", "process")
 
-	// A person's idle prompt is typed into the pane.
-	if r := h.tmag("", "send", sidA[:8], "hello"); r.code != 0 || !strings.Contains(r.out, "sent to "+sidA[:8]+" (") || strings.Contains(r.out, "(inbox)") {
+	// A person's idle prompt is typed into the pane, named with its server:
+	// the person runs tmag outside the test's server.
+	if r := h.tmag("", "send", sidA[:8], "hello"); r.code != 0 || !strings.Contains(r.out, "sent to "+sidA[:8]+" ("+h.name+":"+a+") ") {
 		t.Fatalf("a person's idle send: %d %s", r.code, r.out)
 	}
 	h.eventually("A answers the person's prompt", func() bool {
