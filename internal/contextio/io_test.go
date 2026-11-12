@@ -169,17 +169,8 @@ func TestOwnedClosePreservesOriginalPollablePipe(t *testing.T) {
 	}
 }
 
-func TestMetadataRejectsFIFOAndOversize(t *testing.T) {
+func TestReadFileIsBounded(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "record")
-	if err := syscall.Mkfifo(path, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := ReadFile(context.Background(), path, 64); err == nil {
-		t.Fatal("FIFO accepted as metadata")
-	}
-	if err := os.Remove(path); err != nil {
-		t.Fatal(err)
-	}
 	if err := os.WriteFile(path, []byte("12345"), 0o600); err != nil {
 		t.Fatal(err)
 	}

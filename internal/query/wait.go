@@ -7,6 +7,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
 )
@@ -80,6 +81,35 @@ func Wait(ctx context.Context, store session.Store, s Session, o WaitOptions) (s
 		select {
 		case <-ctx.Done():
 			return session.Record{}, ctx.Err()
+		case <-tick.C:
+		}
+	}
+}
+
+// shownPoll is how often WaitShown looks at the pane: it reads the world,
+// which costs more than a record.
+const shownPoll = 500 * time.Millisecond
+
+// WaitShown blocks until the pane shows a session tmag can prove, and
+// returns that session. An agent started in a pane a moment ago, by a person
+// or by another agent with tmux, shows its session from its first hook. It
+// fails with ErrNotFound once the pane is gone.
+func WaitShown(ctx context.Context, store session.Store, ref eventlog.PaneRef) (Session, error) {
+	tick := time.NewTicker(shownPoll)
+	defer tick.Stop()
+	for {
+		v, w, err := Load(ctx, store)
+		if err == nil {
+			if _, ok := w.Find(ref.Server, ref.ID); !ok {
+				return Session{}, fmt.Errorf("%w: pane %s is gone", ErrNotFound, ref.ID)
+			}
+			if t, err := paneTarget(v, ref, ref.ID); err == nil && t.Session != nil {
+				return *t.Session, nil
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return Session{}, ctx.Err()
 		case <-tick.C:
 		}
 	}

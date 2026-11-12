@@ -15,11 +15,11 @@ You need Go (the version in `go.mod` or newer) and tmux 3.2 or newer. The
 commands, layout and testing conventions are in [AGENTS.md](AGENTS.md); they
 apply to people as much as to agents.
 
-A change is ready when `go test -race ./...`, `golangci-lint run`,
-`shellcheck tmag.tmux scripts/*` and `claude plugin validate .` pass, and
-behaviour changes are covered by a test. If you change how a hook payload or
-terminal title is read, describe how you checked it against the real agent and
-which version.
+A change is ready when `go test -race ./...`, `golangci-lint run`, the
+shellcheck command in [AGENTS.md](AGENTS.md#commands) and `claude plugin
+validate .` pass, and behaviour changes are covered by a test. If you change
+how a hook payload or terminal title is read, describe how you checked it
+against the real agent and which version.
 
 ## Pull requests
 
@@ -40,5 +40,4 @@ which version.
    from the tagged commit.
 4. Check the install paths users take, on Linux and macOS: the TPM install
    (`prefix + I` downloads the new binary, `prefix + M-a` connects the agents,
-   Pi's and oh-my-pi's packages included),
-   the steps in `SKILL.md`, and `mise use -g github:ChrAlpha/tmux-agent-experience`.
+   Pi's and oh-my-pi's packages included) and the steps in `SKILL.md`.

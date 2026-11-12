@@ -626,6 +626,10 @@ func TestClaudeAnswersThroughTheHook(t *testing.T) {
 	if req.Kind != "permission" || req.Tool != "Bash" {
 		t.Fatalf("request = %+v", req)
 	}
+	// The person finds the request's id where the skill sends them.
+	if r := h.tmag("", "inspect", sidA[:8]); r.code != 0 || !strings.Contains(r.out, "request: "+req.ID+" (permission, Bash)\n") {
+		t.Fatalf("inspect: %d %s", r.code, r.out)
+	}
 	r := h.tmag("", "request", sidA[:8], req.ID, "--json")
 	if r.code != 0 || !strings.Contains(r.out, `"tool":"Bash"`) || !strings.Contains(r.out, `"input":{"command":"date"}`) {
 		t.Fatalf("request: %d %s", r.code, r.out)
@@ -771,7 +775,7 @@ func TestPaneWithoutProofIsVisibleButNotControllable(t *testing.T) {
 	if r := h.tmag("", "send", h.target(pane), "hello"); r.code != 3 || !strings.Contains(r.out, "unbound") {
 		t.Fatalf("send to a pane that shows no session: %d %s", r.code, r.out)
 	}
-	if r := h.tmag("", "wait", h.target(pane)); r.code != 3 || !strings.Contains(r.out, "unbound") {
+	if r := h.tmag("", "wait", h.target(pane), "--timeout", "1s"); r.code != 4 || !strings.Contains(r.out, "shows no session tmag can prove") || !strings.Contains(r.out, "next: it still shows no session") {
 		t.Fatalf("wait on a pane that shows no session: %d %s", r.code, r.out)
 	}
 	if r := h.tmag("", "read", h.target(pane), "--lines", "5"); r.code != 0 || !strings.Contains(r.out, "ready") {

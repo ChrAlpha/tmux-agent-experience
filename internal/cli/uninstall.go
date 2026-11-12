@@ -79,16 +79,7 @@ Close tmag serve's window first, if it runs.
      set -g @plugin '%[3]s'
 `, a.log.Dir, strings.Join(removals, "\n     "), repo)
 	if !inPluginDir(canonical(self)) {
-		fmt.Fprintf(a.stdout, "4. This binary, installed outside the tmux plugin:\n     %s\n", removeBinary(self))
+		fmt.Fprintf(a.stdout, "4. This binary, installed outside the tmux plugin:\n     rm %s\n", self)
 	}
 	return ExitOK
-}
-
-// removeBinary names the command that removes a tmag installed outside the
-// tmux plugin, the way it was installed.
-func removeBinary(self string) string {
-	if inMiseInstalls(canonical(self)) {
-		return "mise unuse -g " + miseTool
-	}
-	return "rm " + self
 }

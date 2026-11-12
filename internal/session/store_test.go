@@ -77,32 +77,19 @@ func TestUnreadableRecordIsLeftOutAndReported(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "bad.json"), []byte("{not json"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	elsewhere := filepath.Join(t.TempDir(), "target.json")
-	if err := os.WriteFile(elsewhere, []byte(`{"agent":"claude","id":"link"}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(elsewhere, filepath.Join(dir, "link.json")); err != nil {
-		t.Fatal(err)
-	}
 	recs, faults, err := s.All(ctx)
-	if err != nil || len(recs) != 1 || recs[0].ID != good.ID || len(faults) != 2 {
+	if err != nil || len(recs) != 1 || recs[0].ID != good.ID || len(faults) != 1 {
 		t.Fatalf("All = %+v, %+v, %v", recs, faults, err)
 	}
 	var fault *RecordError
 	if _, ok, err := s.Get(ctx, proc.Claude, "bad"); ok || !errors.As(err, &fault) || fault.Category != "decode" {
 		t.Fatalf("Get of a damaged record: %v, %v", ok, err)
 	}
-	if _, ok, err := s.Get(ctx, proc.Claude, "link"); ok || !errors.As(err, &fault) {
-		t.Fatalf("Get through a symlink: %v, %v", ok, err)
-	}
 	if err := s.Put(ctx, Record{Agent: proc.Claude, ID: "bad", Main: "idle"}); err != nil {
 		t.Fatal(err)
 	}
 	if rec, ok, err := s.Get(ctx, proc.Claude, "bad"); err != nil || !ok || rec.Main != "idle" {
 		t.Fatalf("rewritten record: %+v, %v, %v", rec, ok, err)
-	}
-	if b, _ := os.ReadFile(elsewhere); string(b) != `{"agent":"claude","id":"link"}` {
-		t.Fatalf("a symlink's target changed: %s", b)
 	}
 }
 

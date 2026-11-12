@@ -33,7 +33,7 @@ const usage = `tmag — agent awareness for tmux
 
 Usage:
   tmag list     [--json]                       agents in all tmux panes
-  tmag inspect  <target> [--json] [--events N] one agent and its recent events
+  tmag inspect  <target> [--json] [--events N] one agent, its open requests and recent events
   tmag watch    [--since SEQ]                  JSON lines: snapshot, then events
   tmag read     <target> [--lines N | --last] [--json]
                                                recent pane output, or the agent's last reply
@@ -65,8 +65,10 @@ Usage:
   tmag answer-hook <claude>                    Claude's PermissionRequest hook: waits for answer
   tmag version
 
-Targets: an agent id or unique prefix (>= 4 chars), a pane id %N on the current
-server, or SERVER:%N where SERVER is a tmux socket name or path.
+Targets: an agent id or unique prefix (>= 4 chars); any target-pane tmux takes
+on the current server (%N, work:1.0, a window name, {last}); or SERVER:%N where
+SERVER is a tmux socket name or path. wait on a pane lasts until its agent
+shows a session, as one started there a moment ago does from its first hook.
 
 Exit codes: 0 ok, 1 error, 2 usage, 3 refused by the safety gate, 4 timeout.
 `

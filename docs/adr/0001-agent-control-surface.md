@@ -5,7 +5,8 @@
   is recorded, then logged, best effort, and the contract is `tmag/v2`;
   amended again 2026-11-10: one `send` verb delivers now, with `--wait` for a
   turn of its own and `--reply` for an answer; `reply` uses the asker's
-  channel
+  channel; amended 2026-11-12: targets take tmux's target-pane syntax, and
+  `wait` on a pane lasts until its agent shows a session
 - Date: 2026-11-03
 - Evidence: [Claude Code control channels](../research/claude-control-channels.md)
   (2.1.317), [Codex control channels](../research/codex-control-channels.md)
@@ -402,8 +403,8 @@ These replace the corresponding entries in AGENTS.md:
   (`send` and `send --reply` nothing unconfirmed, `send --wait` idle too,
   `interrupt` working or blocked, `answer` its request open), checks all of it
   again under the locks it needs, and logs its event before releasing them.
-  `internal/driver` alone decides which channel carries a verb. `wait` refuses
-  a pane that shows no session.
+  `internal/driver` alone decides which channel carries a verb. `wait` on a
+  pane that shows no session waits until it shows one, and acts on nothing.
 - **Callers are proven too.** Who runs a verb comes from process ancestry,
   distinguished by the agent's own tool variable and never named by it alone.
   People and agents use the same verbs and every control event records

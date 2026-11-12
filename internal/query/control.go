@@ -61,16 +61,28 @@ func prepare(ctx context.Context, log *eventlog.Log) (View, Caller, error) {
 
 // controlled resolves target to the session a verb acts on and the pane it
 // named, if any.
-func controlled(v View, target string) (Session, *Pane, error) {
-	t, err := Resolve(v, target)
+func controlled(ctx context.Context, v View, target string) (Session, *Pane, error) {
+	t, err := Resolve(ctx, v, target)
 	if err != nil {
 		return Session{}, nil, err
 	}
 	if t.Session == nil {
-		return Session{}, nil, &RefusedError{RefuseUnbound, fmt.Sprintf("%s in %s shows no session tmag can prove", t.Pane.Agent, t.Pane.ID)}
+		return Session{}, nil, unshown(*t.Pane)
 	}
 	return *t.Session, t.Pane, nil
 }
+
+// UnshownError refuses, unbound, a verb on a pane whose agent shows no
+// session tmag can prove: one started a moment ago shows it from its first
+// hook.
+type UnshownError struct{ refusal *RefusedError }
+
+func unshown(p Pane) *UnshownError {
+	return &UnshownError{&RefusedError{RefuseUnbound, fmt.Sprintf("%s in %s shows no session tmag can prove", p.Agent, p.ID)}}
+}
+
+func (e *UnshownError) Error() string { return e.refusal.Error() }
+func (e *UnshownError) Unwrap() error { return e.refusal }
 
 func unsupported(s Session, verb string) error {
 	return &RefusedError{RefuseUnsupported, fmt.Sprintf("no channel carries %s to %s %s (%s)", verb, s.Agent, s.ID, runtimeName(s.Runtime))}

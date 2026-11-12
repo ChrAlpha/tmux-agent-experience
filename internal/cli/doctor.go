@@ -35,7 +35,7 @@ func (a *app) cmdDoctor(args []string) int {
 	defer cancel()
 	ctx, stopProbe := context.WithTimeout(ctx, 2*time.Second)
 	defer stopProbe()
-	checks := []check{a.checkRecords(ctx), a.checkState(ctx), a.checkHookErrors(ctx), checkTmux(ctx), checkPlugin(ctx), checkBinary(), a.checkNotify(ctx), checkServe(ctx)}
+	checks := []check{a.checkRecords(ctx), a.checkState(ctx), a.checkHookErrors(ctx), checkTmux(ctx), checkTmuxOptions(ctx), checkPlugin(ctx), checkBinary(), a.checkNotify(ctx), checkServe(ctx)}
 	peers, err := doctorPeers(ctx)
 	if err != nil {
 		for _, agent := range proc.Agents {
@@ -93,6 +93,38 @@ func checkTmux(ctx context.Context) check {
 	return check{"tmux", "ok", fmt.Sprintf("%s, %d server(s) running", v, live)}
 }
 
+// checkTmuxOptions reports the tmux options that silently undo what tmag
+// shows, with the line that restores each: monitor-bell off leaves the bell
+// of an alert without a window flag, and allow-set-title off (tmux 3.5) keeps
+// Codex's title, which names the thread a pane shows, out of the pane. It
+// changes nothing; a server it cannot read is left out.
+func checkTmuxOptions(ctx context.Context) check {
+	servers, err := doctorServers(ctx)
+	if err != nil {
+		return check{"options", "warn", "server discovery incomplete"}
+	}
+	var problems []string
+	for _, s := range servers {
+		alert, err := s.GlobalOptionContext(ctx, "@tmag-alert")
+		if err != nil {
+			continue
+		}
+		name := serverName(s.Socket)
+		if alert != "" && alert != "off" {
+			if v, err := s.GlobalOptionContext(ctx, "monitor-bell"); err == nil && v == "off" {
+				problems = append(problems, fmt.Sprintf("monitor-bell is off on %s, so alerts flag no window: set -g monitor-bell on, or set -g @tmag-alert off", name))
+			}
+		}
+		if v, err := s.GlobalOptionContext(ctx, "allow-set-title"); err == nil && v == "off" {
+			problems = append(problems, fmt.Sprintf("allow-set-title is off on %s, so a Codex pane cannot show the thread it runs: set -g allow-set-title on", name))
+		}
+	}
+	if len(problems) > 0 {
+		return check{"options", "warn", strings.Join(problems, "; ")}
+	}
+	return check{"options", "ok", "tmux shows alerts and pane titles as tmag needs"}
+}
+
 // checkPlugin reports whether the tmux plugin is loaded, and at which version.
 func checkPlugin(ctx context.Context) check {
 	loaded, stale := 0, ""
@@ -133,50 +165,10 @@ func binaryCheck(self string, found []string) check {
 	if len(found) == 0 {
 		return check{"tmag", "fail", fmt.Sprintf("%s at %s, but agent hooks find no tmag: neither the tmux plugin's bin/tmag nor tmag on PATH", version.Version, self)}
 	}
-	if shim, ok := viaMiseShim(found); ok {
-		return check{"tmag", "ok", fmt.Sprintf("%s via mise shim %s", version.Version, shim)}
-	}
-	first := found[0]
-	if inMiseInstalls(first) {
-		return check{"tmag", "warn", fmt.Sprintf("%s is inside mise's versioned install directory; "+
-			"long-running agents such as the Codex daemon lose it after an upgrade. Put mise's shims directory on PATH", first)}
-	}
-	if canonical(first) != canonical(self) {
+	if first := found[0]; canonical(first) != canonical(self) {
 		return check{"tmag", "warn", fmt.Sprintf("running %s, but hooks will run %s", canonical(self), canonical(first))}
 	}
-	return check{"tmag", "ok", fmt.Sprintf("%s at %s", version.Version, first)}
-}
-
-// viaMiseShim reports whether tmag is reached through a mise shim. When a shim
-// runs a tool, mise puts the tool's versioned directory first on PATH, so the
-// shim shows up behind it.
-func viaMiseShim(found []string) (string, bool) {
-	if len(found) == 0 || (!isMiseShim(found[0]) && !inMiseInstalls(found[0])) {
-		return "", false
-	}
-	for _, p := range found {
-		if isMiseShim(p) {
-			return p, true
-		}
-	}
-	return "", false
-}
-
-// isMiseShim reports whether p is a mise shim, a link to the mise binary.
-func isMiseShim(p string) bool {
-	return filepath.Base(canonical(p)) == "mise"
-}
-
-// inMiseInstalls reports whether p lies in a mise data directory's versioned
-// installs/ tree, recognised by the shims/ directory next to it.
-func inMiseInstalls(p string) bool {
-	for dir := filepath.Dir(p); dir != filepath.Dir(dir); dir = filepath.Dir(dir) {
-		if filepath.Base(dir) == "installs" {
-			st, err := os.Stat(filepath.Join(filepath.Dir(dir), "shims"))
-			return err == nil && st.IsDir()
-		}
-	}
-	return false
+	return check{"tmag", "ok", fmt.Sprintf("%s at %s", version.Version, found[0])}
 }
 
 func canonical(p string) string {
@@ -387,15 +379,8 @@ func daemonBinaryProblem(pid int) string {
 	if !readable {
 		return ""
 	}
-	found := hookBinaries(func(k string) string { return env[k] })
-	const restart = "restart it from a shell inside tmux: codex app-server daemon restart (this interrupts running Codex work)"
-	switch {
-	case len(found) == 0:
-		return "the daemon cannot find tmag, so its hooks cannot run; " + restart
-	case !inPluginDir(found[0]) && inMiseInstalls(found[0]):
-		if _, shim := viaMiseShim(found); !shim {
-			return "the daemon reaches tmag through mise's versioned install directory and loses it after an upgrade; " + restart
-		}
+	if len(hookBinaries(func(k string) string { return env[k] })) == 0 {
+		return "the daemon cannot find tmag, so its hooks cannot run; restart it from a shell inside tmux: codex app-server daemon restart (this interrupts running Codex work)"
 	}
 	return ""
 }

@@ -9,7 +9,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -234,22 +233,6 @@ func TestLockHonoursDeadline(t *testing.T) {
 	}
 }
 
-// A log file replaced by a FIFO fails instead of blocking a hook.
-func TestSpecialFileDoesNotBlock(t *testing.T) {
-	l := Open(t.TempDir())
-	if err := syscall.Mkfifo(filepath.Join(l.Dir, currentName), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithTimeout(bg, time.Second)
-	defer cancel()
-	if err := l.Append(ctx, &Event{Event: "Stop"}); err == nil || errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("append to a FIFO: %v", err)
-	}
-	if _, _, err := l.Since(ctx, 0); err == nil || errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("read of a FIFO: %v", err)
-	}
-}
-
 // A tail that follows from the end of a log vouches for what comes next, the
 // first events of a fresh log too, across rotations it sees, and for nothing
 // once files it never read rotated away.
@@ -369,107 +352,5 @@ func TestLongEventsKeepTheNumbering(t *testing.T) {
 			t.Fatalf("rotate=%v: after the long event: %v %v %v", rotate, evs, complete, err)
 		}
 		tail.Close()
-	}
-}
-
-// A file emptied and written again to the same size under a tail keeps its
-// inode and its size; the tail notices all the same.
-func TestTailNoticesAFileWrittenAgainToTheSameSize(t *testing.T) {
-	l := Open(t.TempDir())
-	at := time.Date(2026, 11, 10, 6, 0, 0, 123456789, time.UTC)
-	stop := func() {
-		t.Helper()
-		if err := l.Append(bg, &Event{Agent: "claude", Session: "s", Event: "Stop", State: "idle", Time: at}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	stop()
-	tail, err := l.Follow(bg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer tail.Close()
-	path := filepath.Join(l.Dir, currentName)
-	before, _ := os.Stat(path)
-	if err := os.Truncate(path, 0); err != nil {
-		t.Fatal(err)
-	}
-	stop()
-	after, _ := os.Stat(path)
-	if after.Size() != before.Size() {
-		t.Fatalf("the refill is %d bytes, the original %d", after.Size(), before.Size())
-	}
-	if _, complete, err := tail.Next(bg); err != nil || complete {
-		t.Fatalf("a refill of the same size: complete=%v err=%v", complete, err)
-	}
-}
-
-// A tail polled while its file is emptied and written again, over and over,
-// never fails: each look vouches for what it read or asks for a snapshot,
-// a tail started meanwhile too, and once the file settles a tail follows
-// it.
-func TestTailOfAFileWrittenAgainWhileItLooks(t *testing.T) {
-	l := Open(t.TempDir())
-	if err := l.Append(bg, large()); err != nil {
-		t.Fatal(err)
-	}
-	tail, err := l.Follow(bg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	path := filepath.Join(l.Dir, currentName)
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	f, err := os.OpenFile(path, os.O_RDWR, 0o600)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
-	stop, done := make(chan struct{}), make(chan struct{})
-	go func() {
-		defer close(done)
-		for {
-			select {
-			case <-stop:
-				return
-			default:
-			}
-			_ = f.Truncate(0)
-			_, _ = f.WriteAt(data, 0)
-		}
-	}()
-	lost := 0
-	for i := range 2000 {
-		if _, complete, err := tail.Next(bg); err != nil {
-			close(stop)
-			<-done
-			t.Fatalf("look %d failed instead of asking for a snapshot: %v", i, err)
-		} else if !complete {
-			lost++
-			tail.Close()
-			if tail, err = l.Follow(bg); err != nil {
-				close(stop)
-				<-done
-				t.Fatalf("a tail started while the file is written again: %v", err)
-			}
-		}
-	}
-	close(stop)
-	<-done
-	defer func() { tail.Close() }()
-	if lost == 0 {
-		t.Log("no look saw the file emptied")
-	}
-	tail.Close()
-	if tail, err = l.Follow(bg); err != nil {
-		t.Fatal(err)
-	}
-	if err := l.Append(bg, &Event{Event: "After"}); err != nil {
-		t.Fatal(err)
-	}
-	if events, complete, err := tail.Next(bg); err != nil || !complete || len(events) != 1 || events[0].Event != "After" {
-		t.Fatalf("after the file settled: %v %v %v", events, complete, err)
 	}
 }

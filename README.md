@@ -6,8 +6,8 @@ A tmux plugin that knows what your coding agents are doing.
 
 Keep Claude Code, Codex, Pi and oh-my-pi in your usual panes. See who is
 working, waiting or done—and let agents discover each other, send work and
-read replies. A thin layer over the tmux workflow you already use, leaving
-agents to work out how to collaborate.
+read replies. tmux stays tmux, agents stay agents; tmag is only the thread
+between them.
 
 ## Your agents, at a glance
 
@@ -24,9 +24,9 @@ agents to work out how to collaborate.
   and stop turns through an optional owner-authorized local HTTP API. Connect
   alerts to your own notification command.
 
-No daemon or agent wrapper. Hooks fail open, so a broken or missing tmag does
-not block a turn. Prompts and agent output are never stored by tmag; replies
-are read from the agent's own transcript when requested. Defaults are
+No daemon, no wrapper. A prompt is never typed into a busy agent. An agent's
+prompt carries its proven sender. Prompts and output are never stored. A
+broken or missing tmag never blocks a turn. Defaults are
 [configurable](https://github.com/ChrAlpha/tmux-agent-experience/wiki/tmux-Integration#options).
 
 ## Install
