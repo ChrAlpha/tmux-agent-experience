@@ -3,7 +3,7 @@ package gateway
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"net/url"
 	"path/filepath"
@@ -167,10 +167,11 @@ func alertMessage(machine string, s Session, a Alert) push.Message {
 }
 
 // sessionTag names a notification for one session, so a newer one replaces
-// it. Web Push topics are at most 32 URL-safe characters.
+// it. A topic is 32 lower-case hex characters: Apple's push service refuses
+// the URL-safe base64 RFC 8030 allows.
 func sessionTag(machine string, s Session) string {
 	sum := sha256.Sum256([]byte(machine + "\x00" + s.Agent + "\x00" + s.ID))
-	return "tmag-" + base64.RawURLEncoding.EncodeToString(sum[:12])
+	return hex.EncodeToString(sum[:16])
 }
 
 // pushLoop sends queued alerts, away from every follower.

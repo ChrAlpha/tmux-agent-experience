@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"sync"
 	"testing"
 	"time"
@@ -29,6 +30,29 @@ func subscribed(t *testing.T, s *Server, endpoint string) auth.Generated {
 		t.Fatal(err)
 	}
 	return issued
+}
+
+func TestSessionTagIsStableLowercaseHex(t *testing.T) {
+	tag := sessionTag("here", Session{ID: "s1", Agent: "claude"})
+	if !regexp.MustCompile(`^[0-9a-f]{32}$`).MatchString(tag) {
+		t.Fatalf("topic %q is not 32 lower-case hex characters", tag)
+	}
+	if again := sessionTag("here", Session{ID: "s1", Agent: "claude"}); again != tag {
+		t.Fatalf("the same session got topics %q and %q", tag, again)
+	}
+	for _, other := range []struct {
+		name    string
+		machine string
+		session Session
+	}{
+		{"another machine", "elsewhere", Session{ID: "s1", Agent: "claude"}},
+		{"another agent", "here", Session{ID: "s1", Agent: "codex"}},
+		{"another session", "here", Session{ID: "s2", Agent: "claude"}},
+	} {
+		if got := sessionTag(other.machine, other.session); got == tag {
+			t.Errorf("%s got the same topic %q", other.name, got)
+		}
+	}
 }
 
 func TestRevokedDeviceIsNotSent(t *testing.T) {
