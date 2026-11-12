@@ -4,7 +4,7 @@
 
 让 tmux 知道你的 coding agents 正在做什么。
 
-照常在 tmux panes 中使用 Claude Code、Codex、Pi 和 oh-my-pi。看清谁在工作、等待回应或已经完成，也让 agents 发现彼此、发送任务并读取回复。只在熟悉的 tmux 工作流上加一层薄薄的连接，如何协作，交给 agents 自己发挥。
+照常在 tmux panes 中使用 Claude Code、Codex、Pi 和 oh-my-pi。看清谁在工作、等待回应或已经完成，也让 agents 发现彼此、发送任务并读取回复。tmux 还是 tmux，agent 还是 agent；tmag 只是它们之间的那根线。
 
 ## Agent 动态，一目了然
 
@@ -14,7 +14,7 @@
 - **让 agents 协作。** Agents 可以发现彼此、查看状态、发送 prompts 并读取回复。请一个 agent 邀请另一个参与当前任务。
 - **离开终端，也能操作。** 通过可选的本地 HTTP API 回应 permission requests、发送 prompts 或中断任务；每个客户端均需 owner 授权。也可以将提醒接入自己的通知命令。
 
-无需 daemon 或 agent wrapper。Hooks 采用 fail-open 机制，tmag 缺失或故障不会阻塞 agent 的一个 turn。tmag 不存储 prompts 和 agent 输出；需要回复时，从 agent 自己的 transcript 中读取。默认行为均可[配置](https://github.com/ChrAlpha/tmux-agent-experience/wiki/tmux-Integration-zh-CN#配置项)。
+没有 daemon，也不包装 agent。不会向忙碌的 agent 输入 prompt。Agent 发出的 prompt 带有经证明的发送方。不存储 prompts 和输出。tmag 缺失或故障，也不会阻塞任何 turn。默认行为均可[配置](https://github.com/ChrAlpha/tmux-agent-experience/wiki/tmux-Integration-zh-CN#配置项)。
 
 ## 安装
 
