@@ -252,12 +252,13 @@ tmag watch</code></pre>
     <article class="practice">
       <div class="practice-text">
         <h4><span class="n">07</span> 按你的规则，从别处访问 agents</h4>
-        <p><span class="keys"><kbd>prefix</kbd> <kbd>M-r</kbd></span> 在一个 tmux window 中打开 <code>tmag serve</code>，监听 <code>127.0.0.1:7777</code>；关闭该 window 即停止。每个客户端用各自的一次性邀请配对，之后可以单独撤销任意一个。用你自己选择的隧道或反向代理从别处访问，并用 <code>--host</code> 指定其地址。</p>
+        <p>远程伴侣 <code>tmag-client</code> 把你的 agents 带到手机上：等你处理的排在最前，每个 agent 的最后一条回复和屏幕，以及它请求你批准、拒绝或回答的事。它运行在一台机器的 tmux window 中，并通过在其他机器上运行 tmag 的命令跟随它们。用你自己选择的隧道访问它，通知也需要隧道；扫描它打印的二维码即可配对手机，在 iPhone 上要先把页面添加到主屏幕，再从那里配对。它有自己的发布版本，安装方法见 wiki 的 <a href="https://github.com/ChrAlpha/tmux-agent-experience/wiki/Installation-and-Updates-zh-CN">安装与更新</a> 页面。<span class="keys"><kbd>prefix</kbd> <kbd>M-r</kbd></span> 仍会打开 <code>tmag serve</code>，供集成以及没有命令可以到达的机器使用。</p>
       </div>
       <div class="snippet">
-        <pre><code>tmag auth pair phone     <span class="c"># 仅可使用一次，十分钟内有效</span>
-tmag auth list
-tmag auth revoke ID</code></pre>
+        <pre><code>tmag-client serve --public https://laptop.example.ts.net \
+  --machine laptop --machine box='ssh box tmag'
+tmag-client auth pair phone   <span class="c"># 仅可使用一次，十分钟内有效</span>
+tmag-client auth revoke ID</code></pre>
       </div>
     </article>
 

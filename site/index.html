@@ -251,12 +251,13 @@ tmag watch</code></pre>
     <article class="practice">
       <div class="practice-text">
         <h4><span class="n">07</span> Reach agents from elsewhere, on your terms</h4>
-        <p><span class="keys"><kbd>prefix</kbd> <kbd>M-r</kbd></span> opens <code>tmag serve</code> in a tmux window, on <code>127.0.0.1:7777</code>; closing the window stops it. Pair each client with its own single-use invitation and revoke any one later. A tunnel or reverse proxy of your choice reaches it from elsewhere, named with <code>--host</code>.</p>
+        <p>The remote companion, <code>tmag-client</code>, puts your agents on your phone: the ones waiting on you first, each one's last reply and screen, and its requests to allow, deny or answer. It runs in a tmux window on one machine and follows others through a command that runs tmag there. A tunnel of your choice reaches it, and notifications need one; scan the code it prints to pair a phone, and on an iPhone add the page to the Home Screen first and pair from there. It has releases of its own, which the wiki's <a href="https://github.com/ChrAlpha/tmux-agent-experience/wiki/Installation-and-Updates">Installation and Updates</a> page installs. <span class="keys"><kbd>prefix</kbd> <kbd>M-r</kbd></span> still opens <code>tmag serve</code>, for integrations and machines no command reaches.</p>
       </div>
       <div class="snippet">
-        <pre><code>tmag auth pair phone     <span class="c"># one use, valid for ten minutes</span>
-tmag auth list
-tmag auth revoke ID</code></pre>
+        <pre><code>tmag-client serve --public https://laptop.example.ts.net \
+  --machine laptop --machine box='ssh box tmag'
+tmag-client auth pair phone   <span class="c"># one use, valid for ten minutes</span>
+tmag-client auth revoke ID</code></pre>
       </div>
     </article>
 

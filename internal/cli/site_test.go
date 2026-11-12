@@ -88,6 +88,14 @@ func TestSiteTeachesTmagAsItIs(t *testing.T) {
 
 	summary := Summary([]query.Session{{State: adapter.Blocked}, {State: adapter.Working}, {State: adapter.Idle}}, false)
 
+	// The companion's commands and flags are those of its usage text, which
+	// its module keeps in its main package.
+	client := regexp.MustCompile("(?s)const usage = `(.*?)`").FindStringSubmatch(readRepo(t, "client/cmd/tmag-client/main.go"))
+	if client == nil {
+		t.Fatal("found no usage text in client/cmd/tmag-client/main.go")
+	}
+	clientUsage := client[1]
+
 	prompt := regexp.MustCompile(`(?m)^> (Read https://\S+/SKILL\.md .+)$`)
 	readmePrompts := map[string]bool{}
 	for _, readme := range []string{"README.md", "README.zh-CN.md"} {
@@ -121,9 +129,22 @@ func TestSiteTeachesTmagAsItIs(t *testing.T) {
 				t.Errorf("%s names tmag %s, which the CLI does not have", path, c[1])
 			}
 		}
-		for _, f := range regexp.MustCompile(`(?:^|[\s(])(--[a-z][a-z-]*)`).FindAllStringSubmatch(code, -1) {
-			if !regexp.MustCompile(regexp.QuoteMeta(f[1]) + `\b`).MatchString(usage) {
-				t.Errorf("%s names %s, which no command takes", path, f[1])
+		// A command goes on past a line that ends in a backslash; its flags
+		// are tmag-client's when it runs tmag-client.
+		for _, command := range strings.Split(strings.ReplaceAll(code, "\\\n", " "), "\n") {
+			text, name := usage, "tmag"
+			if strings.Contains(command, "tmag-client") {
+				text, name = clientUsage, "tmag-client"
+				for _, c := range regexp.MustCompile(`\btmag-client ((?:auth )?[a-z][a-z-]*)`).FindAllStringSubmatch(command, -1) {
+					if !regexp.MustCompile(regexp.QuoteMeta("tmag-client "+c[1]) + `\b`).MatchString(clientUsage) {
+						t.Errorf("%s names tmag-client %s, which the client does not have", path, c[1])
+					}
+				}
+			}
+			for _, f := range regexp.MustCompile(`(?:^|[\s(])(--[a-z][a-z-]*)`).FindAllStringSubmatch(command, -1) {
+				if !regexp.MustCompile(regexp.QuoteMeta(f[1]) + `\b`).MatchString(text) {
+					t.Errorf("%s names %s, which no %s command takes", path, f[1], name)
+				}
 			}
 		}
 		for _, o := range regexp.MustCompile(`@tmag-[a-z]+(?:-[a-z]+)*`).FindAllString(siteText(page), -1) {
