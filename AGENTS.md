@@ -25,6 +25,12 @@ layers, in order of importance:
    panes show them, the event log and a versioned JSON contract (`tmag/v2`)
    for agents, scripts and remote clients.
 
+Beside them, the **remote companion** (`client/`) is one person's page for the
+agents on the machines they name. Its gateway runs in a tmux window on one
+machine and follows the others through `tmag` commands or `tmag serve`
+endpoints; it has its own module, version and releases, and reads tmag only
+through `tmag/v2` and `tmag/http/v2`. `client/AGENTS.md` holds its promises.
+
 ## Invariants
 
 Every change must keep these promises. Tests guard most of them; treat a
@@ -149,6 +155,7 @@ promise is documented in the package, and changes with it.
 | `.claude-plugin/`, `.agents/plugins/` | Marketplace manifests |
 | `SKILL.md` | Install and update procedure that agents follow from its raw URL |
 | `site/` | The landing page, in English and `zh-CN/`: static files that `.github/workflows/pages.yml` publishes from each release |
+| `client/` | The remote companion: its own module, gateway, page, version, and releases by `.github/workflows/release-client.yml` |
 
 ## Commands
 
@@ -162,12 +169,20 @@ govulncheck ./...
 claude plugin validate .      # marketplace and plugin manifests
 ```
 
+The companion's are in `client/AGENTS.md`; `cd client && go test -race ./...`
+runs its tests, end to end against tmag built from the same commit.
+
 ## Conventions
 
 - Go 1.25 or later is required (`sync.WaitGroup.Go`); CI and releases select
   the latest stable patched toolchain, independently of the module minimum.
 - Go standard library only. A dependency needs a reason that outweighs one more
-  thing to audit in a binary every agent hook runs.
+  thing to audit in a binary every agent hook runs. The client module requires
+  no other module and imports nothing of the root one.
+- The client has its own version (`client/internal/version`) and tags,
+  `client/vX.Y.Z`, whose releases are never latest: latest keeps meaning tmag
+  for people, `scripts/install.sh` and the pages workflow. A client release
+  moves no tmag or plugin version, and the tmux plugin does not install it.
 - tmux baseline is 3.2; Linux and macOS. Read the process table through
   `internal/proc` (Linux `/proc`, otherwise `ps`).
 - tmux formats: wrap free-text fields with `clean()` in `internal/tmux`.
