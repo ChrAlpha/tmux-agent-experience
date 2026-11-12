@@ -180,6 +180,7 @@ tmag when asked to, and that `set -g @tmag-peers off` followed by
 | `doctor`: a Pi package disabled in Pi's configuration | The user enables it with `pi config`. |
 | `doctor`: Codex hooks not approved, or Codex agents stay `unknown` after a plugin update although an approval is found | Codex honours an approval only for the plugin version it was given for, even when the hooks did not change. After a restart, approve them in Codex with `/hooks`. |
 | `doctor`: hook errors recorded | Report the latest line; it names the failure. |
+| `doctor`: `monitor-bell` or `allow-set-title` is off | tmag changes no tmux option. Show the user the `set -g` line doctor names; with their consent, add it to `CONF` and `tmux source-file CONF`. |
 | `tmag list` shows a Codex pane without an id long after a turn, and the session on its own row | The terminal title lacks the thread id. The user runs `/title` in Codex and turns on `thread-id`; the pane attaches at once. |
 
 ## Uninstall
@@ -197,4 +198,4 @@ confirms; run `"$TMAG" uninstall --purge` first, while the binary exists.
 
 ---
 
-**Last updated**: 2026-11-10
+**Last updated**: 2026-11-12

@@ -35,7 +35,7 @@ func (a *app) cmdDoctor(args []string) int {
 	defer cancel()
 	ctx, stopProbe := context.WithTimeout(ctx, 2*time.Second)
 	defer stopProbe()
-	checks := []check{a.checkRecords(ctx), a.checkState(ctx), a.checkHookErrors(ctx), checkTmux(ctx), checkPlugin(ctx), checkBinary(), a.checkNotify(ctx), checkServe(ctx)}
+	checks := []check{a.checkRecords(ctx), a.checkState(ctx), a.checkHookErrors(ctx), checkTmux(ctx), checkTmuxOptions(ctx), checkPlugin(ctx), checkBinary(), a.checkNotify(ctx), checkServe(ctx)}
 	peers, err := doctorPeers(ctx)
 	if err != nil {
 		for _, agent := range proc.Agents {
@@ -91,6 +91,38 @@ func checkTmux(ctx context.Context) check {
 		}
 	}
 	return check{"tmux", "ok", fmt.Sprintf("%s, %d server(s) running", v, live)}
+}
+
+// checkTmuxOptions reports the tmux options that silently undo what tmag
+// shows, with the line that restores each: monitor-bell off leaves the bell
+// of an alert without a window flag, and allow-set-title off (tmux 3.5) keeps
+// Codex's title, which names the thread a pane shows, out of the pane. It
+// changes nothing; a server it cannot read is left out.
+func checkTmuxOptions(ctx context.Context) check {
+	servers, err := doctorServers(ctx)
+	if err != nil {
+		return check{"options", "warn", "server discovery incomplete"}
+	}
+	var problems []string
+	for _, s := range servers {
+		alert, err := s.GlobalOptionContext(ctx, "@tmag-alert")
+		if err != nil {
+			continue
+		}
+		name := serverName(s.Socket)
+		if alert != "" && alert != "off" {
+			if v, err := s.GlobalOptionContext(ctx, "monitor-bell"); err == nil && v == "off" {
+				problems = append(problems, fmt.Sprintf("monitor-bell is off on %s, so alerts flag no window: set -g monitor-bell on, or set -g @tmag-alert off", name))
+			}
+		}
+		if v, err := s.GlobalOptionContext(ctx, "allow-set-title"); err == nil && v == "off" {
+			problems = append(problems, fmt.Sprintf("allow-set-title is off on %s, so a Codex pane cannot show the thread it runs: set -g allow-set-title on", name))
+		}
+	}
+	if len(problems) > 0 {
+		return check{"options", "warn", strings.Join(problems, "; ")}
+	}
+	return check{"options", "ok", "tmux shows alerts and pane titles as tmag needs"}
 }
 
 // checkPlugin reports whether the tmux plugin is loaded, and at which version.

@@ -196,6 +196,24 @@ func TestBellMarksWaitingWindow(t *testing.T) {
 	h.eventually("bell flag", func() bool { return flag() == "1" })
 }
 
+// tmag changes no tmux option: doctor names those that silently undo what it
+// shows, and the line that restores each.
+func TestDoctorNamesTmuxOptionsThatUndoAlerts(t *testing.T) {
+	h := start(t)
+	h.tmux("set-option", "-g", "@tmag-alert", "blocked,finished")
+	if r := h.tmag("", "doctor"); !strings.Contains(r.out, "✓ options") {
+		t.Fatalf("doctor with tmux's defaults: %s", r.out)
+	}
+	h.tmux("set-option", "-g", "monitor-bell", "off")
+	if r := h.tmag("", "doctor"); !strings.Contains(r.out, "! options  monitor-bell is off on e2e, so alerts flag no window: set -g monitor-bell on, or set -g @tmag-alert off") {
+		t.Fatalf("doctor with monitor-bell off: %s", r.out)
+	}
+	h.tmux("set-option", "-g", "@tmag-alert", "off")
+	if r := h.tmag("", "doctor"); !strings.Contains(r.out, "✓ options") {
+		t.Fatalf("doctor with alerts off: %s", r.out)
+	}
+}
+
 func TestJumpAndStatus(t *testing.T) {
 	h := start(t)
 	sock := h.tmux("display-message", "-p", "#{socket_path}")
