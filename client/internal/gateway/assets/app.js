@@ -744,7 +744,7 @@ function footPart() {
     sig: st.check + st.version + st.machines.join() + (st.credential ? st.credential.id : ""),
     build: () => el("div", {},
       el("h2", { class: "section-label" }, "This page"),
-      el("p", { class: "note" }, "tmag " + st.version + " on " + st.machines.join(", ") + ". It acts only through tmag's verbs, which check each agent's state first."),
+      el("p", { class: "note" }, "tmag-client " + st.version + " on " + st.machines.join(", ") + ". It acts only through tmag's verbs, which check each agent's state first."),
       el("button", { class: "link", type: "button", onclick: check }, "Compare with tmag list"),
       st.check ? el("pre", { class: "screen", text: st.check }) : null),
   };
