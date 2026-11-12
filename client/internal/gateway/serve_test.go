@@ -92,6 +92,20 @@ func testLogger(t *testing.T) *log.Logger {
 	return log.New(testWriter{t}, "", 0)
 }
 
+// waitCalls waits until the fake backend recorded a call containing want.
+func waitCalls(t *testing.T, path, want string) {
+	t.Helper()
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		b, _ := os.ReadFile(path)
+		if strings.Contains(string(b), want) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("calls never contained %q: %q", want, b)
+		}
+	}
+}
+
 type testWriter struct{ t *testing.T }
 
 func (w testWriter) Write(p []byte) (int, error) {
@@ -807,6 +821,7 @@ func TestActionsAreOneGatedVerbEach(t *testing.T) {
 	bin, calls := fakeTmag(t, `echo '{"schema":"tmag/v2","type":"snapshot","seq":1,"sessions":[],"panes":[]}'; sleep 30`)
 	s, hs := newServer(t, Config{Machines: []Machine{{Name: "here", Argv: []string{bin}}}})
 	issued := signIn(t, s)
+	waitCalls(t, calls, "watch\n")
 	post := func(body string, header map[string]string) *http.Response {
 		return call(t, http.MethodPost, hs.URL+"/api/act", issued.Token, body, header)
 	}
