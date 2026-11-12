@@ -77,6 +77,51 @@ func TestServiceWorkerMessagesStartOnLoad(t *testing.T) {
 	}
 }
 
+// A tap leaves its route in IndexedDB for a page that reloads or finds no
+// message.
+func TestNotificationTapLeavesItsRouteForThePage(t *testing.T) {
+	sw := readAsset(t, "sw.js")
+	page := readAsset(t, "app.js")
+	for name, script := range map[string]string{"sw.js": sw, "app.js": page} {
+		for _, want := range []string{
+			`const ROUTE_DB = "tmag-route";`,
+			`const ROUTE_STORE = "route";`,
+			`const ROUTE_KEY = "tapped";`,
+		} {
+			if !strings.Contains(script, want) {
+				t.Errorf("%s: no %s", name, want)
+			}
+		}
+	}
+	for _, want := range []string{
+		`indexedDB.open(ROUTE_DB, 1)`,
+		`put({ route, at: Date.now() }, ROUTE_KEY)`,
+		`await rememberRoute(route)`,
+	} {
+		if !strings.Contains(sw, want) {
+			t.Errorf("sw.js: no %s", want)
+		}
+	}
+	stored := strings.Index(sw, `await rememberRoute(route)`)
+	posted := strings.Index(sw, `client.postMessage({ type: "tmag-route", route })`)
+	if stored < 0 || posted < 0 || stored > posted {
+		t.Error("sw.js posts the route before keeping it for the page")
+	}
+	for _, want := range []string{
+		`const ROUTE_FRESH = 2 * 60 * 1000;`,
+		`store.get(ROUTE_KEY)`,
+		`store.delete(ROUTE_KEY)`,
+		`validRoute(record.route)`,
+		`Date.now() - record.at < ROUTE_FRESH`,
+		`await takeTappedRoute()`,
+		`if (document.visibilityState === "visible") takeTappedRoute();`,
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("app.js: no %s", want)
+		}
+	}
+}
+
 // A home-screen web app keeps its own storage, so iOS pairs from there.
 func TestPairingOnIOSStartsFromHomeScreen(t *testing.T) {
 	page := readAsset(t, "app.js")

@@ -54,6 +54,47 @@ function takeOpenRoute() {
   return validRoute(route) ? route : "";
 }
 
+const ROUTE_DB = "tmag-route";
+const ROUTE_STORE = "route";
+const ROUTE_KEY = "tapped";
+const ROUTE_FRESH = 2 * 60 * 1000;
+
+function routeDB() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(ROUTE_DB, 1);
+    request.onupgradeneeded = () => request.result.createObjectStore(ROUTE_STORE);
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+// takeTappedRoute applies the route a notification tap left in IndexedDB. The
+// page may have reloaded, or the worker may have found no window to post to.
+function takeTappedRoute() {
+  if (!("indexedDB" in window)) return Promise.resolve("");
+  return routeDB().then(db => new Promise((resolve, reject) => {
+    let record = null;
+    const tx = db.transaction(ROUTE_STORE, "readwrite");
+    const store = tx.objectStore(ROUTE_STORE);
+    const get = store.get(ROUTE_KEY);
+    get.onsuccess = () => {
+      record = get.result;
+      if (record) store.delete(ROUTE_KEY);
+    };
+    tx.oncomplete = () => {
+      db.close();
+      if (record && validRoute(record.route) && typeof record.at === "number" && Date.now() - record.at < ROUTE_FRESH) {
+        openRoute(record.route);
+        resolve(record.route);
+      } else {
+        resolve("");
+      }
+    };
+    tx.onerror = () => { db.close(); reject(tx.error); };
+    tx.onabort = () => { db.close(); reject(tx.error); };
+  })).catch(() => "");
+}
+
 if ("serviceWorker" in navigator) {
   navigator.serviceWorker.addEventListener("message", event => {
     if (event.data && event.data.type === "tmag-route") openRoute(event.data.route);
@@ -1038,6 +1079,7 @@ function toast(text, error) {
 
 async function start() {
   takeOpenRoute();
+  await takeTappedRoute();
   const invitation = takeInvitation();
   credential = localStorage.getItem(CREDENTIAL_KEY) || "";
   if (invitation) {
@@ -1083,7 +1125,10 @@ function reportVisible() {
   if (!credential) return;
   api("/api/visible", { visible: document.visibilityState === "visible" }).catch(() => {});
 }
-document.addEventListener("visibilitychange", reportVisible);
+document.addEventListener("visibilitychange", () => {
+  reportVisible();
+  if (document.visibilityState === "visible") takeTappedRoute();
+});
 setInterval(() => { if (document.visibilityState === "visible") reportVisible(); }, 30000);
 window.addEventListener("pagehide", () => {
   if (!credential) return;
