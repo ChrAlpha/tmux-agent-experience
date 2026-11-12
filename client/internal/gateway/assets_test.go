@@ -38,13 +38,18 @@ func TestNotificationTapCarriesTheRoute(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
-		`client.focus()`,
 		`client.postMessage({ type: "tmag-route", route })`,
+		`try { await client.focus(); } catch {`,
 		`clients.openWindow("/?open=" + encodeURIComponent(route))`,
 	} {
 		if !strings.Contains(sw, want) {
 			t.Errorf("sw.js: no %s", want)
 		}
+	}
+	posted := strings.Index(sw, `client.postMessage({ type: "tmag-route", route })`)
+	focused := strings.Index(sw, `client.focus()`)
+	if posted < 0 || focused < 0 || posted > focused {
+		t.Error("sw.js posts the route after focus can fail")
 	}
 	if strings.Contains(sw, "client.navigate") {
 		t.Error("sw.js still relies on WebKit's navigate")

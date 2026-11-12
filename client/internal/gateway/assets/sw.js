@@ -34,8 +34,8 @@ self.addEventListener("notificationclick", event => {
     const open = await clients.matchAll({ type: "window", includeUncontrolled: true });
     for (const client of open) {
       if (new URL(client.url).origin !== self.location.origin) continue;
-      await client.focus();
       client.postMessage({ type: "tmag-route", route });
+      try { await client.focus(); } catch { /* the route is already posted */ }
       return;
     }
     await clients.openWindow("/?open=" + encodeURIComponent(route));
