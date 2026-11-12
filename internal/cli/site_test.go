@@ -80,6 +80,12 @@ func TestSiteTeachesTmagAsItIs(t *testing.T) {
 	}
 	columns := strings.Split(header[1], `\t`)
 
+	request := regexp.MustCompile(`"(request: [^"]*)\\n"`).FindStringSubmatch(readRepo(t, "internal/cli/commands.go"))
+	if request == nil {
+		t.Fatal("found no tmag inspect request line in cli/commands.go")
+	}
+	requestLine := regexp.MustCompile("^" + strings.ReplaceAll(regexp.QuoteMeta(request[1]), "%s", ".+") + "$")
+
 	summary := Summary([]query.Session{{State: adapter.Blocked}, {State: adapter.Working}, {State: adapter.Idle}}, false)
 
 	prompt := regexp.MustCompile(`(?m)^> (Read https://\S+/SKILL\.md .+)$`)
@@ -140,6 +146,9 @@ func TestSiteTeachesTmagAsItIs(t *testing.T) {
 			}
 			if strings.HasPrefix(line, "TARGET ") && !slices.Equal(strings.Fields(line), columns) {
 				t.Errorf("%s shows tmag list's columns as %q, want %q", path, strings.Fields(line), columns)
+			}
+			if strings.HasPrefix(line, "request: ") && !requestLine.MatchString(line) {
+				t.Errorf("%s shows an open request as tmag inspect never prints one: %s", path, line)
 			}
 		}
 		if !strings.Contains(siteText(page), summary) {

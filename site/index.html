@@ -216,8 +216,10 @@ tmux new-window -n login -c "$(realpath ../web-login)"</code></pre>
         <p>Set it to <code>agents</code> only if you want them to, or <code>off</code> to decide in the agent alone.</p>
       </div>
       <div class="snippet">
-        <pre class="cols"><samp><span class="t-prompt">$</span> tmag inspect 1787 --json | jq -r '.session.requests[].id'
-3fdce4c70dfa
+        <pre class="cols"><samp><span class="t-prompt">$</span> tmag inspect 1787
+<span class="c">…</span>
+request: 3fdce4c70dfa (permission, Bash)
+<span class="c">…</span>
 <span class="t-prompt">$</span> tmag request 1787 3fdce4c70dfa
 1787a44e permission asks: Bash
 {
