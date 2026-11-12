@@ -231,6 +231,17 @@ func (a *app) cmdInspect(args []string) int {
 		for _, p := range s.Panes {
 			fmt.Fprintf(a.stdout, "shown in: %s (%s, %s)\n", p.ID, p.Evidence, p.View)
 		}
+		// Open requests, by the ids request and answer take.
+		for _, r := range s.Requests {
+			what := r.Kind
+			if r.Tool != "" {
+				what += ", " + r.Tool
+			}
+			if r.Agent != "" {
+				what += ", subagent " + r.Agent
+			}
+			fmt.Fprintf(a.stdout, "request: %s (%s)\n", r.ID, what)
+		}
 	}
 	for _, e := range events {
 		fmt.Fprintf(a.stdout, "%6d  %s  %-18s %s\n", e.Seq, e.Time.Local().Format("15:04:05"), e.Event, describe(e.State, e.Kind))
