@@ -1,7 +1,7 @@
 // Package hook handles one agent hook invocation: map the event, apply it to
 // the session, attach the session to the pane it runs in when the hook
-// proves one, update the panes that show it, alert the person, and log what
-// changed.
+// proves one, update the panes that show it, log the change and any alert,
+// and tell the person.
 package hook
 
 import (
@@ -235,10 +235,19 @@ func RunContext(parent context.Context, in Input) error {
 		}
 		shown = append(shown, s.Client.Pane)
 	}
+	// Presence is what the bell and @tmag-notify rest on, and what an Alert
+	// event reports: computed once, for a change that alerts.
+	atTerminal := false
+	if ring != "" {
+		atTerminal = present(shown, func(s tmux.Server) (time.Time, bool) { return s.LastInput(ctx) })
+		if err := logAlert(ctx, in.Log, rec, ring, atTerminal); err != nil {
+			RecordErrorContext(ctx, in.Log.Dir, in.Agent, err)
+		}
+	}
 	for _, pane := range shown {
 		alert(ctx, tmux.Server{Socket: pane.Server}, pane, ring)
 	}
-	return tell(ctx, rec, shown, ring)
+	return tell(ctx, rec, shown, ring, atTerminal)
 }
 
 // Alert names the change worth a bell, or "": "blocked" when an agent starts
@@ -251,6 +260,33 @@ func Alert(prev, next string) string {
 		return "finished"
 	}
 	return ""
+}
+
+// logAlert appends the Alert event for a change that alerts, after the event
+// that reports the change. The alert holds no state: a client that applies it
+// to a snapshot discards one the current state contradicts.
+func logAlert(ctx context.Context, log *eventlog.Log, rec session.Record, kind string, atTerminal bool) error {
+	a := eventlog.AlertInfo{Kind: kind, Present: atTerminal}
+	if kind == "finished" {
+		a.Turn = rec.Turn
+	}
+	if kind == "blocked" {
+		if q, ok := blockedRequest(rec); ok {
+			a.Request = &q
+		}
+	}
+	return log.Append(ctx, &eventlog.Event{Agent: rec.Agent, Session: rec.ID, Event: eventlog.Alert, Alert: &a})
+}
+
+// blockedRequest names the request a blocked alert reports: the prompt that
+// just opened, when the session waits on one.
+func blockedRequest(rec session.Record) (eventlog.AlertRequest, bool) {
+	refs := rec.RequestRefs()
+	if len(refs) == 0 {
+		return eventlog.AlertRequest{}, false
+	}
+	q := refs[len(refs)-1]
+	return eventlog.AlertRequest{ID: q.ID, Kind: q.Kind, Tool: q.Tool}, true
 }
 
 // alert rings the pane's bell when the tmux plugin enabled this kind of alert
@@ -278,8 +314,8 @@ func alerts(ctx context.Context, srv tmux.Server, kind string) bool {
 // and the bell reaches them there. A session no pane shows rings no bell, so
 // its alerts always run the command. Each distinct command set on a server
 // whose @tmag-alert names the alert runs once, detached, so the hook does not
-// wait for the network.
-func tell(ctx context.Context, rec session.Record, shown []tmux.Pane, kind string) error {
+// wait for the network. atTerminal is what the alert event reported.
+func tell(ctx context.Context, rec session.Record, shown []tmux.Pane, kind string, atTerminal bool) error {
 	if kind == "" {
 		return nil
 	}
@@ -298,13 +334,14 @@ func tell(ctx context.Context, rec session.Record, shown []tmux.Pane, kind strin
 	if len(commands) == 0 {
 		return nil // as by default: one tmux call per server, nothing more
 	}
-	if present(ctx, shown) {
+	if atTerminal {
 		return nil
 	}
 	a := notify.Alert{Kind: kind, Agent: rec.Agent, Session: rec.ID, State: rec.State(), StateKind: rec.Kind(), Cwd: rec.Cwd}
-	if refs := rec.RequestRefs(); kind == "blocked" && len(refs) > 0 {
-		q := refs[len(refs)-1] // the prompt that just opened
-		a.Request, a.RequestKind, a.Tool = q.ID, q.Kind, q.Tool
+	if kind == "blocked" {
+		if q, ok := blockedRequest(rec); ok {
+			a.Request, a.RequestKind, a.Tool = q.ID, q.Kind, q.Tool
+		}
 	}
 	if len(shown) > 0 {
 		a.Target = shown[0].Target()
@@ -326,15 +363,15 @@ func tell(ctx context.Context, rec session.Record, shown []tmux.Pane, kind strin
 }
 
 // present reports whether the person is at a terminal that shows one of the
-// panes: its tmux server had their input within notify.Present.
-func present(ctx context.Context, shown []tmux.Pane) bool {
+// panes: one of their tmux servers had their input within notify.Present.
+func present(shown []tmux.Pane, lastInput func(tmux.Server) (time.Time, bool)) bool {
 	seen := map[string]bool{}
 	for _, p := range shown {
 		if seen[p.Server] {
 			continue
 		}
 		seen[p.Server] = true
-		if last, ok := (tmux.Server{Socket: p.Server}).LastInput(ctx); ok && time.Since(last) < notify.Present {
+		if last, ok := lastInput(tmux.Server{Socket: p.Server}); ok && time.Since(last) < notify.Present {
 			return true
 		}
 	}

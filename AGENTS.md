@@ -80,8 +80,10 @@ promise is documented in the package, and changes with it.
   sharing a home never end each other's sessions.
 - **Records are the truth; the log tells what changed.** A change lands in
   its record or pane, then in the log, best effort; gap-free numbering lets
-  a follower know what it missed and take a snapshot. Waits read records;
-  hook contact is never logged alone and grants nothing.
+  a follower know what it missed and take a snapshot. An alert is logged
+  after the change it names, with whether the person was at a terminal that
+  shows the session. Waits read records; hook contact is never logged alone
+  and grants nothing.
 - **A session's state never depends on a pane.** Hooks apply to the session
   wherever it runs, in daemons and background supervisors too.
 - **A pane shows a session only on proof.** Process ancestry or the Codex
