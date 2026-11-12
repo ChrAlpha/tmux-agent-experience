@@ -1,8 +1,9 @@
 name: pages
 
 # The landing page describes what users install, so it is published from a
-# release's commit once the release workflow has succeeded, never from main.
-# Run by hand, it publishes the latest release again.
+# core release's commit once the release workflow has succeeded, never from
+# main, and never from a client release: release-client is not in this list.
+# Run by hand, it publishes the newest core release again.
 on:
   workflow_run:
     workflows: [release]
@@ -35,7 +36,12 @@ jobs:
           SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           if [ -z "$SHA" ]; then
-            tag=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)
+            # The newest core release, whatever GitHub marks latest: a client
+            # release (client/v*) belongs to another train and publishes no
+            # landing page.
+            tag=$(gh release list --repo "$GITHUB_REPOSITORY" --exclude-drafts --limit 100 --json tagName \
+              --jq '[.[].tagName | select(startswith("v"))][0]')
+            [ -n "$tag" ] || { echo "::error::no core release found"; exit 1; }
             SHA=$(gh api "repos/$GITHUB_REPOSITORY/commits/$tag" --jq .sha)
           fi
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"

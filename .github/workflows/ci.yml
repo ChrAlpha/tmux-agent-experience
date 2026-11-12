@@ -22,7 +22,8 @@ jobs:
   plan:
     runs-on: ubuntu-latest
     outputs:
-      code: ${{ steps.changes.outputs.code }}
+      core: ${{ steps.changes.outputs.core }}
+      client: ${{ steps.changes.outputs.client }}
       go: ${{ steps.go.outputs.version }}
       matrix: ${{ steps.split.outputs.matrix }}
     steps:
@@ -31,7 +32,10 @@ jobs:
           fetch-depth: 2
       # Documentation outside the plugins and the READMEs, whose install
       # prompt the landing page repeats, feeds no check, so a change to it
-      # alone skips every job but ci, which still reports.
+      # alone skips every job but ci, which still reports. A core change is
+      # one outside client/ that is not documentation only; the client follows
+      # core's contracts, and its own Markdown feeds no check, so it runs for
+      # either.
       - id: changes
         name: Detect code changes
         env:
@@ -43,12 +47,21 @@ jobs:
             git fetch --quiet --depth=1 origin "$base" || base=
           fi
           if [ -n "$base" ] &&
-            git diff --quiet "$base" HEAD -- . ':!*.md' ':!docs/' ':!LICENSE' ':!.github/ISSUE_TEMPLATE/' &&
+            git diff --quiet "$base" HEAD -- . ':!*.md' ':!docs/' ':!LICENSE' ':!.github/ISSUE_TEMPLATE/' ':!client/' &&
             git diff --quiet "$base" HEAD -- plugins/ README.md README.zh-CN.md; then
-            echo code=false >> "$GITHUB_OUTPUT"
+            core=false
           else
-            echo code=true >> "$GITHUB_OUTPUT"
+            core=true
           fi
+          if [ -n "$base" ] && git diff --quiet "$base" HEAD -- client ':!*.md'; then
+            client=false
+          else
+            client=true
+          fi
+          # The client follows core's contracts, so a core change runs it too.
+          if [ "$core" = true ]; then client=true; fi
+          echo "core=$core" >> "$GITHUB_OUTPUT"
+          echo "client=$client" >> "$GITHUB_OUTPUT"
       # Every job of a run uses the same release, the latest one.
       - id: go
         name: Resolve the Go release
@@ -99,7 +112,7 @@ jobs:
 
   test:
     needs: plan
-    if: needs.plan.outputs.code == 'true'
+    if: needs.plan.outputs.core == 'true'
     name: test (${{ matrix.os }}, ${{ matrix.suite.name }})
     strategy:
       fail-fast: false
@@ -184,7 +197,7 @@ jobs:
 
   lint:
     needs: plan
-    if: needs.plan.outputs.code == 'true'
+    if: needs.plan.outputs.core == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -199,7 +212,7 @@ jobs:
 
   vulncheck:
     needs: plan
-    if: needs.plan.outputs.code == 'true'
+    if: needs.plan.outputs.core == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -224,7 +237,7 @@ jobs:
 
   manifests:
     needs: plan
-    if: needs.plan.outputs.code == 'true'
+    if: needs.plan.outputs.core == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -237,22 +250,143 @@ jobs:
             jq empty "$f" || { echo "invalid JSON: $f"; exit 1; }
           done
 
-  # The one check to require: it passes when every job passed, or when only
-  # documentation changed and the plan skipped them, whatever the matrix. It
-  # runs in a cancelled run too, failing there: a skipped check would pass.
-  ci:
-    if: always()
-    needs: [plan, test, lint, vulncheck, manifests]
+  client-build:
+    needs: plan
+    if: needs.plan.outputs.client == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: client
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-go
+        with:
+          go-version: ${{ needs.plan.outputs.go }}
+          build-cache: client
+      - name: Build
+        run: go build ./...
+      # The module requires nothing but itself: no other module, no
+      # dependency to audit.
+      - name: Check the module needs nothing but itself
+        run: |
+          if [ "$(go list -m all)" != "$(go list -m)" ]; then
+            echo "::error::the client module requires another module";
+            go list -m all
+            exit 1
+          fi
+
+  client-test:
+    needs: plan
+    if: needs.plan.outputs.client == 'true'
+    name: client test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: client
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-go
+        with:
+          go-version: ${{ needs.plan.outputs.go }}
+          build-cache: client-race
+      # The client's end-to-end tests run tmag and a fake agent in a private
+      # tmux server.
+      - name: Install tmux
+        run: |
+          if [ "$RUNNER_OS" = macOS ]; then
+            brew install tmux
+          elif ! command -v tmux > /dev/null; then
+            sudo apt-get update && sudo apt-get install -y tmux
+          fi
+          tmux -V
+      - name: Test
+        run: go test -race ./...
+
+  client-lint:
+    needs: plan
+    if: needs.plan.outputs.client == 'true'
     runs-on: ubuntu-latest
     steps:
-      - env:
-          CODE: ${{ needs.plan.outputs.code }}
-          RESULTS: ${{ join(needs.*.result, ' ') }}
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-go
+        with:
+          go-version: ${{ needs.plan.outputs.go }}
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.15
+          working-directory: client
+
+  client-vulncheck:
+    needs: plan
+    if: needs.plan.outputs.client == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-go
+        with:
+          go-version: ${{ needs.plan.outputs.go }}
+      # The same built binary serves every module: its version and the Go
+      # release select it.
+      - id: govulncheck
+        name: Resolve govulncheck
+        run: echo "version=$(go list -m -f '{{.Version}}' golang.org/x/vuln@latest)" >> "$GITHUB_OUTPUT"
+      - id: govulncheck-cache
+        uses: actions/cache@v6
+        with:
+          path: ~/go/bin/govulncheck
+          key: govulncheck-${{ steps.govulncheck.outputs.version }}-${{ needs.plan.outputs.go }}-${{ runner.os }}-${{ runner.arch }}
+      - if: steps.govulncheck-cache.outputs.cache-hit != 'true'
+        name: Build govulncheck
+        run: go install "golang.org/x/vuln/cmd/govulncheck@${{ steps.govulncheck.outputs.version }}"
+      - name: Govulncheck
+        working-directory: client
+        run: govulncheck ./...
+
+  client-assets:
+    needs: plan
+    if: needs.plan.outputs.client == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - name: Check the client's scripts
+        run: find client/internal/gateway/assets -name '*.js' -exec node --check {} \;
+
+  # The one check to require: it passes when every job passed, or when a job's
+  # own condition was false and it was skipped, whatever the matrix. It runs
+  # in a cancelled run too, failing there: a skipped check would pass.
+  ci:
+    if: always()
+    needs: [plan, test, lint, vulncheck, manifests, client-build, client-test, client-lint, client-vulncheck, client-assets]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every job passed or was skipped with its condition
+        env:
+          CORE: ${{ needs.plan.outputs.core }}
+          CLIENT: ${{ needs.plan.outputs.client }}
+          NEEDS: ${{ toJSON(needs) }}
         run: |
-          for result in $RESULTS; do
-            case "$result" in
-              success) ;;
-              skipped) [ "$CODE" = false ] || { echo "::error::a job was skipped although code changed"; exit 1; } ;;
-              *) echo "::error::a job ended $result"; exit 1 ;;
-            esac
+          fail=0
+          plan=$(jq -r '.plan.result' <<< "$NEEDS")
+          [ "$plan" = success ] || { echo "::error::plan ended $plan"; fail=1; }
+          # A job runs, and must pass, exactly when its condition holds; a job
+          # whose condition is false must have been skipped.
+          check() { # JOB CONDITION
+            result=$(jq -r --arg job "$1" '.[$job].result' <<< "$NEEDS")
+            if [ "$2" = true ]; then
+              [ "$result" = success ] || { echo "::error::$1 ended $result"; fail=1; }
+            else
+              [ "$result" = skipped ] || { echo "::error::$1 ran although its condition was false ($result)"; fail=1; }
+            fi
+          }
+          for job in test lint vulncheck manifests; do check "$job" "$CORE"; done
+          for job in client-build client-test client-lint client-vulncheck client-assets; do
+            check "$job" "$CLIENT"
           done
+          exit "$fail"
