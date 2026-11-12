@@ -1,8 +1,9 @@
 # AGENTS.md
 
-Guidance for coding agents working in this repository. README.md introduces the
-product; the GitHub Wiki holds user guides and reference. This file describes
-how to change it without breaking its promises.
+Guidance for coding agents working in this repository. README.md and the
+landing page in `site/` introduce the product; the GitHub Wiki holds user
+guides and reference. This file describes how to change it without breaking
+its promises.
 
 ## What this is
 
@@ -145,6 +146,7 @@ promise is documented in the package, and changes with it.
 | `plugins/<host>/tmag-peers` | The `peers` skill and the `tmag` launcher (`bin/` in Claude Code, which puts it on `PATH`; the skill's `scripts/` elsewhere) |
 | `.claude-plugin/`, `.agents/plugins/` | Marketplace manifests |
 | `SKILL.md` | Install and update procedure that agents follow from its raw URL |
+| `site/` | The landing page, in English and `zh-CN/`: static files that `.github/workflows/pages.yml` publishes from each release |
 
 ## Commands
 
@@ -187,14 +189,21 @@ claude plugin validate .      # marketplace and plugin manifests
   paths. Pi and oh-my-pi install `plugins/pi` and `plugins/omp` by path from
   the tmux plugin's directory, so a package matches the binary it runs.
 - Install and update steps live in `SKILL.md` (for agents) and the GitHub Wiki's
-  Installation and Updates page (for people), with a quick start in README.md.
-  Keep them consistent, and run every command you write there: they are executed
-  verbatim by someone else. Wiki pages live in the separate
-  `tmux-agent-experience.wiki.git` repository.
+  Installation and Updates page (for people), with a quick start in README.md
+  and onboarding and best practices on the landing page. Keep them consistent,
+  and run every command you write there: they are executed verbatim by someone
+  else. Wiki pages live in the separate `tmux-agent-experience.wiki.git`
+  repository.
+- The landing page is HTML, CSS and a script that only enhances it: no build
+  step, and no request beyond its own files. Like the skill, it names only
+  commands, flags, options and keys tmag has, shows output as tmag prints it,
+  and repeats README's install prompt (`TestSiteTeachesTmagAsItIs`); its tmux
+  picture follows tmux's own status line and `tmag jump`'s order.
 - Commits follow Conventional Commits. Code comments and canonical docs are in
-  English. Localized README and Wiki pages follow the English source; preserve
-  commands, flags, JSON fields and output examples, and keep language links and
-  translated instructions consistent when updating their source.
+  English. Localized README, Wiki and landing pages follow the English source;
+  preserve commands, flags, JSON fields and output examples (a landing page's
+  code differs only in its comments), and keep language links and translated
+  instructions consistent when updating their source.
 
 ## Testing
 
