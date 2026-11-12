@@ -58,6 +58,7 @@ if ("serviceWorker" in navigator) {
   navigator.serviceWorker.addEventListener("message", event => {
     if (event.data && event.data.type === "tmag-route") openRoute(event.data.route);
   });
+  navigator.serviceWorker.startMessages();
 }
 
 function setCredential(token) {

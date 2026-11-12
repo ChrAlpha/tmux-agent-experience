@@ -67,6 +67,16 @@ func TestNotificationTapCarriesTheRoute(t *testing.T) {
 	}
 }
 
+// A listener alone does not start the messages WebKit queued for the page.
+func TestServiceWorkerMessagesStartOnLoad(t *testing.T) {
+	page := readAsset(t, "app.js")
+	listener := strings.Index(page, `navigator.serviceWorker.addEventListener("message"`)
+	start := strings.Index(page, `navigator.serviceWorker.startMessages()`)
+	if listener < 0 || start < 0 || start < listener {
+		t.Fatal("app.js does not start the queued service worker messages after listening")
+	}
+}
+
 // A home-screen web app keeps its own storage, so iOS pairs from there.
 func TestPairingOnIOSStartsFromHomeScreen(t *testing.T) {
 	page := readAsset(t, "app.js")
