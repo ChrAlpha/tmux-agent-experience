@@ -16,10 +16,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
-	"hash"
 	"io"
 	"os"
 	"path/filepath"
@@ -180,7 +178,7 @@ func (l *Log) Append(ctx context.Context, e *Event) error {
 		if err != nil {
 			return err
 		}
-		last, at, err := lastLine(ctx, f, st.Size())
+		last, end, err := lastLine(ctx, f, st.Size())
 		if err != nil {
 			return err
 		}
@@ -209,7 +207,7 @@ func (l *Log) Append(ctx context.Context, e *Event) error {
 			if f, err = l.openAppend(ctx); err != nil {
 				return err
 			}
-		} else if at.end != st.Size() {
+		} else if end != st.Size() {
 			line = append([]byte{'\n'}, line...)
 		}
 		return contextio.WriteAll(ctx, f, line)
@@ -262,51 +260,23 @@ func scanBack(ctx context.Context, f *os.File, size int64, fn func(buf []byte, b
 	}
 }
 
-// mark is where a reader stands in a file: after the line from start to
-// end, whose bytes hash to sum. The zero mark stands at the file's start.
-type mark struct {
-	start, end int64
-	sum        [32]byte
-}
-
-// on reports whether f still holds, where m found it, the line m stands
-// after: false once the file was emptied, or written again, under the
-// reader.
-func (m mark) on(f *os.File) (bool, error) {
-	if m.end == 0 {
-		return true, nil
-	}
-	buf := make([]byte, m.end-m.start)
-	if _, err := f.ReadAt(buf, m.start); errors.Is(err, io.EOF) {
-		return false, nil // the file is shorter now
-	} else if err != nil {
-		return false, err
-	}
-	return sha256.Sum256(buf) == m.sum, nil
-}
-
 // lastLine returns the sequence number of the last line of f that decodes,
-// 0 when none does, and the mark after its last complete line, the zero
-// mark when it has none: a reader that has read every complete line stands
-// there, and f ends a line when the mark is at its size. Both come from one
-// read of f's end, which holds them in a healthy log.
-func lastLine(ctx context.Context, f *os.File, size int64) (int64, mark, error) {
-	var seq int64
-	var at mark
+// 0 when none does, and the offset after its last complete line, 0 when it
+// has none: a reader that has read every complete line stands there, and f
+// ends a line when that offset is its size. Both come from one read of f's
+// end, which holds them in a healthy log.
+func lastLine(ctx context.Context, f *os.File, size int64) (seq, end int64, err error) {
 	if size == 0 {
-		return 0, at, nil
+		return 0, 0, nil
 	}
-	err := scanBack(ctx, f, size, func(buf []byte, base int64) bool {
-		seq, at = lastSeqIn(buf), mark{}
+	err = scanBack(ctx, f, size, func(buf []byte, base int64) bool {
+		seq, end = lastSeqIn(buf), 0
 		if i := bytes.LastIndexByte(buf, '\n'); i >= 0 {
-			j := bytes.LastIndexByte(buf[:i], '\n')
-			if j >= 0 || base == 0 { // else the line starts before the window
-				at = mark{start: base + int64(j) + 1, end: base + int64(i) + 1, sum: sha256.Sum256(buf[j+1 : i+1])}
-			}
+			end = base + int64(i) + 1
 		}
-		return seq > 0 && at.end > 0
+		return seq > 0 && end > 0
 	})
-	return seq, at, err
+	return seq, end, err
 }
 
 // lastSeqIn returns the sequence number of the last line in buf that
@@ -417,7 +387,7 @@ func (l *Log) read(ctx context.Context, name string) ([]Event, error) {
 		return nil, err
 	}
 	defer f.Close()
-	events, _, err := readFrom(ctx, f, mark{})
+	events, _, err := readFrom(ctx, f, 0)
 	return events, err
 }
 
@@ -446,29 +416,26 @@ func identity(st os.FileInfo) fileID {
 	return fileID{}
 }
 
-// readFrom decodes the complete lines of f after mark at, skipping those
-// that do not decode, and returns the mark after the last of them.
-func readFrom(ctx context.Context, f *os.File, at mark) ([]Event, mark, error) {
-	if _, err := f.Seek(at.end, io.SeekStart); err != nil {
+// readFrom decodes the complete lines of f from offset at, skipping those
+// that do not decode, and returns the offset after the last of them.
+func readFrom(ctx context.Context, f *os.File, at int64) ([]Event, int64, error) {
+	if _, err := f.Seek(at, io.SeekStart); err != nil {
 		return nil, at, err
 	}
 	r := bufio.NewReaderSize(f, 64<<10)
-	h := sha256.New()
 	var events []Event
 	for {
 		if err := ctx.Err(); err != nil {
 			return nil, at, err
 		}
-		h.Reset()
-		line, n, err := readLine(r, h)
+		line, n, err := readLine(r)
 		if errors.Is(err, io.EOF) {
 			return events, at, nil // the end, or an unfinished last line
 		}
 		if err != nil {
 			return nil, at, err
 		}
-		at = mark{start: at.end, end: at.end + n}
-		copy(at.sum[:], h.Sum(nil))
+		at += n
 		if line == nil {
 			continue // longer than maxLine
 		}
@@ -480,16 +447,14 @@ func readFrom(ctx context.Context, f *os.File, at mark) ([]Event, mark, error) {
 }
 
 // readLine returns the next complete line and how many bytes it took, or a
-// nil line for one longer than maxLine, which it consumes whole. Every byte
-// it takes also goes to h.
-func readLine(r *bufio.Reader, h hash.Hash) ([]byte, int64, error) {
+// nil line for one longer than maxLine, which it consumes whole.
+func readLine(r *bufio.Reader) ([]byte, int64, error) {
 	var line []byte
 	var n int64
 	long := false
 	for {
 		part, err := r.ReadSlice('\n')
 		n += int64(len(part))
-		h.Write(part)
 		if !long {
 			if len(line)+len(part) > maxLine {
 				long, line = true, nil
@@ -513,15 +478,14 @@ func readLine(r *bufio.Reader, h hash.Hash) ([]byte, int64, error) {
 // Tail follows the log, reading only what each file gained since it last
 // looked. It holds the file it reads open, so that the file's inode stays
 // its own whatever rotation does to its name, and it can read the rest of
-// it after the file is rotated away. It also keeps a hash of the last line
-// it read, of the bytes as it read them, so that a file emptied and written
-// again under it, which keeps its inode, is noticed rather than read from
-// the middle, also while it reads. Close releases the file.
+// it after the file is rotated away. tmag never empties a file in place; a
+// file emptied under a tail all the same, which keeps its inode, is shorter
+// than where the tail stands, and costs a snapshot. Close releases the file.
 type Tail struct {
 	log  *Log
 	seq  int64
 	file *os.File // the file it reads; nil before the first look
-	at   mark     // where it stands in that file
+	at   int64    // the offset it stands at in that file
 }
 
 // Tail returns a tail that delivers the events after seq after, which it
@@ -608,8 +572,8 @@ func (t *Tail) Next(ctx context.Context) ([]Event, bool, error) {
 		if err != nil {
 			return nil, false, err
 		}
-		if on, err := t.at.on(t.file); err != nil || !on {
-			return nil, false, err // emptied, or written again, under the tail
+		if st.Size() < t.at {
+			return nil, false, nil // emptied under the tail
 		}
 		// The rest of the file the tail holds; once rotated, then any file
 		// between it and the current one.
@@ -625,7 +589,7 @@ func (t *Tail) Next(ctx context.Context) ([]Event, bool, error) {
 			if rotated != nil {
 				if rotatedID != identity(st) {
 					var between []Event
-					between, _, err = readFrom(ctx, rotated, mark{})
+					between, _, err = readFrom(ctx, rotated, 0)
 					events = append(events, between...)
 				}
 				rotated.Close()
@@ -639,7 +603,7 @@ func (t *Tail) Next(ctx context.Context) ([]Event, bool, error) {
 	}
 	if !same {
 		t.Close()
-		t.file, t.at, held = cur, mark{}, cur != nil
+		t.file, t.at, held = cur, 0, cur != nil
 		if cur != nil {
 			var more []Event
 			if more, err = t.read(ctx); err != nil {
