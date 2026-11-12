@@ -37,6 +37,9 @@ type tracker struct {
 	mu   sync.Mutex
 	now  func() time.Time
 	seen map[string]seenTurn
+	// live names every session a machine shows now, or is nil until every
+	// machine has shown its state.
+	live func() map[string]bool
 
 	path  string
 	saved time.Time
@@ -87,7 +90,6 @@ func loadTracker(dir string) (*tracker, error) {
 	if doc.Version != 1 {
 		return nil, errors.New("unsupported seen-turn store")
 	}
-	now := t.now()
 	for _, r := range doc.Seen {
 		if r.Turn == "" {
 			continue
@@ -96,7 +98,7 @@ func loadTracker(dir string) (*tracker, error) {
 			machine: r.Machine, agent: r.Agent, id: r.ID, turn: r.Turn, shown: r.Shown,
 		}
 	}
-	if t.pruneLocked(now) {
+	if t.trimLocked() {
 		t.dirty = true
 		t.saveLocked(true)
 	}
@@ -161,14 +163,27 @@ func (t *tracker) flush() {
 	t.saveLocked(true)
 }
 
-// pruneLocked drops old turns and keeps the newest seenLimit of them.
+// pruneLocked drops old turns no machine shows and keeps the newest
+// seenLimit of them. While the machines' state is unknown, only the limit
+// applies.
 func (t *tracker) pruneLocked(now time.Time) (changed bool) {
-	for k, v := range t.seen {
-		if now.Sub(v.shown) > seenForget {
-			delete(t.seen, k)
-			changed = true
+	live := map[string]bool{}
+	if t.live != nil {
+		live = t.live()
+	}
+	if live != nil {
+		for k, v := range t.seen {
+			if !live[k] && now.Sub(v.shown) > seenForget {
+				delete(t.seen, k)
+				changed = true
+			}
 		}
 	}
+	return t.trimLocked() || changed
+}
+
+// trimLocked keeps the newest seenLimit turns.
+func (t *tracker) trimLocked() (changed bool) {
 	if len(t.seen) > seenLimit {
 		type pair struct {
 			k string

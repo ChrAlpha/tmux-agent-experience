@@ -547,6 +547,38 @@ func TestSeenTurns(t *testing.T) {
 	waitSeen(t, two, `"session":"s1","turn":"t1"`)
 }
 
+func TestSeenKeepsASessionTheMachineStillShows(t *testing.T) {
+	bin, _ := fakeTmag(t, `echo '{"schema":"tmag/v2","type":"snapshot","seq":1,"sessions":[{"id":"s1","agent":"claude","state":"idle","turn":"t1"}],"panes":[]}'; sleep 30`)
+	s, hs := newServer(t, Config{Machines: []Machine{{Name: "here", Argv: []string{bin}}}})
+	waitSession(t, s)
+	issued := signIn(t, s)
+	res := call(t, http.MethodPost, hs.URL+"/api/seen", issued.Token, `{"machine":"here","agent":"claude","session":"s1","turn":"t1"}`, nil)
+	var marked struct{ Turn string }
+	decodeBody(t, res, &marked)
+	if marked.Turn != "t1" {
+		t.Fatalf("marked %q", marked.Turn)
+	}
+	// Eight quiet days do not forget a session its machine still shows.
+	later := time.Now().Add(8 * 24 * time.Hour)
+	s.seen.now = func() time.Time { return later }
+	var machines struct {
+		Seen map[string]string `json:"seen"`
+	}
+	res = call(t, http.MethodGet, hs.URL+"/api/machines", issued.Token, "", nil)
+	decodeBody(t, res, &machines)
+	if machines.Seen["here/claude/s1"] != "t1" {
+		t.Fatalf("a shown session was forgotten: %v", machines.Seen)
+	}
+	// Once no machine shows it, the turn is forgotten after the week.
+	s.states["here"].replace(2, nil, nil)
+	machines.Seen = nil
+	res = call(t, http.MethodGet, hs.URL+"/api/machines", issued.Token, "", nil)
+	decodeBody(t, res, &machines)
+	if len(machines.Seen) != 0 {
+		t.Fatalf("an unseen session remained: %v", machines.Seen)
+	}
+}
+
 func TestAlertFiltering(t *testing.T) {
 	idle := Session{State: "idle", Turn: "t1"}
 	blocked := Session{ID: "s1", Agent: "claude", State: "blocked", Cwd: "/work/repo", Requests: []Request{{ID: "r1", Kind: "permission", Tool: "Bash"}}}

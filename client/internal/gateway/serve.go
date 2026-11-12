@@ -164,6 +164,7 @@ func New(cfg Config) (*Server, error) {
 	for _, m := range cfg.Machines {
 		s.states[m.Name] = newMachineState(m.Name)
 	}
+	s.seen.live = s.live
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", s.asset)
 	mux.HandleFunc("GET /app.js", s.asset)
