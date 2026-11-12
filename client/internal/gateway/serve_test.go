@@ -583,8 +583,18 @@ func TestSeenKeepsASessionTheMachineStillShows(t *testing.T) {
 	if machines.Seen["here/claude/s1"] != "t1" {
 		t.Fatalf("a shown session was forgotten: %v", machines.Seen)
 	}
-	// Once no machine shows it, the turn is forgotten after the week.
+	// Once it disappears, its last-shown time is eight days old, not zero:
+	// it stays for the week of its absence.
 	s.states["here"].replace(2, nil, nil)
+	machines.Seen = nil
+	res = call(t, http.MethodGet, hs.URL+"/api/machines", issued.Token, "", nil)
+	decodeBody(t, res, &machines)
+	if machines.Seen["here/claude/s1"] != "t1" {
+		t.Fatalf("a session was forgotten as soon as it disappeared: %v", machines.Seen)
+	}
+	// Seven days later, the trace is gone.
+	after := later.Add(7*24*time.Hour + time.Hour)
+	s.seen.now = func() time.Time { return after }
 	machines.Seen = nil
 	res = call(t, http.MethodGet, hs.URL+"/api/machines", issued.Token, "", nil)
 	decodeBody(t, res, &machines)

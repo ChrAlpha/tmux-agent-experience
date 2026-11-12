@@ -163,9 +163,9 @@ func (t *tracker) flush() {
 	t.saveLocked(true)
 }
 
-// pruneLocked drops old turns no machine shows and keeps the newest
-// seenLimit of them. While the machines' state is unknown, only the limit
-// applies.
+// pruneLocked refreshes the last-shown time of every session a machine
+// shows, drops old turns no machine shows and keeps the newest seenLimit of
+// them. While the machines' state is unknown, only the limit applies.
 func (t *tracker) pruneLocked(now time.Time) (changed bool) {
 	live := map[string]bool{}
 	if t.live != nil {
@@ -173,7 +173,15 @@ func (t *tracker) pruneLocked(now time.Time) (changed bool) {
 	}
 	if live != nil {
 		for k, v := range t.seen {
-			if !live[k] && now.Sub(v.shown) > seenForget {
+			if live[k] {
+				if !v.shown.Equal(now) {
+					v.shown = now
+					t.seen[k] = v
+					changed = true
+				}
+				continue
+			}
+			if now.Sub(v.shown) > seenForget {
 				delete(t.seen, k)
 				changed = true
 			}
