@@ -34,9 +34,10 @@ const (
 // tracker remembers which turn of which session the person has seen. It
 // keeps ids and times only, never a reply.
 type tracker struct {
-	mu   sync.Mutex
-	now  func() time.Time
-	seen map[string]seenTurn
+	mu      sync.Mutex
+	now     func() time.Time
+	seen    map[string]seenTurn
+	present map[string]map[string]bool // machine -> sessionKey(agent, id)
 
 	path  string
 	saved time.Time
@@ -67,7 +68,7 @@ type seenDocument struct {
 }
 
 func newTracker() *tracker {
-	return &tracker{now: time.Now, seen: map[string]seenTurn{}}
+	return &tracker{now: time.Now, seen: map[string]seenTurn{}, present: map[string]map[string]bool{}}
 }
 
 // setNow changes the clock under the tracker's lock.
@@ -75,6 +76,40 @@ func (t *tracker) setNow(now func() time.Time) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.now = now
+}
+
+// configure names the machines this gateway follows. Markers of machines it
+// no longer follows become absent now, unless they already were.
+func (t *tracker) configure(machines []string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	now := t.now()
+	configured := make(map[string]bool, len(machines))
+	present := make(map[string]map[string]bool, len(machines))
+	for _, m := range machines {
+		configured[m] = true
+		if old, ok := t.present[m]; ok {
+			present[m] = old
+		} else {
+			present[m] = map[string]bool{}
+		}
+	}
+	t.present = present
+	changed := false
+	for k, v := range t.seen {
+		if !configured[v.machine] && v.absent.IsZero() {
+			v.absent = now
+			t.seen[k] = v
+			changed = true
+		}
+	}
+	if t.pruneLocked(now) {
+		changed = true
+	}
+	if changed {
+		t.dirty = true
+		t.saveLocked(true)
+	}
 }
 
 // loadTracker reads the turns a previous gateway saw. A missing file is an
@@ -120,19 +155,27 @@ func (t *tracker) touch(machine string, sessions []Session) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	now := t.now()
+	if t.present[machine] == nil {
+		t.present[machine] = map[string]bool{}
+	}
+	changed := false
 	for _, s := range sessions {
+		t.present[machine][sessionKey(s.Agent, s.ID)] = true
 		k := sessionID(machine, s.Agent, s.ID)
 		if v, ok := t.seen[k]; ok {
+			if !v.absent.IsZero() {
+				v.absent = time.Time{}
+				changed = true
+			}
 			v.shown = now
-			v.absent = time.Time{}
 			t.seen[k] = v
 			t.dirty = true
 		}
 	}
 	if t.pruneLocked(now) {
-		t.dirty = true
+		changed = true
 	}
-	t.saveLocked(false)
+	t.saveLocked(changed)
 }
 
 // observe says a machine's snapshot shows exactly these sessions. A marker
@@ -142,27 +185,33 @@ func (t *tracker) observe(machine string, sessions []Session) {
 	defer t.mu.Unlock()
 	now := t.now()
 	live := make(map[string]bool, len(sessions))
+	changed := false
 	for _, s := range sessions {
+		live[sessionKey(s.Agent, s.ID)] = true
 		k := sessionID(machine, s.Agent, s.ID)
-		live[k] = true
 		if v, ok := t.seen[k]; ok {
+			if !v.absent.IsZero() {
+				v.absent = time.Time{}
+				changed = true
+			}
 			v.shown = now
-			v.absent = time.Time{}
 			t.seen[k] = v
 			t.dirty = true
 		}
 	}
 	for k, v := range t.seen {
-		if v.machine == machine && !live[k] && v.absent.IsZero() {
+		if v.machine == machine && !live[sessionKey(v.agent, v.id)] && v.absent.IsZero() {
 			v.absent = now
 			t.seen[k] = v
 			t.dirty = true
+			changed = true
 		}
 	}
+	t.present[machine] = live
 	if t.pruneLocked(now) {
-		t.dirty = true
+		changed = true
 	}
-	t.saveLocked(false)
+	t.saveLocked(changed)
 }
 
 // leave records when a machine stopped showing these sessions, so absence
@@ -171,34 +220,39 @@ func (t *tracker) leave(machine string, sessions []Session) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	now := t.now()
+	changed := false
 	for _, s := range sessions {
+		if t.present[machine] != nil {
+			delete(t.present[machine], sessionKey(s.Agent, s.ID))
+		}
 		k := sessionID(machine, s.Agent, s.ID)
 		if v, ok := t.seen[k]; ok && v.absent.IsZero() {
 			v.absent = now
 			t.seen[k] = v
 			t.dirty = true
+			changed = true
 		}
 	}
 	if t.pruneLocked(now) {
-		t.dirty = true
+		changed = true
 	}
-	t.saveLocked(true)
+	t.saveLocked(changed)
 }
 
-// mark records a turn as seen and returns it, or "" when there is none.
+// mark records a turn as seen and returns it, or "" when there is none or
+// its session is no longer present on its machine.
 func (t *tracker) mark(machine, agent, id, turn string) string {
 	if turn == "" {
 		return ""
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if !t.present[machine][sessionKey(agent, id)] {
+		return ""
+	}
 	now := t.now()
 	k := sessionID(machine, agent, id)
-	v := seenTurn{machine: machine, agent: agent, id: id, turn: turn, shown: now}
-	if old, ok := t.seen[k]; ok {
-		v.absent = old.absent
-	}
-	t.seen[k] = v
+	t.seen[k] = seenTurn{machine: machine, agent: agent, id: id, turn: turn, shown: now}
 	t.dirty = true
 	t.pruneLocked(now)
 	t.saveLocked(true)

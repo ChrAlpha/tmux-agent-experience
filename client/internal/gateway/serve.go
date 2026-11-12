@@ -127,6 +127,11 @@ func New(cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	names := make([]string, len(cfg.Machines))
+	for i, m := range cfg.Machines {
+		names[i] = m.Name
+	}
+	seenTurns.configure(names)
 	s := &Server{
 		cfg:    cfg,
 		guard:  guard{owner: cfg.Owner, tailscale: lower(cfg.Tailscale), access: lower(cfg.Access.Hosts)},

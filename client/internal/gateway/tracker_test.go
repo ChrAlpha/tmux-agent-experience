@@ -45,11 +45,14 @@ func TestSeenPersists(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	first.configure([]string{"box"})
+	first.observe("box", []Session{{Agent: "claude", ID: "s1"}})
 	first.mark("box", "claude", "s1", "t1")
 	second, err := loadTracker(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
+	second.configure([]string{"box"})
 	if !second.isSeen("box", Session{Agent: "claude", ID: "s1", Turn: "t1"}) {
 		t.Fatal("a seen turn did not survive a restart")
 	}
@@ -72,6 +75,12 @@ func TestSeenBounds(t *testing.T) {
 	tr := newTracker()
 	at := time.Now()
 	tr.setNow(func() time.Time { return at })
+	tr.configure([]string{"box"})
+	present := make([]Session, 0, seenLimit+10)
+	for i := range seenLimit + 10 {
+		present = append(present, Session{Agent: "claude", ID: string(rune('a'+i%26)) + string(rune('a'+i/26))})
+	}
+	tr.observe("box", present)
 	for i := range seenLimit + 10 {
 		tr.mark("box", "claude", string(rune('a'+i%26))+string(rune('a'+i/26)), "turn")
 	}
@@ -81,6 +90,8 @@ func TestSeenBounds(t *testing.T) {
 	// A present session stays however quiet it is.
 	tr = newTracker()
 	tr.setNow(func() time.Time { return at })
+	tr.configure([]string{"box"})
+	tr.observe("box", []Session{{Agent: "claude", ID: "s1"}})
 	tr.mark("box", "claude", "s1", "t1")
 	at = at.Add(8 * 24 * time.Hour)
 	if got := tr.snapshot(); len(got) != 1 {
@@ -100,6 +111,8 @@ func TestSeenBounds(t *testing.T) {
 	at = time.Now()
 	tr = newTracker()
 	tr.setNow(func() time.Time { return at })
+	tr.configure([]string{"box"})
+	tr.observe("box", []Session{{Agent: "claude", ID: "s1"}})
 	tr.mark("box", "claude", "s1", "t1")
 	if !tr.isSeen("box", Session{Agent: "claude", ID: "s1", Turn: "t1"}) {
 		t.Fatal("the marked turn is not seen")
@@ -113,6 +126,8 @@ func TestSeenPresenceSurvivesAnotherMachinesPrune(t *testing.T) {
 	tr := newTracker()
 	at := time.Now()
 	tr.setNow(func() time.Time { return at })
+	tr.configure([]string{"a", "b"})
+	tr.observe("a", []Session{{Agent: "claude", ID: "s1"}})
 	tr.mark("a", "claude", "s1", "t1")
 	at = at.Add(8 * 24 * time.Hour)
 	// Another machine's follower prunes before a records the removal.
@@ -136,11 +151,14 @@ func TestSeenFirstSnapshotMarksMissingSessionsAbsent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	first.configure([]string{"box"})
+	first.observe("box", []Session{{Agent: "claude", ID: "s1"}})
 	first.mark("box", "claude", "s1", "t1")
 	second, err := loadTracker(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
+	second.configure([]string{"box"})
 	at := time.Now()
 	second.setNow(func() time.Time { return at })
 	// The gateway restarts and the machine's first snapshot lacks the session.
@@ -157,5 +175,81 @@ func TestSeenFirstSnapshotMarksMissingSessionsAbsent(t *testing.T) {
 	third.setNow(func() time.Time { return at })
 	if got := third.snapshot(); len(got) != 0 {
 		t.Fatalf("a marker absent since the first snapshot remained: %v", got)
+	}
+}
+
+func TestMarkAfterLeaveRecordsNothing(t *testing.T) {
+	tr := newTracker()
+	at := time.Now()
+	tr.setNow(func() time.Time { return at })
+	tr.configure([]string{"box"})
+	tr.observe("box", []Session{{Agent: "claude", ID: "s1"}})
+	// The ending event wins the race with the page's mark.
+	tr.leave("box", []Session{{Agent: "claude", ID: "s1"}})
+	if got := tr.mark("box", "claude", "s1", "t1"); got != "" {
+		t.Fatalf("marked a session that had left: %q", got)
+	}
+	if got := tr.snapshot(); len(got) != 0 {
+		t.Fatalf("a marker was created after the session left: %v", got)
+	}
+}
+
+func TestSeenAbsenceSurvivesAThrottledSave(t *testing.T) {
+	dir := t.TempDir()
+	first, err := loadTracker(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Now()
+	first.setNow(func() time.Time { return at })
+	first.configure([]string{"box"})
+	first.observe("box", []Session{{Agent: "claude", ID: "s1"}})
+	first.mark("box", "claude", "s1", "t1")
+	at = at.Add(30 * time.Second)
+	first.observe("box", nil) // absent right after the mark's save
+	// A crash: reload only what reached disk, without flushing memory.
+	second, err := loadTracker(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after := at.Add(7*24*time.Hour + time.Hour)
+	second.setNow(func() time.Time { return after })
+	second.configure([]string{"box"})
+	second.observe("box", nil)
+	if got := second.snapshot(); len(got) != 0 {
+		t.Fatalf("an absence lost by the save throttle remained: %v", got)
+	}
+}
+
+func TestSeenRestartWithoutAMachineExpires(t *testing.T) {
+	dir := t.TempDir()
+	first, err := loadTracker(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Now()
+	first.setNow(func() time.Time { return at })
+	first.configure([]string{"here", "gone"})
+	first.observe("here", []Session{{Agent: "claude", ID: "s1"}})
+	first.observe("gone", []Session{{Agent: "claude", ID: "s2"}})
+	first.mark("here", "claude", "s1", "t1")
+	first.mark("gone", "claude", "s2", "t2")
+
+	second, err := loadTracker(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at = at.Add(time.Hour)
+	second.setNow(func() time.Time { return at })
+	second.configure([]string{"here"})
+	second.observe("here", []Session{{Agent: "claude", ID: "s1"}})
+	at = at.Add(7*24*time.Hour + time.Hour)
+	second.observe("here", []Session{{Agent: "claude", ID: "s1"}})
+	got := second.snapshot()
+	if got["here/claude/s1"] != "t1" {
+		t.Fatalf("the configured machine's marker was lost: %v", got)
+	}
+	if _, ok := got["gone/claude/s2"]; ok {
+		t.Fatalf("a marker of an unconfigured machine remained: %v", got)
 	}
 }
