@@ -140,9 +140,9 @@ func TestSendPiAndOhMyPiThroughTheirInboxes(t *testing.T) {
 				r := h.tmag("", "read", sidA[:8], "--last")
 				return r.code == 0 && r.out == "answered: hello\n"
 			})
-			if got := h.eventNames(sidA); !strings.Contains(got, "Send: message_end:working "+stop+":idle") {
-				t.Fatalf("events = %s", got)
-			}
+			h.eventually("the target's turn events", func() bool {
+				return strings.Contains(h.eventNames(sidA), "Send: message_end:working "+stop+":idle")
+			})
 			f.agrees(h)
 
 			// A person's idle prompt is typed; an agent's later prompt joins

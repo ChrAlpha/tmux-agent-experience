@@ -356,9 +356,9 @@ func TestClaudeInProcess(t *testing.T) {
 	if got, _ := os.ReadFile(out); string(got) != "review the diff\n" {
 		t.Fatalf("agent received %q", got)
 	}
-	if got, want := h.eventNames(sidA), "SessionStart:idle Attach:idle Send: UserPromptSubmit:working Stop:idle Alert:"; got != want {
-		t.Fatalf("events = %s, want %s", got, want)
-	}
+	h.eventually("the turn's events", func() bool {
+		return h.eventNames(sidA) == "SessionStart:idle Attach:idle Send: UserPromptSubmit:working Stop:idle Alert:"
+	})
 	f.agrees(h)
 
 	// A second prompt while the first is running is refused, not queued.
@@ -437,9 +437,9 @@ func TestPiAndOhMyPi(t *testing.T) {
 			if r := h.tmag("", "read", sidA[:8], "--last", "--json"); r.code != 0 || !strings.Contains(r.out, `"turn":"t1"`) || !strings.Contains(r.out, `"text":"answered: review the diff"`) {
 				t.Fatalf("read --last: %d %s", r.code, r.out)
 			}
-			if got, want := h.eventNames(sidA), "session_start:idle Attach:idle Send: message_end:working "+stop+":idle Alert:"; got != want {
-				t.Fatalf("events = %s, want %s", got, want)
-			}
+			h.eventually("the turn's events", func() bool {
+				return h.eventNames(sidA) == "session_start:idle Attach:idle Send: message_end:working "+stop+":idle Alert:"
+			})
 			f.agrees(h)
 
 			// A dialog blocks the session until the person answers it in
@@ -468,9 +468,9 @@ func TestPiAndOhMyPi(t *testing.T) {
 				t.Fatalf("interrupt: %d %s", r.code, r.out)
 			}
 			h.waitSession(sidA, "idle")
-			if got := h.eventNames(sidA); !strings.HasSuffix(got, "Send: message_end:working Halt: "+stop+":idle Alert:") {
-				t.Fatalf("events = %s", got)
-			}
+			h.eventually("the interrupt's events", func() bool {
+				return strings.HasSuffix(h.eventNames(sidA), "Send: message_end:working Halt: "+stop+":idle Alert:")
+			})
 			f.agrees(h)
 
 			h.tmux("send-keys", "-t", pane, "C-d")
@@ -559,9 +559,9 @@ func TestInterruptThroughThePane(t *testing.T) {
 	})
 	// Claude Code reports nothing, so tmag reports the session idle itself;
 	// a second interrupt, which could open a menu, is refused.
-	if got := h.eventNames(sidA); !strings.HasSuffix(got, "Send: UserPromptSubmit:working Halt:idle") {
-		t.Fatalf("events = %s", got)
-	}
+	h.eventually("the interrupt's events", func() bool {
+		return strings.HasSuffix(h.eventNames(sidA), "Send: UserPromptSubmit:working Halt:idle")
+	})
 	f.agrees(h)
 	if r := h.tmag("", "interrupt", sidA[:8]); r.code != 3 || !strings.Contains(r.out, "idle") {
 		t.Fatalf("second interrupt: %d %s", r.code, r.out)
@@ -581,9 +581,9 @@ func TestInterruptThroughThePane(t *testing.T) {
 		t.Fatalf("interrupt codex: %d %s", r.code, r.out)
 	}
 	h.waitPane(codex, "idle", "process")
-	if got := h.eventNames(sidB); !strings.HasSuffix(got, "Halt: Interrupt:idle Alert:") {
-		t.Fatalf("codex events = %s", got)
-	}
+	h.eventually("codex's interrupt events", func() bool {
+		return strings.HasSuffix(h.eventNames(sidB), "Halt: Interrupt:idle Alert:")
+	})
 	f.agrees(h)
 }
 
@@ -641,9 +641,9 @@ func TestClaudeAnswersThroughTheHook(t *testing.T) {
 	received("hook:allow")
 	h.waitSession(sidA, "idle")
 	// The answer closes the request at once; the call runs on.
-	if got := h.eventNames(sidA); !strings.HasSuffix(got, "UserPromptSubmit:working PermissionRequest:blocked Alert: Answer:working Stop:idle Alert:") {
-		t.Fatalf("events = %s", got)
-	}
+	h.eventually("the answer's events", func() bool {
+		return strings.HasSuffix(h.eventNames(sidA), "UserPromptSubmit:working PermissionRequest:blocked Alert: Answer:working Stop:idle Alert:")
+	})
 	f.agrees(h)
 	if r := h.tmag("", "answer", sidA[:8], req.ID, "allow"); r.code != 3 || !strings.Contains(r.out, "changed") {
 		t.Fatalf("answering twice: %d %s", r.code, r.out)
@@ -917,9 +917,9 @@ func TestCodexDaemonSessions(t *testing.T) {
 	if _, s := h.waitPane(byID, "blocked", "title-id"); s.ID != sidC {
 		t.Fatalf("pane shows %s after switching threads", s.ID)
 	}
-	if !strings.HasSuffix(h.eventNames(sidB), "Detach:") || !strings.Contains(h.eventNames(sidC), "Attach:blocked") {
-		t.Fatalf("switch events: %s / %s", h.eventNames(sidB), h.eventNames(sidC))
-	}
+	h.eventually("the pane's switch in the event log", func() bool {
+		return strings.HasSuffix(h.eventNames(sidB), "Detach:") && strings.Contains(h.eventNames(sidC), "Attach:blocked")
+	})
 	f.agrees(h)
 
 	// The daemon's threads end with it, SessionEnd or not.
@@ -929,9 +929,9 @@ func TestCodexDaemonSessions(t *testing.T) {
 	_ = d.cmd.Wait()
 	h.tmag("", "status")
 	for _, id := range []string{sidB, sidC} {
-		if got := h.eventNames(id); !strings.Contains(got, "Exit:") {
-			t.Fatalf("%s events after the daemon exited: %s", id, got)
-		}
+		h.eventually("the daemon's threads to end", func() bool {
+			return strings.Contains(h.eventNames(id), "Exit:")
+		})
 	}
 	if v := h.view(); len(v.Sessions) != 0 {
 		t.Fatalf("sessions outlived their daemon: %+v", v.Sessions)
@@ -978,9 +978,10 @@ func TestCodexDaemonCarriesSendAndInterrupt(t *testing.T) {
 	if rec, ok, err := (session.Store{Dir: h.state}).Get(context.Background(), "codex", sidC); err != nil || !ok || !rec.Queued.IsZero() {
 		t.Fatalf("the interrupt left the second prompt queued: %+v %v", rec, err)
 	}
-	if got := h.eventNames(sidC); !strings.Contains(got, "Send: UserPromptSubmit:working") || !strings.HasSuffix(got, "Send: Halt: Interrupt:idle Alert:") {
-		t.Fatalf("events = %s", got)
-	}
+	h.eventually("the interrupt's events", func() bool {
+		got := h.eventNames(sidC)
+		return strings.Contains(got, "Send: UserPromptSubmit:working") && strings.HasSuffix(got, "Send: Halt: Interrupt:idle Alert:")
+	})
 	f.agrees(h)
 
 	// Another daemon now answers on the socket: it does not run the thread.
@@ -1025,9 +1026,9 @@ func TestCodexDaemonCarriesAnswers(t *testing.T) {
 		t.Fatalf("answer: %d %s", r.code, r.out)
 	}
 	h.waitSession(sidC, "working")
-	if got := h.eventNames(sidC); !strings.HasSuffix(got, "PermissionRequest:blocked Alert: Answer:blocked PostToolUse:working") {
-		t.Fatalf("events = %s", got)
-	}
+	h.eventually("the answer's events", func() bool {
+		return strings.HasSuffix(h.eventNames(sidC), "PermissionRequest:blocked Alert: Answer:blocked PostToolUse:working")
+	})
 	f.agrees(h)
 
 	req = blocked()
@@ -1035,9 +1036,9 @@ func TestCodexDaemonCarriesAnswers(t *testing.T) {
 		t.Fatalf("deny: %d %s", r.code, r.out)
 	}
 	h.waitSession(sidC, "working")
-	if got := h.eventNames(sidC); !strings.HasSuffix(got, "Answer:blocked PreModelRequest:working") {
-		t.Fatalf("events after deny = %s", got)
-	}
+	h.eventually("the deny's events", func() bool {
+		return strings.HasSuffix(h.eventNames(sidC), "Answer:blocked PreModelRequest:working")
+	})
 
 	// Two answers at once: one is delivered, the other refused.
 	req = blocked()
@@ -1057,9 +1058,10 @@ func TestCodexDaemonCarriesAnswers(t *testing.T) {
 		t.Fatalf("two answers at once exited %v", codes)
 	}
 	h.waitSession(sidC, "working")
-	if got := h.eventNames(sidC); strings.Count(got[strings.LastIndex(got, "PermissionRequest:"):], "Answer:") != 1 {
-		t.Fatalf("events after two answers = %s", got)
-	}
+	h.eventually("the one answer in the events", func() bool {
+		got := h.eventNames(sidC)
+		return strings.Count(got[strings.LastIndex(got, "PermissionRequest:"):], "Answer:") == 1
+	})
 
 	// With answering off, no answer goes through the daemon either.
 	h.tmux("set-option", "-g", "@tmag-answer", "off")
@@ -1985,13 +1987,13 @@ func TestChangingEvidenceKeepsThePaneShowingItsSession(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	var got []string
-	for _, e := range h.events(sidB) {
-		got = append(got, e.Event+":"+e.Evidence)
-	}
-	if want := "Attach:title-id Attach:process"; strings.Join(got, " ") != want {
-		t.Fatalf("events %q, want %q", strings.Join(got, " "), want)
-	}
+	h.eventually("both Attach events", func() bool {
+		var got []string
+		for _, e := range h.events(sidB) {
+			got = append(got, e.Event+":"+e.Evidence)
+		}
+		return strings.Join(got, " ") == "Attach:title-id Attach:process"
+	})
 	if p, _ := h.waitPane(pane, "idle", "process"); p.Session != sidB {
 		t.Fatalf("pane shows %+v", p)
 	}
@@ -2303,9 +2305,9 @@ func TestUnchangedHookRestoresItsPanesAttachment(t *testing.T) {
 		p, _, _ := h.paneIn(pane)
 		return p.Session == sidA
 	})
-	if got := h.eventNames(sidA); got != before+" Attach:idle" {
-		t.Fatalf("events %q, want %q and its Attach", got, before)
-	}
+	h.eventually("the Attach in the event log", func() bool {
+		return h.eventNames(sidA) == before+" Attach:idle"
+	})
 	if after, _ := h.sessionOf(sidA); !after.LastHookAt.Equal(s.LastHookAt) {
 		t.Fatalf("contact within %s was written: %v, then %v", hook.ContactInterval, s.LastHookAt, after.LastHookAt)
 	}
