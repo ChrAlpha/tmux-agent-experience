@@ -26,7 +26,7 @@ func TestPairRedeemsOnce(t *testing.T) {
 	if err != nil || issued.Label != "phone" || issued.Token == "" {
 		t.Fatalf("redeem: %+v %v", issued, err)
 	}
-	if _, err := store.Redeem(ctx, p.Code); !errors.Is(err, ErrUnauthorized) {
+	if _, err := store.Redeem(ctx, p.Code); !errors.Is(err, ErrInvitation) {
 		t.Fatalf("a code redeemed twice: %v", err)
 	}
 	if _, list, err := store.List(ctx); err != nil || len(list) != 1 || list[0].ID != issued.ID {
@@ -58,6 +58,30 @@ func TestPairRedeemsOnce(t *testing.T) {
 	}
 }
 
+func TestRedeemNamesTheInvitation(t *testing.T) {
+	store := Store{Dir: t.TempDir()}
+	ctx := context.Background()
+	if _, err := store.Redeem(ctx, "0000-0000-0000"); !errors.Is(err, ErrInvitation) || errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("an unknown code: %v", err)
+	} else if !strings.Contains(err.Error(), "code is invalid, expired or already used") {
+		t.Fatalf("an unknown code says %q", err)
+	}
+	p, err := store.Pair(ctx, "phone", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	issued, err := store.Redeem(ctx, p.Code)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Redeem(ctx, p.Code); !errors.Is(err, ErrInvitation) || errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("a redeemed code: %v", err)
+	}
+	if _, err := store.Authenticate(ctx, issued.Token[:len(issued.Token)-1]+"z"); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("a bad credential: %v", err)
+	}
+}
+
 func TestInvitationExpires(t *testing.T) {
 	store := Store{Dir: t.TempDir()}
 	ctx := context.Background()
@@ -79,7 +103,7 @@ func TestInvitationExpires(t *testing.T) {
 	if err := os.WriteFile(path, b, 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Redeem(ctx, p.Code); !errors.Is(err, ErrUnauthorized) {
+	if _, err := store.Redeem(ctx, p.Code); !errors.Is(err, ErrInvitation) {
 		t.Fatalf("an expired code: %v", err)
 	}
 }
@@ -103,7 +127,7 @@ func TestConcurrentRedemption(t *testing.T) {
 				mu.Lock()
 				wins++
 				mu.Unlock()
-			} else if !errors.Is(err, ErrUnauthorized) {
+			} else if !errors.Is(err, ErrInvitation) {
 				t.Errorf("redeem: %v", err)
 			}
 		}()

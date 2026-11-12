@@ -21,6 +21,10 @@ import (
 
 var ErrUnauthorized = errors.New("credential is invalid, expired or revoked")
 
+// ErrInvitation is a code that names no usable invitation: it was mistyped,
+// expired or already redeemed.
+var ErrInvitation = errors.New("invitation code is invalid, expired or already used")
+
 // Store is the gateway's authorization directory.
 type Store struct{ Dir string }
 
@@ -295,13 +299,13 @@ func (s Store) Redeem(ctx context.Context, raw string) (Generated, error) {
 			}
 			if !now.Before(p.Expires) {
 				d.Invitations = append(d.Invitations[:i], d.Invitations[i+1:]...)
-				return ErrUnauthorized
+				return ErrInvitation
 			}
 			out = issue(d, p.Label, p.TTL)
 			d.Invitations = append(d.Invitations[:i], d.Invitations[i+1:]...)
 			return nil
 		}
-		return ErrUnauthorized
+		return ErrInvitation
 	})
 	return out, err
 }

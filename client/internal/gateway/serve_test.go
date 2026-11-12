@@ -460,6 +460,31 @@ func TestPageAndCredential(t *testing.T) {
 	}
 }
 
+func TestPairingRefusalNamesTheCode(t *testing.T) {
+	bin, _ := fakeTmag(t, `echo '{"schema":"tmag/v2","type":"snapshot","seq":1,"sessions":[],"panes":[]}'; sleep 30`)
+	var logs strings.Builder
+	_, hs := newServer(t, Config{Machines: []Machine{{Name: "here", Argv: []string{bin}}}, Owner: "me@example.com", Log: log.New(&logs, "", 0)})
+	res := call(t, http.MethodPost, hs.URL+"/api/pair", "", `{"code":"0000-0000-0000"}`, nil)
+	if res.StatusCode != http.StatusForbidden {
+		t.Fatalf("a wrong code: %s", res.Status)
+	}
+	var doc struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	decodeBody(t, res, &doc)
+	if !strings.Contains(doc.Error.Message, "code is invalid, expired or already used") {
+		t.Errorf("the page says %q", doc.Error.Message)
+	}
+	if strings.Contains(logs.String(), "credential is invalid") {
+		t.Errorf("the log blames a credential: %s", logs.String())
+	}
+	if !strings.Contains(logs.String(), "invitation code is invalid, expired or already used") {
+		t.Errorf("the log does not name the code: %s", logs.String())
+	}
+}
+
 func TestWatchResumesAndFansOut(t *testing.T) {
 	signal := filepath.Join(t.TempDir(), "signal")
 	bin, calls := fakeTmag(t, `
