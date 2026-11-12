@@ -380,6 +380,22 @@ func (s Store) Unsubscribe(ctx context.Context, id string) error {
 	})
 }
 
+// UnsubscribeIf drops a device's push subscription only while it is still
+// sub, so a failure for an older one leaves a newer registration alone.
+func (s Store) UnsubscribeIf(ctx context.Context, id string, sub Subscription) error {
+	return s.with(ctx, true, func(d *database) error {
+		for i := range d.Credentials {
+			if d.Credentials[i].ID == id {
+				if cur := d.Credentials[i].Subscription; cur != nil && *cur == sub {
+					d.Credentials[i].Subscription = nil
+				}
+				return nil
+			}
+		}
+		return nil
+	})
+}
+
 // Subscriptions returns every subscribed device, for one push.
 func (s Store) Subscriptions(ctx context.Context) ([]Entry, error) {
 	var out []Entry

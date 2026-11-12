@@ -228,7 +228,7 @@ func (s *Server) sendDevice(job alertJob, id string) {
 	err = s.push.Send(ctx, push.Subscription{Endpoint: sub.Endpoint, P256DH: sub.P256DH, Auth: sub.Auth}, job.msg)
 	switch {
 	case errors.Is(err, push.ErrGone):
-		if err := s.auth.Unsubscribe(s.ctx, id); err != nil {
+		if err := s.auth.UnsubscribeIf(s.ctx, id, sub); err != nil {
 			s.cfg.Log.Printf("push %s: drop gone subscription: %v", job.msg.Kind, err)
 		}
 	case err != nil:

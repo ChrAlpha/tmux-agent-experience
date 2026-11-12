@@ -54,6 +54,51 @@ func TestRevokedDeviceIsNotSent(t *testing.T) {
 	}
 }
 
+func TestStaleGonePushKeepsNewerSubscription(t *testing.T) {
+	s := pushGateway(t)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	pushSrv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		close(started)
+		<-release
+		w.WriteHeader(http.StatusGone)
+	}))
+	defer pushSrv.Close()
+	issued := subscribed(t, s, pushSrv.URL+"/push")
+	s.push.HTTP = pushSrv.Client()
+	s.push.Endpoint = url.Parse
+	s.states["here"].replace(1, []Session{{ID: "s1", Agent: "claude", State: "idle", Turn: "t1"}}, nil)
+	job := alertJob{machine: "here", agent: "claude", session: "s1", alert: Alert{Kind: "finished", Turn: "t1"}, msg: push.Message{Kind: "finished"}}
+	done := make(chan struct{})
+	go func() {
+		s.sendDevice(job, issued.ID)
+		close(done)
+	}()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the push was not sent")
+	}
+	newer := auth.Subscription{Endpoint: pushSrv.URL + "/push", P256DH: testP256(t), Auth: testAuth()}
+	if err := s.auth.Subscribe(context.Background(), issued.ID, newer); err != nil {
+		t.Fatal(err)
+	}
+	want, ok, err := s.auth.Subscription(context.Background(), issued.ID)
+	if err != nil || !ok {
+		t.Fatalf("newer subscription: %+v %v %v", want, ok, err)
+	}
+	close(release)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the push did not finish")
+	}
+	got, ok, err := s.auth.Subscription(context.Background(), issued.ID)
+	if err != nil || !ok || got != want {
+		t.Fatalf("a stale failure dropped the newer subscription: %+v %v %v", got, ok, err)
+	}
+}
+
 func TestQueuedAlertIsCheckedAgain(t *testing.T) {
 	s := pushGateway(t)
 	got := make(chan struct{}, 1)
