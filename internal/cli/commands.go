@@ -99,10 +99,11 @@ func (a *app) printView(v query.View, caller query.Caller) {
 	tw := tabwriter.NewWriter(a.stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(tw, "TARGET\tPANE\tAGENT\tSTATE\tFOR\tID\tCWD")
 	for _, p := range v.Panes {
-		target, pane := p.Target, p.ID
+		target := p.Target
 		if p.Server != here {
-			target, pane = filepath.Base(p.Server)+"/"+target, serverName(p.Server)+":"+p.ID
+			target = filepath.Base(p.Server) + "/" + target
 		}
+		pane := paneName(here, p.Server, p.ID)
 		state, since, id := adapter.Unknown, (*time.Time)(nil), "-"
 		if s, ok := v.Session(p.Agent, p.Session); ok {
 			state, since, id = describe(s.State, s.Kind), s.Since, own(s)
@@ -118,6 +119,15 @@ func (a *app) printView(v query.View, caller query.Caller) {
 		}
 	}
 	tw.Flush()
+}
+
+// paneName names a pane as targets take it: %N on the caller's tmux server
+// (here), server:%N on another.
+func paneName(here, server, id string) string {
+	if server == here {
+		return id
+	}
+	return serverName(server) + ":" + id
 }
 
 // serverName names a tmux server as targets take it: its socket's name when
@@ -228,8 +238,9 @@ func (a *app) cmdInspect(args []string) int {
 		if !s.LastHookAt.IsZero() {
 			fmt.Fprintf(a.stdout, "last hook: %s (contact only)\n", s.LastHookAt.UTC().Format(time.RFC3339Nano))
 		}
+		here := tmux.DefaultServer().Socket
 		for _, p := range s.Panes {
-			fmt.Fprintf(a.stdout, "shown in: %s (%s, %s)\n", p.ID, p.Evidence, p.View)
+			fmt.Fprintf(a.stdout, "shown in: %s (%s, %s)\n", paneName(here, p.Server, p.ID), p.Evidence, p.View)
 		}
 		// Open requests, by the ids request and answer take.
 		for _, r := range s.Requests {
@@ -559,7 +570,7 @@ func (a *app) reportDelivery(what string, d query.Delivery) {
 	}
 	where := d.Via
 	if d.Pane != nil {
-		where = d.Pane.ID
+		where = paneName(tmux.DefaultServer().Socket, d.Pane.Server, d.Pane.ID)
 	}
 	fmt.Fprintf(a.stdout, "%s %s (%s) seq %d\n", what, shortID(d.Session.ID), where, d.Seq)
 }

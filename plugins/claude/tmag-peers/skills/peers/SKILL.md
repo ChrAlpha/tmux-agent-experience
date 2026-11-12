@@ -121,7 +121,7 @@ tmux window of its own, where the user can watch it and take it over, and
 work with it through tmag like any other peer:
 
 ```sh
-pane=$(tmux new-window -d -P -F '#{pane_id}' -c "$PWD" claude)
+pane=$(command tmux new-window -d -P -F '#{pane_id}' -c "$PWD" claude)
 tmag wait "$pane" --for idle --timeout 2m
 tmag send "$pane" --reply - <<'EOF'
 Review the parser in internal/parse.go and list the bugs you find.
