@@ -626,6 +626,10 @@ func TestClaudeAnswersThroughTheHook(t *testing.T) {
 	if req.Kind != "permission" || req.Tool != "Bash" {
 		t.Fatalf("request = %+v", req)
 	}
+	// The person finds the request's id where the skill sends them.
+	if r := h.tmag("", "inspect", sidA[:8]); r.code != 0 || !strings.Contains(r.out, "request: "+req.ID+" (permission, Bash)\n") {
+		t.Fatalf("inspect: %d %s", r.code, r.out)
+	}
 	r := h.tmag("", "request", sidA[:8], req.ID, "--json")
 	if r.code != 0 || !strings.Contains(r.out, `"tool":"Bash"`) || !strings.Contains(r.out, `"input":{"command":"date"}`) {
 		t.Fatalf("request: %d %s", r.code, r.out)
