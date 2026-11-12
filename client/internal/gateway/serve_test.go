@@ -618,6 +618,61 @@ func TestSeenKeepsASessionTheMachineStillShows(t *testing.T) {
 	}
 }
 
+func TestSeenCountsAbsenceFromWhenTheSessionLeaves(t *testing.T) {
+	for _, c := range []struct{ name, leave string }{
+		{"snapshot", `echo '{"schema":"tmag/v2","type":"snapshot","seq":2,"sessions":[],"panes":[]}'`},
+		{"event", `echo '{"schema":"tmag/v2","type":"event","event":{"seq":2,"time":"2026-11-12T08:00:00Z","agent":"claude","session":"s1","event":"SessionEnd"}}'`},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			signal := filepath.Join(t.TempDir(), "signal")
+			t.Setenv("WATCH_SIGNAL", signal)
+			bin, _ := fakeTmag(t, `
+echo '{"schema":"tmag/v2","type":"snapshot","seq":1,"sessions":[{"id":"s1","agent":"claude","state":"idle","turn":"t1"}],"panes":[]}'
+[ -n "$WATCH_SIGNAL" ] && while [ ! -f "$WATCH_SIGNAL" ]; do sleep 0.02; done
+`+c.leave+`
+sleep 30`)
+			s, hs := newServer(t, Config{Machines: []Machine{{Name: "here", Argv: []string{bin}}}})
+			waitSession(t, s)
+			waitMachine(t, s, "here")
+			issued := signIn(t, s)
+			res := call(t, http.MethodPost, hs.URL+"/api/seen", issued.Token, `{"machine":"here","agent":"claude","session":"s1","turn":"t1"}`, nil)
+			var marked struct{ Turn string }
+			decodeBody(t, res, &marked)
+			if marked.Turn != "t1" {
+				t.Fatalf("marked %q", marked.Turn)
+			}
+			page := watch(t, hs, issued.Token)
+			waitFor(t, page, `"type":"snapshot"`)
+
+			// Eight quiet days pass without a page request. Then the session
+			// leaves, and absence starts there.
+			at := time.Now().Add(8 * 24 * time.Hour)
+			s.seen.setNow(func() time.Time { return at })
+			if err := os.WriteFile(signal, []byte("go"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			waitFor(t, page, `"seq":2`)
+			var machines struct {
+				Seen map[string]string `json:"seen"`
+			}
+			res = call(t, http.MethodGet, hs.URL+"/api/machines", issued.Token, "", nil)
+			decodeBody(t, res, &machines)
+			if machines.Seen["here/claude/s1"] != "t1" {
+				t.Fatalf("a session was forgotten when it left: %v", machines.Seen)
+			}
+			// A week after it left, the trace is gone.
+			after := at.Add(7*24*time.Hour + time.Hour)
+			s.seen.setNow(func() time.Time { return after })
+			machines.Seen = nil
+			res = call(t, http.MethodGet, hs.URL+"/api/machines", issued.Token, "", nil)
+			decodeBody(t, res, &machines)
+			if len(machines.Seen) != 0 {
+				t.Fatalf("an absent session remained: %v", machines.Seen)
+			}
+		})
+	}
+}
+
 func TestAlertFiltering(t *testing.T) {
 	idle := Session{State: "idle", Turn: "t1"}
 	blocked := Session{ID: "s1", Agent: "claude", State: "blocked", Cwd: "/work/repo", Requests: []Request{{ID: "r1", Kind: "permission", Tool: "Bash"}}}

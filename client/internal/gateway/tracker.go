@@ -133,6 +133,23 @@ func (t *tracker) touch(machine string, sessions []Session) {
 	t.saveLocked(false)
 }
 
+// leave records when a machine stopped showing these sessions, so absence
+// counts from that moment.
+func (t *tracker) leave(machine string, sessions []Session) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	now := t.now()
+	for _, s := range sessions {
+		k := sessionID(machine, s.Agent, s.ID)
+		if v, ok := t.seen[k]; ok {
+			v.shown = now
+			t.seen[k] = v
+			t.dirty = true
+		}
+	}
+	t.saveLocked(true)
+}
+
 // mark records a turn as seen and returns it, or "" when there is none.
 func (t *tracker) mark(machine, agent, id, turn string) string {
 	if turn == "" {

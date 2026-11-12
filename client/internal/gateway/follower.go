@@ -31,17 +31,25 @@ func newMachineState(name string) *machineState {
 
 func sessionKey(agent, id string) string { return agent + "/" + id }
 
-// replace takes a snapshot as the machine's whole state.
-func (m *machineState) replace(seq int64, sessions []Session, panes []Pane) {
+// replace takes a snapshot as the machine's whole state, and returns the
+// sessions the snapshot no longer shows.
+func (m *machineState) replace(seq int64, sessions []Session, panes []Pane) (removed []Session) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.seq = seq
 	m.loaded = true
-	m.sessions = make(map[string]Session, len(sessions))
+	next := make(map[string]Session, len(sessions))
 	for _, s := range sessions {
-		m.sessions[sessionKey(s.Agent, s.ID)] = s
+		next[sessionKey(s.Agent, s.ID)] = s
 	}
+	for k, s := range m.sessions {
+		if _, ok := next[k]; !ok {
+			removed = append(removed, s)
+		}
+	}
+	m.sessions = next
 	m.panes = append([]Pane(nil), panes...)
+	return removed
 }
 
 // setPanes takes the latest pane list.
@@ -198,8 +206,9 @@ func (s *Server) follow(m Machine) {
 			applied := true
 			switch d.Type {
 			case "snapshot":
-				machine.replace(d.Seq, d.Sessions, d.Panes)
+				removed := machine.replace(d.Seq, d.Sessions, d.Panes)
 				since = d.Seq
+				s.seen.leave(m.Name, removed)
 				s.track(m.Name, d.Sessions)
 			case "panes":
 				machine.setPanes(d.Panes)
@@ -209,6 +218,9 @@ func (s *Server) follow(m Machine) {
 					continue
 				}
 				machine.apply(*d.Event)
+				if d.Event.ended() {
+					s.seen.leave(m.Name, []Session{{Agent: d.Event.Agent, ID: d.Event.Session}})
+				}
 				if d.Event.Seq > since {
 					since = d.Event.Seq
 				}
