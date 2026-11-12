@@ -21,6 +21,7 @@ import (
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/auth"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/query"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/version"
 )
 
@@ -210,7 +211,7 @@ func (s *Server) info(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"schema": Schema, "state_schema": version.Schema, "version": s.cfg.Version, "instance": instance,
-		"operations": []string{"list", "inspect", "watch", "read", "request", "send", "interrupt", "answer"}})
+		"operations": []string{"list", "inspect", "watch", "read", "request", "send", "interrupt", "seen", "answer"}})
 }
 func (s *Server) relay(w http.ResponseWriter, r *http.Request, args []string, input io.Reader) int {
 	ctx, cancel := context.WithTimeout(r.Context(), actTimeout)
@@ -278,6 +279,7 @@ func (s *Server) read(w http.ResponseWriter, r *http.Request) {
 type action struct {
 	Verb     string            `json:"verb"`
 	Target   string            `json:"target"`
+	Turn     string            `json:"turn,omitempty"`
 	Text     string            `json:"text,omitempty"`
 	Request  string            `json:"request,omitempty"`
 	Decision string            `json:"decision,omitempty"`
@@ -301,6 +303,15 @@ func (s *Server) act(w http.ResponseWriter, r *http.Request) {
 		args = append(args, "--", a.Target, "-")
 		input = strings.NewReader(a.Text)
 	case "interrupt":
+		args = append(args, "--", a.Target)
+	case "seen":
+		if len(a.Turn) > session.MaxTurn {
+			fail(w, 400, "usage", "turn is too long")
+			return
+		}
+		if a.Turn != "" {
+			args = append(args, "--turn="+a.Turn)
+		}
 		args = append(args, "--", a.Target)
 	case "answer":
 		if a.Request == "" || (a.Decision != "allow" && a.Decision != "deny") {

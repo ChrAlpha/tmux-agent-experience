@@ -235,6 +235,9 @@ func (a *app) cmdInspect(args []string) int {
 	a.printView(v, query.Caller{})
 	if s := t.Session; s != nil {
 		fmt.Fprintf(a.stdout, "\nid: %s\nruntime: %s\n", s.ID, s.Runtime)
+		if s.Seen != "" {
+			fmt.Fprintf(a.stdout, "seen: %s\n", s.Seen)
+		}
 		if !s.LastHookAt.IsZero() {
 			fmt.Fprintf(a.stdout, "last hook: %s (contact only)\n", s.LastHookAt.UTC().Format(time.RFC3339Nano))
 		}

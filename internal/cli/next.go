@@ -104,6 +104,9 @@ func nextAfterRefusal(cmd, target, reason string) string {
 	case query.RefuseSelf:
 		return "this is your own session: use another agent's id from tmag list"
 	case query.RefuseAgent:
+		if cmd == "seen" {
+			return "only the person can mark a turn seen: it is your own view of the work, which no agent speaks for"
+		}
 		return "only the person can decide this"
 	}
 	return ""

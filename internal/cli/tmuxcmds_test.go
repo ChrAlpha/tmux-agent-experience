@@ -30,7 +30,11 @@ func TestSummary(t *testing.T) {
 	shownIn(&v, "%2", "blocked", 0)
 	shownIn(&v, "%3", "working", 0)
 	shownIn(&v, "%4", "unknown", 0)
-	if got := Summary(v.Sessions, false); got != "2 blocked · 1 working" {
+	v.Sessions = append(v.Sessions,
+		query.Session{ID: "finished", Agent: "claude", State: "idle", Turn: "t1"},
+		query.Session{ID: "settled", Agent: "claude", State: "idle", Turn: "t1", Seen: "t1"},
+	)
+	if got := Summary(v.Sessions, false); got != "2 blocked · 1 finished · 1 working · 1 idle" {
 		t.Fatalf("plain = %q", got)
 	}
 	if got := Summary(v.Sessions, true); !strings.HasPrefix(got, "#[fg=red,bold]2 blocked#[default]") {
@@ -65,8 +69,12 @@ func TestWaiting(t *testing.T) {
 	var idle query.View
 	shownIn(&idle, "%1", "idle", time.Hour)
 	shownIn(&idle, "%4", "working", 2*time.Hour)
+	if got := pick(idle, ""); got != "" {
+		t.Fatalf("a settled session was a target: %s", got)
+	}
+	idle.Sessions[0].Turn = "t1"
 	if got := pick(idle, ""); got != "%1" {
-		t.Fatalf("idle fallback picked %s", got)
+		t.Fatalf("finished fallback picked %s", got)
 	}
 	if got := pick(idle, "%1"); got != "" {
 		t.Fatal("picked the pane the user is in")

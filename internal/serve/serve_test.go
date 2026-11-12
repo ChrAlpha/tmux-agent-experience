@@ -71,8 +71,8 @@ func TestAdmissionAndIndependentContract(t *testing.T) {
 	if !strings.Contains(info.Body.String(), Schema) || !strings.Contains(info.Body.String(), "instance") {
 		t.Fatal("missing public contract discovery")
 	}
-	if !strings.Contains(info.Body.String(), `"send"`) {
-		t.Fatal("send is not among the operations")
+	if !strings.Contains(info.Body.String(), `"send"`) || !strings.Contains(info.Body.String(), `"seen"`) {
+		t.Fatal("send or seen is not among the operations")
 	}
 	for _, path := range []string{"/app.js", "/", "/api/machines"} {
 		if got := call(s, "GET", path, "", c.Token, "", ""); got.Code != 404 {
@@ -103,6 +103,16 @@ func TestActionsPreserveArgumentsAndGates(t *testing.T) {
 	r = call(s, "POST", "/v2/act", `{"verb":"shell","target":"--json","text":"hello"}`, c.Token, "", "")
 	if r.Code != 400 {
 		t.Fatalf("an unknown control verb: %d", r.Code)
+	}
+	got = nil
+	r = call(s, "POST", "/v2/act", `{"verb":"seen","target":"--json","turn":"t1"}`, c.Token, "", "")
+	if r.Code != 409 || strings.Join(got, " ") != "seen --json --turn=t1 -- --json" {
+		t.Fatalf("seen arguments or refusal changed: %d %v", r.Code, got)
+	}
+	got = nil
+	long := strings.Repeat("t", 257)
+	if r = call(s, "POST", "/v2/act", `{"verb":"seen","target":"a","turn":"`+long+`"}`, c.Token, "", ""); r.Code != 400 || got != nil {
+		t.Fatalf("an oversized turn reached the runner: %d %v", r.Code, got)
 	}
 	got = nil
 	for _, b := range []string{`{"verb":"shell","target":"a"}`, `{"verb":"send","target":"a","machine":"remote"}`, `{"verb":"send","target":"a"} {}`} {

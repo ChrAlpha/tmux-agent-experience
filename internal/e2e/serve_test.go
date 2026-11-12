@@ -140,6 +140,22 @@ func TestServeCarriesOwnerVerbs(t *testing.T) {
 		code, body := call(http.MethodGet, "/v2/read?target="+sidA+"&last=1", "")
 		return code == http.StatusOK && strings.Contains(body, `"text":"answered: from the phone`)
 	})
+	// The owner marks the finished turn seen; the event names its credential.
+	finished, _ := h.sessionOf(sidA)
+	if finished.Turn == "" || finished.Seen != "" {
+		t.Fatalf("the turn is %+v", finished)
+	}
+	if code, body := call(http.MethodPost, "/v2/act", `{"verb":"seen","target":"`+sidA+`","turn":"`+finished.Turn+`"}`); code != http.StatusOK || !strings.Contains(body, `"seen":"`+finished.Turn+`"`) {
+		t.Fatalf("seen: %d %s", code, body)
+	}
+	h.eventually("a Seen event with the credential", func() bool {
+		for _, e := range h.events(sidA) {
+			if e.Event == eventlog.Seen && e.Turn == finished.Turn && e.Credential == issued.ID {
+				return true
+			}
+		}
+		return false
+	})
 
 	// A request: what it asks, then the answer.
 	h.tmux("send-keys", "-t", pane, "block", "Enter")

@@ -51,6 +51,8 @@ Usage:
   tmag prune    [--server S]                   reconcile panes with the sessions
   tmag jump     [--client C] [--server S] [--from %N] [--json]
                                                go to the agent waiting longest
+  tmag seen     <target> [--turn TURN] [--json]  the person has seen its finished turn
+  tmag seen     --shown [--server S]            mark the turns the terminal shows seen
   tmag notify   [--json]                       send a test alert through @tmag-notify
   tmag serve    [--addr ADDR] [--host HOST]... [--origin ORIGIN]...
                                                local HTTP API, until stopped
@@ -175,6 +177,8 @@ func (a *app) run(args []string) int {
 		return a.cmdPrune(rest)
 	case "jump":
 		return a.cmdJump(rest)
+	case "seen":
+		return a.cmdSeen(rest)
 	case "notify":
 		return a.cmdNotify(rest)
 	case "auth":

@@ -157,6 +157,12 @@ func RunContext(parent context.Context, in Input) error {
 	}
 
 	var prev, rec session.Record
+	var shown []tmux.Pane
+	var own *attach.Client
+	var others []attach.Shown
+	var ring string
+	var atTerminal bool
+	var opts optionCache
 	wrote := false
 	err = env.Store.Lock(ctx, in.Agent, p.SessionID, func() error {
 		cur, found, err := get()
@@ -188,10 +194,37 @@ func RunContext(parent context.Context, in Input) error {
 		if contact.After(next.LastHookAt) {
 			next.LastHookAt = contact
 		}
+		ring = Alert(cur.State(), next.State())
+		own, others, shown = sightOf(w, host, hostKnown, next)
+		// Presence is what the bell and @tmag-notify rest on, what an Alert
+		// event reports, and what a seen turn rests on: computed once, for a
+		// change that alerts, and no tmux call for one that does not.
+		if ring != "" {
+			present := presence(shown, func(s tmux.Server) (time.Time, bool) { return s.LastInput(ctx) })
+			for _, at := range present {
+				atTerminal = atTerminal || at
+			}
+			if ring == "finished" && next.Finished() && seenAt(shown, present, &opts, ctx) {
+				next.Seen = next.Turn
+			}
+		}
 		// Calls and other background work change without an event; whatever
 		// an event reports of the session (session.Report) is logged.
 		if err := env.Store.Save(ctx, in.Log, cur, next, ev); err != nil {
 			return err
+		}
+		if ring != "" {
+			// Seen is logged after the change and its Alert, under the same
+			// lock, and written with the change.
+			if err := logAlert(ctx, in.Log, next, ring, atTerminal); err != nil {
+				RecordErrorContext(ctx, in.Log.Dir, in.Agent, err)
+			}
+			if next.Seen != cur.Seen {
+				seen := eventlog.Event{Event: eventlog.Seen, Agent: next.Agent, Session: next.ID, Turn: next.Seen}
+				if err := in.Log.Append(ctx, &seen); err != nil {
+					RecordErrorContext(ctx, in.Log.Dir, in.Agent, err)
+				}
+			}
 		}
 		prev, rec, wrote = cur, next, true
 		return nil
@@ -218,36 +251,54 @@ func RunContext(parent context.Context, in Input) error {
 	}
 	answer.Close(ctx, in.Log.Dir, closed...)
 
-	ring := Alert(prev.State(), rec.State())
-	var shown []tmux.Pane
-	if c, ok := w.ClientOf(host); hostKnown && ok {
-		if err := env.Attach(ctx, w, c, rec, attach.Process); err != nil {
+	if own != nil {
+		if err := env.Attach(ctx, w, *own, rec, attach.Process); err != nil {
 			return err
 		}
-		shown = append(shown, c.Pane)
 	}
-	for _, s := range w.Attached(rec) {
-		if len(shown) > 0 && s.Client.Pane.Server == shown[0].Server && s.Client.Pane.ID == shown[0].ID {
-			continue // just attached, projection included
-		}
+	for _, s := range others {
 		if err := env.Show(ctx, s.Client.Pane, s.Attachment); err != nil {
 			return err
 		}
-		shown = append(shown, s.Client.Pane)
-	}
-	// Presence is what the bell and @tmag-notify rest on, and what an Alert
-	// event reports: computed once, for a change that alerts.
-	atTerminal := false
-	if ring != "" {
-		atTerminal = present(shown, func(s tmux.Server) (time.Time, bool) { return s.LastInput(ctx) })
-		if err := logAlert(ctx, in.Log, rec, ring, atTerminal); err != nil {
-			RecordErrorContext(ctx, in.Log.Dir, in.Agent, err)
-		}
 	}
 	for _, pane := range shown {
-		alert(ctx, tmux.Server{Socket: pane.Server}, pane, ring)
+		alert(ctx, tmux.Server{Socket: pane.Server}, pane, ring, &opts)
 	}
-	return tell(ctx, rec, shown, ring, atTerminal)
+	return tell(ctx, rec, shown, ring, atTerminal, &opts)
+}
+
+// sightOf is the panes that show rec: the hook's own client, whose process
+// ancestry proves the pane, then every stored attachment. own is the pane
+// the hook attaches; its projection comes with the attachment.
+func sightOf(w *attach.World, host proc.Host, hostKnown bool, rec session.Record) (own *attach.Client, others []attach.Shown, shown []tmux.Pane) {
+	if c, ok := w.ClientOf(host); hostKnown && ok {
+		own = &c
+		shown = append(shown, c.Pane)
+	}
+	for _, s := range w.Attached(rec) {
+		if own != nil && s.Client.Pane.Server == own.Pane.Server && s.Client.Pane.ID == own.Pane.ID {
+			continue
+		}
+		others = append(others, s)
+		shown = append(shown, s.Client.Pane)
+	}
+	return own, others, shown
+}
+
+// seenAt reports whether the person sees rec on the terminal: a watched pane
+// shows it, its server had the person's input within notify.Present, and the
+// server learns seen turns from the terminal (@tmag-seen).
+func seenAt(shown []tmux.Pane, present map[string]bool, opts *optionCache, ctx context.Context) bool {
+	for _, p := range shown {
+		if !p.Watched || !present[p.Server] {
+			continue
+		}
+		if opts.get(ctx, tmux.Server{Socket: p.Server}).seen == "off" {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 // Alert names the change worth a bell, or "": "blocked" when an agent starts
@@ -292,15 +343,38 @@ func blockedRequest(rec session.Record) (eventlog.AlertRequest, bool) {
 // alert rings the pane's bell when the tmux plugin enabled this kind of alert
 // (@tmag-alert) and nobody is looking at the pane. tmux turns the bell into the
 // window's alert flag, which prefix + M-n jumps to.
-func alert(ctx context.Context, srv tmux.Server, pane tmux.Pane, kind string) {
-	if kind != "" && !pane.Watched && alerts(ctx, srv, kind) {
+func alert(ctx context.Context, srv tmux.Server, pane tmux.Pane, kind string, opts *optionCache) {
+	if kind != "" && !pane.Watched && opts.alerts(ctx, srv, kind) {
 		_ = pane.Bell()
 	}
 }
 
+// optionCache reads the plugin's options from tmux once per server, in one
+// call: a hook that needs @tmag-seen has @tmag-alert too.
+type optionCache struct{ values map[string]serverOptions }
+
+// serverOptions are the plugin's options on one server. An unreadable or
+// unset option is "", which means the default.
+type serverOptions struct{ alert, seen string }
+
+func (o *optionCache) get(ctx context.Context, srv tmux.Server) serverOptions {
+	if o.values == nil {
+		o.values = map[string]serverOptions{}
+	}
+	if v, ok := o.values[srv.Socket]; ok {
+		return v
+	}
+	v := serverOptions{}
+	if values, err := srv.GlobalOptionsContext(ctx, "@tmag-alert", tmux.OptionSeen); err == nil {
+		v.alert, v.seen = values["@tmag-alert"], values[tmux.OptionSeen]
+	}
+	o.values[srv.Socket] = v
+	return v
+}
+
 // alerts reports whether the server's @tmag-alert names this kind of alert.
-func alerts(ctx context.Context, srv tmux.Server, kind string) bool {
-	for _, enabled := range strings.Split(srv.GlobalOption(ctx, "@tmag-alert"), ",") {
+func (o *optionCache) alerts(ctx context.Context, srv tmux.Server, kind string) bool {
+	for _, enabled := range strings.Split(o.get(ctx, srv).alert, ",") {
 		if strings.TrimSpace(enabled) == kind {
 			return true
 		}
@@ -315,7 +389,7 @@ func alerts(ctx context.Context, srv tmux.Server, kind string) bool {
 // its alerts always run the command. Each distinct command set on a server
 // whose @tmag-alert names the alert runs once, detached, so the hook does not
 // wait for the network. atTerminal is what the alert event reported.
-func tell(ctx context.Context, rec session.Record, shown []tmux.Pane, kind string, atTerminal bool) error {
+func tell(ctx context.Context, rec session.Record, shown []tmux.Pane, kind string, atTerminal bool, opts *optionCache) error {
 	if kind == "" {
 		return nil
 	}
@@ -326,7 +400,7 @@ func tell(ctx context.Context, rec session.Record, shown []tmux.Pane, kind strin
 	var commands []string
 	for _, srv := range servers {
 		command := srv.GlobalOption(ctx, notify.Option)
-		if command == "" || slices.Contains(commands, command) || !alerts(ctx, srv, kind) {
+		if command == "" || slices.Contains(commands, command) || !opts.alerts(ctx, srv, kind) {
 			continue
 		}
 		commands = append(commands, command)
@@ -362,16 +436,25 @@ func tell(ctx context.Context, rec session.Record, shown []tmux.Pane, kind strin
 	return nil
 }
 
+// presence reports, per server that shows one of the panes, whether a client
+// had the person's input within notify.Present. It asks each server once.
+func presence(shown []tmux.Pane, lastInput func(tmux.Server) (time.Time, bool)) map[string]bool {
+	at := map[string]bool{}
+	for _, p := range shown {
+		if _, asked := at[p.Server]; asked {
+			continue
+		}
+		last, ok := lastInput(tmux.Server{Socket: p.Server})
+		at[p.Server] = ok && time.Since(last) < notify.Present
+	}
+	return at
+}
+
 // present reports whether the person is at a terminal that shows one of the
 // panes: one of their tmux servers had their input within notify.Present.
 func present(shown []tmux.Pane, lastInput func(tmux.Server) (time.Time, bool)) bool {
-	seen := map[string]bool{}
-	for _, p := range shown {
-		if seen[p.Server] {
-			continue
-		}
-		seen[p.Server] = true
-		if last, ok := lastInput(tmux.Server{Socket: p.Server}); ok && time.Since(last) < notify.Present {
+	for _, at := range presence(shown, lastInput) {
+		if at {
 			return true
 		}
 	}

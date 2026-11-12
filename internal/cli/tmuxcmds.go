@@ -19,10 +19,10 @@ import (
 // empty, in line with the sessions, and returns the view of those panes and
 // of the sessions they show. tmux's own displays (pane borders, the picker)
 // read pane options directly, where nothing else checks them.
-func (a *app) reconciled(ctx context.Context, server string) (query.View, error) {
+func (a *app) reconciled(ctx context.Context, server string) (query.View, *attach.World, error) {
 	w, err := attach.Load(ctx)
 	if err != nil {
-		return query.View{}, err
+		return query.View{}, nil, err
 	}
 	socket := ""
 	if server != "" {
@@ -30,17 +30,17 @@ func (a *app) reconciled(ctx context.Context, server string) (query.View, error)
 		w.Panes = slices.DeleteFunc(w.Panes, func(p tmux.Pane) bool { return p.Server != socket })
 	}
 	if err := attach.Reconcile(ctx, attach.Env{Log: a.log, Store: a.store()}, w); err != nil {
-		return query.View{}, err
+		return query.View{}, nil, err
 	}
-	v, _, err := query.Load(ctx, a.store())
+	v, fresh, err := query.Load(ctx, a.store())
 	if err != nil || socket == "" {
-		return v, err
+		return v, fresh, err
 	}
 	v.Panes = slices.DeleteFunc(v.Panes, func(p query.Pane) bool { return p.Server != socket })
 	v.Sessions = slices.DeleteFunc(v.Sessions, func(s query.Session) bool {
 		return !slices.ContainsFunc(s.Panes, func(p query.Shown) bool { return p.Server == socket })
 	})
-	return v, nil
+	return v, fresh, nil
 }
 
 // cmdPrune reconciles panes of one server or all. The picker runs it first
@@ -59,7 +59,7 @@ func (a *app) cmdPrune(args []string) int {
 	defer stop()
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
-	if _, err := a.reconciled(ctx, *server); err != nil {
+	if _, _, err := a.reconciled(ctx, *server); err != nil {
 		return a.fail("prune", err)
 	}
 	return ExitOK
@@ -77,26 +77,49 @@ func (a *app) cmdStatus(args []string) int {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	v, err := a.reconciled(ctx, *server)
+	v, w, err := a.reconciled(ctx, *server)
 	if err != nil {
 		return a.fail("status", err)
+	}
+	// The status line is drawn for an attached client, so a finished turn it
+	// shows is one the person has seen. A failure leaves the count as it was;
+	// the next tick tries again.
+	if marked, err := query.MarkShown(ctx, a.log, v, w, *server); err == nil {
+		for _, d := range marked {
+			for i := range v.Sessions {
+				if v.Sessions[i].Agent == d.Session.Agent && v.Sessions[i].ID == d.Session.ID {
+					v.Sessions[i].Seen = d.Session.Seen
+				}
+			}
+		}
 	}
 	fmt.Fprintln(a.stdout, Summary(v.Sessions, *styled))
 	return ExitOK
 }
 
-// Summary counts sessions by state, e.g. "2 blocked · 1 working". Blocked
+// Summary counts sessions by what they need, in this order: blocked,
+// finished (idle on a turn the person has not seen), working, and idle
+// (settled), e.g. "1 blocked · 2 finished · 1 working · 3 idle". Blocked
 // sessions are highlighted in tmux style when styled is set.
 func Summary(sessions []query.Session, styled bool) string {
 	count := map[string]int{}
 	for _, s := range sessions {
-		count[s.State]++
+		switch {
+		case s.State == adapter.Blocked:
+			count["blocked"]++
+		case s.Finished():
+			count["finished"]++
+		case s.State == adapter.Working:
+			count["working"]++
+		case s.State == adapter.Idle:
+			count["idle"]++
+		}
 	}
 	var parts []string
-	for _, state := range []string{adapter.Blocked, adapter.Working, adapter.Idle} {
+	for _, state := range []string{"blocked", "finished", "working", "idle"} {
 		if n := count[state]; n > 0 {
 			part := fmt.Sprintf("%d %s", n, state)
-			if styled && state == adapter.Blocked {
+			if styled && state == "blocked" {
 				part = "#[fg=red,bold]" + part + "#[default]"
 			}
 			parts = append(parts, part)
@@ -118,7 +141,7 @@ func (a *app) cmdJump(args []string) int {
 	}
 	ctx, cancel := signalContext()
 	defer cancel()
-	v, err := a.reconciled(ctx, *server)
+	v, _, err := a.reconciled(ctx, *server)
 	if err != nil {
 		return a.fail("jump", err)
 	}
@@ -151,8 +174,9 @@ func (a *app) cmdJump(args []string) int {
 }
 
 // Waiting picks the pane of the session that has waited longest for the
-// user: blocked sessions first, then idle ones, oldest first, skipping the
-// pane the user is in.
+// user: blocked sessions first, then finished ones (idle on a turn the person
+// has not seen), oldest first, skipping the pane the user is in. A settled
+// session is never a target.
 func Waiting(v query.View, fromPane string) (query.Pane, bool) {
 	type candidate struct {
 		pane    query.Pane
@@ -162,10 +186,14 @@ func Waiting(v query.View, fromPane string) (query.Pane, bool) {
 	var pool []candidate
 	for _, p := range v.Panes {
 		s, ok := v.Session(p.Agent, p.Session)
-		if !ok || p.ID == fromPane || (s.State != adapter.Blocked && s.State != adapter.Idle) {
+		if !ok || p.ID == fromPane {
 			continue
 		}
-		c := candidate{pane: p, blocked: s.State == adapter.Blocked}
+		blocked := s.State == adapter.Blocked
+		if !blocked && !s.Finished() {
+			continue
+		}
+		c := candidate{pane: p, blocked: blocked}
 		if s.Since != nil {
 			c.since = *s.Since
 		}

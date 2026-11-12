@@ -112,7 +112,7 @@ func TestEveryRefusalSaysWhatNext(t *testing.T) {
 		t.Fatal("found no refusal reasons in query/control.go")
 	}
 	for _, code := range codes {
-		for _, cmd := range []string{"send", "reply", "interrupt", "answer", "read"} {
+		for _, cmd := range []string{"send", "reply", "interrupt", "answer", "seen", "read"} {
 			if next(cmd, "abcd", &query.RefusedError{Reason: code}) == "" {
 				t.Errorf("%s refused %s says nothing about what to do next", cmd, code)
 			}

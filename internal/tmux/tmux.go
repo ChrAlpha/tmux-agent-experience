@@ -53,6 +53,10 @@ func (p Pane) Target() string {
 // OptionPrefix scopes every pane option owned by tmag.
 const OptionPrefix = "@tmag_"
 
+// OptionSeen is the plugin's switch for learning seen turns from the
+// terminal: `on` (the default when unset) or `off`.
+const OptionSeen = "@tmag-seen"
+
 // OptionKeys lists every pane option tmag reads or writes, without the
 // prefix: the attachment (agent, session, pid, start, evidence) and the
 // display projection (state, kind, since, cmd).
@@ -278,27 +282,56 @@ func (s Server) GlobalOption(ctx context.Context, name string) string {
 // GlobalOptionContext returns an unset option as "", nil while preserving
 // command, cancellation and decoding errors. It performs no value expansion.
 func (s Server) GlobalOptionContext(ctx context.Context, name string) (string, error) {
+	values, err := s.GlobalOptionsContext(ctx, name)
+	if err != nil {
+		return "", err
+	}
+	return values[name], nil
+}
+
+// GlobalOptionsContext returns several global options in one tmux
+// invocation, sparing a hook a process per option. An unset option is "".
+func (s Server) GlobalOptionsContext(ctx context.Context, names ...string) (map[string]string, error) {
+	values := make(map[string]string, len(names))
+	if len(names) == 0 {
+		return values, nil
+	}
 	// Read tmux's quoted representation so literal backslashes and control
 	// characters remain distinguishable. tmux 3.4 additionally escapes dollar
 	// variables when printing; probe that layer in the same command invocation.
 	const probe = "$TMAG_OPTION_PRINT"
-	out, err := s.Run(ctx, "show-option", "-gq", name, ";", "display-message", "-p", probe)
+	var args []string
+	for _, name := range names {
+		args = append(args, "show-option", "-gq", name, ";")
+	}
+	args = append(args, "display-message", "-p", probe)
+	out, err := s.Run(ctx, args...)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	line, printed, _ := strings.Cut(string(out), "\n")
-	value, ok := strings.CutPrefix(line, name+" ")
-	if !ok {
-		return "", nil
+	lines := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
+	escaped := false
+	if len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == `\`+probe {
+		escaped = true
+		lines = lines[:len(lines)-1]
 	}
-	if strings.TrimSpace(printed) == `\`+probe {
-		value = unescapePrintedDollars(value)
+	for _, name := range names {
+		for _, line := range lines {
+			value, ok := strings.CutPrefix(line, name+" ")
+			if !ok {
+				continue
+			}
+			if escaped {
+				value = unescapePrintedDollars(value)
+			}
+			if value, err = unquoteOption(value); err != nil {
+				return nil, err
+			}
+			values[name] = strings.TrimSpace(value)
+			break
+		}
 	}
-	value, err = unquoteOption(value)
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(value), nil
+	return values, nil
 }
 
 // unescapePrintedDollars reverses just the extra printing layer of tmux 3.4.

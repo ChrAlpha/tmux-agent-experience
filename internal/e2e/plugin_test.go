@@ -218,20 +218,41 @@ func TestJumpAndStatus(t *testing.T) {
 	h := start(t)
 	sock := h.tmux("display-message", "-p", "#{socket_path}")
 	blocked := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_HOOKS": "1"}, filepath.Join(bin, "claude"))
-	idle := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidB, "FAKE_HOOKS": "1"}, filepath.Join(bin, "claude"))
-	h.waitPane(idle, "idle", "process")
+	finished := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidB, "FAKE_HOOKS": "1"}, filepath.Join(bin, "claude"))
+	h.waitPane(finished, "idle", "process")
 	h.waitPane(blocked, "idle", "process")
+	// A turn ends in a pane nobody watches: sidB is finished, not settled.
+	if r := h.tmag("", "send", sidB[:8], "--wait", "work"); r.code != 0 {
+		t.Fatalf("send to the idle pane: %d %s", r.code, r.out)
+	}
 	h.tmux("send-keys", "-t", blocked, "block", "Enter")
 	h.waitPane(blocked, "blocked", "process")
+	s, _ := h.sessionOf(sidB)
+	if s.Seen != "" || s.Turn == "" {
+		t.Fatalf("the finished turn is %+v", s)
+	}
 
 	if r := h.tmag("", "jump", "--server", sock); r.code != 0 || strings.TrimSpace(r.out) != sock+":"+blocked {
 		t.Fatalf("jump = %d %q, want %s", r.code, r.out, blocked)
 	}
-	if r := h.tmag("", "jump", "--server", sock, "--from", blocked); strings.TrimSpace(r.out) != sock+":"+idle {
-		t.Fatalf("jump from the blocked pane = %q, want %s", r.out, idle)
+	if r := h.tmag("", "jump", "--server", sock, "--from", blocked); strings.TrimSpace(r.out) != sock+":"+finished {
+		t.Fatalf("jump from the blocked pane = %q, want %s", r.out, finished)
+	}
+	if r := h.tmag("", "status", "--server", sock); strings.TrimSpace(r.out) != "1 blocked · 1 finished" {
+		t.Fatalf("status = %q", r.out)
+	}
+	// The person marks the finished turn seen, as a command does.
+	if r := h.tmag("", "seen", sidB[:8], "--turn", s.Turn); r.code != 0 {
+		t.Fatalf("seen: %d %s", r.code, r.out)
+	}
+	if got, _ := h.sessionOf(sidB); got.Seen != s.Turn {
+		t.Fatalf("after seen: %+v", got)
+	}
+	if r := h.tmag("", "jump", "--server", sock, "--from", blocked); r.code == 0 {
+		t.Fatalf("a settled session is still a jump target: %s", r.out)
 	}
 	if r := h.tmag("", "status", "--server", sock); strings.TrimSpace(r.out) != "1 blocked · 1 idle" {
-		t.Fatalf("status = %q", r.out)
+		t.Fatalf("status after seen = %q", r.out)
 	}
 }
 
@@ -375,5 +396,78 @@ func TestPickerClearsStaleRecords(t *testing.T) {
 	_ = exec.Command("tmux", "-L", h.name, "source-file", conf).Run()
 	if got := listed(); got != "" {
 		t.Fatalf("the picker would list a vanished agent as %q", got)
+	}
+}
+
+// The plugin installs one hook per view change, at an index of its own: a
+// reload replaces them in place, a person's hooks keep theirs, and
+// @tmag-seen off removes only tmag's.
+func TestPluginSeenHooks(t *testing.T) {
+	h := start(t)
+	h.tmux("set-hook", "-g", "client-attached[0]", "display-message person")
+	h.tmux("set-hook", "-gw", "window-pane-changed[97]", "display-message person97")
+	plugin := h.loadPlugin(false, nil)
+	h.waitBinary(plugin)
+	if got := h.tmux("show-option", "-gqv", "@tmag-seen"); got != "on" {
+		t.Fatalf("@tmag-seen = %q", got)
+	}
+	seenHooks := func() map[string]int {
+		count := map[string]int{}
+		for _, scope := range []string{"-g", "-gw"} {
+			for _, line := range strings.Split(h.tmux("show-hooks", scope), "\n") {
+				if !strings.Contains(line, "# tmag seen hook") {
+					continue
+				}
+				if name, _, ok := strings.Cut(line, "["); ok {
+					count[name]++
+				}
+			}
+		}
+		return count
+	}
+	only := func(want map[string]int) bool {
+		got := seenHooks()
+		if len(got) != len(want) {
+			return false
+		}
+		for name, n := range want {
+			if got[name] != n {
+				return false
+			}
+		}
+		return true
+	}
+	// A pane's change is a window hook; a person's member there moved tmag's
+	// to another index, and the session and client hooks stay global.
+	if got := h.tmux("show-hooks", "-gw"); !strings.Contains(got, "window-pane-changed[98]") {
+		t.Fatalf("the pane hook is not a global window member at its own index:\n%s", got)
+	}
+	hooks := []string{"session-window-changed", "window-pane-changed", "client-session-changed", "client-attached"}
+	one := map[string]int{}
+	for _, name := range hooks {
+		one[name] = 1
+	}
+	h.eventually("one hook per view change", func() bool { return only(one) })
+	// Loading again replaces them; a person's hook at tmag's index moved
+	// tmag's to another one, and stays.
+	for range 2 {
+		h.tmux("run-shell", filepath.Join(plugin, "tmag.tmux"))
+	}
+	if got := h.tmux("show-hooks", "-g"); !strings.Contains(got, "client-attached[0] display-message person") {
+		t.Fatalf("the person's global hook changed:\n%s", got)
+	}
+	if got := h.tmux("show-hooks", "-gw"); !strings.Contains(got, "window-pane-changed[97] display-message person97") {
+		t.Fatalf("the person's window hook changed:\n%s", got)
+	}
+	h.eventually("still one hook per view change", func() bool { return only(one) })
+
+	h.tmux("set-option", "-g", "@tmag-seen", "off")
+	h.tmux("run-shell", filepath.Join(plugin, "tmag.tmux"))
+	h.eventually("no tmag hooks", func() bool { return only(nil) })
+	if got := h.tmux("show-hooks", "-g"); !strings.Contains(got, "client-attached[0] display-message person") {
+		t.Fatalf("the person's global hook changed with tmag off:\n%s", got)
+	}
+	if got := h.tmux("show-hooks", "-gw"); !strings.Contains(got, "window-pane-changed[97] display-message person97") {
+		t.Fatalf("the person's window hook changed with tmag off:\n%s", got)
 	}
 }
