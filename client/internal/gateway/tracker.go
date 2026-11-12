@@ -71,6 +71,13 @@ func newTracker() *tracker {
 	return &tracker{now: time.Now, seen: map[string]seenTurn{}}
 }
 
+// setNow changes the clock under the tracker's lock.
+func (t *tracker) setNow(now func() time.Time) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.now = now
+}
+
 // loadTracker reads the turns a previous gateway saw. A missing file is an
 // empty history.
 func loadTracker(dir string) (*tracker, error) {
@@ -109,9 +116,9 @@ func sessionID(machine, agent, id string) string { return machine + "/" + agent 
 
 // touch says a machine still shows these sessions.
 func (t *tracker) touch(machine string, sessions []Session) {
-	now := t.now()
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	now := t.now()
 	for _, s := range sessions {
 		k := sessionID(machine, s.Agent, s.ID)
 		if v, ok := t.seen[k]; ok {
@@ -131,9 +138,9 @@ func (t *tracker) mark(machine, agent, id, turn string) string {
 	if turn == "" {
 		return ""
 	}
-	now := t.now()
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	now := t.now()
 	t.seen[sessionID(machine, agent, id)] = seenTurn{machine: machine, agent: agent, id: id, turn: turn, shown: now}
 	t.dirty = true
 	t.pruneLocked(now)

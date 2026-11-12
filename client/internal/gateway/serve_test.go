@@ -263,6 +263,20 @@ func waitSession(t *testing.T, s *Server) Session {
 	}
 }
 
+// waitMachine waits until the follower has applied its first snapshot, which
+// happens after it tracked that snapshot's sessions.
+func waitMachine(t *testing.T, s *Server, name string) {
+	t.Helper()
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		if _, _, _, up, _ := s.states[name].snapshot(); up {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("machine %s never came up", name)
+		}
+	}
+}
+
 func TestGuard(t *testing.T) {
 	g := guard{owner: "me@example.com", tailscale: []string{"box.tail1234.ts.net"}}
 	req := func(host string, header map[string]string) *http.Request {
@@ -565,6 +579,7 @@ func TestSeenKeepsASessionTheMachineStillShows(t *testing.T) {
 	bin, _ := fakeTmag(t, `echo '{"schema":"tmag/v2","type":"snapshot","seq":1,"sessions":[{"id":"s1","agent":"claude","state":"idle","turn":"t1"}],"panes":[]}'; sleep 30`)
 	s, hs := newServer(t, Config{Machines: []Machine{{Name: "here", Argv: []string{bin}}}})
 	waitSession(t, s)
+	waitMachine(t, s, "here")
 	issued := signIn(t, s)
 	res := call(t, http.MethodPost, hs.URL+"/api/seen", issued.Token, `{"machine":"here","agent":"claude","session":"s1","turn":"t1"}`, nil)
 	var marked struct{ Turn string }
@@ -574,7 +589,7 @@ func TestSeenKeepsASessionTheMachineStillShows(t *testing.T) {
 	}
 	// Eight quiet days do not forget a session its machine still shows.
 	later := time.Now().Add(8 * 24 * time.Hour)
-	s.seen.now = func() time.Time { return later }
+	s.seen.setNow(func() time.Time { return later })
 	var machines struct {
 		Seen map[string]string `json:"seen"`
 	}
@@ -594,7 +609,7 @@ func TestSeenKeepsASessionTheMachineStillShows(t *testing.T) {
 	}
 	// Seven days later, the trace is gone.
 	after := later.Add(7*24*time.Hour + time.Hour)
-	s.seen.now = func() time.Time { return after }
+	s.seen.setNow(func() time.Time { return after })
 	machines.Seen = nil
 	res = call(t, http.MethodGet, hs.URL+"/api/machines", issued.Token, "", nil)
 	decodeBody(t, res, &machines)

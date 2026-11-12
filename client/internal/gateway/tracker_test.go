@@ -71,7 +71,7 @@ func TestSeenPersists(t *testing.T) {
 func TestSeenBounds(t *testing.T) {
 	tr := newTracker()
 	at := time.Now()
-	tr.now = func() time.Time { return at }
+	tr.setNow(func() time.Time { return at })
 	for i := range seenLimit + 10 {
 		tr.mark("box", "claude", string(rune('a'+i%26))+string(rune('a'+i/26)), "turn")
 	}
@@ -80,7 +80,7 @@ func TestSeenBounds(t *testing.T) {
 	}
 	// A session no machine shows for a week leaves a trace no longer.
 	tr = newTracker()
-	tr.now = func() time.Time { return at }
+	tr.setNow(func() time.Time { return at })
 	tr.mark("box", "claude", "s1", "t1")
 	at = at.Add(3 * 24 * time.Hour)
 	tr.touch("box", []Session{{Agent: "claude", ID: "s1"}})
@@ -95,7 +95,7 @@ func TestSeenBounds(t *testing.T) {
 	// A new turn is not seen until it is marked.
 	at = time.Now()
 	tr = newTracker()
-	tr.now = func() time.Time { return at }
+	tr.setNow(func() time.Time { return at })
 	tr.mark("box", "claude", "s1", "t1")
 	if !tr.isSeen("box", Session{Agent: "claude", ID: "s1", Turn: "t1"}) {
 		t.Fatal("the marked turn is not seen")
