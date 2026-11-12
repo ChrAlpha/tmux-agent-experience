@@ -1,0 +1,326 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>tmag：让 tmux 知道你的 coding agents 正在做什么</title>
+<meta name="description" content="照常在 tmux panes 中使用 Claude Code、Codex、Pi 和 oh-my-pi。看清谁在工作、等待回应或已经完成，直接跳到需要你的 agent，也让 agents 互相交接工作。">
+<link rel="canonical" href="https://chralpha.github.io/tmux-agent-experience/zh-CN/">
+<link rel="alternate" hreflang="en" href="https://chralpha.github.io/tmux-agent-experience/">
+<link rel="alternate" hreflang="zh-CN" href="https://chralpha.github.io/tmux-agent-experience/zh-CN/">
+<link rel="alternate" hreflang="x-default" href="https://chralpha.github.io/tmux-agent-experience/">
+<meta property="og:type" content="website">
+<meta property="og:locale" content="zh_CN">
+<meta property="og:title" content="tmag：让 tmux 知道你的 coding agents 正在做什么">
+<meta property="og:description" content="看清哪个 agent 需要你，一键跳过去，也让 agents 互相交接工作。无需 daemon 或 wrapper。">
+<meta property="og:url" content="https://chralpha.github.io/tmux-agent-experience/zh-CN/">
+<meta property="og:image" content="https://chralpha.github.io/tmux-agent-experience/og.png">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="theme-color" content="#5fce55">
+<link rel="icon" href="../favicon.svg" type="image/svg+xml">
+<link rel="preload" href="../fonts/overpass.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="../style.css">
+<script src="../site.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">跳到正文</a>
+
+<header class="hero" id="start">
+  <div class="hero-grid">
+    <p class="kicker">tmux-agent-experience <span aria-hidden="true">·</span> <code>tmag</code></p>
+    <h1>让 tmux 知道你的 coding agents 正在做什么。</h1>
+    <div class="hero-copy">
+      <p class="lede">照常在 tmux panes 中使用 Claude Code、Codex、Pi 和 oh-my-pi。看清谁在工作、等待回应或已经完成，直接跳到需要你的 agent，也让 agents 互相交接工作。</p>
+      <div class="install" id="install">
+        <p class="install-label">把这段话粘贴给你在 tmux 中运行的 coding agent：</p>
+        <div class="prompt">
+          <p id="install-prompt">Read https://raw.githubusercontent.com/ChrAlpha/tmux-agent-experience/main/SKILL.md and follow it to install or update tmag for the AI tool I am using.</p>
+          <button type="button" class="copy" data-copy="install-prompt" data-copied="已复制">复制</button>
+        </div>
+        <p class="install-note">Agent 会先征得你同意再修改 tmux 配置，随后接入它所在的 agent 宿主，并验证结果。需要 Linux 或 macOS 上的 tmux 3.2+、TPM 和 curl。<a href="#by-hand">手动安装</a></p>
+      </div>
+    </div>
+
+    <figure class="tmux" data-session="work">
+      <div class="tmux-screen" aria-hidden="true">
+        <div class="tmux-window" data-window="0" hidden>
+          <div class="pane active">
+            <div class="pane-border"><span> 0 claude blocked permission </span></div>
+<pre class="pane-body"><span class="t-prompt">&gt; Run the test suite and fix what fails</span>
+
+  <span class="t-dim">Permission requested</span>
+  Bash: go test ./...
+
+  <span class="t-key">[y]</span> allow   <span class="t-key">[n]</span> deny</pre>
+          </div>
+        </div>
+        <div class="tmux-window" data-window="1">
+          <div class="pane">
+            <div class="pane-border"><span> 0 codex working </span></div>
+<pre class="pane-body"><span class="t-prompt">&gt; Refactor the parser so tokens carry their source span</span>
+
+  <span class="t-dim">Reading</span>  internal/parse/lexer.go
+  <span class="t-dim">Editing</span>  internal/parse/token.go
+  <span class="t-dim">Running</span>  go test ./internal/parse/...
+
+  <span class="t-dim">working · 1m 12s</span></pre>
+          </div>
+          <div class="pane active">
+            <div class="pane-border"><span> 1 zsh </span></div>
+<pre class="pane-body"><span class="t-prompt">$</span> tmag list
+TARGET    PANE  AGENT   STATE                 FOR  ID        CWD
+work:0.0  %0    claude  blocked (permission)  12s  1787a44e  ~/src/api
+work:1.0  %2    codex   working               1m   019a1fda  ~/src/web
+work:2.0  %3    pi      idle                  3m   5c2e90b1  ~/src/cli
+<span class="t-prompt">$</span> <span class="t-cursor"> </span></pre>
+          </div>
+        </div>
+        <div class="tmux-window" data-window="2" hidden>
+          <div class="pane active">
+            <div class="pane-border"><span> 0 pi idle </span></div>
+<pre class="pane-body"><span class="t-prompt">&gt; Add a --json flag to the export command</span>
+
+  export now takes --json and prints one object per record.
+  <span class="t-dim">go test ./cmd/export/...</span>  ok
+
+<span class="t-prompt">&gt;</span> <span class="t-cursor"> </span></pre>
+          </div>
+        </div>
+        <div class="tmux-status">
+          <span class="ts-left">[work] <span class="ts-win" data-window="0">0:api!</span> <span class="ts-win" data-window="1">1:web*</span> <span class="ts-win" data-window="2">2:cli!</span></span>
+          <span class="ts-right"><b class="ts-blocked">1 blocked</b> · 1 working · 1 idle | 14:20</span>
+        </div>
+      </div>
+      <figcaption>
+        <p>一个 tmux session，三个 agents。你看着别处时，blocked 或已完成的 agent 所在 window 会带上 <code>!</code> 标记；状态栏统计它们，每个 pane 边框标出所属 agent 及其状态。</p>
+        <p class="jump" hidden data-to0="0:api 里的 claude 在等你批准：blocked agents 优先。再按一次。" data-to2="接下来是 2:cli 里的 pi：blocked 之后，轮到等待最久的 idle agent。你一到，它的 window 标记就清除了。" data-again0="0:api 里的 claude 仍是 blocked，所以又排在最前。" data-again2="又是 2:cli 里的 pi。回应 claude 之后，它就退出这一轮。"><button type="button" id="jump"><kbd>prefix</kbd> <kbd>A</kbd></button> <span id="jump-said" aria-live="polite">你正看着 <code>1:web</code> 里的 codex 工作。按下即可跳到等待最久的 agent。</span></p>
+      </figcaption>
+    </figure>
+  </div>
+</header>
+
+<main id="main">
+
+<section class="onboard" id="onboard" aria-labelledby="onboard-title">
+  <div class="section-head">
+    <h2 id="onboard-title">从安装到第一次交接</h2>
+    <p>大约十分钟。每一步都可以放心重复，之后更新 tmag 也是同样的步骤。</p>
+  </div>
+  <ol class="steps">
+    <li id="by-hand">
+      <h3>安装插件</h3>
+      <p>上面的 prompt 会替你完成这一切。手动安装：在 TPM 的 <code>run</code> 行之上加入插件，然后按 <span class="keys"><kbd>prefix</kbd> <kbd>I</kbd></span>。插件会下载与其版本匹配的已发布 <code>tmag</code> binary，校验 SHA-256，并保存在插件自己的目录中。</p>
+      <pre><code>set -g @plugin 'ChrAlpha/tmux-agent-experience'</code></pre>
+    </li>
+    <li>
+      <h3>接入 agents</h3>
+      <p>按 <span class="keys"><kbd>prefix</kbd> <kbd>M-a</kbd></span>。弹窗列出通过各个 agent 自己的 plugin manager 安装 tmag 插件的命令，确认后执行，然后运行 <code>tmag doctor</code>。</p>
+    </li>
+    <li>
+      <h3>开启新的 session</h3>
+      <p>Hooks 在 session 启动时加载，所以请在 tmux panes 中开启新的 agent session。在 Codex 中用 <code>/hooks</code> 批准 tmag 的 hooks，并运行一次 <code>/title</code> 开启 <code>thread-id</code>；Codex pane 在第一个 prompt 之后关联。</p>
+    </li>
+    <li>
+      <h3>检查，然后交接</h3>
+      <p><code>tmag doctor</code> 没有 <code>✗</code> 行即表示完成。按 <span class="keys"><kbd>prefix</kbd> <kbd>a</kbd></span> 查看你的 agents，然后请其中一个邀请另一个参与：</p>
+      <p class="ask">请 ~/src/web 里的 Codex agent review 我最近一次 commit，并等它回复。</p>
+      <p>你的 agent 会运行 <code>tmag send --wait</code>，再运行 <code>tmag read --last</code>。Codex 从第一行看到是谁发来的，这一行由 tmag 写入：</p>
+      <pre><samp>[tmag] From claude 1787a44e-…, another agent. Answer in your final message.</samp></pre>
+    </li>
+  </ol>
+</section>
+
+<section class="practices" id="practices" aria-labelledby="practices-title">
+  <div class="section-head">
+    <h2 id="practices-title">最佳实践</h2>
+    <p>同时运行多个 agents 时，让 tmag 物尽其用的习惯。</p>
+  </div>
+
+  <div class="group">
+    <h3 class="group-title">留意需要你的时刻</h3>
+
+    <article class="practice">
+      <div class="practice-text">
+        <h4><span class="n">01</span> 把状态放在你本来就会看的地方</h4>
+        <p>状态栏按状态统计 agents，pane 边框标出每一个，扫一眼就不必挨个切换 pane。保留你自己的 <code>status-right</code>，把 <code>#{tmag_status}</code> 加在其中任意位置。</p>
+        <p>在 TPM 的 <code>run</code> 行之上设置选项：插件在加载时读取它们。</p>
+      </div>
+      <div class="snippet">
+        <pre id="conf"><code><span class="c"># 状态栏显示 "1 blocked · 1 working · 1 idle"</span>
+set -g status-right '#{tmag_status} | %H:%M'
+set -g status-right-length 60
+
+<span class="c"># 每个 agent 的 pane 边框显示 "claude blocked permission"</span>
+set -g pane-border-status top
+set -g pane-border-format ' #{pane_index} #{?#{E:@tmag-pane-status},#{E:@tmag-pane-status},#{pane_current_command}} '
+
+set -g @plugin 'ChrAlpha/tmux-agent-experience'
+run '~/.tmux/plugins/tpm/tpm'</code></pre>
+        <button type="button" class="copy" data-copy="conf" data-copied="已复制">复制</button>
+      </div>
+    </article>
+
+    <article class="practice">
+      <div class="practice-text">
+        <h4><span class="n">02</span> 让提醒来找你</h4>
+        <p>Agent 在你没在看的 pane 中进入 blocked 或完成任务时，会响起所在 window 的 bell。<span class="keys"><kbd>prefix</kbd> <kbd>A</kbd></span> 带你去等待最久的 agent，blocked 优先；tmux 自带的 <span class="keys"><kbd>prefix</kbd> <kbd>M-n</kbd></span> 和 <kbd>M-p</kbd> 在带标记的 windows 之间跳转。</p>
+        <p>离开终端时，<code>@tmag-notify</code> 会运行你自己的命令，提醒内容放在 <code>TMAG_*</code> 变量中；如果你最近一分钟在显示该 agent 的 server 上有过输入，则不运行。<code>tmag notify</code> 发送一条测试提醒。</p>
+      </div>
+      <div class="snippet">
+        <pre><code><span class="c"># Linux 桌面</span>
+set -g @tmag-notify 'notify-send "$TMAG_TITLE" "$TMAG_MESSAGE"'
+
+<span class="c"># macOS</span>
+set -g @tmag-notify 'osascript -e "on run argv" -e "display notification (item 2 of argv) with title (item 1 of argv)" -e "end run" "$TMAG_TITLE" "$TMAG_MESSAGE"'</code></pre>
+      </div>
+    </article>
+  </div>
+
+  <div class="group">
+    <h3 class="group-title">与多个 agents 协作</h3>
+
+    <article class="practice">
+      <div class="practice-text">
+        <h4><span class="n">03</span> 一个 pane 一个 agent，一个任务一个 worktree</h4>
+        <p>并行任务放在各自的 git worktree 中，就不会互相干扰。确实共享同一仓库的 agents，在切换分支、改写历史或停止进程之前，会先通过 tmag 查看彼此，并且不碰对方的改动。</p>
+      </div>
+      <div class="snippet">
+        <pre><code>git worktree add -b fix/login ../web-login
+tmux new-window -n login -c "$(realpath ../web-login)"</code></pre>
+      </div>
+    </article>
+
+    <article class="practice">
+      <div class="practice-text">
+        <h4><span class="n">04</span> 用平常的话提出请求</h4>
+        <p>委派工作时你不需要输入 tmag 命令。直接告诉你的 agent；<code>tmag-peers</code> skill 会选择合适的命令，tmag 通过对方 agent 自己的 channel 投递。正在工作的 agent 会在下一步读到消息；Claude Code 可能会先交给它的使用者批准。</p>
+        <p>第一行由 tmag 根据它所证实的发送者写入。你本人的 prompt 没有这一行，agent 也从不对自己的 session 执行操作。</p>
+      </div>
+      <div class="snippet">
+        <table class="asks">
+          <thead><tr><th scope="col">你说</th><th scope="col">tmag 执行</th></tr></thead>
+          <tbody>
+            <tr><td>“请 Codex agent review 这份 diff，并等它回复。”</td><td><code>send --wait</code>，然后 <code>read --last</code></td></tr>
+            <tr><td>“让另一个 agent 查查这个不稳定的测试，查到后把结果发给你。”</td><td><code>send --reply</code>；对方用 <code>tmag reply</code> 回复</td></tr>
+            <tr><td>“告诉 Pi agent，API schema 改了。”</td><td><code>send</code></td></tr>
+          </tbody>
+        </table>
+        <p class="snippet-note">对方首先读到的内容，与上表逐行对应：</p>
+        <pre><samp>[tmag] From claude 1787a44e-…, another agent. Answer in your final message.
+[tmag] From claude 1787a44e-…, another agent. When done, send your answer on stdin to: tmag reply 1787a44e-… -
+[tmag] From claude 1787a44e-…, another agent. No answer needed.</samp></pre>
+      </div>
+    </article>
+
+    <article class="practice">
+      <div class="practice-text">
+        <h4><span class="n">05</span> 审批权留在你手里</h4>
+        <p><code>@tmag-answer</code> 保持默认值 <code>on</code> 时，你可以在任意 pane 或脚本中决定 Claude Code 或 Codex 的 permission prompt，agent 自己的对话框同时保持打开。Agent 尝试这样做会被拒绝，因此 agents 之间不会意外地互相批准。</p>
+        <p>只有在你希望 agents 代为批准时才设为 <code>agents</code>；设为 <code>off</code> 则只在 agent 中决定。</p>
+      </div>
+      <div class="snippet">
+        <pre class="cols"><samp><span class="t-prompt">$</span> tmag inspect 1787 --json | jq -r '.session.requests[].id'
+3fdce4c70dfa
+<span class="t-prompt">$</span> tmag request 1787 3fdce4c70dfa
+1787a44e permission asks: Bash
+{
+  "command": "go test ./..."
+}
+<span class="t-prompt">$</span> tmag answer 1787 3fdce4c70dfa allow
+answered 1787a44e (hook) seq 1794457203091588</samp></pre>
+      </div>
+    </article>
+  </div>
+
+  <div class="group">
+    <h3 class="group-title">在此之上构建</h3>
+
+    <article class="practice">
+      <div class="practice-text">
+        <h4><span class="n">06</span> 脚本读 JSON，不读屏幕</h4>
+        <p>把插件的 <code>bin/</code> 加入 <code>PATH</code>。<code>--json</code> 遵循带版本的 <code>tmag/v2</code> 协议；<code>tmag watch</code> 先输出一份快照，之后每次变化输出一行，编号连续无缺口，订阅方因此知道自己错过了什么。</p>
+      </div>
+      <div class="snippet">
+        <pre><code>export PATH="$HOME/.tmux/plugins/tmux-agent-experience/bin:$PATH"
+
+tmag list --json | jq -r '.sessions[] | select(.state == "blocked") | .id'
+tmag wait 01a1 --for idle --timeout 30m &amp;&amp; tmag read 01a1 --last
+tmag watch</code></pre>
+      </div>
+    </article>
+
+    <article class="practice">
+      <div class="practice-text">
+        <h4><span class="n">07</span> 按你的规则，从别处访问 agents</h4>
+        <p><span class="keys"><kbd>prefix</kbd> <kbd>M-r</kbd></span> 在一个 tmux window 中打开 <code>tmag serve</code>，监听 <code>127.0.0.1:7777</code>；关闭该 window 即停止。每个客户端用各自的一次性邀请配对，之后可以单独撤销任意一个。用你自己选择的隧道或反向代理从别处访问，并用 <code>--host</code> 指定其地址。</p>
+      </div>
+      <div class="snippet">
+        <pre><code>tmag auth pair phone     <span class="c"># 仅可使用一次，十分钟内有效</span>
+tmag auth list
+tmag auth revoke ID</code></pre>
+      </div>
+    </article>
+
+    <article class="practice">
+      <div class="practice-text">
+        <h4><span class="n">08</span> 两个按键完成更新</h4>
+        <p><span class="keys"><kbd>prefix</kbd> <kbd>U</kbd></span> 通过 TPM 更新插件，<span class="keys"><kbd>prefix</kbd> <kbd>M-a</kbd></span> 把每个 agent 中的插件更新到相同版本。Codex 按插件版本批准 hooks：在新的 Codex session 中用 <code>/hooks</code> 再次批准 tmag 的 hooks。Pi 和 oh-my-pi 的 packages 随插件一起更新。</p>
+      </div>
+      <div class="snippet">
+        <pre class="cols"><samp>prefix + U      <span class="c">更新插件，它会获取匹配的 binary</span>
+prefix + M-a    <span class="c">更新每个 agent 中的 tmag 插件</span>
+/hooks          <span class="c">在新的 Codex session 中批准 tmag 的 hooks</span></samp></pre>
+      </div>
+    </article>
+  </div>
+</section>
+
+<section class="trust" id="trust" aria-labelledby="trust-title">
+  <div class="section-head">
+    <h2 id="trust-title">tmag 不会碰的东西</h2>
+  </div>
+  <ul class="promises">
+    <li><strong>你的 agents。</strong>没有 daemon，也没有 wrapper：agents 按你的方式启动，<code>tmag serve</code> 只在你打开的 window 中运行。</li>
+    <li><strong>你的 turns。</strong>Hooks 采用 fail-open 机制，tmag 缺失或故障都不会阻塞任何一个 turn。</li>
+    <li><strong>你的内容。</strong>记录只保存 ids、状态、路径和时间。回复在被请求时从 agent 自己的 transcript 中读取，不做任何保存。</li>
+    <li><strong>猜测。</strong>只有进程表或 Codex 的 <code>thread-id</code> 标题证实时，pane 才会显示对应的 session；其余一律为 <code>unknown</code>。</li>
+    <li><strong>你的配置。</strong>Agent 插件通过各个 agent 自己的 plugin manager 安装；tmag 从不修改它们的设置。</li>
+    <li><strong>你的选择。</strong>每个默认行为都有关闭开关：<code>@tmag-alert off</code>、设为 <code>off</code> 的按键选项，或者 <code>@tmag-peers off</code> 后按 <span class="keys"><kbd>prefix</kbd> <kbd>M-a</kbd></span>，让 tmag 不进入 agents 的上下文。</li>
+  </ul>
+</section>
+
+<section class="docs" id="docs" aria-labelledby="docs-title">
+  <div class="section-head">
+    <h2 id="docs-title">深入了解</h2>
+  </div>
+  <ul class="doc-links">
+    <li><a href="https://github.com/ChrAlpha/tmux-agent-experience/wiki/Installation-and-Updates-zh-CN">安装与更新</a><span>安装、接入 agents、更新及卸载。</span></li>
+    <li><a href="https://github.com/ChrAlpha/tmux-agent-experience/wiki/tmux-Integration-zh-CN">tmux 集成</a><span>快捷键、bell 提醒、状态格式和全部配置项。</span></li>
+    <li><a href="https://github.com/ChrAlpha/tmux-agent-experience/wiki/Agent-Collaboration-zh-CN">Agent 协作</a><span>Agents 如何发现彼此、发送 prompts 并相互回复。</span></li>
+    <li><a href="https://github.com/ChrAlpha/tmux-agent-experience/wiki/CLI-Reference-zh-CN">CLI 参考</a><span>查看、发送、读取、等待、中断和回应请求。</span></li>
+    <li><a href="https://github.com/ChrAlpha/tmux-agent-experience/wiki/HTTP-API-zh-CN">HTTP API</a><span>向获授权的客户端提供本地状态和控制能力。</span></li>
+    <li><a href="https://github.com/ChrAlpha/tmux-agent-experience/wiki/Notifications-zh-CN">通知</a><span>你的提醒命令收到的变量。</span></li>
+    <li><a href="https://github.com/ChrAlpha/tmux-agent-experience/wiki/Troubleshooting-zh-CN">故障排查</a><span>诊断和已知限制。</span></li>
+    <li><a href="https://github.com/ChrAlpha/tmux-agent-experience/wiki/Architecture-and-Contracts-zh-CN">架构与协议</a><span>设计保证、JSON/events 和存储。</span></li>
+  </ul>
+</section>
+
+</main>
+
+<footer class="footer">
+  <p><a href="https://github.com/ChrAlpha/tmux-agent-experience">仓库</a> · <a href="https://github.com/ChrAlpha/tmux-agent-experience/releases">Releases</a> · <a href="https://github.com/ChrAlpha/tmux-agent-experience/blob/main/CONTRIBUTING.md">贡献指南</a> · <a href="https://github.com/ChrAlpha/tmux-agent-experience/blob/main/SECURITY.md">安全</a> · MIT 许可证</p>
+</footer>
+
+<nav class="statusline" aria-label="章节">
+  <span class="sl-session" aria-hidden="true">[tmag]</span>
+  <ol>
+    <li><a href="#start" aria-current="true">0:start</a></li>
+    <li><a href="#onboard">1:onboard</a></li>
+    <li><a href="#practices">2:practices</a></li>
+    <li><a href="#trust">3:trust</a></li>
+    <li><a href="#docs">4:docs</a></li>
+  </ol>
+  <span class="sl-right"><a href="../" hreflang="en" lang="en">English</a> <a href="https://github.com/ChrAlpha/tmux-agent-experience">GitHub</a></span>
+</nav>
+</body>
+</html>

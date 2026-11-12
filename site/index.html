@@ -1,0 +1,325 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>tmag: a tmux plugin that knows what your coding agents are doing</title>
+<meta name="description" content="Keep Claude Code, Codex, Pi and oh-my-pi in your usual tmux panes. See who is working, waiting or done, jump to the one that needs you, and let agents hand work to each other.">
+<link rel="canonical" href="https://chralpha.github.io/tmux-agent-experience/">
+<link rel="alternate" hreflang="en" href="https://chralpha.github.io/tmux-agent-experience/">
+<link rel="alternate" hreflang="zh-CN" href="https://chralpha.github.io/tmux-agent-experience/zh-CN/">
+<link rel="alternate" hreflang="x-default" href="https://chralpha.github.io/tmux-agent-experience/">
+<meta property="og:type" content="website">
+<meta property="og:title" content="tmag: a tmux plugin that knows what your coding agents are doing">
+<meta property="og:description" content="See which agent needs you, jump to it, and let agents hand work to each other. No daemon, no wrapper.">
+<meta property="og:url" content="https://chralpha.github.io/tmux-agent-experience/">
+<meta property="og:image" content="https://chralpha.github.io/tmux-agent-experience/og.png">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="theme-color" content="#5fce55">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="preload" href="fonts/overpass.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="style.css">
+<script src="site.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="hero" id="start">
+  <div class="hero-grid">
+    <p class="kicker">tmux-agent-experience <span aria-hidden="true">·</span> <code>tmag</code></p>
+    <h1>A tmux plugin that knows what your coding agents are doing.</h1>
+    <div class="hero-copy">
+      <p class="lede">Keep Claude Code, Codex, Pi and oh-my-pi in your usual panes. See who is working, waiting or done, jump to the one that needs you, and let agents hand work to each other.</p>
+      <div class="install" id="install">
+        <p class="install-label">Paste this into the coding agent you run in tmux:</p>
+        <div class="prompt">
+          <p id="install-prompt">Read https://raw.githubusercontent.com/ChrAlpha/tmux-agent-experience/main/SKILL.md and follow it to install or update tmag for the AI tool I am using.</p>
+          <button type="button" class="copy" data-copy="install-prompt" data-copied="Copied">Copy</button>
+        </div>
+        <p class="install-note">It asks before it edits your tmux configuration, connects the agent it runs in, and checks the result. Needs tmux 3.2+ on Linux or macOS, TPM and curl. <a href="#by-hand">Install by hand</a></p>
+      </div>
+    </div>
+
+    <figure class="tmux" data-session="work">
+      <div class="tmux-screen" aria-hidden="true">
+        <div class="tmux-window" data-window="0" hidden>
+          <div class="pane active">
+            <div class="pane-border"><span> 0 claude blocked permission </span></div>
+<pre class="pane-body"><span class="t-prompt">&gt; Run the test suite and fix what fails</span>
+
+  <span class="t-dim">Permission requested</span>
+  Bash: go test ./...
+
+  <span class="t-key">[y]</span> allow   <span class="t-key">[n]</span> deny</pre>
+          </div>
+        </div>
+        <div class="tmux-window" data-window="1">
+          <div class="pane">
+            <div class="pane-border"><span> 0 codex working </span></div>
+<pre class="pane-body"><span class="t-prompt">&gt; Refactor the parser so tokens carry their source span</span>
+
+  <span class="t-dim">Reading</span>  internal/parse/lexer.go
+  <span class="t-dim">Editing</span>  internal/parse/token.go
+  <span class="t-dim">Running</span>  go test ./internal/parse/...
+
+  <span class="t-dim">working · 1m 12s</span></pre>
+          </div>
+          <div class="pane active">
+            <div class="pane-border"><span> 1 zsh </span></div>
+<pre class="pane-body"><span class="t-prompt">$</span> tmag list
+TARGET    PANE  AGENT   STATE                 FOR  ID        CWD
+work:0.0  %0    claude  blocked (permission)  12s  1787a44e  ~/src/api
+work:1.0  %2    codex   working               1m   019a1fda  ~/src/web
+work:2.0  %3    pi      idle                  3m   5c2e90b1  ~/src/cli
+<span class="t-prompt">$</span> <span class="t-cursor"> </span></pre>
+          </div>
+        </div>
+        <div class="tmux-window" data-window="2" hidden>
+          <div class="pane active">
+            <div class="pane-border"><span> 0 pi idle </span></div>
+<pre class="pane-body"><span class="t-prompt">&gt; Add a --json flag to the export command</span>
+
+  export now takes --json and prints one object per record.
+  <span class="t-dim">go test ./cmd/export/...</span>  ok
+
+<span class="t-prompt">&gt;</span> <span class="t-cursor"> </span></pre>
+          </div>
+        </div>
+        <div class="tmux-status">
+          <span class="ts-left">[work] <span class="ts-win" data-window="0">0:api!</span> <span class="ts-win" data-window="1">1:web*</span> <span class="ts-win" data-window="2">2:cli!</span></span>
+          <span class="ts-right"><b class="ts-blocked">1 blocked</b> · 1 working · 1 idle | 14:20</span>
+        </div>
+      </div>
+      <figcaption>
+        <p>One tmux session, three agents. <code>!</code> flags the windows of agents that are blocked or finished while you look elsewhere, the status line counts them, and each pane border names its agent and state.</p>
+        <p class="jump" hidden data-to0="claude in 0:api waits for your approval: blocked agents come first. Press again." data-to2="pi in 2:cli is next: after blocked agents, the idle one that has waited longest. Its window flag cleared as you arrived." data-again0="claude in 0:api is still blocked, so it comes first again." data-again2="pi in 2:cli again. Answer claude, and it drops out of the round."><button type="button" id="jump"><kbd>prefix</kbd> <kbd>A</kbd></button> <span id="jump-said" aria-live="polite">You are watching codex work in <code>1:web</code>. Press to jump to the agent waiting longest.</span></p>
+      </figcaption>
+    </figure>
+  </div>
+</header>
+
+<main id="main">
+
+<section class="onboard" id="onboard" aria-labelledby="onboard-title">
+  <div class="section-head">
+    <h2 id="onboard-title">From install to first handoff</h2>
+    <p>About ten minutes. Every step is safe to repeat, and the same steps update tmag later.</p>
+  </div>
+  <ol class="steps">
+    <li id="by-hand">
+      <h3>Install the plugin</h3>
+      <p>The prompt above does all of this for you. By hand: add the plugin above TPM's <code>run</code> line and press <span class="keys"><kbd>prefix</kbd> <kbd>I</kbd></span>. The plugin downloads the released <code>tmag</code> binary for its version, checks its SHA-256 and keeps it in its own directory.</p>
+      <pre><code>set -g @plugin 'ChrAlpha/tmux-agent-experience'</code></pre>
+    </li>
+    <li>
+      <h3>Connect your agents</h3>
+      <p>Press <span class="keys"><kbd>prefix</kbd> <kbd>M-a</kbd></span>. A popup shows the commands that install tmag's plugins through each agent's own plugin manager, runs them once you confirm, then runs <code>tmag doctor</code>.</p>
+    </li>
+    <li>
+      <h3>Start fresh sessions</h3>
+      <p>Hooks load when a session starts, so start new agent sessions in tmux panes. In Codex, approve tmag's hooks with <code>/hooks</code> and run <code>/title</code> once to turn on <code>thread-id</code>; Codex panes attach after the first prompt.</p>
+    </li>
+    <li>
+      <h3>Check, then hand off</h3>
+      <p><code>tmag doctor</code> without <code>✗</code> lines means you are done. Press <span class="keys"><kbd>prefix</kbd> <kbd>a</kbd></span> to see your agents, then ask one to bring in another:</p>
+      <p class="ask">Ask the Codex agent in ~/src/web to review my last commit, and wait for its answer.</p>
+      <p>Your agent runs <code>tmag send --wait</code>, then <code>tmag read --last</code>. Codex reads who asked on the first line, which tmag writes:</p>
+      <pre><samp>[tmag] From claude 1787a44e-…, another agent. Answer in your final message.</samp></pre>
+    </li>
+  </ol>
+</section>
+
+<section class="practices" id="practices" aria-labelledby="practices-title">
+  <div class="section-head">
+    <h2 id="practices-title">Best practices</h2>
+    <p>Habits that make tmag pay off once several agents run at once.</p>
+  </div>
+
+  <div class="group">
+    <h3 class="group-title">Notice what needs you</h3>
+
+    <article class="practice">
+      <div class="practice-text">
+        <h4><span class="n">01</span> Put state where you already look</h4>
+        <p>The status line counts agents by state and pane borders name each one, so a glance replaces visiting panes. Keep your own <code>status-right</code> and add <code>#{tmag_status}</code> anywhere in it.</p>
+        <p>Set options above TPM's <code>run</code> line: the plugin reads them when it loads.</p>
+      </div>
+      <div class="snippet">
+        <pre id="conf"><code><span class="c"># "1 blocked · 1 working · 1 idle" in the status line</span>
+set -g status-right '#{tmag_status} | %H:%M'
+set -g status-right-length 60
+
+<span class="c"># "claude blocked permission" on each agent's pane border</span>
+set -g pane-border-status top
+set -g pane-border-format ' #{pane_index} #{?#{E:@tmag-pane-status},#{E:@tmag-pane-status},#{pane_current_command}} '
+
+set -g @plugin 'ChrAlpha/tmux-agent-experience'
+run '~/.tmux/plugins/tpm/tpm'</code></pre>
+        <button type="button" class="copy" data-copy="conf" data-copied="Copied">Copy</button>
+      </div>
+    </article>
+
+    <article class="practice">
+      <div class="practice-text">
+        <h4><span class="n">02</span> Let alerts come to you</h4>
+        <p>An agent that blocks or finishes in a pane you are not looking at rings its window's bell. <span class="keys"><kbd>prefix</kbd> <kbd>A</kbd></span> takes you to the agent waiting longest, blocked ones first; tmux's <span class="keys"><kbd>prefix</kbd> <kbd>M-n</kbd></span> and <kbd>M-p</kbd> visit flagged windows.</p>
+        <p>Away from the terminal, <code>@tmag-notify</code> runs your own command with the alert in <code>TMAG_*</code> variables, unless you typed on a server showing that agent in the last minute. <code>tmag notify</code> sends a test alert.</p>
+      </div>
+      <div class="snippet">
+        <pre><code><span class="c"># Linux desktop</span>
+set -g @tmag-notify 'notify-send "$TMAG_TITLE" "$TMAG_MESSAGE"'
+
+<span class="c"># macOS</span>
+set -g @tmag-notify 'osascript -e "on run argv" -e "display notification (item 2 of argv) with title (item 1 of argv)" -e "end run" "$TMAG_TITLE" "$TMAG_MESSAGE"'</code></pre>
+      </div>
+    </article>
+  </div>
+
+  <div class="group">
+    <h3 class="group-title">Work with several agents</h3>
+
+    <article class="practice">
+      <div class="practice-text">
+        <h4><span class="n">03</span> One agent per pane, one worktree per task</h4>
+        <p>Parallel tasks in separate git worktrees never trip over each other. Agents that do share a repository check their peers through tmag before they switch branches, rewrite history or stop processes, and leave a peer's changes alone.</p>
+      </div>
+      <div class="snippet">
+        <pre><code>git worktree add -b fix/login ../web-login
+tmux new-window -n login -c "$(realpath ../web-login)"</code></pre>
+      </div>
+    </article>
+
+    <article class="practice">
+      <div class="practice-text">
+        <h4><span class="n">04</span> Ask in plain words</h4>
+        <p>You never type tmag's verbs to delegate. Ask your agent; the <code>tmag-peers</code> skill picks the verb, and tmag delivers through the other agent's own channel. A working agent reads a message at its next step; Claude Code may hold one for its person's approval.</p>
+        <p>tmag writes the first line from the sender it proves. A person's prompt gets none, and an agent never acts on its own session.</p>
+      </div>
+      <div class="snippet">
+        <table class="asks">
+          <thead><tr><th scope="col">You ask</th><th scope="col">tmag runs</th></tr></thead>
+          <tbody>
+            <tr><td>“Ask the Codex agent to review this diff and wait for its answer.”</td><td><code>send --wait</code>, then <code>read --last</code></td></tr>
+            <tr><td>“Have another agent look into the flaky test and send you what it finds.”</td><td><code>send --reply</code>; the peer answers with <code>tmag reply</code></td></tr>
+            <tr><td>“Tell the Pi agent that the API schema changed.”</td><td><code>send</code></td></tr>
+          </tbody>
+        </table>
+        <p class="snippet-note">What the other agent reads first, row by row:</p>
+        <pre><samp>[tmag] From claude 1787a44e-…, another agent. Answer in your final message.
+[tmag] From claude 1787a44e-…, another agent. When done, send your answer on stdin to: tmag reply 1787a44e-… -
+[tmag] From claude 1787a44e-…, another agent. No answer needed.</samp></pre>
+      </div>
+    </article>
+
+    <article class="practice">
+      <div class="practice-text">
+        <h4><span class="n">05</span> Keep approvals yours</h4>
+        <p>With <code>@tmag-answer</code> at its default, <code>on</code>, you can decide a Claude Code or Codex permission prompt from any pane or script while the agent's own dialog stays open. An agent that tries is refused, so agents never approve each other by accident.</p>
+        <p>Set it to <code>agents</code> only if you want them to, or <code>off</code> to decide in the agent alone.</p>
+      </div>
+      <div class="snippet">
+        <pre class="cols"><samp><span class="t-prompt">$</span> tmag inspect 1787 --json | jq -r '.session.requests[].id'
+3fdce4c70dfa
+<span class="t-prompt">$</span> tmag request 1787 3fdce4c70dfa
+1787a44e permission asks: Bash
+{
+  "command": "go test ./..."
+}
+<span class="t-prompt">$</span> tmag answer 1787 3fdce4c70dfa allow
+answered 1787a44e (hook) seq 1794457203091588</samp></pre>
+      </div>
+    </article>
+  </div>
+
+  <div class="group">
+    <h3 class="group-title">Build on it</h3>
+
+    <article class="practice">
+      <div class="practice-text">
+        <h4><span class="n">06</span> Script against JSON, not screens</h4>
+        <p>Put the plugin's <code>bin/</code> on your <code>PATH</code>. <code>--json</code> follows the versioned <code>tmag/v2</code> contract; <code>tmag watch</code> prints a snapshot, then one line per change, numbered without gaps so a follower knows what it missed.</p>
+      </div>
+      <div class="snippet">
+        <pre><code>export PATH="$HOME/.tmux/plugins/tmux-agent-experience/bin:$PATH"
+
+tmag list --json | jq -r '.sessions[] | select(.state == "blocked") | .id'
+tmag wait 01a1 --for idle --timeout 30m &amp;&amp; tmag read 01a1 --last
+tmag watch</code></pre>
+      </div>
+    </article>
+
+    <article class="practice">
+      <div class="practice-text">
+        <h4><span class="n">07</span> Reach agents from elsewhere, on your terms</h4>
+        <p><span class="keys"><kbd>prefix</kbd> <kbd>M-r</kbd></span> opens <code>tmag serve</code> in a tmux window, on <code>127.0.0.1:7777</code>; closing the window stops it. Pair each client with its own single-use invitation and revoke any one later. A tunnel or reverse proxy of your choice reaches it from elsewhere, named with <code>--host</code>.</p>
+      </div>
+      <div class="snippet">
+        <pre><code>tmag auth pair phone     <span class="c"># one use, valid for ten minutes</span>
+tmag auth list
+tmag auth revoke ID</code></pre>
+      </div>
+    </article>
+
+    <article class="practice">
+      <div class="practice-text">
+        <h4><span class="n">08</span> Update with two keys</h4>
+        <p><span class="keys"><kbd>prefix</kbd> <kbd>U</kbd></span> updates the plugin through TPM, and <span class="keys"><kbd>prefix</kbd> <kbd>M-a</kbd></span> brings each agent's plugins to the same version. Codex approves hooks per plugin version: approve tmag's again with <code>/hooks</code> in a new Codex session. Pi's and oh-my-pi's packages update with the plugin.</p>
+      </div>
+      <div class="snippet">
+        <pre class="cols"><samp>prefix + U      <span class="c">update the plugin; it fetches the matching binary</span>
+prefix + M-a    <span class="c">update tmag's plugins in every agent</span>
+/hooks          <span class="c">in a new Codex session: approve tmag's hooks</span></samp></pre>
+      </div>
+    </article>
+  </div>
+</section>
+
+<section class="trust" id="trust" aria-labelledby="trust-title">
+  <div class="section-head">
+    <h2 id="trust-title">What tmag leaves alone</h2>
+  </div>
+  <ul class="promises">
+    <li><strong>Your agents.</strong> No daemon and no wrapper: agents run as you start them, and <code>tmag serve</code> runs only in a window you open.</li>
+    <li><strong>Your turns.</strong> Hooks fail open. A missing or broken tmag never blocks a turn.</li>
+    <li><strong>Your words.</strong> Records hold ids, states, paths and times. A reply is read from the agent's own transcript when asked, and kept nowhere.</li>
+    <li><strong>Guesswork.</strong> A pane shows a session only when the process table, or Codex's <code>thread-id</code> title, proves it. Anything else is <code>unknown</code>.</li>
+    <li><strong>Your configuration.</strong> Agent plugins install through each agent's own plugin manager; tmag never edits their settings.</li>
+    <li><strong>Your choices.</strong> Every default has an off switch: <code>@tmag-alert off</code>, a key option set to <code>off</code>, or <code>@tmag-peers off</code> then <span class="keys"><kbd>prefix</kbd> <kbd>M-a</kbd></span> to keep tmag out of the agents' context.</li>
+  </ul>
+</section>
+
+<section class="docs" id="docs" aria-labelledby="docs-title">
+  <div class="section-head">
+    <h2 id="docs-title">Go deeper</h2>
+  </div>
+  <ul class="doc-links">
+    <li><a href="https://github.com/ChrAlpha/tmux-agent-experience/wiki/Installation-and-Updates">Installation &amp; Updates</a><span>Install, connect agents, update and uninstall.</span></li>
+    <li><a href="https://github.com/ChrAlpha/tmux-agent-experience/wiki/tmux-Integration">tmux Integration</a><span>Keys, bells, status formats and every option.</span></li>
+    <li><a href="https://github.com/ChrAlpha/tmux-agent-experience/wiki/Agent-Collaboration">Agent Collaboration</a><span>How agents find, prompt and answer each other.</span></li>
+    <li><a href="https://github.com/ChrAlpha/tmux-agent-experience/wiki/CLI-Reference">CLI Reference</a><span>List, send, read, wait, interrupt and answer.</span></li>
+    <li><a href="https://github.com/ChrAlpha/tmux-agent-experience/wiki/HTTP-API">HTTP API</a><span>Serve local state and controls to authorized clients.</span></li>
+    <li><a href="https://github.com/ChrAlpha/tmux-agent-experience/wiki/Notifications">Notifications</a><span>The variables your alert command receives.</span></li>
+    <li><a href="https://github.com/ChrAlpha/tmux-agent-experience/wiki/Troubleshooting">Troubleshooting</a><span>Diagnostics and known limitations.</span></li>
+    <li><a href="https://github.com/ChrAlpha/tmux-agent-experience/wiki/Architecture-and-Contracts">Architecture &amp; Contracts</a><span>Guarantees, JSON, events and storage.</span></li>
+  </ul>
+</section>
+
+</main>
+
+<footer class="footer">
+  <p><a href="https://github.com/ChrAlpha/tmux-agent-experience">Repository</a> · <a href="https://github.com/ChrAlpha/tmux-agent-experience/releases">Releases</a> · <a href="https://github.com/ChrAlpha/tmux-agent-experience/blob/main/CONTRIBUTING.md">Contributing</a> · <a href="https://github.com/ChrAlpha/tmux-agent-experience/blob/main/SECURITY.md">Security</a> · MIT License</p>
+</footer>
+
+<nav class="statusline" aria-label="Sections">
+  <span class="sl-session" aria-hidden="true">[tmag]</span>
+  <ol>
+    <li><a href="#start" aria-current="true">0:start</a></li>
+    <li><a href="#onboard">1:onboard</a></li>
+    <li><a href="#practices">2:practices</a></li>
+    <li><a href="#trust">3:trust</a></li>
+    <li><a href="#docs">4:docs</a></li>
+  </ol>
+  <span class="sl-right"><a href="zh-CN/" hreflang="zh-CN" lang="zh-CN">中文</a> <a href="https://github.com/ChrAlpha/tmux-agent-experience">GitHub</a></span>
+</nav>
+</body>
+</html>

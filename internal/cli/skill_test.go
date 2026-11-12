@@ -40,6 +40,15 @@ func readSkill(t *testing.T) string {
 	return text
 }
 
+// usageCommands are the commands the CLI's usage lists.
+func usageCommands() map[string]bool {
+	commands := map[string]bool{}
+	for _, c := range regexp.MustCompile(`(?m)^  tmag (\S+)`).FindAllStringSubmatch(usage, -1) {
+		commands[c[1]] = true
+	}
+	return commands
+}
+
 // The skill teaches the CLI as it is: its commands, flags, refusal codes
 // and exit codes.
 func TestPeersSkillMatchesCLI(t *testing.T) {
@@ -59,10 +68,7 @@ func TestPeersSkillMatchesCLI(t *testing.T) {
 		t.Errorf("description is not a plain YAML scalar: %q", d)
 	}
 
-	commands := map[string]bool{}
-	for _, c := range regexp.MustCompile(`(?m)^  tmag (\S+)`).FindAllStringSubmatch(usage, -1) {
-		commands[c[1]] = true
-	}
+	commands := usageCommands()
 	for _, c := range regexp.MustCompile("`tmag ([a-z-]+)").FindAllStringSubmatch(text, -1) {
 		if !commands[c[1]] {
 			t.Errorf("the skill names tmag %s, which the CLI does not have", c[1])
