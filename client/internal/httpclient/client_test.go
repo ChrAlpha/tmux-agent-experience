@@ -10,6 +10,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/ChrAlpha/tmux-agent-experience/client/internal/version"
 )
 
 func TestPublicHTTPContract(t *testing.T) {
@@ -55,6 +57,39 @@ func TestPublicHTTPContract(t *testing.T) {
 		}
 	}
 }
+func TestSeenIsAControlVerb(t *testing.T) {
+	actions := make(chan map[string]any, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v2/act" {
+			t.Errorf("seen reached %s %s", r.Method, r.URL.Path)
+		}
+		var a map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&a)
+		actions <- a
+		w.Header().Set("Tmag-API-Schema", version.HTTP)
+		fmt.Fprint(w, `{"schema":"tmag/v2","seq":9}`)
+	}))
+	defer server.Close()
+	for _, c := range []struct {
+		args []string
+		turn any
+	}{
+		{[]string{"seen", "--json", "--turn", "t1", "--", "s1"}, "t1"},
+		{[]string{"seen", "--json", "--turn=t2", "--", "s1"}, "t2"},
+		{[]string{"seen", "--json", "--", "s1"}, nil},
+	} {
+		var out, stderr bytes.Buffer
+		code := Run(context.Background(), server.URL, "test-only-credential", c.args, nil, &out, &stderr)
+		if code != 0 || !strings.Contains(out.String(), "\"seq\":9") {
+			t.Fatalf("%v: %d %s", c.args, code, stderr.String())
+		}
+		got := <-actions
+		if got["verb"] != "seen" || got["target"] != "s1" || got["turn"] != c.turn {
+			t.Fatalf("%v: action %v", c.args, got)
+		}
+	}
+}
+
 func TestCredentialNeverFollowsRedirect(t *testing.T) {
 	reached := false
 	other := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { reached = true }))

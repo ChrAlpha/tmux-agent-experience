@@ -112,13 +112,18 @@ func Run(ctx context.Context, endpoint, token string, args []string, in io.Reade
 			}
 			q.Set("lines", n)
 		}
-	case "send", "interrupt", "answer":
+	case "send", "interrupt", "answer", "seen":
 		if len(pos) == 0 {
 			return 2
 		}
 		method = "POST"
 		path = "/v2/act"
 		a := map[string]any{"verb": verb, "target": pos[0]}
+		if verb == "seen" {
+			if t := flags["turn"]; t != "" {
+				a["turn"] = t
+			}
+		}
 		if verb == "send" {
 			b, err := io.ReadAll(io.LimitReader(in, 1<<20+1))
 			if err != nil || len(b) > 1<<20 {

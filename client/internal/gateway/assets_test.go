@@ -167,6 +167,30 @@ func TestPushKeepsRecentAlertsForThePage(t *testing.T) {
 	}
 }
 
+// A turn's seen state comes from the session's own record, and a mark that
+// fails shows on the page instead of a settled turn it did not get.
+func TestPageRendersSeenFromTheSession(t *testing.T) {
+	page := readAsset(t, "app.js")
+	for _, want := range []string{
+		`const REPORTED = ["state", "kind", "turn", "seen", "cwd", "runtime", "transcript", "subagents"];`,
+		`if (e.event === "Seen") {`,
+		`return !!x.s.turn && x.s.seen === x.s.turn;`,
+		`api("/api/seen", { machine: x.machine, session: x.s.id, turn: x.s.turn })`,
+		`st.seenErrors.set(k, err.message)`,
+		`This turn is not marked seen.`,
+		`st.seenAttempts.delete(k)`,
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("app.js: no %s", want)
+		}
+	}
+	for _, unwanted := range []string{`type === "seen"`, `st.seen.get(`, `st.seen = new Map`, `doc.turn`} {
+		if strings.Contains(page, unwanted) {
+			t.Errorf("app.js still assumes a mark: %s", unwanted)
+		}
+	}
+}
+
 // A home-screen web app keeps its own storage, so iOS pairs from there.
 func TestPairingOnIOSStartsFromHomeScreen(t *testing.T) {
 	page := readAsset(t, "app.js")

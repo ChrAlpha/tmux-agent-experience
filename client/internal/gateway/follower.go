@@ -60,6 +60,11 @@ func (m *machineState) apply(e Event) {
 	switch {
 	case e.ended():
 		delete(m.sessions, k)
+	case e.Event == "Seen":
+		if s, ok := m.sessions[k]; ok && e.Turn != "" {
+			s.Seen = e.Turn
+			m.sessions[k] = s
+		}
 	case e.State != "":
 		prev, known := m.sessions[k]
 		var since *time.Time
@@ -75,7 +80,7 @@ func (m *machineState) apply(e Event) {
 		}
 		m.sessions[k] = Session{
 			LastHookAt: e.LastHookAt, ID: e.Session, Agent: e.Agent, State: e.State, Kind: e.Kind,
-			Turn: e.Turn, Since: since, Cwd: e.Cwd, Runtime: e.Runtime, Transcript: e.Transcript,
+			Turn: e.Turn, Seen: e.Seen, Since: since, Cwd: e.Cwd, Runtime: e.Runtime, Transcript: e.Transcript,
 			Subagents: e.Subagents, Capabilities: e.Capabilities, Requests: e.Requests,
 		}
 	}
@@ -189,22 +194,13 @@ func (s *Server) follow(m Machine) {
 			applied := true
 			switch d.Type {
 			case "snapshot":
-				s.seen.observe(m.Name, d.Sessions)
 				machine.replace(d.Seq, d.Sessions, d.Panes)
 				since = d.Seq
 			case "panes":
 				machine.setPanes(d.Panes)
-				s.trackPanes(m.Name, d.Panes)
 			case "event":
 				if d.Event == nil {
 					continue
-				}
-				session := []Session{{Agent: d.Event.Agent, ID: d.Event.Session}}
-				switch {
-				case d.Event.ended():
-					s.seen.leave(m.Name, session)
-				case d.Event.State != "":
-					s.track(m.Name, session)
 				}
 				machine.apply(*d.Event)
 				if d.Event.Seq > since {
@@ -356,18 +352,4 @@ func (h *hub) closeInactive(active map[string]bool) {
 func frame(event string, v any) string {
 	b, _ := json.Marshal(v)
 	return fmt.Sprintf("event: %s\ndata: %s\n\n", event, b)
-}
-
-// track says the machine still shows these sessions.
-func (s *Server) track(machine string, sessions []Session) { s.seen.touch(machine, sessions) }
-
-// trackPanes says the machine still shows the sessions its panes show.
-func (s *Server) trackPanes(machine string, panes []Pane) {
-	sessions := make([]Session, 0, len(panes))
-	for _, p := range panes {
-		if p.Session != "" {
-			sessions = append(sessions, Session{Agent: p.Agent, ID: p.Session})
-		}
-	}
-	s.seen.touch(machine, sessions)
 }

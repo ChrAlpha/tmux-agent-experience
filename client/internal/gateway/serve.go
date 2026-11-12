@@ -43,7 +43,7 @@ type Config struct {
 	Tailscale []string
 	// Access is the application behind Cloudflare Access, if any.
 	Access Access
-	// StateDir holds the gateway's credentials, seen turns and VAPID keys.
+	// StateDir holds the gateway's credentials and VAPID keys.
 	StateDir string
 	// Push names the alert kinds to push. nil means the default, blocked and
 	// finished; an empty list turns push off.
@@ -66,7 +66,6 @@ type Server struct {
 	guard  guard
 	auth   *auth.Store
 	vapid  *push.Keys
-	seen   *tracker
 	hub    *hub
 	states map[string]*machineState
 	vis    *visibility
@@ -123,20 +122,10 @@ func New(cfg Config) (*Server, error) {
 	if kinds == nil {
 		kinds = []string{"blocked", "finished"}
 	}
-	seenTurns, err := loadTracker(cfg.StateDir)
-	if err != nil {
-		return nil, err
-	}
-	names := make([]string, len(cfg.Machines))
-	for i, m := range cfg.Machines {
-		names[i] = m.Name
-	}
-	seenTurns.configure(names)
 	s := &Server{
 		cfg:    cfg,
 		guard:  guard{owner: cfg.Owner, tailscale: lower(cfg.Tailscale), access: lower(cfg.Access.Hosts)},
 		auth:   &auth.Store{Dir: cfg.StateDir},
-		seen:   seenTurns,
 		hub:    newHub(),
 		states: map[string]*machineState{},
 		vis:    &visibility{at: map[string]time.Time{}},
@@ -213,7 +202,6 @@ func (s *Server) Close() {
 		s.hub.closeAll()
 		s.cancel()
 		s.wg.Wait()
-		s.seen.flush()
 	})
 }
 
@@ -388,7 +376,6 @@ func (s *Server) machines(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"machines":   names,
 		"version":    s.cfg.Version,
-		"seen":       s.seen.snapshot(),
 		"push":       s.pushState(credential),
 		"credential": map[string]string{"id": credential.ID, "label": credential.Label},
 	})
@@ -405,8 +392,8 @@ func (s *Server) machine(w http.ResponseWriter, name string) (Machine, bool) {
 
 // watch serves the gateway's state as server-sent events: a "machine" event
 // when a machine's stream starts or ends, a snapshot document for each
-// machine, then a "doc" event for each change. A "seen" event reports a turn
-// another device opened, and a "ping" event says the stream is alive.
+// machine, then a "doc" event for each change, and a "ping" event that says
+// the stream is alive.
 func (s *Server) watch(w http.ResponseWriter, r *http.Request) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -423,14 +410,13 @@ func (s *Server) watch(w http.ResponseWriter, r *http.Request) {
 	defer s.hub.unsubscribe(sub)
 
 	_, _ = io.WriteString(w, ": watching\n\n")
-	seen := s.seen.snapshot()
 	for _, m := range s.cfg.Machines {
 		state := s.states[m.Name]
 		seq, sessions, panes, up, why := state.snapshot()
 		if _, err := io.WriteString(w, frame("machine", map[string]any{"machine": m.Name, "up": up, "error": why})); err != nil {
 			return
 		}
-		doc := map[string]any{"schema": version.State, "type": "snapshot", "seq": seq, "sessions": sessions, "panes": panes, "seen": seen}
+		doc := map[string]any{"schema": version.State, "type": "snapshot", "seq": seq, "sessions": sessions, "panes": panes}
 		if _, err := io.WriteString(w, frame("doc", map[string]any{"machine": m.Name, "doc": doc})); err != nil {
 			return
 		}
@@ -450,41 +436,35 @@ func (s *Server) watch(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// seen marks the session's current turn seen, for every device.
+// seenTurn marks the turn a session view shows seen on its machine, as the
+// person. The Seen event that follows reports it to every page.
 func (s *Server) seenTurn(w http.ResponseWriter, r *http.Request) {
 	if !jsonFromPage(w, r) {
 		return
 	}
 	var body struct {
 		Machine string `json:"machine"`
-		Agent   string `json:"agent"`
 		Session string `json:"session"`
 		Turn    string `json:"turn"`
 	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 4<<10)).Decode(&body); err != nil {
+	if err := json.NewDecoder(io.LimitReader(r.Body, 4<<10)).Decode(&body); err != nil || body.Session == "" {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	state, ok := s.states[body.Machine]
+	m, ok := s.machine(w, body.Machine)
 	if !ok {
-		http.Error(w, "unknown machine", http.StatusBadRequest)
 		return
 	}
-	session, ok := state.session(body.Agent, body.Session)
-	if !ok {
-		http.Error(w, "unknown session", http.StatusNotFound)
-		return
+	// The person opened the session: the mark runs to its end even when the
+	// page that asked for it goes away.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), actTimeout)
+	defer cancel()
+	args := []string{"seen", "--json"}
+	if body.Turn != "" {
+		args = append(args, "--turn="+body.Turn)
 	}
-	turn := ""
-	if body.Turn != "" && session.State == "idle" && session.Turn == body.Turn {
-		turn = s.seen.mark(body.Machine, session.Agent, session.ID, session.Turn)
-	}
-	if turn != "" {
-		s.hub.publish(frame("seen", map[string]string{"machine": body.Machine, "agent": session.Agent, "session": session.ID, "turn": turn}))
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "no-store")
-	_ = json.NewEncoder(w).Encode(map[string]string{"turn": turn})
+	outcome := s.relay(w, m.command(ctx, append(args, "--", body.Session)...))
+	s.cfg.Log.Printf("seen %q on %q by credential %s: %q", body.Session, body.Machine, credentialOf(r).ID, outcome)
 }
 
 // pushState describes whether this device can turn push on.

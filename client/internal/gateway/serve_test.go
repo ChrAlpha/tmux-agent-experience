@@ -49,6 +49,13 @@ send)
 answer)
 	echo '{"schema":"tmag/v2","error":{"code":"refused:changed","message":"answered already"}}'
 	exit 3 ;;
+seen)
+	case "$*" in
+	*"-- s9"*)
+		echo '{"schema":"tmag/v2","error":{"code":"refused:busy","message":"not idle on that turn"}}'
+		exit 3 ;;
+	esac
+	echo '{"schema":"tmag/v2","seq":9}' ;;
 read)
 	echo 'ssh: connect to host box: Connection refused' >&2
 	exit 255 ;;
@@ -218,24 +225,6 @@ func waitFor(t *testing.T, ch <-chan sse, contains string) {
 	}
 }
 
-func waitSeen(t *testing.T, ch <-chan sse, contains string) {
-	t.Helper()
-	deadline := time.After(10 * time.Second)
-	for {
-		select {
-		case f, ok := <-ch:
-			if !ok {
-				t.Fatalf("stream ended waiting for a seen event containing %q", contains)
-			}
-			if f.event == "seen" && strings.Contains(f.data, contains) {
-				return
-			}
-		case <-deadline:
-			t.Fatalf("no seen event containing %q", contains)
-		}
-	}
-}
-
 func waitStreamClosed(t *testing.T, ch <-chan sse) {
 	t.Helper()
 	deadline := time.After(5 * time.Second)
@@ -259,20 +248,6 @@ func waitSession(t *testing.T, s *Server) Session {
 		}
 		if time.Now().After(deadline) {
 			t.Fatal("session here/claude/s1 never appeared")
-		}
-	}
-}
-
-// waitMachine waits until the follower has applied its first snapshot, which
-// happens after it tracked that snapshot's sessions.
-func waitMachine(t *testing.T, s *Server, name string) {
-	t.Helper()
-	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
-		if _, _, _, up, _ := s.states[name].snapshot(); up {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("machine %s never came up", name)
 		}
 	}
 }
@@ -553,139 +528,62 @@ func TestRevocationClosesStreamsAndDropsPush(t *testing.T) {
 	}
 }
 
-func TestSeenTurns(t *testing.T) {
-	bin, _ := fakeTmag(t, `echo '{"schema":"tmag/v2","type":"snapshot","seq":1,"sessions":[{"id":"s1","agent":"claude","state":"idle","turn":"t1","capabilities":["send"]},{"id":"s2","agent":"claude","state":"working","turn":"t2","capabilities":["send"]}],"panes":[]}'; sleep 30`)
+// A Seen event from the machine moves the session's seen turn, and every
+// page reads it from the following snapshot or the event itself.
+func TestWatchRelaysSeenEvents(t *testing.T) {
+	signal := filepath.Join(t.TempDir(), "signal")
+	t.Setenv("WATCH_SIGNAL", signal)
+	bin, _ := fakeTmag(t, `
+ echo '{"schema":"tmag/v2","type":"snapshot","seq":1,"sessions":[{"id":"s1","agent":"claude","state":"idle","turn":"t1"}],"panes":[]}'
+ [ -n "$WATCH_SIGNAL" ] && while [ ! -f "$WATCH_SIGNAL" ]; do sleep 0.02; done
+ echo '{"schema":"tmag/v2","type":"event","event":{"seq":2,"time":"2026-11-12T08:02:00Z","agent":"claude","session":"s1","event":"Seen","turn":"t1"}}'
+ sleep 30`)
 	s, hs := newServer(t, Config{Machines: []Machine{{Name: "here", Argv: []string{bin}}}})
 	waitSession(t, s)
 	issued := signIn(t, s)
-	var machines struct {
-		Seen map[string]string `json:"seen"`
+	page := watch(t, hs, issued.Token)
+	waitFor(t, page, `"type":"snapshot"`)
+	if err := os.WriteFile(signal, []byte("go"), 0600); err != nil {
+		t.Fatal(err)
 	}
-	res := call(t, http.MethodGet, hs.URL+"/api/machines", issued.Token, "", nil)
-	decodeBody(t, res, &machines)
-	if len(machines.Seen) != 0 {
-		t.Fatalf("seen before opening: %v", machines.Seen)
+	waitFor(t, page, `"event":"Seen"`)
+	if session, ok := s.states["here"].session("claude", "s1"); !ok || session.Seen != "t1" {
+		t.Fatalf("a Seen event left the session %+v", session)
 	}
-	var marked struct{ Turn string }
-	// A working turn is not seen, and a stale turn is not this session's.
-	for _, body := range []string{
-		`{"machine":"here","agent":"claude","session":"s2","turn":"t2"}`,
-		`{"machine":"here","agent":"claude","session":"s1","turn":"t0"}`,
-	} {
-		res = call(t, http.MethodPost, hs.URL+"/api/seen", issued.Token, body, nil)
-		decodeBody(t, res, &marked)
-		if marked.Turn != "" {
-			t.Fatalf("marked a turn it should not: %s", body)
-		}
-	}
-	res = call(t, http.MethodPost, hs.URL+"/api/seen", issued.Token, `{"machine":"here","agent":"claude","session":"s1","turn":"t1"}`, nil)
-	decodeBody(t, res, &marked)
-	if marked.Turn != "t1" {
-		t.Fatalf("marked %q", marked.Turn)
-	}
-	res = call(t, http.MethodGet, hs.URL+"/api/machines", issued.Token, "", nil)
-	decodeBody(t, res, &machines)
-	if machines.Seen["here/claude/s1"] != "t1" {
-		t.Fatalf("seen after opening: %v", machines.Seen)
-	}
-	// Every stream starts with the whole seen state.
-	one := watch(t, hs, issued.Token)
-	two := watch(t, hs, issued.Token)
-	waitFor(t, one, `"seen":{"here/claude/s1":"t1"}`)
-	waitFor(t, two, `"seen":{"here/claude/s1":"t1"}`)
-	// A mark reaches every open page.
-	res = call(t, http.MethodPost, hs.URL+"/api/seen", issued.Token, `{"machine":"here","agent":"claude","session":"s1","turn":"t1"}`, nil)
-	decodeBody(t, res, &marked)
-	waitSeen(t, one, `"session":"s1","turn":"t1"`)
-	waitSeen(t, two, `"session":"s1","turn":"t1"`)
+	// A page that connects later gets the seen turn in its snapshot.
+	next := watch(t, hs, issued.Token)
+	waitFor(t, next, `"sessions":[{"id":"s1","agent":"claude","state":"idle","turn":"t1","seen":"t1"`)
 }
 
-func TestSeenKeepsASessionTheMachineStillShows(t *testing.T) {
-	bin, _ := fakeTmag(t, `echo '{"schema":"tmag/v2","type":"snapshot","seq":1,"sessions":[{"id":"s1","agent":"claude","state":"idle","turn":"t1"}],"panes":[]}'; sleep 30`)
+func TestSeenRunsTheMachinesCommand(t *testing.T) {
+	bin, calls := fakeTmag(t, `echo '{"schema":"tmag/v2","type":"snapshot","seq":1,"sessions":[],"panes":[]}'; sleep 30`)
 	s, hs := newServer(t, Config{Machines: []Machine{{Name: "here", Argv: []string{bin}}}})
-	waitSession(t, s)
-	waitMachine(t, s, "here")
 	issued := signIn(t, s)
-	res := call(t, http.MethodPost, hs.URL+"/api/seen", issued.Token, `{"machine":"here","agent":"claude","session":"s1","turn":"t1"}`, nil)
-	var marked struct{ Turn string }
-	decodeBody(t, res, &marked)
-	if marked.Turn != "t1" {
-		t.Fatalf("marked %q", marked.Turn)
+	res := call(t, http.MethodPost, hs.URL+"/api/seen", issued.Token, `{"machine":"here","session":"s1","turn":"t1"}`, nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("mark seen: %s", res.Status)
 	}
-	// Eight quiet days do not forget a session its machine still shows.
-	later := time.Now().Add(8 * 24 * time.Hour)
-	s.seen.setNow(func() time.Time { return later })
-	var machines struct {
-		Seen map[string]string `json:"seen"`
+	waitCalls(t, calls, "seen --json --turn=t1 -- s1")
+	// Without a turn, tmag marks the session's current one.
+	res = call(t, http.MethodPost, hs.URL+"/api/seen", issued.Token, `{"machine":"here","session":"s1"}`, nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("mark seen: %s", res.Status)
 	}
-	res = call(t, http.MethodGet, hs.URL+"/api/machines", issued.Token, "", nil)
-	decodeBody(t, res, &machines)
-	if machines.Seen["here/claude/s1"] != "t1" {
-		t.Fatalf("a shown session was forgotten: %v", machines.Seen)
+	waitCalls(t, calls, "seen --json -- s1")
+	// Nothing local decides: a refusal reaches the page as tmag worded it.
+	res = call(t, http.MethodPost, hs.URL+"/api/seen", issued.Token, `{"machine":"here","session":"s9","turn":"t1"}`, nil)
+	var doc struct {
+		Error struct{ Code, Message string }
 	}
-	// It stays present however quiet, long after it was marked.
-	far := later.Add(30 * 24 * time.Hour)
-	s.seen.setNow(func() time.Time { return far })
-	machines.Seen = nil
-	res = call(t, http.MethodGet, hs.URL+"/api/machines", issued.Token, "", nil)
-	decodeBody(t, res, &machines)
-	if machines.Seen["here/claude/s1"] != "t1" {
-		t.Fatalf("a present session was forgotten: %v", machines.Seen)
+	decodeBody(t, res, &doc)
+	if res.StatusCode != http.StatusUnprocessableEntity || doc.Error.Code != "refused:busy" || doc.Error.Message != "not idle on that turn" {
+		t.Fatalf("refusal: %s %+v", res.Status, doc)
 	}
-}
-
-func TestSeenCountsAbsenceFromWhenTheSessionLeaves(t *testing.T) {
-	for _, c := range []struct{ name, leave string }{
-		{"snapshot", `echo '{"schema":"tmag/v2","type":"snapshot","seq":2,"sessions":[],"panes":[]}'`},
-		{"event", `echo '{"schema":"tmag/v2","type":"event","event":{"seq":2,"time":"2026-11-12T08:00:00Z","agent":"claude","session":"s1","event":"SessionEnd"}}'`},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			signal := filepath.Join(t.TempDir(), "signal")
-			t.Setenv("WATCH_SIGNAL", signal)
-			bin, _ := fakeTmag(t, `
-echo '{"schema":"tmag/v2","type":"snapshot","seq":1,"sessions":[{"id":"s1","agent":"claude","state":"idle","turn":"t1"}],"panes":[]}'
-[ -n "$WATCH_SIGNAL" ] && while [ ! -f "$WATCH_SIGNAL" ]; do sleep 0.02; done
-`+c.leave+`
-sleep 30`)
-			s, hs := newServer(t, Config{Machines: []Machine{{Name: "here", Argv: []string{bin}}}})
-			waitSession(t, s)
-			waitMachine(t, s, "here")
-			issued := signIn(t, s)
-			res := call(t, http.MethodPost, hs.URL+"/api/seen", issued.Token, `{"machine":"here","agent":"claude","session":"s1","turn":"t1"}`, nil)
-			var marked struct{ Turn string }
-			decodeBody(t, res, &marked)
-			if marked.Turn != "t1" {
-				t.Fatalf("marked %q", marked.Turn)
-			}
-			page := watch(t, hs, issued.Token)
-			waitFor(t, page, `"type":"snapshot"`)
-
-			// Eight quiet days pass without a page request. Then the session
-			// leaves, and absence starts there.
-			at := time.Now().Add(8 * 24 * time.Hour)
-			s.seen.setNow(func() time.Time { return at })
-			if err := os.WriteFile(signal, []byte("go"), 0600); err != nil {
-				t.Fatal(err)
-			}
-			waitFor(t, page, `"seq":2`)
-			var machines struct {
-				Seen map[string]string `json:"seen"`
-			}
-			res = call(t, http.MethodGet, hs.URL+"/api/machines", issued.Token, "", nil)
-			decodeBody(t, res, &machines)
-			if machines.Seen["here/claude/s1"] != "t1" {
-				t.Fatalf("a session was forgotten when it left: %v", machines.Seen)
-			}
-			// A week after it left, the trace is gone.
-			after := at.Add(7*24*time.Hour + time.Hour)
-			s.seen.setNow(func() time.Time { return after })
-			machines.Seen = nil
-			res = call(t, http.MethodGet, hs.URL+"/api/machines", issued.Token, "", nil)
-			decodeBody(t, res, &machines)
-			if len(machines.Seen) != 0 {
-				t.Fatalf("an absent session remained: %v", machines.Seen)
-			}
-		})
+	// A request without a session names nothing to mark.
+	res = call(t, http.MethodPost, hs.URL+"/api/seen", issued.Token, `{"machine":"here"}`, nil)
+	t.Cleanup(func() { res.Body.Close() })
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("missing session: %s", res.Status)
 	}
 }
 
@@ -697,12 +595,14 @@ func TestAlertFiltering(t *testing.T) {
 		s     Session
 		holds bool
 	}{
-		"finished on its turn":       {Alert{Kind: "finished", Turn: "t1"}, idle, true},
-		"finished on another turn":   {Alert{Kind: "finished", Turn: "t2"}, idle, false},
-		"finished while working":     {Alert{Kind: "finished", Turn: "t1"}, Session{State: "working", Turn: "t1"}, false},
-		"blocked on an open request": {Alert{Kind: "blocked", Request: &AlertRequest{ID: "r1"}}, blocked, true},
-		"blocked after the answer":   {Alert{Kind: "blocked", Request: &AlertRequest{ID: "r2"}}, blocked, false},
-		"blocked without a request":  {Alert{Kind: "blocked"}, blocked, false},
+		"finished on its turn":           {Alert{Kind: "finished", Turn: "t1"}, idle, true},
+		"finished on another turn":       {Alert{Kind: "finished", Turn: "t2"}, idle, false},
+		"finished on a seen turn":        {Alert{Kind: "finished", Turn: "t1"}, Session{State: "idle", Turn: "t1", Seen: "t1"}, false},
+		"finished after an earlier seen": {Alert{Kind: "finished", Turn: "t2"}, Session{State: "idle", Turn: "t2", Seen: "t1"}, true},
+		"finished while working":         {Alert{Kind: "finished", Turn: "t1"}, Session{State: "working", Turn: "t1"}, false},
+		"blocked on an open request":     {Alert{Kind: "blocked", Request: &AlertRequest{ID: "r1"}}, blocked, true},
+		"blocked after the answer":       {Alert{Kind: "blocked", Request: &AlertRequest{ID: "r2"}}, blocked, false},
+		"blocked without a request":      {Alert{Kind: "blocked"}, blocked, false},
 	} {
 		if got := alertHolds(c.alert, c.s); got != c.holds {
 			t.Errorf("%s: holds = %v", name, got)
@@ -722,6 +622,7 @@ func TestAlertFiltering(t *testing.T) {
 func TestAlertFiltersBeforeQueueing(t *testing.T) {
 	state := newMachineState("box")
 	state.apply(Event{Seq: 1, Agent: "claude", Session: "s1", State: "blocked", Requests: []Request{{ID: "r1", Kind: "permission", Tool: "Bash"}}})
+	state.apply(Event{Seq: 2, Agent: "claude", Session: "s2", State: "idle", Turn: "t2", Seen: "t2"})
 	s := &Server{
 		states: map[string]*machineState{"box": state},
 		kinds:  map[string]bool{"blocked": true},
@@ -733,6 +634,7 @@ func TestAlertFiltersBeforeQueueing(t *testing.T) {
 		"present":         {Agent: "claude", Session: "s1", Alert: &Alert{Kind: "blocked", Present: true, Request: &AlertRequest{ID: "r1"}}},
 		"kind not chosen": {Agent: "claude", Session: "s1", Alert: &Alert{Kind: "finished", Present: false, Turn: "t1"}},
 		"contradicted":    {Agent: "claude", Session: "s1", Alert: &Alert{Kind: "blocked", Present: false, Request: &AlertRequest{ID: "closed"}}},
+		"seen turn":       {Agent: "claude", Session: "s2", Alert: &Alert{Kind: "finished", Present: false, Turn: "t2"}},
 		"unknown session": {Agent: "claude", Session: "gone", Alert: &Alert{Kind: "blocked", Present: false, Request: &AlertRequest{ID: "r1"}}},
 	} {
 		s.alert("box", e)

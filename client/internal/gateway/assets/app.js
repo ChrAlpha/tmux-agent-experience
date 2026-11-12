@@ -7,7 +7,7 @@
 "use strict";
 
 const ENDED = new Set(["SessionEnd", "Exit"]);
-const REPORTED = ["state", "kind", "turn", "cwd", "runtime", "transcript", "subagents"];
+const REPORTED = ["state", "kind", "turn", "seen", "cwd", "runtime", "transcript", "subagents"];
 const SECTION_ORDER = { inbox: 0, working: 1, settled: 2, unknown: 3 };
 const STALE = 45000; // a stream silent this long is presumed dead
 const AUTHORIZATION = "Authorization";
@@ -193,8 +193,8 @@ const st = {
   check: "", // the last comparison with tmag list
   refused: "", // why tmag-client refused the stream last, until it accepts it
   pairing: null, // { error, busy } while this device needs pairing
-  seen: new Map(), // machine/agent/id -> the turn the person has seen
-  measured: new Set(), // session turns this page already marked seen
+  seenAttempts: new Set(), // session turns this page already asked to mark seen
+  seenErrors: new Map(), // machine/agent/id:turn -> why the mark failed
   push: { enabled: false, subscribed: false, key: "", reason: "" },
   pushBusy: false,
   credential: null, // { id, label }
@@ -223,7 +223,6 @@ function apply(name, doc) {
       m.seq = doc.seq;
       m.sessions = new Map((doc.sessions || []).map(s => [skey(s.agent, s.id), normal(s)]));
       m.panes = doc.panes || [];
-      if (doc.seen) st.seen = new Map(Object.entries(doc.seen));
       break;
     case "panes":
       m.panes = doc.panes || [];
@@ -242,10 +241,19 @@ function applyEvent(m, e) {
     m.sessions.delete(k);
     return;
   }
+  const prev = m.sessions.get(k);
+  // A Seen event reports the turn the person has seen, and changes nothing
+  // else about the session.
+  if (e.event === "Seen") {
+    if (prev && e.turn) {
+      prev.seen = e.turn;
+      m.sessions.set(k, prev);
+    }
+    return;
+  }
   // Only an event with a state speaks for the session as a whole; a field
   // left out is empty.
   if (!e.state) return;
-  const prev = m.sessions.get(k);
   const s = { id: e.session, agent: e.agent, capabilities: e.capabilities, requests: e.requests };
   for (const f of REPORTED) s[f] = e[f];
   const same = prev && prev.state === e.state && (prev.kind || "") === (e.kind || "");
@@ -276,7 +284,7 @@ function all() {
 }
 
 function isSeen(x) {
-  return !!x.s.turn && st.seen.get(tkey(x.machine, x.s.agent, x.s.id)) === x.s.turn;
+  return !!x.s.turn && x.s.seen === x.s.turn;
 }
 
 function sectionOf(x) {
@@ -374,10 +382,6 @@ function frame(block) {
     const { machine: name, doc } = JSON.parse(data.join("\n"));
     apply(name, doc);
     changed();
-  } else if (type === "seen") {
-    const d = JSON.parse(data.join("\n"));
-    st.seen.set(tkey(d.machine, d.agent, d.session), d.turn);
-    render();
   } else if (type === "machine") {
     const d = JSON.parse(data.join("\n"));
     const m = machine(d.machine);
@@ -792,7 +796,7 @@ function homeParts() {
         : el("div", {}, el("h2", { class: "section-label" }, labels[name]),
           el("p", { class: "empty" },
             el("strong", { text: name === "inbox" ? "Nothing waits for you." : name === "working" ? "No agent is working." : "No settled sessions." }),
-            name === "inbox" ? (st.connected ? "A blocked agent, or an idle one whose turn you have not opened, shows here." : "Connecting to tmag-client.") : "")),
+            name === "inbox" ? (st.connected ? "A blocked agent, or an idle one on a turn you have not seen, shows here." : "Connecting to tmag-client.") : "")),
     });
   }
   parts.push(pushPart());
@@ -1013,18 +1017,33 @@ function requestView(x, q, d, focused) {
 
 // ---- a session ----
 
-// markSeen opens a session: its finished turn is seen for every device.
-// A working turn is not seen; it is seen when the view shows it idle.
+// markSeen marks the finished turn a session view shows seen on its machine.
+// The Seen event that follows reports it to every page; a failure shows here.
 function markSeen(x) {
   if (document.visibilityState !== "visible" || x.s.state !== "idle" || !x.s.turn || isSeen(x)) return;
-  const k = tkey(x.machine, x.s.agent, x.s.id) + ":" + x.s.turn;
-  if (st.measured.has(k)) return;
-  st.measured.add(k);
-  api("/api/seen", { machine: x.machine, agent: x.s.agent, session: x.s.id, turn: x.s.turn })
-    .then(doc => {
-      if (doc.turn) st.seen.set(tkey(x.machine, x.s.agent, x.s.id), doc.turn);
-      render();
-    }, () => st.measured.delete(k));
+  const k = seenKey(x);
+  if (st.seenAttempts.has(k)) return;
+  st.seenAttempts.add(k);
+  api("/api/seen", { machine: x.machine, session: x.s.id, turn: x.s.turn })
+    .then(() => render(), err => { st.seenErrors.set(k, err.message); render(); });
+}
+
+const seenKey = x => tkey(x.machine, x.s.agent, x.s.id) + ":" + x.s.turn;
+
+// seenFailure says why this page could not mark the turn seen, and offers a
+// retry with the session as the next render shows it.
+function seenFailurePart(x) {
+  const k = seenKey(x);
+  const why = st.seenErrors.get(k);
+  if (!why || isSeen(x)) return null;
+  return {
+    id: "seen",
+    sig: why,
+    build: () => el("p", { class: "note error" },
+      el("strong", { text: "This turn is not marked seen." }),
+      " " + why + " ",
+      el("button", { class: "link", type: "button", onclick: () => { st.seenErrors.delete(k); st.seenAttempts.delete(k); render(); } }, "Try again")),
+  };
 }
 
 function sessionParts(r) {
@@ -1041,6 +1060,8 @@ function sessionParts(r) {
   }
   markSeen(x);
   const parts = [headPart(x)];
+  const failed = seenFailurePart(x);
+  if (failed) parts.push(failed);
   if (r.request && !x.s.requests.some(q => q.id === r.request)) {
     parts.push({ id: "closed", sig: "closed", build: () => el("p", { class: "note", text: "That request was answered or closed." }) });
   }
@@ -1173,7 +1194,6 @@ async function start() {
     const doc = await api("/api/machines");
     st.machines = doc.machines;
     st.version = doc.version;
-    st.seen = new Map(Object.entries(doc.seen || {}));
     st.push = doc.push || st.push;
     st.credential = doc.credential || null;
     for (const n of st.machines) machine(n);

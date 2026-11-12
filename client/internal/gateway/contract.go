@@ -11,6 +11,7 @@ type Session struct {
 	State        string      `json:"state"`
 	Kind         string      `json:"kind,omitempty"`
 	Turn         string      `json:"turn,omitempty"`
+	Seen         string      `json:"seen,omitempty"`
 	Since        *time.Time  `json:"since,omitempty"`
 	Cwd          string      `json:"cwd,omitempty"`
 	Runtime      string      `json:"runtime,omitempty"`
@@ -75,6 +76,7 @@ type Event struct {
 	Kind         string      `json:"kind,omitempty"`
 	Since        *time.Time  `json:"since,omitempty"`
 	Turn         string      `json:"turn,omitempty"`
+	Seen         string      `json:"seen,omitempty"`
 	Cwd          string      `json:"cwd,omitempty"`
 	Runtime      string      `json:"runtime,omitempty"`
 	Transcript   *Transcript `json:"transcript,omitempty"`

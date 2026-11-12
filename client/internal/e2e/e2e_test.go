@@ -371,20 +371,9 @@ func (g *gatewayServer) waitSession(id string, pred func(gateway.Session) bool) 
 	return gateway.Session{}
 }
 
-func (g *gatewayServer) waitIdle(id, turn string) gateway.Session {
+func (g *gatewayServer) waitIdle(id string) gateway.Session {
 	g.t.Helper()
-	return g.waitSession(id, func(s gateway.Session) bool {
-		return s.State == "idle" && s.Turn != "" && (turn == "" || s.Turn == turn)
-	})
-}
-
-func (g *gatewayServer) seen() map[string]string {
-	g.t.Helper()
-	var doc struct {
-		Seen map[string]string `json:"seen"`
-	}
-	g.json(http.MethodGet, "/api/machines", nil, &doc)
-	return doc.Seen
+	return g.waitSession(id, func(s gateway.Session) bool { return s.State == "idle" && s.Turn != "" })
 }
 
 func (g *gatewayServer) send(id, text string) {

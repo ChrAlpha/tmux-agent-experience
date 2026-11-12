@@ -97,7 +97,9 @@ func alertHolds(a Alert, s Session) bool {
 		}
 		return false
 	case "finished":
-		return s.State == "idle" && (a.Turn == "" || s.Turn == a.Turn)
+		// A turn the person has already seen is settled: the push would
+		// contradict the session's record.
+		return s.State == "idle" && (a.Turn == "" || (s.Turn == a.Turn && s.Seen != a.Turn))
 	}
 	return false
 }

@@ -31,42 +31,55 @@ func TestPairingInboxAndRestart(t *testing.T) {
 	}
 
 	s := g.waitSession("inbox-session", func(s gateway.Session) bool { return s.State == "idle" })
-	if s.Turn != "" || gateway.Section(s, false) != gateway.SectionSettled {
-		t.Fatalf("a session without a turn: %+v %s", s, gateway.Section(s, false))
+	if s.Turn != "" || gateway.Section(s) != gateway.SectionSettled {
+		t.Fatalf("a session without a turn: %+v %s", s, gateway.Section(s))
 	}
 	g.send(s.ID, "hello")
-	s = g.waitIdle(s.ID, "")
-	if gateway.Section(s, false) != gateway.SectionInbox {
-		t.Fatalf("an unseen finished turn is %s", gateway.Section(s, false))
+	s = g.waitIdle(s.ID)
+	if s.Seen != "" || gateway.Section(s) != gateway.SectionInbox {
+		t.Fatalf("an unseen finished turn: %+v %s", s, gateway.Section(s))
 	}
-	key := "local/claude/" + s.ID
-	if g.seen()[key] != "" {
-		t.Fatalf("a turn was seen before it was opened: %v", g.seen())
+	if res, b := g.do(http.MethodPost, "/api/seen", map[string]string{"machine": "local", "session": s.ID, "turn": s.Turn}); res.StatusCode != http.StatusOK {
+		t.Fatalf("mark seen: %s %s", res.Status, b)
 	}
-	var marked struct {
-		Turn string `json:"turn"`
-	}
-	if res := g.json(http.MethodPost, "/api/seen", map[string]string{"machine": "local", "agent": "claude", "session": s.ID, "turn": s.Turn}, &marked); res.StatusCode != http.StatusOK || marked.Turn != s.Turn {
-		t.Fatalf("mark seen: %s %+v", res.Status, marked)
-	}
-	if got := g.seen()[key]; got != s.Turn {
-		t.Fatalf("seen = %q, want %q", got, s.Turn)
-	}
-	if gateway.Section(s, true) != gateway.SectionSettled {
+	// The Seen event that follows settles the turn for every page.
+	turn := s.Turn
+	s = g.waitSession(s.ID, func(s gateway.Session) bool { return s.State == "idle" && s.Seen == turn })
+	if gateway.Section(s) != gateway.SectionSettled {
 		t.Fatal("a seen turn is not settled")
 	}
 
-	// The seen turn fills no inbox after a gateway restart.
-	turn := s.Turn
+	// Seen is the machine's record: a gateway restart changes nothing.
 	g.close()
 	g2 := w.serve(t)
 	g2.token = g.token
-	s2 := g2.waitSession(s.ID, func(s gateway.Session) bool { return s.State == "idle" && s.Turn == turn })
-	if got := g2.seen()[key]; got != s.Turn {
-		t.Fatalf("seen after restart = %q, want %q", got, s.Turn)
-	}
-	if gateway.Section(s2, true) != gateway.SectionSettled {
+	s2 := g2.waitSession(s.ID, func(s gateway.Session) bool { return s.State == "idle" && s.Seen == turn })
+	if gateway.Section(s2) != gateway.SectionSettled {
 		t.Fatal("a seen turn is not settled after restart")
+	}
+}
+
+// A turn the person marked seen at the terminal settles in the inbox, with no
+// request from the page.
+func TestSeenAtTheTerminalLeavesTheInbox(t *testing.T) {
+	w := startWorld(t)
+	w.spawn(map[string]string{"FAKE_SESSION": "terminal-session", "FAKE_HOOKS": "1"}, filepath.Join(binDir, claude))
+	g := w.serve(t)
+	g.pair()
+	s := g.waitSession("terminal-session", func(s gateway.Session) bool {
+		return s.State == "idle" && contains(s.Capabilities, "send")
+	})
+	g.send(s.ID, "hello")
+	s = g.waitIdle(s.ID)
+	if s.Seen != "" || gateway.Section(s) != gateway.SectionInbox {
+		t.Fatalf("an unseen finished turn: %+v %s", s, gateway.Section(s))
+	}
+	turn := s.Turn
+	// The person marks it seen from another terminal on the machine.
+	w.spawn(nil, filepath.Join(binDir, "tmag"), "seen", s.ID, "--turn", turn)
+	s = g.waitSession(s.ID, func(s gateway.Session) bool { return s.State == "idle" && s.Seen == turn })
+	if gateway.Section(s) != gateway.SectionSettled {
+		t.Fatalf("a turn seen at the terminal is %s", gateway.Section(s))
 	}
 }
 
@@ -80,7 +93,7 @@ func TestActionAndAnswer(t *testing.T) {
 		return s.State == "idle" && contains(s.Capabilities, "send")
 	})
 	g.send(s.ID, "hello")
-	s = g.waitIdle(s.ID, "")
+	s = g.waitIdle(s.ID)
 	if text := g.readLast(s.ID); !strings.Contains(text, "answered: hello") {
 		t.Fatalf("last reply = %q", text)
 	}
@@ -130,7 +143,7 @@ func TestPushAlertsAndVisibility(t *testing.T) {
 
 	s := g.waitSession("push-session", func(s gateway.Session) bool { return s.State == "idle" && contains(s.Capabilities, "send") })
 	w.tmux("send-keys", "-t", pane, "hello", "Enter")
-	s = g.waitIdle(s.ID, "")
+	s = g.waitIdle(s.ID)
 	finished := waitPush(t, pushService, "finished")
 	if finished.msg.Session != s.ID || finished.msg.Agent != "claude" || finished.msg.Machine != "local" ||
 		finished.msg.Title != "claude finished" || finished.headers.Get("Urgency") != "normal" ||
