@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ChrAlpha/tmux-agent-experience/internal/adapter"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/attach"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
@@ -27,14 +28,17 @@ type Shown struct {
 
 // Session is one agent session, wherever it runs.
 type Session struct {
-	LastHookAt time.Time  `json:"last_hook_at,omitzero"`
-	ID         string     `json:"id"`
-	Agent      string     `json:"agent"`
-	State      string     `json:"state"`
-	Kind       string     `json:"kind,omitempty"`
-	Turn       string     `json:"turn,omitempty"`
-	Since      *time.Time `json:"since,omitempty"`
-	Cwd        string     `json:"cwd,omitempty"`
+	LastHookAt time.Time `json:"last_hook_at,omitzero"`
+	ID         string    `json:"id"`
+	Agent      string    `json:"agent"`
+	State      string    `json:"state"`
+	Kind       string    `json:"kind,omitempty"`
+	Turn       string    `json:"turn,omitempty"`
+	// Seen is the last turn whose end the person has seen, at the terminal
+	// or by a command.
+	Seen  string     `json:"seen,omitempty"`
+	Since *time.Time `json:"since,omitempty"`
+	Cwd   string     `json:"cwd,omitempty"`
 	// Runtime is how the session runs: in a terminal's own agent process, or
 	// in a background service; "" when its hooks did not say.
 	Runtime string `json:"runtime,omitempty"`
@@ -96,7 +100,7 @@ func Build(w *attach.World, recs []session.Record) View {
 	for _, r := range live {
 		s := Session{
 			LastHookAt: r.LastHookAt,
-			ID:         r.ID, Agent: r.Agent, State: r.State(), Kind: r.Kind(), Turn: r.Turn,
+			ID:         r.ID, Agent: r.Agent, State: r.State(), Kind: r.Kind(), Turn: r.Turn, Seen: r.Seen,
 			Cwd: r.Cwd, Runtime: string(r.Host.Role), Transcript: r.TranscriptRef(), Subagents: r.RunningSubagents(),
 			Capabilities: r.Capabilities(), Requests: r.RequestRefs(), Panes: shown[[2]string{r.Agent, r.ID}],
 		}
@@ -134,6 +138,12 @@ func (v View) Session(agent, id string) (Session, bool) {
 		}
 	}
 	return Session{}, false
+}
+
+// Finished reports whether the session is idle on a turn the person has not
+// seen.
+func (s Session) Finished() bool {
+	return s.State == adapter.Idle && s.Turn != "" && s.Turn != s.Seen
 }
 
 // Load reads the world and the sessions and builds the view.

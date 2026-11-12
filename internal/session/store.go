@@ -56,6 +56,9 @@ func (s Store) Put(ctx context.Context, rec Record) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if len(rec.Seen) > MaxTurn {
+		return fmt.Errorf("invalid seen turn of %d bytes", len(rec.Seen))
+	}
 	path, err := s.path(rec.Agent, rec.ID)
 	if err != nil {
 		return err

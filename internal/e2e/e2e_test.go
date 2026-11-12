@@ -1226,6 +1226,11 @@ func (f *follower) apply(line []byte) {
 		switch {
 		case e.Event == eventlog.End || e.Event == eventlog.Exit:
 			delete(f.sessions, key)
+		case e.Event == eventlog.Seen:
+			if s, ok := f.sessions[key]; ok {
+				s.Seen = e.Turn
+				f.sessions[key] = s
+			}
 		case e.State != "":
 			s, known := f.sessions[key]
 			since := s.Since
@@ -1237,7 +1242,7 @@ func (f *follower) apply(line []byte) {
 				since = e.Since
 			}
 			f.sessions[key] = query.Session{
-				LastHookAt: e.LastHookAt, ID: e.Session, Agent: e.Agent, State: e.State, Kind: e.Kind, Turn: e.Turn, Since: since,
+				LastHookAt: e.LastHookAt, ID: e.Session, Agent: e.Agent, State: e.State, Kind: e.Kind, Turn: e.Turn, Seen: e.Seen, Since: since,
 				Cwd: e.Cwd, Runtime: e.Runtime, Transcript: e.Transcript, Subagents: e.Subagents,
 				Capabilities: e.Capabilities, Requests: e.Requests,
 			}
@@ -2270,6 +2275,11 @@ func TestGlobalOptionPreservesShellCommands(t *testing.T) {
 	}
 	if got := srv.GlobalOption(context.Background(), "@tmag-option-unset"); got != "" {
 		t.Fatalf("unset option = %q", got)
+	}
+	h.tmux("set-option", "-g", "@tmag-test-other", `printf '%s' "\$other"`)
+	if got, err := srv.GlobalOptionsContext(context.Background(), "@tmag-test-option", "@tmag-test-other", "@tmag-option-unset"); err != nil ||
+		got["@tmag-test-option"] != "on" || got["@tmag-test-other"] != `printf '%s' "\$other"` || got["@tmag-option-unset"] != "" {
+		t.Fatalf("several global options = %q, %v", got, err)
 	}
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()

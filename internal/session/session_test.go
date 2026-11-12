@@ -2,6 +2,9 @@ package session
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -530,5 +533,72 @@ func TestAnsweringARequestClosesItsPromptOnce(t *testing.T) {
 	is(t, rec, adapter.Working, "")
 	if _, changed := Apply(rec, answered("h2"), t0); changed {
 		t.Fatal("answering a closed request changed the session")
+	}
+}
+
+// A turn is finished when it is over and the person has not seen it; once
+// seen, the session is settled until another turn ends.
+func TestFinishedTurns(t *testing.T) {
+	rec := Record{Agent: proc.Claude, ID: "s1", Main: adapter.Working, Turn: "t1"}
+	if rec.Finished() {
+		t.Fatal("a running turn is finished")
+	}
+	rec.Main = adapter.Idle
+	if !rec.Finished() {
+		t.Fatal("an idle turn the person has not seen is not finished")
+	}
+	seen, ok := MarkSeen(rec, "t1")
+	if !ok || seen.Seen != "t1" || seen.Finished() {
+		t.Fatalf("MarkSeen = %+v, %v", seen, ok)
+	}
+	if _, ok := MarkSeen(seen, "t1"); ok {
+		t.Fatal("MarkSeen marked a turn already seen")
+	}
+	if _, ok := MarkSeen(rec, "t2"); ok {
+		t.Fatal("MarkSeen marked a turn the session is not idle on")
+	}
+	if _, ok := MarkSeen(Record{Main: adapter.Idle}, ""); ok {
+		t.Fatal("MarkSeen marked no turn")
+	}
+	if (Record{Main: adapter.Idle, Turn: "t1", Seen: "t1"}).Finished() {
+		t.Fatal("a settled session is finished")
+	}
+	if (Record{Main: adapter.Idle}).Finished() {
+		t.Fatal("an idle session with no turn is finished")
+	}
+}
+
+// A seen turn is bounded like any turn a payload reports, where the record
+// is read and again before one is written.
+func TestSeenTurnIsBounded(t *testing.T) {
+	ctx := context.Background()
+	store := Store{Dir: t.TempDir()}
+	long := strings.Repeat("t", MaxTurn+1)
+	if err := store.Put(ctx, Record{Agent: proc.Claude, ID: "s1", Main: adapter.Idle, Turn: "t1", Seen: long}); err == nil {
+		t.Fatal("a record with an oversized seen turn was written")
+	}
+	rec := Record{Agent: proc.Claude, ID: "s1", Main: adapter.Idle, Turn: "t1"}
+	if err := store.Put(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+	path, err := store.path(rec.Agent, rec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec.Seen = long
+	data, err := json.Marshal(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var fault *RecordError
+	if _, _, err := store.Get(ctx, rec.Agent, rec.ID); !errors.As(err, &fault) || fault.Category != "seen" {
+		t.Fatalf("a record with an oversized seen turn read as %v", err)
+	}
+	rec.Seen = strings.Repeat("y", MaxTurn)
+	if err := store.Put(ctx, rec); err != nil {
+		t.Fatalf("a seen turn at the bound was refused: %v", err)
 	}
 }

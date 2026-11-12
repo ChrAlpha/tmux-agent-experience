@@ -100,7 +100,10 @@ type Event struct {
 	// Since is when the reported state/kind last changed.
 	Since *time.Time `json:"since,omitempty"`
 	Turn  string     `json:"turn,omitempty"`
-	Cwd   string     `json:"cwd,omitempty"`
+	// Seen is the last turn whose end the person had seen when the event was
+	// logged.
+	Seen string `json:"seen,omitempty"`
+	Cwd  string `json:"cwd,omitempty"`
 	// Runtime is how the session runs: terminal or service.
 	Runtime    string      `json:"runtime,omitempty"`
 	Transcript *Transcript `json:"transcript,omitempty"`
@@ -140,6 +143,7 @@ const (
 	Detach = "Detach" // a pane stopped showing the session
 	Exit   = "Exit"   // the session's process ended without SessionEnd
 	End    = "SessionEnd"
+	Seen   = "Seen"  // the person has seen the turn that ended
 	Alert  = "Alert" // a change worth telling the person about
 )
 

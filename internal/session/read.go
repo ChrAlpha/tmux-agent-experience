@@ -62,6 +62,9 @@ func (s Store) Get(ctx context.Context, agent, id string) (Record, bool, error) 
 	if rec.Agent != agent || rec.ID != id || rec.Host.PID < 0 {
 		return fault("identity")
 	}
+	if len(rec.Seen) > MaxTurn {
+		return fault("seen")
+	}
 	switch rec.Main {
 	case "", "idle", "working", "unknown":
 	default:

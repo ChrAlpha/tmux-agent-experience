@@ -48,6 +48,9 @@ type Record struct {
 	MainKind string `json:"main_kind,omitempty"`
 	// Turn is the main agent's current or last turn.
 	Turn string `json:"turn,omitempty"`
+	// Seen is the last turn whose end the person has seen, at the terminal
+	// or by a command. No agent marks a turn seen.
+	Seen string `json:"seen,omitempty"`
 
 	// Pending are the prompts awaiting the user, oldest first.
 	Pending []adapter.Prompt `json:"pending,omitempty"`
@@ -148,6 +151,7 @@ type Report struct {
 	State      string
 	Kind       string
 	Turn       string
+	Seen       string
 	Cwd        string
 	Runtime    string
 	Transcript string
@@ -161,7 +165,7 @@ type Report struct {
 // logged.
 func (r Record) Reports() Report {
 	return Report{
-		State: r.State(), Kind: r.Kind(), Turn: r.Turn, Cwd: r.Cwd, Runtime: string(r.Host.Role),
+		State: r.State(), Kind: r.Kind(), Turn: r.Turn, Seen: r.Seen, Cwd: r.Cwd, Runtime: string(r.Host.Role),
 		Transcript: r.Transcript, Subagents: strings.Join(r.RunningSubagents(), "\n"),
 		Requests: strings.Join(r.requestIDs(), "\n"), Since: r.Since.UTC(),
 	}
@@ -179,7 +183,7 @@ func (r Record) requestIDs() []string {
 func (r Record) Report(ev *eventlog.Event) {
 	ev.Agent, ev.Session = r.Agent, r.ID
 	ev.LastHookAt = r.LastHookAt
-	ev.State, ev.Kind, ev.Turn, ev.Cwd = r.State(), r.Kind(), r.Turn, r.Cwd
+	ev.State, ev.Kind, ev.Turn, ev.Seen, ev.Cwd = r.State(), r.Kind(), r.Turn, r.Seen, r.Cwd
 	ev.Since = nil
 	if !r.Since.IsZero() {
 		since := r.Since.UTC()
@@ -212,6 +216,24 @@ func (r Record) TranscriptRef() *eventlog.Transcript {
 	return &eventlog.Transcript{Path: r.Transcript, Format: format}
 }
 
+// Finished reports whether the session is idle on a turn the person has not
+// seen: it has something to show from a turn that is over.
+func (r Record) Finished() bool {
+	return r.State() == adapter.Idle && r.Turn != "" && r.Turn != r.Seen
+}
+
+// MarkSeen records that the person has seen turn, which is the session's own
+// and over. It changes nothing else, and reports false when the session is
+// not idle on that turn or has seen it already: when unsure, a turn stays
+// unseen.
+func MarkSeen(rec Record, turn string) (Record, bool) {
+	if turn == "" || !rec.Finished() || rec.Turn != turn || rec.Seen == turn {
+		return rec, false
+	}
+	rec.Seen = turn
+	return rec, true
+}
+
 // RunningSubagents are the session's subagents still running, oldest first.
 func (r Record) RunningSubagents() []string {
 	var out []string
@@ -235,6 +257,10 @@ const (
 	maxTasks     = 64
 	maxSubagents = 32
 )
+
+// MaxTurn bounds a turn id, as adapter.Decode bounds the turn ids hooks
+// report. A --turn flag and an HTTP action carry the same bound.
+const MaxTurn = adapter.MaxName
 
 // State is the session's state as tmag reports it: blocked while a prompt is
 // open, working during a turn or while background work runs, otherwise the
@@ -501,7 +527,7 @@ func newest[S ~[]E, E any](s S, n int) S {
 
 func (r Record) equal(o Record) bool {
 	return r.Agent == o.Agent && r.ID == o.ID && r.Cwd == o.Cwd && r.Host == o.Host && r.Transcript == o.Transcript &&
-		SameInbox(r.Inbox, o.Inbox) && r.Main == o.Main && r.MainKind == o.MainKind && r.Turn == o.Turn &&
+		SameInbox(r.Inbox, o.Inbox) && r.Main == o.Main && r.MainKind == o.MainKind && r.Turn == o.Turn && r.Seen == o.Seen &&
 		slices.Equal(r.Pending, o.Pending) && slices.Equal(r.Requests, o.Requests) && slices.Equal(r.Calls, o.Calls) &&
 		slices.Equal(r.Done, o.Done) && slices.Equal(r.Background, o.Background) &&
 		slices.Equal(r.Subagents, o.Subagents) && r.Since.Equal(o.Since) && r.Sent.Equal(o.Sent) &&
