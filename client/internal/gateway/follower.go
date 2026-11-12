@@ -297,10 +297,32 @@ func (h *hub) publish(frame string) {
 		select {
 		case sub.frames <- frame:
 		default:
-			// A page that cannot keep up takes a fresh snapshot instead.
+			// A page that cannot keep up is disconnected and takes a fresh
+			// snapshot when it reconnects.
 			delete(h.subs, id)
 			close(sub.frames)
+			sub.cancel()
 		}
+	}
+}
+
+// next waits for the next frame of one page stream. A cancelled stream,
+// whose credential was revoked or which fell behind, writes nothing more,
+// even when frames are still buffered.
+func next(ctx context.Context, frames <-chan string, ping <-chan time.Time) (string, bool) {
+	select {
+	case <-ctx.Done():
+		return "", false
+	case f, ok := <-frames:
+		if !ok || ctx.Err() != nil {
+			return "", false
+		}
+		return f, true
+	case <-ping:
+		if ctx.Err() != nil {
+			return "", false
+		}
+		return "event: ping\ndata: 1\n\n", true
 	}
 }
 

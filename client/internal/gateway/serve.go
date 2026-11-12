@@ -427,19 +427,9 @@ func (s *Server) watch(w http.ResponseWriter, r *http.Request) {
 	ping := time.NewTicker(pingEvery)
 	defer ping.Stop()
 	for {
-		var f string
-		select {
-		case <-ctx.Done():
+		f, ok := next(ctx, sub.frames, ping.C)
+		if !ok {
 			return
-		case v, ok := <-sub.frames:
-			if !ok {
-				return
-			}
-			f = v
-		case <-ping.C:
-			// A comment would keep proxies from timing out too, but a page
-			// sees only events: this one tells it the stream is alive.
-			f = "event: ping\ndata: 1\n\n"
 		}
 		if _, err := io.WriteString(w, f); err != nil {
 			return
