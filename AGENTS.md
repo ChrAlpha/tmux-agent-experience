@@ -25,6 +25,13 @@ layers, in order of importance:
    panes show them, the event log and a versioned JSON contract (`tmag/v2`)
    for agents, scripts and remote clients.
 
+Beside them, the **remote companion** (`client/`) is one person's page for
+the agents on the machines they name. Its gateway runs in a tmux window on
+one machine and follows the others through `tmag` commands or `tmag serve`
+endpoints, serving a phone app for triage and action. It has its own version
+and release train, and speaks only the public `tmag/v2` and `tmag/http/v2`
+contracts.
+
 ## Invariants
 
 Every change must keep these promises. Tests guard most of them; treat a
@@ -80,8 +87,9 @@ promise is documented in the package, and changes with it.
   sharing a home never end each other's sessions.
 - **Records are the truth; the log tells what changed.** A change lands in
   its record or pane, then in the log, best effort; gap-free numbering lets
-  a follower know what it missed and take a snapshot. Waits read records;
-  hook contact is never logged alone and grants nothing.
+  a follower know what it missed and take a snapshot. An alert is logged
+  beside the change it names, with whether the person was present. Waits
+  read records; hook contact is never logged alone and grants nothing.
 - **A session's state never depends on a pane.** Hooks apply to the session
   wherever it runs, in daemons and background supervisors too.
 - **A pane shows a session only on proof.** Process ancestry or the Codex
@@ -147,6 +155,8 @@ promise is documented in the package, and changes with it.
 | `.claude-plugin/`, `.agents/plugins/` | Marketplace manifests |
 | `SKILL.md` | Install and update procedure that agents follow from its raw URL |
 | `site/` | The landing page, in English and `zh-CN/`: static files that `.github/workflows/pages.yml` publishes from each release |
+| `client/` | The remote companion: its own Go module, page, gateway, version and release train |
+| `.github/workflows/release-client.yml` | Publishes a `client/v*` release from the client module, never as latest |
 
 ## Commands
 
@@ -160,12 +170,32 @@ govulncheck ./...
 claude plugin validate .      # marketplace and plugin manifests
 ```
 
+In the client module:
+
+```sh
+cd client
+go build ./...
+go vet ./...
+go test -race ./...           # unit + e2e; e2e needs tmux
+golangci-lint run             # the root .golangci.yml, through the parent directory
+for f in internal/gateway/assets/*.js; do node --check "$f"; done
+go list -m all                # the client module alone
+```
+
 ## Conventions
 
 - Go 1.25 or later is required (`sync.WaitGroup.Go`); CI and releases select
   the latest stable patched toolchain, independently of the module minimum.
 - Go standard library only. A dependency needs a reason that outweighs one more
   thing to audit in a binary every agent hook runs.
+- The client is a module of its own, `github.com/ChrAlpha/tmux-agent-experience/client`.
+  It requires no other module, imports nothing of the root module, and consumes
+  only the public `tmag/v2` and `tmag/http/v2` contracts. It uses the root
+  `.golangci.yml` and LICENSE.
+- The client has its own version (`client/internal/version`) and its own tags,
+  `client/vX.Y.Z`. Its releases are never latest, so latest keeps meaning tmag
+  for people, `scripts/install.sh` and the pages workflow; the TPM plugin does
+  not install the client, and a client release moves no tmag or plugin version.
 - tmux baseline is 3.2; Linux and macOS. Read the process table through
   `internal/proc` (Linux `/proc`, otherwise `ps`).
 - tmux formats: wrap free-text fields with `clean()` in `internal/tmux`.
@@ -207,6 +237,11 @@ claude plugin validate .      # marketplace and plugin manifests
 
 ## Testing
 
+- The client's tests run in its module (`cd client && go test -race ./...`),
+  against fake command backends and `httptest` servers. A test that needs tmux
+  uses a private server under a temporary `TMUX_TMPDIR`; one that needs a real
+  tmag builds this module's binaries from the tested commit and runs them as
+  external programs.
 - Unit tests build worlds from `proc.NewTable` and literal `tmux.Pane`s; no
   tmux needed.
 - Tests run tmag as a person from outside the test's process tree

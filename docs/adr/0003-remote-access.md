@@ -1,6 +1,8 @@
 # ADR 0003: Local owner API and independent clients
 
-- Status: accepted
+- Status: accepted; its clause that moves the client to an independent
+  repository and its last paragraph are superseded by
+  [ADR 0004](0004-remote-companion.md)
 - Date: 2026-11-07
 - Supersedes: ADR 0001's remote access section.
 
