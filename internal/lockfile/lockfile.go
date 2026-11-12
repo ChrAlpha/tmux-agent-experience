@@ -1,10 +1,8 @@
 // Package lockfile provides advisory file locks whose waiting is bounded by a
 // context.
 //
-// A lock file is opened without following a symlink and without waiting for
-// a peer, and must be a regular file: a lock name replaced by anything else
-// fails rather than blocking a hook. Lock files are never removed, so a lock
-// held through an open file always guards the name others open.
+// Lock files are never removed, so a lock held through an open file always
+// guards the name others open.
 package lockfile
 
 import (
@@ -85,19 +83,7 @@ func open(ctx context.Context, path string) (*os.File, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0o600)
-	if err != nil {
-		return nil, err
-	}
-	st, err := f.Stat()
-	if err == nil && !st.Mode().IsRegular() {
-		err = fmt.Errorf("lock %s is not a regular file", filepath.Base(path))
-	}
-	if err != nil {
-		f.Close()
-		return nil, err
-	}
-	return f, nil
+	return os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
 }
 
 func flock(ctx context.Context, f *os.File, path string, how int, wait bool) error {

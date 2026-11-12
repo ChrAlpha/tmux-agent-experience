@@ -9,7 +9,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -231,22 +230,6 @@ func TestLockHonoursDeadline(t *testing.T) {
 	defer cancel()
 	if err := l.Append(ctx, &Event{Event: "Stop"}); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("append under a held lock: %v", err)
-	}
-}
-
-// A log file replaced by a FIFO fails instead of blocking a hook.
-func TestSpecialFileDoesNotBlock(t *testing.T) {
-	l := Open(t.TempDir())
-	if err := syscall.Mkfifo(filepath.Join(l.Dir, currentName), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithTimeout(bg, time.Second)
-	defer cancel()
-	if err := l.Append(ctx, &Event{Event: "Stop"}); err == nil || errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("append to a FIFO: %v", err)
-	}
-	if _, _, err := l.Since(ctx, 0); err == nil || errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("read of a FIFO: %v", err)
 	}
 }
 

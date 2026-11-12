@@ -72,7 +72,7 @@ func (s Store) Put(ctx context.Context, rec Record) error {
 	// stripe's lock, so one temporary serves every session of the stripe, and
 	// a writer that dies leaves at most it behind, for the next to reuse.
 	tmp := filepath.Join(dir, fmt.Sprintf(".tmp-%02x", sessionKey(rec.Agent, rec.ID)[0]))
-	f, err := contextio.OpenRegular(ctx, tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return err
 	}

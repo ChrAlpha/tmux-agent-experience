@@ -350,7 +350,6 @@ func RecordError(dir, agent string, err error) {
 }
 
 // RecordErrorContext logs only while the invocation has budget remaining.
-// A replaced hook.log must not turn a diagnostic into a blocking FIFO open.
 func RecordErrorContext(parent context.Context, dir, agent string, err error) {
 	if err == nil || parent.Err() != nil {
 		return
@@ -376,7 +375,7 @@ func RecordErrorContext(parent context.Context, dir, agent string, err error) {
 	// or hook input. Exclusion covers the ceiling check, truncation and append.
 	line := []byte(fmt.Sprintf("%s %s %s\n", time.Now().UTC().Format(time.RFC3339), agent, category))
 	_ = lockfile.With(ctx, filepath.Join(dir, "hook-log.lock"), func() error {
-		f, err := contextio.OpenRegular(ctx, filepath.Join(dir, "hook.log"), os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o600)
+		f, err := os.OpenFile(filepath.Join(dir, "hook.log"), os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o600)
 		if err != nil {
 			return err
 		}

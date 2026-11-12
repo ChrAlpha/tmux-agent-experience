@@ -160,49 +160,12 @@ func ReadAll(ctx context.Context, r io.Reader, limit int64) ([]byte, error) {
 	return b, err
 }
 
-// OpenRegular rejects symlinks and special files without waiting for a peer.
-// Truncation, when requested, happens only after regular-file validation and a
-// fresh cancellation check. Filesystem syscalls still rely on a responsive OS.
-func OpenRegular(ctx context.Context, path string, flags int, perm os.FileMode) (*os.File, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	fd, err := syscall.Open(path, flags&^syscall.O_TRUNC|syscall.O_NONBLOCK|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, uint32(perm.Perm()))
-	if err != nil {
-		return nil, err
-	}
-	f := os.NewFile(uintptr(fd), path)
-	st, err := f.Stat()
-	if err != nil {
-		_ = f.Close()
-		return nil, err
-	}
-	if !st.Mode().IsRegular() {
-		_ = f.Close()
-		return nil, fmt.Errorf("metadata %s is not a regular file", path)
-	}
-	if flags&(syscall.O_WRONLY|syscall.O_RDWR) != 0 {
-		if sys, ok := st.Sys().(*syscall.Stat_t); ok && sys.Nlink > 1 {
-			_ = f.Close()
-			return nil, fmt.Errorf("metadata %s has multiple links", path)
-		}
-	}
-	if err := ctx.Err(); err != nil {
-		_ = f.Close()
-		return nil, err
-	}
-	if flags&syscall.O_TRUNC != 0 {
-		if err := f.Truncate(0); err != nil {
-			_ = f.Close()
-			return nil, err
-		}
-	}
-	return f, nil
-}
-
-// ReadFile reads only regular metadata, with bounded allocation and work.
+// ReadFile reads a file with bounded allocation and work.
 func ReadFile(ctx context.Context, path string, limit int64) ([]byte, error) {
-	f, err := OpenRegular(ctx, path, os.O_RDONLY, 0)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
@@ -234,11 +197,10 @@ func Entries(ctx context.Context, path string, visit func(os.DirEntry) error) er
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NONBLOCK|syscall.O_CLOEXEC, 0)
+	f, err := os.Open(path)
 	if err != nil {
 		return err
 	}
-	f := os.NewFile(uintptr(fd), path)
 	defer f.Close()
 	for {
 		if err := ctx.Err(); err != nil {

@@ -169,7 +169,7 @@ func (l *Log) WithLock(ctx context.Context, fn func() error) error {
 // used again, keeping the numbers readers see without gaps.
 func (l *Log) Append(ctx context.Context, e *Event) error {
 	return l.WithLock(ctx, func() error {
-		f, err := l.openAppend(ctx)
+		f, err := l.openAppend()
 		if err != nil {
 			return err
 		}
@@ -204,7 +204,7 @@ func (l *Log) Append(ctx context.Context, e *Event) error {
 			if err := os.Rename(l.path(currentName), l.path(rotatedName)); err != nil {
 				return err
 			}
-			if f, err = l.openAppend(ctx); err != nil {
+			if f, err = l.openAppend(); err != nil {
 				return err
 			}
 		} else if end != st.Size() {
@@ -214,16 +214,16 @@ func (l *Log) Append(ctx context.Context, e *Event) error {
 	})
 }
 
-func (l *Log) openAppend(ctx context.Context) (*os.File, error) {
+func (l *Log) openAppend() (*os.File, error) {
 	if err := os.MkdirAll(l.Dir, 0o700); err != nil {
 		return nil, err
 	}
-	return contextio.OpenRegular(ctx, l.path(currentName), os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o600)
+	return os.OpenFile(l.path(currentName), os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o600)
 }
 
 // lastRotated is the last sequence number of the rotated file, or 0.
 func (l *Log) lastRotated(ctx context.Context) (int64, error) {
-	f, err := contextio.OpenRegular(ctx, l.path(rotatedName), os.O_RDONLY, 0)
+	f, err := os.Open(l.path(rotatedName))
 	if errors.Is(err, os.ErrNotExist) {
 		return 0, nil
 	}
@@ -311,7 +311,7 @@ func seqOf(line []byte) int64 {
 
 // Head is the sequence number of the last event, or 0 for an empty log.
 func (l *Log) Head(ctx context.Context) (int64, error) {
-	f, err := contextio.OpenRegular(ctx, l.path(currentName), os.O_RDONLY, 0)
+	f, err := os.Open(l.path(currentName))
 	if errors.Is(err, os.ErrNotExist) {
 		return l.lastRotated(ctx)
 	}
@@ -382,7 +382,7 @@ func continues(after int64, events []Event) bool {
 // read decodes the complete lines of the named file, skipping those that
 // do not decode.
 func (l *Log) read(ctx context.Context, name string) ([]Event, error) {
-	f, _, err := l.openRead(ctx, name)
+	f, _, err := l.openRead(name)
 	if err != nil || f == nil {
 		return nil, err
 	}
@@ -393,8 +393,8 @@ func (l *Log) read(ctx context.Context, name string) ([]Event, error) {
 
 // openRead opens the named file for reading and identifies it, or returns a
 // nil file when there is none.
-func (l *Log) openRead(ctx context.Context, name string) (*os.File, fileID, error) {
-	f, err := contextio.OpenRegular(ctx, l.path(name), os.O_RDONLY, 0)
+func (l *Log) openRead(name string) (*os.File, fileID, error) {
+	f, err := os.Open(l.path(name))
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, fileID{}, nil
 	}
@@ -500,7 +500,7 @@ func (l *Log) Follow(ctx context.Context) (*Tail, error) {
 	if err := os.MkdirAll(l.Dir, 0o700); err != nil {
 		return nil, err
 	}
-	f, err := contextio.OpenRegular(ctx, l.path(currentName), os.O_CREATE|os.O_RDONLY, 0o600)
+	f, err := os.OpenFile(l.path(currentName), os.O_CREATE|os.O_RDONLY, 0o600)
 	if err != nil {
 		return nil, err
 	}
@@ -555,7 +555,7 @@ func (t *Tail) read(ctx context.Context) ([]Event, error) {
 func (t *Tail) Next(ctx context.Context) ([]Event, bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, ReadTimeout)
 	defer cancel()
-	cur, curID, err := t.log.openRead(ctx, currentName)
+	cur, curID, err := t.log.openRead(currentName)
 	if err != nil {
 		return nil, false, err
 	}
@@ -582,7 +582,7 @@ func (t *Tail) Next(ctx context.Context) ([]Event, bool, error) {
 		}
 		same = cur != nil && identity(st) == curID
 		if !same {
-			rotated, rotatedID, err := t.log.openRead(ctx, rotatedName)
+			rotated, rotatedID, err := t.log.openRead(rotatedName)
 			if err != nil {
 				return nil, false, err
 			}
