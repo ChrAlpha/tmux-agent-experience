@@ -58,11 +58,18 @@ const ROUTE_DB = "tmag-route";
 const ROUTE_STORE = "route";
 const ROUTE_KEY = "tapped";
 const ROUTE_FRESH = 2 * 60 * 1000;
+const ALERTS_STORE = "alerts";
+const ALERT_TTL = 10 * 60 * 1000;
+const DB_VERSION = 2;
 
 function routeDB() {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open(ROUTE_DB, 1);
-    request.onupgradeneeded = () => request.result.createObjectStore(ROUTE_STORE);
+    const request = indexedDB.open(ROUTE_DB, DB_VERSION);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(ROUTE_STORE)) db.createObjectStore(ROUTE_STORE);
+      if (!db.objectStoreNames.contains(ALERTS_STORE)) db.createObjectStore(ALERTS_STORE, { keyPath: "tag" });
+    };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
   });
@@ -93,6 +100,66 @@ function takeTappedRoute() {
     tx.onerror = () => { db.close(); reject(tx.error); };
     tx.onabort = () => { db.close(); reject(tx.error); };
   })).catch(() => "");
+}
+
+function readAlerts() {
+  return routeDB().then(db => new Promise((resolve, reject) => {
+    const tx = db.transaction(ALERTS_STORE, "readonly");
+    const all = tx.objectStore(ALERTS_STORE).getAll();
+    let alerts = [];
+    all.onsuccess = () => { alerts = all.result || []; };
+    tx.oncomplete = () => { db.close(); resolve(alerts); };
+    tx.onerror = () => { db.close(); reject(tx.error); };
+    tx.onabort = () => { db.close(); reject(tx.error); };
+  }));
+}
+
+function forgetAlerts(tags) {
+  if (!tags.length) return Promise.resolve();
+  return routeDB().then(db => new Promise((resolve, reject) => {
+    const tx = db.transaction(ALERTS_STORE, "readwrite");
+    const store = tx.objectStore(ALERTS_STORE);
+    for (const tag of tags) store.delete(tag);
+    tx.oncomplete = () => { db.close(); resolve(); };
+    tx.onerror = () => { db.close(); reject(tx.error); };
+    tx.onabort = () => { db.close(); reject(tx.error); };
+  }));
+}
+
+// takeAlertRoute opens the newest recent alert no longer shown, which the
+// person took. It always forgets taken and expired alerts; open says whether
+// a tap's own route did not already win.
+async function takeAlertRoute(open) {
+  if (!("indexedDB" in window)) return "";
+  let alerts;
+  try { alerts = await readAlerts(); } catch { return ""; }
+  const now = Date.now();
+  const recent = [];
+  const expired = [];
+  for (const alert of alerts) {
+    if (!alert || typeof alert.tag !== "string") continue;
+    if (typeof alert.at !== "number" || now - alert.at >= ALERT_TTL) expired.push(alert.tag);
+    else recent.push(alert);
+  }
+  try { await forgetAlerts(expired); } catch { /* taking the route still goes on */ }
+  if (!recent.length) return "";
+  if (!navigator.serviceWorker || typeof navigator.serviceWorker.getRegistration !== "function") return "";
+  let shown;
+  try {
+    const registration = await navigator.serviceWorker.getRegistration();
+    if (!registration || typeof registration.getNotifications !== "function") return "";
+    shown = await registration.getNotifications();
+  } catch {
+    return "";
+  }
+  const displayed = new Set((shown || []).map(notification => notification.tag || ""));
+  const taken = recent.filter(alert => !displayed.has(alert.tag));
+  try { await forgetAlerts(taken.map(alert => alert.tag)); } catch { /* taking the route still goes on */ }
+  if (!open) return "";
+  const valid = taken.filter(alert => validRoute(alert.route)).sort((a, b) => b.at - a.at);
+  if (!valid.length) return "";
+  openRoute(valid[0].route);
+  return valid[0].route;
 }
 
 if ("serviceWorker" in navigator) {
@@ -1078,8 +1145,9 @@ function toast(text, error) {
 // ---- start ----
 
 async function start() {
-  takeOpenRoute();
-  await takeTappedRoute();
+  const opened = takeOpenRoute();
+  const tapped = await takeTappedRoute();
+  await takeAlertRoute(!opened && !tapped);
   const invitation = takeInvitation();
   credential = localStorage.getItem(CREDENTIAL_KEY) || "";
   if (invitation) {
@@ -1125,9 +1193,11 @@ function reportVisible() {
   if (!credential) return;
   api("/api/visible", { visible: document.visibilityState === "visible" }).catch(() => {});
 }
-document.addEventListener("visibilitychange", () => {
+document.addEventListener("visibilitychange", async () => {
   reportVisible();
-  if (document.visibilityState === "visible") takeTappedRoute();
+  if (document.visibilityState !== "visible") return;
+  const tapped = await takeTappedRoute();
+  await takeAlertRoute(!tapped);
 });
 setInterval(() => { if (document.visibilityState === "visible") reportVisible(); }, 30000);
 window.addEventListener("pagehide", () => {

@@ -1,6 +1,7 @@
 // tmag-client's service worker: show an alert, and open the session it names.
-// It caches nothing. It keeps only the route a tap names, for a moment, in
-// IndexedDB, where a page can find it after a reload.
+// It caches nothing. It keeps notification tags, routes and times of recent
+// alerts, and the route a tap names, in IndexedDB for minutes, where a page
+// can open one it missed.
 "use strict";
 
 // A new worker takes over at once: nothing is cached, and iOS rarely closes
@@ -25,7 +26,11 @@ self.addEventListener("push", event => {
     badge: "/icon.png",
     renotify: true,
   };
-  event.waitUntil(self.registration.showNotification(title, options));
+  const route = alertRoute(options.data);
+  event.waitUntil((async () => {
+    try { await rememberAlert({ tag: options.tag, route, at: Date.now() }); } catch { /* still show it */ }
+    await self.registration.showNotification(title, options);
+  })());
 });
 
 self.addEventListener("notificationclick", event => {
@@ -65,12 +70,20 @@ function alertRoute(data) {
 const ROUTE_DB = "tmag-route";
 const ROUTE_STORE = "route";
 const ROUTE_KEY = "tapped";
+const ALERTS_STORE = "alerts";
+const ALERT_LIMIT = 20;
+const ALERT_TTL = 10 * 60 * 1000;
+const DB_VERSION = 2;
 
-// routeDB opens the one database and store that hold the tapped route.
+// routeDB opens the database that holds the tapped route and recent alerts.
 function routeDB() {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open(ROUTE_DB, 1);
-    request.onupgradeneeded = () => request.result.createObjectStore(ROUTE_STORE);
+    const request = indexedDB.open(ROUTE_DB, DB_VERSION);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(ROUTE_STORE)) db.createObjectStore(ROUTE_STORE);
+      if (!db.objectStoreNames.contains(ALERTS_STORE)) db.createObjectStore(ALERTS_STORE, { keyPath: "tag" });
+    };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
   });
@@ -82,6 +95,30 @@ function rememberRoute(route) {
   return routeDB().then(db => new Promise((resolve, reject) => {
     const tx = db.transaction(ROUTE_STORE, "readwrite");
     tx.objectStore(ROUTE_STORE).put({ route, at: Date.now() }, ROUTE_KEY);
+    tx.oncomplete = () => { db.close(); resolve(); };
+    tx.onerror = () => { db.close(); reject(tx.error); };
+    tx.onabort = () => { db.close(); reject(tx.error); };
+  }));
+}
+
+// rememberAlert keeps a notification's tag, route and time, for the page to
+// open if iOS never fires a click. It keeps the newest 20 recent alerts.
+function rememberAlert(alert) {
+  return routeDB().then(db => new Promise((resolve, reject) => {
+    const tx = db.transaction(ALERTS_STORE, "readwrite");
+    const store = tx.objectStore(ALERTS_STORE);
+    store.put(alert);
+    const all = store.getAll();
+    all.onsuccess = () => {
+      const now = Date.now();
+      const recent = (all.result || [])
+        .filter(a => a && typeof a.tag === "string" && typeof a.at === "number" && now - a.at < ALERT_TTL)
+        .sort((a, b) => b.at - a.at);
+      const keep = new Set(recent.slice(0, ALERT_LIMIT).map(a => a.tag));
+      for (const record of all.result || []) {
+        if (!record || typeof record.tag !== "string" || !keep.has(record.tag)) store.delete(record.tag);
+      }
+    };
     tx.oncomplete = () => { db.close(); resolve(); };
     tx.onerror = () => { db.close(); reject(tx.error); };
     tx.onabort = () => { db.close(); reject(tx.error); };

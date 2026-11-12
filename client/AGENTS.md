@@ -27,8 +27,8 @@ adapters, machine configuration and aggregation.
 - No content is stored: the page reads replies, pane text and request input
   on demand, and keeps ids, names and times. Seen turns are ids and turn ids
   in `seen.json`; push payloads carry metadata only. The service worker keeps
-  only the route a notification tap names, for a moment, in IndexedDB, so a
-  reloaded page can open it.
+  tags, routes and times of recent alerts, and the route a tap names, in
+  IndexedDB for minutes, so a reloaded page can open one it missed.
 - Both credentials and tunnel proofs admit the owner; a tunnel's check never
   replaces the gateway's own.
 - The gateway follows each machine once, for every page. Events are relayed

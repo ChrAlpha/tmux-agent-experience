@@ -94,7 +94,7 @@ func TestNotificationTapLeavesItsRouteForThePage(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
-		`indexedDB.open(ROUTE_DB, 1)`,
+		`indexedDB.open(ROUTE_DB, DB_VERSION)`,
 		`put({ route, at: Date.now() }, ROUTE_KEY)`,
 		`await rememberRoute(route)`,
 	} {
@@ -113,8 +113,53 @@ func TestNotificationTapLeavesItsRouteForThePage(t *testing.T) {
 		`store.delete(ROUTE_KEY)`,
 		`validRoute(record.route)`,
 		`Date.now() - record.at < ROUTE_FRESH`,
-		`await takeTappedRoute()`,
-		`if (document.visibilityState === "visible") takeTappedRoute();`,
+		`const tapped = await takeTappedRoute();`,
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("app.js: no %s", want)
+		}
+	}
+}
+
+// A push keeps its alert for a page whose app never fires a click.
+func TestPushKeepsRecentAlertsForThePage(t *testing.T) {
+	sw := readAsset(t, "sw.js")
+	page := readAsset(t, "app.js")
+	for name, script := range map[string]string{"sw.js": sw, "app.js": page} {
+		for _, want := range []string{
+			`const ALERTS_STORE = "alerts";`,
+			`const ALERT_TTL = 10 * 60 * 1000;`,
+			`const DB_VERSION = 2;`,
+		} {
+			if !strings.Contains(script, want) {
+				t.Errorf("%s: no %s", name, want)
+			}
+		}
+	}
+	for _, want := range []string{
+		`const ALERT_LIMIT = 20;`,
+		`rememberAlert({ tag: options.tag, route, at: Date.now() })`,
+		`store.put(alert)`,
+		`recent.slice(0, ALERT_LIMIT)`,
+	} {
+		if !strings.Contains(sw, want) {
+			t.Errorf("sw.js: no %s", want)
+		}
+	}
+	remembered := strings.Index(sw, `await rememberAlert({ tag: options.tag, route, at: Date.now() })`)
+	shown := strings.Index(sw, `await self.registration.showNotification(title, options)`)
+	if remembered < 0 || shown < 0 || remembered > shown {
+		t.Error("sw.js shows an alert before keeping it for the page")
+	}
+	for _, want := range []string{
+		`registration.getNotifications()`,
+		`typeof registration.getNotifications !== "function"`,
+		`const displayed = new Set((shown || []).map(notification => notification.tag || ""));`,
+		`const taken = recent.filter(alert => !displayed.has(alert.tag));`,
+		`forgetAlerts(taken.map(alert => alert.tag))`,
+		`validRoute(alert.route)`,
+		`await takeAlertRoute(!opened && !tapped);`,
+		`await takeAlertRoute(!tapped);`,
 	} {
 		if !strings.Contains(page, want) {
 			t.Errorf("app.js: no %s", want)
