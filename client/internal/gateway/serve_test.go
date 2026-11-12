@@ -791,17 +791,23 @@ func testAuth() string {
 
 func TestPushValidation(t *testing.T) {
 	bin, _ := fakeTmag(t, `echo '{"schema":"tmag/v2","type":"snapshot","seq":1,"sessions":[],"panes":[]}'; sleep 30`)
-	s, hs := newServer(t, Config{Machines: []Machine{{Name: "here", Argv: []string{bin}}}})
+	s, hs := newServer(t, Config{Machines: []Machine{{Name: "here", Argv: []string{bin}}}, PushServices: []string{"push.self.example"}})
 	issued := signIn(t, s)
-	for _, endpoint := range []string{"http://push.example.com/x", "https://127.0.0.1/x", "https://10.0.0.1/x", "https://198.18.0.1/x", "https://8.8.8.8/x", "https://push/x"} {
+	for _, endpoint := range []string{"http://fcm.googleapis.com/x", "https://127.0.0.1/x", "https://10.0.0.1/x", "https://198.18.0.1/x", "https://8.8.8.8/x", "https://push/x", "https://admin.corp.example/x"} {
 		res := call(t, http.MethodPost, hs.URL+"/api/push", issued.Token, `{"endpoint":"`+endpoint+`","keys":{"p256dh":"`+testP256(t)+`","auth":"`+testAuth()+`"}}`, nil)
 		if res.StatusCode != http.StatusBadRequest {
 			t.Fatalf("%s accepted: %s", endpoint, res.Status)
 		}
 	}
-	res := call(t, http.MethodPost, hs.URL+"/api/push", issued.Token, `{"endpoint":"https://push.example.com/x","keys":{"p256dh":"`+testP256(t)+`","auth":"`+testAuth()+`"}}`, nil)
+	res := call(t, http.MethodPost, hs.URL+"/api/push", issued.Token, `{"endpoint":"https://admin.corp.example/x","keys":{"p256dh":"`+testP256(t)+`","auth":"`+testAuth()+`"}}`, nil)
+	b, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+	if !strings.Contains(string(b), "admin.corp.example") || !strings.Contains(string(b), "--push-service") {
+		t.Fatalf("an unknown service: %s %s", res.Status, b)
+	}
+	res = call(t, http.MethodPost, hs.URL+"/api/push", issued.Token, `{"endpoint":"https://push.self.example/x","keys":{"p256dh":"`+testP256(t)+`","auth":"`+testAuth()+`"}}`, nil)
 	if res.StatusCode != http.StatusOK {
-		t.Fatalf("a public endpoint: %s", res.Status)
+		t.Fatalf("a configured service: %s", res.Status)
 	}
 	_, list, err := s.auth.List(context.Background())
 	if err != nil || len(list) != 1 || !list[0].Push {

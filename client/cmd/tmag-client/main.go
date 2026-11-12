@@ -50,6 +50,9 @@ Serve flags:
   --state-dir DIR         the gateway's persistent authorization directory
   --push KINDS            alert kinds to push, comma-separated (default blocked,finished;
                           empty turns push off)
+  --push-service HOST     add an exact push service host; repeatable (default
+                          fcm.googleapis.com, updates.push.services.mozilla.com,
+                          web.push.apple.com, *.notify.windows.com)
 
 Auth flags:
 
@@ -226,7 +229,7 @@ func authCommand(args []string) error {
 }
 
 func serve(args []string) error {
-	var machines, endpoints, credentials values
+	var machines, endpoints, credentials, pushServices values
 	fs := flag.NewFlagSet("tmag-client serve", flag.ContinueOnError)
 	addr := fs.String("addr", "127.0.0.1:7778", "loopback HTTP listen address")
 	owner := fs.String("owner", "", "owner identity proven by a tunnel")
@@ -236,6 +239,7 @@ func serve(args []string) error {
 	audience := fs.String("access-aud", "", "Cloudflare Access audience")
 	dir := fs.String("state-dir", defaultState(), "gateway's persistent authorization directory")
 	pushKinds := fs.String("push", "blocked,finished", "alert kinds to push, comma-separated")
+	fs.Var(&pushServices, "push-service", "add an exact push service host; repeatable (defaults: fcm.googleapis.com, updates.push.services.mozilla.com, web.push.apple.com, *.notify.windows.com)")
 	fs.Var(&endpoints, "endpoint", "NAME=URL for a tmag/http/v2 endpoint; repeatable")
 	fs.Var(&credentials, "credential", "NAME=FILE holding an endpoint credential; repeatable")
 	fs.Var(&machines, "machine", "NAME=COMMAND that runs tmag; repeatable")
@@ -257,7 +261,7 @@ func serve(args []string) error {
 	if len(machines)+len(endpoints) == 0 {
 		machines = values{"local=tmag"}
 	}
-	cfg := gateway.Config{Owner: *owner, Tailscale: split(*tailscale), Access: gateway.Access{Hosts: split(*access), Team: *team, Audience: *audience}, StateDir: *dir, Push: splitKinds(*pushKinds), Version: version.Version, Log: log.New(os.Stderr, "", log.Ltime)}
+	cfg := gateway.Config{Owner: *owner, Tailscale: split(*tailscale), Access: gateway.Access{Hosts: split(*access), Team: *team, Audience: *audience}, StateDir: *dir, Push: splitKinds(*pushKinds), PushServices: []string(pushServices), Version: version.Version, Log: log.New(os.Stderr, "", log.Ltime)}
 	for _, m := range machines {
 		parsed, err := gateway.ParseMachine(m)
 		if err != nil {

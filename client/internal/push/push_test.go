@@ -202,29 +202,68 @@ func TestPushTransportFollowsTheEnvironmentProxy(t *testing.T) {
 
 func TestValidateEndpoint(t *testing.T) {
 	for _, bad := range []string{
-		"http://push.example.com/x",
+		"http://fcm.googleapis.com/x",
 		"https://localhost/x", "https://push.localhost/x",
 		"https://127.0.0.1/x", "https://[::1]/x",
 		"https://10.0.0.1/x", "https://169.254.1.1/x", "https://198.18.0.1/x",
 		"https://8.8.8.8/x", "https://[2606:4700:4700::1111]/x",
 		"https://push/x", "https://intranet/x",
-		"https://.example.com/x", "https://push..example.com/x",
-		"https://user:pass@push.example.com/x", "https://push.example.com/x#fragment",
+		"https://.example.com/x", "https://fcm..googleapis.com/x",
+		"https://user:pass@fcm.googleapis.com/x", "https://fcm.googleapis.com/x#fragment",
 	} {
 		if _, err := ValidateEndpoint(bad); err == nil {
 			t.Errorf("%q accepted", bad)
 		}
 	}
+	for _, good := range []string{
+		"https://fcm.googleapis.com/send/abc",
+		"https://updates.push.services.mozilla.com/send/abc",
+		"https://web.push.apple.com/send/abc",
+		"https://wns2-par02p.notify.windows.com/send/abc",
+		"https://fcm.googleapis.com./send/abc",
+	} {
+		if _, err := ValidateEndpoint(good); err != nil {
+			t.Errorf("%q: %v", good, err)
+		}
+	}
+	_, err := ValidateEndpoint("https://admin.corp.example/restart")
+	if err == nil || !strings.Contains(err.Error(), "admin.corp.example") || !strings.Contains(err.Error(), "--push-service") {
+		t.Fatalf("an unknown service: %v", err)
+	}
 }
 
-func TestValidateEndpointAcceptsAReservedName(t *testing.T) {
+func TestValidateEndpointForAcceptsAServiceAndAReservedName(t *testing.T) {
 	// A name is not resolved when the device subscribes; one that DNS
 	// answers with a reserved address is as valid as any other name.
-	if _, err := ValidateEndpoint("https://push.198.18.0.1.example.com/send/abc"); err != nil {
+	const host = "push.198.18.0.1.example.com"
+	if _, err := ValidateEndpointFor("https://"+host+"/send/abc", []string{host}); err != nil {
 		t.Fatalf("a name at a reserved address: %v", err)
 	}
-	if _, err := ValidateEndpoint("https://push.example.com./send/abc"); err != nil {
-		t.Fatalf("a fully qualified name: %v", err)
+	if _, err := ValidateEndpointFor("https://"+host+"/send/abc", nil); err == nil {
+		t.Fatal("a host not added with --push-service was accepted")
+	}
+	if _, err := ValidateEndpointFor("https://sub."+host+"/send/abc", []string{host}); err == nil {
+		t.Fatal("a subdomain of an exact service was accepted")
+	}
+}
+
+func TestSendChecksTheServiceAgain(t *testing.T) {
+	ua, _ := ecdh.P256().GenerateKey(rand.Reader)
+	authSecret := make([]byte, 16)
+	_, _ = rand.Read(authSecret)
+	sub := Subscription{
+		Endpoint: "https://push.self.example/send/abc",
+		P256DH:   base64.RawURLEncoding.EncodeToString(ua.PublicKey().Bytes()),
+		Auth:     base64.RawURLEncoding.EncodeToString(authSecret),
+	}
+	c := &Client{Keys: keys(t), Subject: "https://tmag.example.com", Services: []string{"push.self.example"}}
+	if _, err := c.Validate(sub); err != nil {
+		t.Fatalf("a configured service: %v", err)
+	}
+	c.Services = nil
+	err := c.Send(context.Background(), sub, Message{Title: "t"})
+	if err == nil || !strings.Contains(err.Error(), "push.self.example") || !strings.Contains(err.Error(), "--push-service") {
+		t.Fatalf("send after the service was removed: %v", err)
 	}
 }
 

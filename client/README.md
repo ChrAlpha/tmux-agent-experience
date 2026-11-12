@@ -114,9 +114,14 @@ bin/tmag-client serve --tailscale box.example.ts.net --owner me@example.com
 `blocked,finished`; an empty value turns push off). Push needs one of the
 tunnel hosts above: the VAPID subject is `https://` plus the first public host,
 and a page reached on loopback says push needs a tunnel instead of offering
-it. A device turns notifications on from its page; the gateway keeps its
-subscription with that device's credential and sends to every subscribed
-device except one whose page is visible within the last minute.
+it. A push endpoint must be on a browser's push service: `fcm.googleapis.com`
+for Chrome and other Chromium browsers, `updates.push.services.mozilla.com`
+for Firefox, `web.push.apple.com` for Safari, or a host under
+`notify.windows.com` for Edge. `--push-service HOST` adds an exact self-hosted
+push service; repeat it as needed. A device turns notifications on from its
+page; the gateway keeps its subscription with that device's credential and
+sends to every subscribed device except one whose page is visible within the
+last minute.
 
 Alerts come from tmag's `Alert` events. The gateway discards one whose current
 state contradicts it, and sends metadata only: kind, machine, agent, session,

@@ -48,6 +48,9 @@ type Config struct {
 	// Push names the alert kinds to push. nil means the default, blocked and
 	// finished; an empty list turns push off.
 	Push []string
+	// PushServices are additional exact push service hosts, as --push-service
+	// adds.
+	PushServices []string
 	// PushClient overrides the Web Push sender. The gateway fills its keys and
 	// subject when they are empty; tests use it to reach a local service.
 	PushClient *push.Client
@@ -68,14 +71,16 @@ type Server struct {
 	states map[string]*machineState
 	vis    *visibility
 	push   *push.Client
-	mux    *http.ServeMux
-	kinds  map[string]bool
-	public string // the first public host a tunnel serves
-	queue  chan alertJob
-	ctx    context.Context
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
-	close  sync.Once
+	// pushCheck validates subscriptions, including when push is off.
+	pushCheck *push.Client
+	mux       *http.ServeMux
+	kinds     map[string]bool
+	public    string // the first public host a tunnel serves
+	queue     chan alertJob
+	ctx       context.Context
+	cancel    context.CancelFunc
+	wg        sync.WaitGroup
+	close     sync.Once
 }
 
 // maxLine bounds one document of a watch stream; a snapshot of many
@@ -135,6 +140,7 @@ func New(cfg Config) (*Server, error) {
 		queue:  make(chan alertJob, 64),
 	}
 	s.ctx, s.cancel = context.WithCancel(context.Background())
+	s.pushCheck = &push.Client{Services: append([]string(nil), cfg.PushServices...)}
 	if len(cfg.Access.Hosts) > 0 {
 		s.guard.keys = newAccessKeys(cfg.Access)
 	}
@@ -154,6 +160,8 @@ func New(cfg Config) (*Server, error) {
 		if s.push == nil {
 			s.push = &push.Client{}
 		}
+		s.push.Services = append(s.push.Services, cfg.PushServices...)
+		s.pushCheck = s.push
 		if s.push.Keys == nil {
 			s.push.Keys = keys
 		}
@@ -522,11 +530,7 @@ func (s *Server) subscribe(w http.ResponseWriter, r *http.Request) {
 		p256dh, secret = body.P256DH, body.Auth
 	}
 	sub := auth.Subscription{Endpoint: body.Endpoint, P256DH: p256dh, Auth: secret}
-	check := push.Validate
-	if s.push != nil {
-		check = s.push.Validate
-	}
-	if _, err := check(push.Subscription{Endpoint: sub.Endpoint, P256DH: sub.P256DH, Auth: sub.Auth}); err != nil {
+	if _, err := s.pushCheck.Validate(push.Subscription{Endpoint: sub.Endpoint, P256DH: sub.P256DH, Auth: sub.Auth}); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}

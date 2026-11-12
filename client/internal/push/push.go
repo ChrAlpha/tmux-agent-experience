@@ -138,10 +138,46 @@ type Subscription struct {
 // ErrGone is a subscription the push service no longer has.
 var ErrGone = errors.New("push subscription is gone")
 
-// ValidateEndpoint accepts an HTTPS endpoint whose host is a DNS name. It
-// does not resolve the name: a host that resolves to a reserved address is
-// allowed, while an IP literal, localhost and a single-label name are not.
-func ValidateEndpoint(raw string) (*url.URL, error) {
+// DefaultServices are the hosts browsers' push subscriptions use: Chrome and
+// other Chromium browsers, Firefox, and Safari. Edge's hosts are under
+// WindowsService.
+var DefaultServices = []string{
+	"fcm.googleapis.com",
+	"updates.push.services.mozilla.com",
+	"web.push.apple.com",
+}
+
+// WindowsService is the suffix of Edge's push hosts.
+const WindowsService = "notify.windows.com"
+
+// serviceAllowed reports whether host is a default push service or in extra.
+func serviceAllowed(host string, extra []string) bool {
+	host = strings.TrimSuffix(strings.ToLower(host), ".")
+	if host == WindowsService || strings.HasSuffix(host, "."+WindowsService) {
+		return true
+	}
+	for _, s := range DefaultServices {
+		if host == s {
+			return true
+		}
+	}
+	for _, s := range extra {
+		if host == strings.TrimSuffix(strings.ToLower(strings.TrimSpace(s)), ".") {
+			return true
+		}
+	}
+	return false
+}
+
+// ValidateEndpoint accepts an HTTPS endpoint on a known push service. It
+// does not resolve the name: a service whose DNS answers with a reserved
+// address is allowed, while an IP literal, localhost and a single-label name
+// are not.
+func ValidateEndpoint(raw string) (*url.URL, error) { return ValidateEndpointFor(raw, nil) }
+
+// ValidateEndpointFor is ValidateEndpoint with extra exact service hosts, as
+// --push-service adds.
+func ValidateEndpointFor(raw string, extra []string) (*url.URL, error) {
 	u, err := url.Parse(raw)
 	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.Fragment != "" {
 		return nil, errors.New("a push endpoint must be an HTTPS URL without userinfo or fragment")
@@ -151,16 +187,23 @@ func ValidateEndpoint(raw string) (*url.URL, error) {
 		strings.HasPrefix(host, ".") || strings.Contains(host, "..") || !strings.Contains(host, ".") {
 		return nil, errors.New("a push endpoint must name a DNS host, not an IP address, localhost or a single-label name")
 	}
+	if !serviceAllowed(host, extra) {
+		return nil, fmt.Errorf("push endpoint host %q is not a known push service; add it with --push-service %s", host, host)
+	}
 	return u, nil
+}
+
+// endpoint checks a subscription's endpoint with the client's services.
+func (c *Client) endpoint(raw string) (*url.URL, error) {
+	if c.Endpoint != nil {
+		return c.Endpoint(raw)
+	}
+	return ValidateEndpointFor(raw, c.Services)
 }
 
 // Validate checks a subscription with this client's endpoint check.
 func (c *Client) Validate(s Subscription) (*url.URL, error) {
-	check := c.Endpoint
-	if check == nil {
-		check = ValidateEndpoint
-	}
-	u, err := check(s.Endpoint)
+	u, err := c.endpoint(s.Endpoint)
 	if err != nil {
 		return nil, err
 	}
@@ -219,17 +262,16 @@ type Client struct {
 	Now     func() time.Time
 
 	// Endpoint checks a subscription's endpoint. Tests reach a local push
-	// service with it; nil means ValidateEndpoint.
+	// service with it; nil means ValidateEndpointFor with Services.
 	Endpoint func(string) (*url.URL, error)
+	// Services are additional exact push service hosts, as --push-service
+	// adds; DefaultServices always apply.
+	Services []string
 }
 
 // Send encrypts msg for one subscription and delivers it.
 func (c *Client) Send(ctx context.Context, s Subscription, msg Message) error {
-	check := c.Endpoint
-	if check == nil {
-		check = ValidateEndpoint
-	}
-	u, err := check(s.Endpoint)
+	u, err := c.endpoint(s.Endpoint)
 	if err != nil {
 		return err
 	}
