@@ -35,8 +35,8 @@ Usage:
   tmag list     [--json]                       agents in all tmux panes
   tmag inspect  <target> [--json] [--events N] one agent, its open requests and recent events
   tmag watch    [--since SEQ]                  JSON lines: snapshot, then events
-  tmag read     <target> [--lines N | --last] [--json]
-                                               recent pane output, or the agent's last reply
+  tmag read     <target> [--lines N | --last | --turns N] [--json]
+                                               recent pane output, the agent's last reply, or its last turns
   tmag send     <target> [--wait | --reply] [--timeout D] [--json] [text | -]
                                                deliver a prompt now, or wait for its turn
   tmag reply    <target> [--timeout D] [--json] [text | -]

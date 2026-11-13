@@ -22,6 +22,7 @@ import (
 	"github.com/ChrAlpha/tmux-agent-experience/internal/query"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/tmux"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/transcript"
 )
 
 // cmdHook always exits 0 and never writes stdout: a broken tmag must not
@@ -276,12 +277,19 @@ func (a *app) cmdRead(args []string) int {
 	fs.BoolVar(&a.json, "json", false, "")
 	lines := fs.Int("lines", 100, "")
 	last := fs.Bool("last", false, "")
+	turns := fs.Int("turns", 0, "")
 	pos, err := parse(fs, args)
 	if err == nil && len(pos) != 1 {
 		err = errors.New("expected one target")
 	}
 	if err == nil && *lines <= 0 {
 		err = errors.New("--lines must be positive")
+	}
+	if err == nil && flagSet(fs, "turns") && (*turns < 1 || *turns > transcript.MaxTurns) {
+		err = fmt.Errorf("--turns reads 1 to %d turns", transcript.MaxTurns)
+	}
+	if err == nil && flagSet(fs, "turns") && (*last || flagSet(fs, "lines")) {
+		err = errors.New("--turns reads the agent's turns, not its last reply or lines of its pane; drop --last and --lines")
 	}
 	if err == nil && *last && flagSet(fs, "lines") {
 		err = errors.New("--last reads the agent's reply, not lines of its pane; drop --lines")
@@ -291,6 +299,18 @@ func (a *app) cmdRead(args []string) int {
 	}
 	ctx, cancel := a.signalContext()
 	defer cancel()
+	if flagSet(fs, "turns") {
+		s, ts, err := query.Turns(ctx, a.store(), pos[0], *turns)
+		if err != nil {
+			return a.failOn("read", pos[0], err)
+		}
+		if a.json {
+			a.emit(map[string]any{"session": s, "turns": ts})
+			return ExitOK
+		}
+		printTurns(a.stdout, ts)
+		return ExitOK
+	}
 	if *last {
 		s, r, err := query.LastReply(ctx, a.store(), pos[0])
 		if err != nil {
@@ -320,6 +340,28 @@ func (a *app) cmdRead(args []string) int {
 	}
 	fmt.Fprint(a.stdout, text)
 	return ExitOK
+}
+
+// printTurns writes turns as a person reads them: each prompt quoted, with
+// its sender when not the person, then the reply; a blank line between turns.
+func printTurns(w io.Writer, turns []transcript.Turn) {
+	for i, t := range turns {
+		if i > 0 {
+			fmt.Fprintln(w)
+		}
+		for _, p := range t.Prompts {
+			text := p.Text
+			if p.From != "" {
+				text = "(" + p.From + ") " + text
+			}
+			for line := range strings.SplitSeq(strings.TrimRight(text, "\n"), "\n") {
+				fmt.Fprintln(w, strings.TrimRight("> "+line, " "))
+			}
+		}
+		if reply := strings.TrimRight(t.Reply, "\n"); reply != "" {
+			fmt.Fprintln(w, reply)
+		}
+	}
 }
 
 // flagSet reports whether the command line set the named flag.

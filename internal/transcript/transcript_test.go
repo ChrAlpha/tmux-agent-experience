@@ -19,11 +19,11 @@ func write(t *testing.T, lines ...string) string {
 }
 
 // Lines shaped as Claude Code 2.1.317 writes them: one line per content
-// block, every user entry naming its prompt.
+// block, every user entry naming its prompt, a prompt's with its origin.
 const (
-	claudePrompt1 = `{"type":"user","promptId":"p1","isSidechain":false,"message":{"role":"user","content":"first"}}`
+	claudePrompt1 = `{"type":"user","promptId":"p1","isSidechain":false,"origin":{"kind":"human"},"message":{"role":"user","content":"first"}}`
 	claudeReply1  = `{"type":"assistant","isSidechain":false,"message":{"id":"m1","role":"assistant","content":[{"type":"text","text":"one"}]}}`
-	claudePrompt2 = `{"type":"user","promptId":"p2","isSidechain":false,"message":{"role":"user","content":[{"type":"text","text":"second"}]}}`
+	claudePrompt2 = `{"type":"user","promptId":"p2","isSidechain":false,"origin":{"kind":"human"},"message":{"role":"user","content":[{"type":"text","text":"second"}]}}`
 	claudeThink   = `{"type":"assistant","isSidechain":false,"message":{"id":"m2","role":"assistant","content":[{"type":"thinking","thinking":"hm"}]}}`
 	claudeLook    = `{"type":"assistant","isSidechain":false,"message":{"id":"m2","role":"assistant","content":[{"type":"text","text":"Let me look."}]}}`
 	claudeTool    = `{"type":"assistant","isSidechain":false,"message":{"id":"m2","role":"assistant","content":[{"type":"tool_use","id":"u1","name":"Bash","input":{}}]}}`

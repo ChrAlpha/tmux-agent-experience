@@ -1,8 +1,8 @@
-// Package transcript reads what an agent answered from the transcript it
-// writes of a session, in the agent's own format.
+// Package transcript reads a session's turns, what the agent was asked and
+// what it answered, from the transcript it writes, in the agent's own format.
 //
 // tmag stores no content: it reads a transcript only when a command asks for
-// a reply, prints what it found and keeps nothing.
+// a reply or turns, prints what it found and keeps nothing.
 package transcript
 
 import (
@@ -81,22 +81,43 @@ type claude struct {
 }
 
 type claudeEntry struct {
-	Type        string `json:"type"`
-	IsSidechain bool   `json:"isSidechain"`
-	IsMeta      bool   `json:"isMeta"`
-	PromptID    string `json:"promptId"`
-	Origin      struct {
-		Kind string `json:"kind"`
-	} `json:"origin"`
+	Type        string       `json:"type"`
+	IsSidechain bool         `json:"isSidechain"`
+	IsMeta      bool         `json:"isMeta"`
+	PromptID    string       `json:"promptId"`
+	Origin      claudeOrigin `json:"origin"`
+	Attachment  struct {
+		Type   string          `json:"type"`
+		Prompt json.RawMessage `json:"prompt"`
+		Origin claudeOrigin    `json:"origin"`
+	} `json:"attachment"`
 	Message struct {
 		ID      string          `json:"id"`
 		Content json.RawMessage `json:"content"`
 	} `json:"message"`
 }
 
+// claudeOrigin is where a prompt came from: the person (human), a
+// background task's notice (task-notification), or a message another
+// session sent (peer), whose sender it names and whose text it carries.
+type claudeOrigin struct {
+	Kind string `json:"kind"`
+	Name string `json:"name"`
+	Body string `json:"body"`
+}
+
 func (c *claude) line(b []byte) bool {
 	var e claudeEntry
-	if json.Unmarshal(b, &e) != nil || e.IsSidechain {
+	if json.Unmarshal(b, &e) != nil {
+		return false
+	}
+	return c.entry(e)
+}
+
+// entry takes an entry, last first, and reports the turn's last user entry,
+// after which its reply lies.
+func (c *claude) entry(e claudeEntry) bool {
+	if e.IsSidechain {
 		return false
 	}
 	switch e.Type {
@@ -139,11 +160,16 @@ func (c *claude) reply() (Reply, error) {
 	if !c.found {
 		return Reply{}, ErrNoTurn
 	}
+	return Reply{Turn: c.turn, Text: c.words()}, nil
+}
+
+// words is the reply's text, its blocks in the order they were written.
+func (c *claude) words() string {
 	parts := make([]string, 0, len(c.text))
 	for i := len(c.text) - 1; i >= 0; i-- {
 		parts = append(parts, c.text[i])
 	}
-	return Reply{Turn: c.turn, Text: strings.Join(parts, "\n\n")}, nil
+	return strings.Join(parts, "\n\n")
 }
 
 // codex reads Codex's rollout. A turn's end is a task_complete event that
@@ -193,16 +219,27 @@ type pi struct {
 	have  bool // the reply's message is found
 }
 
+type piEntry struct {
+	Type    string `json:"type"`
+	ID      string `json:"id"`
+	Message struct {
+		Role    string          `json:"role"`
+		Content json.RawMessage `json:"content"`
+	} `json:"message"`
+}
+
 func (p *pi) line(b []byte) bool {
-	var e struct {
-		Type    string `json:"type"`
-		ID      string `json:"id"`
-		Message struct {
-			Role    string          `json:"role"`
-			Content json.RawMessage `json:"content"`
-		} `json:"message"`
+	var e piEntry
+	if json.Unmarshal(b, &e) != nil {
+		return false
 	}
-	if json.Unmarshal(b, &e) != nil || e.Type != "message" {
+	return p.entry(e)
+}
+
+// entry takes an entry, last first, and reports the user message that
+// starts the turn.
+func (p *pi) entry(e piEntry) bool {
+	if e.Type != "message" {
 		return false
 	}
 	switch e.Message.Role {

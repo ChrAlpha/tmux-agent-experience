@@ -72,3 +72,31 @@ func LastReply(ctx context.Context, store session.Store, target string) (Session
 		}
 	}
 }
+
+// Turns returns the last n turns of a session, in any state, as the agent's
+// transcript holds them: the last one may be running. A session whose
+// transcript is not written yet has none. tmag reads the transcript for this
+// and keeps nothing of it.
+func Turns(ctx context.Context, store session.Store, target string, n int) (Session, []transcript.Turn, error) {
+	v, _, err := Load(ctx, store)
+	if err != nil {
+		return Session{}, nil, err
+	}
+	s, _, err := controlled(ctx, v, target)
+	if err != nil {
+		return Session{}, nil, err
+	}
+	if s.Transcript == nil {
+		return s, nil, fmt.Errorf("%w: the hooks of %s did not say where its transcript is", ErrNoReply, s.ID)
+	}
+	turns, err := transcript.Turns(ctx, s.Transcript.Path, s.Transcript.Format, n)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return s, []transcript.Turn{}, nil
+	case err != nil:
+		return s, nil, err
+	case turns == nil:
+		turns = []transcript.Turn{}
+	}
+	return s, turns, nil
+}
