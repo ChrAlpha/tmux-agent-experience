@@ -21,6 +21,7 @@ import (
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/auth"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/query"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/transcript"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/version"
 )
 
@@ -264,15 +265,28 @@ func (s *Server) read(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "usage", "target is required")
 		return
 	}
-	if q.Get("last") == "1" && q.Get("lines") == "" {
+	last, lines, turns := q.Get("last"), q.Get("lines"), q.Get("turns")
+	switch {
+	case last == "1" && lines == "" && turns == "":
 		args = append(args, "--last")
-	} else if n, err := strconv.Atoi(q.Get("lines")); err == nil && n > 0 && n <= 2000 && q.Get("last") == "" {
-		args = append(args, "--lines", strconv.Itoa(n))
-	} else {
-		fail(w, 400, "usage", "read needs last=1 or lines=1..2000")
+	case last == "" && turns == "" && count(lines, 2000) > 0:
+		args = append(args, "--lines", strconv.Itoa(count(lines, 2000)))
+	case last == "" && lines == "" && count(turns, transcript.MaxTurns) > 0:
+		args = append(args, "--turns", strconv.Itoa(count(turns, transcript.MaxTurns)))
+	default:
+		fail(w, 400, "usage", fmt.Sprintf("read needs last=1, lines=1..2000 or turns=1..%d", transcript.MaxTurns))
 		return
 	}
 	s.relay(w, r, append(args, "--", q.Get("target")), nil)
+}
+
+// count is the number s names from 1 to most, or 0.
+func count(s string, most int) int {
+	n, err := strconv.Atoi(s)
+	if err != nil || n < 1 || n > most {
+		return 0
+	}
+	return n
 }
 
 type action struct {

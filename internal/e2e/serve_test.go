@@ -140,6 +140,10 @@ func TestServeCarriesOwnerVerbs(t *testing.T) {
 		code, body := call(http.MethodGet, "/v2/read?target="+sidA+"&last=1", "")
 		return code == http.StatusOK && strings.Contains(body, `"text":"answered: from the phone`)
 	})
+	if code, body := call(http.MethodGet, "/v2/read?target="+sidA+"&turns=1", ""); code != http.StatusOK ||
+		!strings.Contains(body, `"prompts":[{"text":"from the phone"}],"reply":"answered: from the phone"`) {
+		t.Fatalf("the turn on the page: %d %s", code, body)
+	}
 
 	// A request: what it asks, then the answer.
 	h.tmux("send-keys", "-t", pane, "block", "Enter")
