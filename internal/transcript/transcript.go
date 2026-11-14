@@ -2,7 +2,7 @@
 // what it answered, from the transcript it writes, in the agent's own format.
 //
 // tmag stores no content: it reads a transcript only when a command asks for
-// a reply or turns, prints what it found and keeps nothing.
+// turns or a reply, prints what it found and keeps nothing.
 package transcript
 
 import (
@@ -13,7 +13,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strings"
+	"unicode/utf8"
 )
 
 // Formats, as eventlog.Transcript names them.
@@ -26,255 +28,162 @@ const (
 // ErrNoTurn reports a transcript that holds no turn yet.
 var ErrNoTurn = errors.New("no turn in the transcript")
 
-// Reply is what the agent last answered: the text of its final message of
-// a turn, "" when the turn ended without one.
-type Reply struct {
-	Turn string `json:"turn"`
-	Text string `json:"text"`
+// Turn is one turn of a session as the agent's transcript tells it.
+type Turn struct {
+	// ID names the turn as the agent's hooks do.
+	ID string `json:"id"`
+	// Prompts are what the turn was given: the prompt that started it, if
+	// it had one, then those that arrived while it ran.
+	Prompts []Prompt `json:"prompts"`
+	// Reply is the text of the turn's final message once the turn ends, ""
+	// when it ended without one. While the turn runs it is what the
+	// transcript holds so far; Codex writes it when the turn ends.
+	Reply string `json:"reply"`
 }
 
-// Last returns the reply of the last turn the transcript at path holds,
-// as far as it is written.
-func Last(ctx context.Context, path, format string) (Reply, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return Reply{}, err
+// Prompt is a prompt a turn was given. From is who sent it when the
+// transcript names someone other than the person: peer for another
+// session's message, task for a background task's notice. A prompt an agent
+// sent through tmag starts with the line tmag wrote for it.
+type Prompt struct {
+	Text string `json:"text"`
+	From string `json:"from,omitempty"`
+}
+
+// Bounds of what Turns returns, whatever the transcript holds.
+const (
+	MaxTurns   = 20
+	maxPrompts = 10       // per turn: the first and the last ones
+	maxText    = 16 << 10 // bytes of a prompt or a reply
+)
+
+// Turns returns the last n turns the transcript at path holds, oldest first,
+// as far as they are written: the last one may be running. Each keeps within
+// the bounds above.
+func Turns(ctx context.Context, path, format string, n int) ([]Turn, error) {
+	if n < 1 || n > MaxTurns {
+		return nil, fmt.Errorf("read 1 to %d turns", MaxTurns)
 	}
-	defer f.Close()
-	var r replyReader
+	turns, err := read(ctx, path, format, n)
+	for i := range turns {
+		turns[i] = bound(turns[i])
+	}
+	return turns, err
+}
+
+// Last returns the last turn the transcript at path holds, as far as it is
+// written, its reply whole: what read --last prints once the turn ends.
+func Last(ctx context.Context, path, format string) (Turn, error) {
+	turns, err := read(ctx, path, format, 1)
+	switch {
+	case err != nil:
+		return Turn{}, err
+	case len(turns) == 0:
+		return Turn{}, ErrNoTurn
+	}
+	return turns[0], nil
+}
+
+// A turnReader takes a transcript's lines, last first, and gives each turn
+// once it has read the turn whole, with its prompts in the order they came.
+type turnReader interface {
+	line(b []byte) (Turn, bool)
+	// end gives the turn being read at the transcript's start.
+	end() (Turn, bool)
+}
+
+// read returns the last n turns the transcript at path holds, oldest first.
+func read(ctx context.Context, path, format string, n int) ([]Turn, error) {
+	var r turnReader
 	switch format {
 	case ClaudeJSONL:
-		r = &claude{}
+		r = &claudeTurns{}
 	case CodexRollout:
-		r = &codex{}
+		r = &codexTurns{}
 	case PiJSONL:
-		r = &pi{}
+		r = &piTurns{}
 	default:
-		return Reply{}, fmt.Errorf("unknown transcript format %q", format)
+		return nil, fmt.Errorf("unknown transcript format %q", format)
 	}
-	if err := backward(ctx, f, r.line); err != nil {
-		return Reply{}, err
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
 	}
-	return r.reply()
-}
-
-// A replyReader takes a transcript's lines, last first, until it has the
-// last turn's reply.
-type replyReader interface {
-	line(b []byte) (done bool)
-	reply() (Reply, error)
-}
-
-// claude reads Claude Code's JSONL transcript. Each content block of an
-// assistant message is a line of its own; every user entry, prompt or tool
-// result, names the prompt whose turn it belongs to. A peer message is a
-// meta user entry whose origin is a peer, and it names the turn it starts;
-// other meta entries are skipped. The reply is the text of the last
-// assistant message with any, after the turn's last user entry.
-type claude struct {
-	turn  string
-	found bool
-	have  bool     // the reply's message is found
-	msg   string   // its id
-	text  []string // its text blocks, last first
-	ended bool     // an earlier message came after it
-}
-
-type claudeEntry struct {
-	Type        string       `json:"type"`
-	IsSidechain bool         `json:"isSidechain"`
-	IsMeta      bool         `json:"isMeta"`
-	PromptID    string       `json:"promptId"`
-	Origin      claudeOrigin `json:"origin"`
-	Attachment  struct {
-		Type   string          `json:"type"`
-		Prompt json.RawMessage `json:"prompt"`
-		Origin claudeOrigin    `json:"origin"`
-	} `json:"attachment"`
-	Message struct {
-		ID      string          `json:"id"`
-		Content json.RawMessage `json:"content"`
-	} `json:"message"`
-}
-
-// claudeOrigin is where a prompt came from: the person (human), a
-// background task's notice (task-notification), or a message another
-// session sent (peer), whose sender it names and whose text it carries.
-type claudeOrigin struct {
-	Kind string `json:"kind"`
-	Name string `json:"name"`
-	Body string `json:"body"`
-}
-
-func (c *claude) line(b []byte) bool {
-	var e claudeEntry
-	if json.Unmarshal(b, &e) != nil {
-		return false
+	defer f.Close()
+	var turns []Turn
+	err = backward(ctx, f, func(b []byte) bool {
+		if t, ok := r.line(b); ok {
+			turns = append(turns, t)
+		}
+		return len(turns) == n
+	})
+	if err != nil {
+		return nil, err
 	}
-	return c.entry(e)
-}
-
-// entry takes an entry, last first, and reports the turn's last user entry,
-// after which its reply lies.
-func (c *claude) entry(e claudeEntry) bool {
-	if e.IsSidechain {
-		return false
-	}
-	switch e.Type {
-	case "user":
-		if e.PromptID == "" || (e.IsMeta && e.Origin.Kind != "peer") {
-			return false
-		}
-		c.turn, c.found = e.PromptID, true
-		return true
-	case "assistant":
-		var blocks []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		}
-		if json.Unmarshal(e.Message.Content, &blocks) != nil {
-			return false
-		}
-		var texts []string
-		for i := len(blocks) - 1; i >= 0; i-- {
-			if blocks[i].Type == "text" && blocks[i].Text != "" {
-				texts = append(texts, blocks[i].Text)
-			}
-		}
-		switch {
-		case c.ended:
-		case !c.have:
-			if len(texts) > 0 {
-				c.have, c.msg, c.text = true, e.Message.ID, texts
-			}
-		case e.Message.ID == c.msg && c.msg != "":
-			c.text = append(c.text, texts...)
-		default:
-			c.ended = true
+	if len(turns) < n {
+		if t, ok := r.end(); ok {
+			turns = append(turns, t)
 		}
 	}
-	return false
+	slices.Reverse(turns)
+	return turns, nil
 }
 
-func (c *claude) reply() (Reply, error) {
-	if !c.found {
-		return Reply{}, ErrNoTurn
+// words is the text of a message's content: a string, or blocks of which
+// the text ones count.
+func words(raw json.RawMessage) string {
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return s
 	}
-	return Reply{Turn: c.turn, Text: c.words()}, nil
-}
-
-// words is the reply's text, its blocks in the order they were written.
-func (c *claude) words() string {
-	parts := make([]string, 0, len(c.text))
-	for i := len(c.text) - 1; i >= 0; i-- {
-		parts = append(parts, c.text[i])
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
 	}
-	return strings.Join(parts, "\n\n")
-}
-
-// codex reads Codex's rollout. A turn's end is a task_complete event that
-// names the turn and carries the agent's last message.
-type codex struct {
-	r     Reply
-	found bool
-}
-
-func (c *codex) line(b []byte) bool {
-	if !bytes.Contains(b, []byte(`"task_complete"`)) {
-		return false // most lines are long and of no interest: skip decoding
-	}
-	var e struct {
-		Type    string `json:"type"`
-		Payload struct {
-			Type             string  `json:"type"`
-			TurnID           string  `json:"turn_id"`
-			LastAgentMessage *string `json:"last_agent_message"`
-		} `json:"payload"`
-	}
-	if json.Unmarshal(b, &e) != nil || e.Type != "event_msg" || e.Payload.Type != "task_complete" {
-		return false
-	}
-	c.r.Turn, c.found = e.Payload.TurnID, true
-	if e.Payload.LastAgentMessage != nil {
-		c.r.Text = *e.Payload.LastAgentMessage
-	}
-	return true
-}
-
-func (c *codex) reply() (Reply, error) {
-	if !c.found {
-		return Reply{}, ErrNoTurn
-	}
-	return c.r, nil
-}
-
-// pi reads Pi's session file: a header, then one entry per line, each
-// message whole. A turn starts with a user message, whose entry id names it;
-// its reply is the text of the last assistant message with any after it.
-// Other entries (tool results, system prompts, model changes, extensions'
-// messages) belong to the turn they follow.
-type pi struct {
-	r     Reply
-	found bool
-	have  bool // the reply's message is found
-}
-
-type piEntry struct {
-	Type    string `json:"type"`
-	ID      string `json:"id"`
-	Message struct {
-		Role    string          `json:"role"`
-		Content json.RawMessage `json:"content"`
-	} `json:"message"`
-}
-
-func (p *pi) line(b []byte) bool {
-	var e piEntry
-	if json.Unmarshal(b, &e) != nil {
-		return false
-	}
-	return p.entry(e)
-}
-
-// entry takes an entry, last first, and reports the user message that
-// starts the turn.
-func (p *pi) entry(e piEntry) bool {
-	if e.Type != "message" {
-		return false
-	}
-	switch e.Message.Role {
-	case "user":
-		p.r.Turn, p.found = e.ID, true
-		return true
-	case "assistant":
-		if p.have {
-			return false
-		}
-		var blocks []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		}
-		if json.Unmarshal(e.Message.Content, &blocks) != nil {
-			return false
-		}
-		var texts []string
-		for _, b := range blocks {
-			if b.Type == "text" && b.Text != "" {
-				texts = append(texts, b.Text)
-			}
-		}
-		if len(texts) > 0 {
-			p.r.Text, p.have = strings.Join(texts, "\n\n"), true
+	_ = json.Unmarshal(raw, &blocks)
+	var texts []string
+	for _, b := range blocks {
+		if b.Type == "text" && b.Text != "" {
+			texts = append(texts, b.Text)
 		}
 	}
-	return false
+	return strings.Join(texts, "\n\n")
 }
 
-func (p *pi) reply() (Reply, error) {
-	if !p.found {
-		return Reply{}, ErrNoTurn
+// reversed returns the prompts read last first in the order they came.
+func reversed(p []Prompt) []Prompt {
+	p = slices.Clone(p)
+	slices.Reverse(p)
+	return p
+}
+
+// bound keeps a turn within the bounds Turns promises: its first prompt and
+// last ones, each text cut.
+func bound(t Turn) Turn {
+	if t.Prompts == nil {
+		t.Prompts = []Prompt{}
 	}
-	return p.r, nil
+	if len(t.Prompts) > maxPrompts {
+		t.Prompts = append(t.Prompts[:1:1], t.Prompts[len(t.Prompts)-maxPrompts+1:]...)
+	}
+	for i := range t.Prompts {
+		t.Prompts[i].Text = cut(t.Prompts[i].Text)
+	}
+	t.Reply = cut(t.Reply)
+	return t
+}
+
+// cut ends s within maxText bytes, at a character's boundary.
+func cut(s string) string {
+	if len(s) <= maxText {
+		return s
+	}
+	const more = "…"
+	end := maxText - len(more)
+	for end > 0 && !utf8.RuneStart(s[end]) {
+		end--
+	}
+	return s[:end] + more
 }
 
 // chunk is how much of the file backward reads at a time.

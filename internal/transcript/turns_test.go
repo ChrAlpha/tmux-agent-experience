@@ -111,7 +111,7 @@ func TestPiTurns(t *testing.T) {
 
 // Whatever the transcript holds, a turn read stays small: its texts are cut
 // at a character's boundary, and of many prompts the first and the last ones
-// are kept.
+// are kept. Last gives the reply whole, as read --last prints it.
 func TestTurnsBounds(t *testing.T) {
 	long := strings.Repeat("é", maxText)
 	lines := []string{`{"type":"user","promptId":"p1","isSidechain":false,"origin":{"kind":"human"},"message":{"role":"user","content":"` + long + `"}}`}
@@ -131,6 +131,9 @@ func TestTurnsBounds(t *testing.T) {
 		if len(s) > maxText || !utf8.ValidString(s) || !strings.HasSuffix(s, "…") {
 			t.Errorf("a text of %d bytes, valid %v", len(s), utf8.ValidString(s))
 		}
+	}
+	if whole, err := Last(context.Background(), write(t, lines...), ClaudeJSONL); err != nil || whole.Reply != long {
+		t.Errorf("Last cut the reply to %d bytes, %v", len(whole.Reply), err)
 	}
 	for _, n := range []int{0, MaxTurns + 1} {
 		if _, err := Turns(context.Background(), write(t, claudeOther), ClaudeJSONL, n); err == nil {

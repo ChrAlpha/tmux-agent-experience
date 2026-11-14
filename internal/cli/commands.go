@@ -312,15 +312,15 @@ func (a *app) cmdRead(args []string) int {
 		return ExitOK
 	}
 	if *last {
-		s, r, err := query.LastReply(ctx, a.store(), pos[0])
+		s, t, err := query.LastReply(ctx, a.store(), pos[0])
 		if err != nil {
 			return a.failOn("read", pos[0], err)
 		}
 		if a.json {
-			a.emit(map[string]any{"session": s, "turn": r.Turn, "text": r.Text})
+			a.emit(map[string]any{"session": s, "turn": t.ID, "text": t.Reply})
 			return ExitOK
 		}
-		fmt.Fprintln(a.stdout, strings.TrimRight(r.Text, "\n"))
+		fmt.Fprintln(a.stdout, strings.TrimRight(t.Reply, "\n"))
 		return ExitOK
 	}
 	t, err := a.resolve(ctx, pos[0])

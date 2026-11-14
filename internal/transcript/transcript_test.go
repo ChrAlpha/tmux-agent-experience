@@ -9,6 +9,18 @@ import (
 	"testing"
 )
 
+// reply is what read --last uses of the last turn: its id and its reply.
+type reply struct{ turn, text string }
+
+func last(t *testing.T, format string, lines ...string) reply {
+	t.Helper()
+	got, err := Last(context.Background(), write(t, lines...), format)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return reply{got.ID, got.Reply}
+}
+
 func write(t *testing.T, lines ...string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "t.jsonl")
@@ -39,26 +51,25 @@ const (
 	claudeOther    = `{"type":"system","subtype":"turn_duration"}`
 )
 
-func TestClaudeLastReply(t *testing.T) {
+func TestClaudeLast(t *testing.T) {
 	ctx := context.Background()
 	for _, c := range []struct {
 		name  string
 		lines []string
-		want  Reply
+		want  reply
 	}{
-		{"a plain turn", []string{claudePrompt1, claudeReply1, claudeOther}, Reply{"p1", "one"}},
+		{"a plain turn", []string{claudePrompt1, claudeReply1, claudeOther}, reply{"p1", "one"}},
 		{"the final message after tools, whole",
 			[]string{claudePrompt1, claudeReply1, claudePrompt2, claudeThink, claudeLook, claudeTool, claudeResult, claudeFinalA, claudeFinalB, claudeOther},
-			Reply{"p2", "Found it.\n\nIt is fine."}},
+			reply{"p2", "Found it.\n\nIt is fine."}},
 		{"not a subagent's or another meta entry",
-			[]string{claudePrompt1, claudeReply1, claudeSide, claudeMeta, claudeOther}, Reply{"p1", "one"}},
+			[]string{claudePrompt1, claudeReply1, claudeSide, claudeMeta, claudeOther}, reply{"p1", "one"}},
 		{"a peer's message starts its turn",
-			[]string{claudePrompt1, claudeReply1, claudePeer, claudePeerBack, claudeOther}, Reply{"p10", "peer answer"}},
-		{"a turn with no text yet", []string{claudePrompt1, claudeReply1, claudePrompt2, claudeTool}, Reply{"p2", ""}},
+			[]string{claudePrompt1, claudeReply1, claudePeer, claudePeerBack, claudeOther}, reply{"p10", "peer answer"}},
+		{"a turn with no text yet", []string{claudePrompt1, claudeReply1, claudePrompt2, claudeTool}, reply{"p2", ""}},
 	} {
-		got, err := Last(ctx, write(t, c.lines...), ClaudeJSONL)
-		if err != nil || got != c.want {
-			t.Errorf("%s: %+v, %v; want %+v", c.name, got, err, c.want)
+		if got := last(t, ClaudeJSONL, c.lines...); got != c.want {
+			t.Errorf("%s: %+v; want %+v", c.name, got, c.want)
 		}
 	}
 	if _, err := Last(ctx, write(t, claudeOther), ClaudeJSONL); !errors.Is(err, ErrNoTurn) {
@@ -77,23 +88,22 @@ const (
 	codexQuoted   = `{"timestamp":"t","type":"response_item","payload":{"type":"function_call_output","output":"\"task_complete\""}}`
 )
 
-func TestCodexLastReply(t *testing.T) {
+func TestCodexLast(t *testing.T) {
 	ctx := context.Background()
 	for _, c := range []struct {
 		name  string
 		lines []string
-		want  Reply
+		want  reply
 	}{
-		{"the turn's last message", []string{codexMeta, codexStarted1, codexMessage, codexDone1}, Reply{"t1", "all done"}},
-		{"a turn without one", []string{codexMeta, codexStarted1, codexDone1, codexStarted2, codexDone2}, Reply{"t2", ""}},
-		{"the last finished turn", []string{codexMeta, codexStarted1, codexDone1, codexStarted2, codexMessage, codexQuoted}, Reply{"t1", "all done"}},
+		{"the turn's last message", []string{codexMeta, codexStarted1, codexMessage, codexDone1}, reply{"t1", "all done"}},
+		{"a turn without one", []string{codexMeta, codexStarted1, codexDone1, codexStarted2, codexDone2}, reply{"t2", ""}},
+		{"a running turn, which has no reply yet", []string{codexMeta, codexStarted1, codexDone1, codexStarted2, codexMessage, codexQuoted}, reply{"t2", ""}},
 	} {
-		got, err := Last(ctx, write(t, c.lines...), CodexRollout)
-		if err != nil || got != c.want {
-			t.Errorf("%s: %+v, %v; want %+v", c.name, got, err, c.want)
+		if got := last(t, CodexRollout, c.lines...); got != c.want {
+			t.Errorf("%s: %+v; want %+v", c.name, got, c.want)
 		}
 	}
-	if _, err := Last(ctx, write(t, codexMeta, codexStarted1), CodexRollout); !errors.Is(err, ErrNoTurn) {
+	if _, err := Last(ctx, write(t, codexMeta, codexDone1), CodexRollout); !errors.Is(err, ErrNoTurn) {
 		t.Errorf("no turn: %v", err)
 	}
 }
@@ -114,23 +124,22 @@ const (
 	piAborted = `{"type":"message","id":"f6a7b8c9","parentId":"8525eceb","timestamp":"2026-11-10T08:07:06.000Z","message":{"role":"assistant","content":[],"stopReason":"aborted","errorMessage":"aborted","timestamp":1794298026000}}`
 )
 
-func TestPiLastReply(t *testing.T) {
+func TestPiLast(t *testing.T) {
 	ctx := context.Background()
 	for _, c := range []struct {
 		name  string
 		lines []string
-		want  Reply
+		want  reply
 	}{
-		{"a plain turn", []string{piHeader, piModel, piSystem, piPrompt1, piReply1}, Reply{"73544b94", "one"}},
+		{"a plain turn", []string{piHeader, piModel, piSystem, piPrompt1, piReply1}, reply{"73544b94", "one"}},
 		{"the final message after tools, whole",
 			[]string{piHeader, piSystem, piPrompt1, piReply1, piPrompt2, piCall, piResult, piFinal, piCustom},
-			Reply{"8525eceb", "Found it.\n\nIt is fine."}},
-		{"an aborted turn", []string{piHeader, piPrompt1, piReply1, piPrompt2, piAborted}, Reply{"8525eceb", ""}},
-		{"a turn with no text yet", []string{piHeader, piPrompt1, piReply1, piPrompt2}, Reply{"8525eceb", ""}},
+			reply{"8525eceb", "Found it.\n\nIt is fine."}},
+		{"an aborted turn", []string{piHeader, piPrompt1, piReply1, piPrompt2, piAborted}, reply{"8525eceb", ""}},
+		{"a turn with no text yet", []string{piHeader, piPrompt1, piReply1, piPrompt2}, reply{"8525eceb", ""}},
 	} {
-		got, err := Last(ctx, write(t, c.lines...), PiJSONL)
-		if err != nil || got != c.want {
-			t.Errorf("%s: %+v, %v; want %+v", c.name, got, err, c.want)
+		if got := last(t, PiJSONL, c.lines...); got != c.want {
+			t.Errorf("%s: %+v; want %+v", c.name, got, c.want)
 		}
 	}
 	if _, err := Last(ctx, write(t, piHeader, piModel, piSystem), PiJSONL); !errors.Is(err, ErrNoTurn) {
