@@ -423,12 +423,15 @@ func writeTurn(agent, session, path, turn, prompt, answer string) {
 		entry = map[string]any{"type": "message", "id": "r" + turn, "parentId": turn, "message": map[string]any{"role": "assistant",
 			"content": []map[string]string{{"type": "text", "text": answer}}, "stopReason": "stop"}}
 	case agent == "claude" && answer == "":
-		entry = map[string]any{"type": "user", "promptId": turn, "isSidechain": false, "message": map[string]any{"role": "user", "content": prompt}}
+		entry = map[string]any{"type": "user", "promptId": turn, "isSidechain": false, "origin": map[string]string{"kind": "human"},
+			"message": map[string]any{"role": "user", "content": prompt}}
 	case agent == "claude":
 		entry = map[string]any{"type": "assistant", "isSidechain": false, "message": map[string]any{"id": "msg-" + turn, "role": "assistant",
 			"content": []map[string]string{{"type": "text", "text": answer}}}}
 	case answer == "":
-		entry = map[string]any{"type": "event_msg", "payload": map[string]any{"type": "task_started", "turn_id": turn}}
+		appendLine(path, map[string]any{"type": "event_msg", "payload": map[string]any{"type": "task_started", "turn_id": turn}})
+		entry = map[string]any{"type": "event_msg", "payload": map[string]any{"type": "item_completed", "turn_id": turn,
+			"item": map[string]any{"type": "UserMessage", "id": "u" + turn, "content": []map[string]string{{"type": "text", "text": prompt}}}}}
 	default:
 		entry = map[string]any{"type": "event_msg", "payload": map[string]any{"type": "task_complete", "turn_id": turn, "last_agent_message": answer}}
 	}

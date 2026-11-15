@@ -35,7 +35,7 @@ func TestLastReplyWaitsForTheReplyToBeWritten(t *testing.T) {
 				t.Error(err)
 			}
 		}
-		write(`{"type":"user","promptId":"t1","message":{"role":"user","content":"hi"}}`)
+		write(`{"type":"user","promptId":"t1","origin":{"kind":"human"},"message":{"role":"user","content":"hi"}}`)
 		store := session.Store{Dir: t.TempDir()}
 		rec := session.Record{Agent: "claude", ID: "session-1", Main: "idle", Turn: "t1", Transcript: path}
 		if err := store.Put(context.Background(), rec); err != nil {
@@ -49,7 +49,7 @@ func TestLastReplyWaitsForTheReplyToBeWritten(t *testing.T) {
 		time.AfterFunc(500*time.Millisecond, func() {
 			write(`{"type":"assistant","message":{"id":"m1","role":"assistant","content":[{"type":"text","text":"hello"}]}}`)
 		})
-		if _, r, err := LastReply(context.Background(), store, "session-1"); err != nil || r.Turn != "t1" || r.Text != "hello" {
+		if _, r, err := LastReply(context.Background(), store, "session-1"); err != nil || r.ID != "t1" || r.Reply != "hello" {
 			t.Fatalf("a reply written after the turn ended: %+v %v", r, err)
 		}
 	})

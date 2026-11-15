@@ -41,7 +41,7 @@ Successful commands and command failures preserve their `tmag/v2` documents.
 | GET /v2/list | none | `list --json` |
 | GET /v2/inspect | target | `inspect --json` |
 | GET /v2/request | target, request | `request --json` |
-| GET /v2/read | target and either last=1 or lines=1..2000 | `read --json` |
+| GET /v2/read | target and one of last=1, lines=1..2000 or turns=1..20 | `read --json` |
 | GET /v2/watch | optional since cursor, otherwise Last-Event-ID | event stream |
 | POST /v2/act | JSON action | send, interrupt, or answer result |
 | POST /v2/pair | JSON `{code}`; no bearer needed | `{schema,credential:{id,label,created,expires?,token}}` |

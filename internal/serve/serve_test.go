@@ -114,6 +114,34 @@ func TestActionsPreserveArgumentsAndGates(t *testing.T) {
 		t.Fatal("invalid action reached local CLI")
 	}
 }
+
+// A read names one of what it reads, within its bounds, and the target stays
+// literal.
+func TestReadTakesOneOfLastLinesOrTurns(t *testing.T) {
+	var got []string
+	s, _, c := fixture(t, func(ctx context.Context, args []string, in io.Reader, out, stderr io.Writer) int {
+		got = args
+		_, _ = io.WriteString(out, `{"schema":"tmag/v2"}`)
+		return 0
+	})
+	for query, want := range map[string]string{
+		"last=1":   "read --json --last -- --x",
+		"lines=40": "read --json --lines 40 -- --x",
+		"turns=20": "read --json --turns 20 -- --x",
+		"turns=07": "read --json --turns 7 -- --x",
+	} {
+		got = nil
+		if r := call(s, "GET", "/v2/read?target=--x&"+query, "", c.Token, "", ""); r.Code != 200 || strings.Join(got, " ") != want {
+			t.Errorf("%s: %d %q", query, r.Code, got)
+		}
+	}
+	for _, query := range []string{"", "last=1&turns=2", "lines=5&turns=2", "turns=0", "turns=21", "turns=x", "lines=2001"} {
+		got = nil
+		if r := call(s, "GET", "/v2/read?target=a&"+query, "", c.Token, "", ""); r.Code != 400 || got != nil {
+			t.Errorf("%q: %d, ran %q", query, r.Code, got)
+		}
+	}
+}
 func TestPairingIssuesIndependentCredentials(t *testing.T) {
 	s, store, c := fixture(t, func(context.Context, []string, io.Reader, io.Writer, io.Writer) int { return 0 })
 	p, err := store.Pair(context.Background(), "phone", time.Hour)

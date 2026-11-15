@@ -70,8 +70,8 @@ promise is documented in the package, and changes with it.
   no prompt, message or tool-input field, and tmag's extensions send none;
   records, events and alerts hold ids, states, paths and times. A prompt
   sent through an inbox is written to the agent's channel and kept nowhere.
-  `answer-hook` keeps a tool input in memory only, and `read --last` prints a
-  reply and keeps nothing.
+  `answer-hook` keeps a tool input in memory only, and `read --last` and
+  `read --turns` print what they read and keep nothing.
 - **What tmag accepts is bounded where it is read.** `adapter.Decode` bounds
   every field it keeps and records cap their lists, so state stays small
   whatever an agent sends. A new field comes with its bound.
@@ -135,7 +135,7 @@ promise is documented in the package, and changes with it.
 | `internal/codexsvc` | One-command client of the Codex daemon's control socket (JSON-RPC over WebSocket) |
 | `internal/inbox` | The socket a session's agent serves for messages: dial, proof, Claude Code's envelope and the extension framing |
 | `internal/answer` | The answer hook's socket, under `/tmp/tmag-<uid>`, its protocol, and the decision it prints for Claude Code |
-| `internal/transcript` | A turn's reply, read backward from Claude Code's JSONL transcript, Codex's rollout or Pi's session file |
+| `internal/transcript` | A session's turns, their prompts and replies, read backward from Claude Code's JSONL transcript, Codex's rollout or Pi's session file |
 | `internal/eventlog` | Append-only, sequence-numbered event log, and tails that know when they missed events |
 | `internal/tmux` | tmux CLI wrapper; sanitises every free-text field |
 | `internal/proc` | Process table, agent clients and services, hook hosts |
@@ -305,12 +305,15 @@ an adapter, the Codex title rules or an inbox, observe the real thing:
   payload names the socket and that its peer is the agent process.
 - Transcripts: `internal/transcript` reads Claude Code 2.1.319's JSONL (a
   line per content block, each user entry's `promptId` the hooks'
-  `prompt_id`; a peer message is a meta entry whose `origin.kind` is
-  `peer`), Codex 0.167's rollout (`task_complete` with `turn_id` and
-  `last_agent_message`), and Pi 1.5.0's and oh-my-pi 18.18.6's session files
-  (an entry per message, a user message's entry id naming its turn). Before
-  changing it, run a turn and check that `tmag read ID --last` names the turn
-  `tmag list --json` reports.
+  `prompt_id`; a prompt is a user entry with an `origin`, a peer message a
+  meta entry whose `origin.kind` is `peer`, and a message that arrives
+  while a turn runs a `queued_command` attachment), Codex 0.167's rollout
+  (`task_started`, a `UserMessage` item for each prompt, and `task_complete`
+  with `turn_id` and `last_agent_message`), and Pi 1.5.0's and oh-my-pi
+  18.18.6's session files (an entry per message, a user message's entry id
+  naming its turn). Before changing it, run turns and check that `tmag read
+  ID --last` and the last of `tmag read ID --turns N` name the turn `tmag
+  list --json` reports.
 - Clean up afterwards: test threads (`codex delete --force <id>`), session
   transcripts, Pi's and oh-my-pi's scratch homes, scratch servers and
   directories.
