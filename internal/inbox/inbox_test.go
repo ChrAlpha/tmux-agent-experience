@@ -84,6 +84,43 @@ func TestExtensionFraming(t *testing.T) {
 	}
 }
 
+func TestExtensionInterruptFraming(t *testing.T) {
+	lines := make(chan string, 1)
+	sock := serve(t, func(conn net.Conn) {
+		line, _ := bufio.NewReader(conn).ReadString('\n')
+		lines <- line
+		_, _ = io.WriteString(conn, "{\"ok\":true}\n")
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := dial(t, sock).Interrupt(ctx, "s1"); err != nil {
+		t.Fatal(err)
+	}
+	var req struct {
+		Interrupt bool   `json:"interrupt"`
+		Session   string `json:"session"`
+	}
+	if err := json.Unmarshal([]byte(<-lines), &req); err != nil || !req.Interrupt || req.Session != "s1" {
+		t.Fatalf("request = %+v, %v", req, err)
+	}
+}
+
+// An idle session's refusal keeps its own reason, so an interrupt can be
+// told from one that reached another session.
+func TestExtensionInterruptRefusal(t *testing.T) {
+	sock := serve(t, func(conn net.Conn) {
+		_, _ = bufio.NewReader(conn).ReadString('\n')
+		_, _ = io.WriteString(conn, "{\"ok\":false,\"refused\":\"idle\",\"error\":\"this agent runs no turn to interrupt\"}\n")
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	err := dial(t, sock).Interrupt(ctx, "s1")
+	var refused *Refusal
+	if !errors.As(err, &refused) || refused.Reason != "idle" || refused.Detail != "this agent runs no turn to interrupt" {
+		t.Fatalf("Interrupt = %v", err)
+	}
+}
+
 func TestExtensionSaysWhenItTookNothing(t *testing.T) {
 	sock := serve(t, func(conn net.Conn) {
 		_, _ = bufio.NewReader(conn).ReadString('\n')

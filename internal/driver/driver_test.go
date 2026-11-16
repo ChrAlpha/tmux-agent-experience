@@ -17,7 +17,7 @@ func TestChannel(t *testing.T) {
 		{"codex", "terminal", Answer, ""},
 		{"codex", "service", Interrupt, Service},
 		{"codex", "service", Answer, Service},
-		{"pi", "terminal", Interrupt, Pane},
+		{"pi", "terminal", Interrupt, Inbox},
 		{"pi", "terminal", Answer, ""},
 		{"pi", "service", Interrupt, ""},
 		{"pi", "service", Answer, ""},
@@ -25,6 +25,27 @@ func TestChannel(t *testing.T) {
 	} {
 		if got := Channel(c.agent, c.runtime, c.verb); got != c.want {
 			t.Errorf("Channel(%s, %s, %s) = %q, want %q", c.agent, c.runtime, c.verb, got, c.want)
+		}
+	}
+}
+
+func TestInterruptRoute(t *testing.T) {
+	for _, c := range []struct {
+		agent, runtime string
+		want           Route
+	}{
+		{"claude", "terminal", Route{Channel: Pane}},
+		{"claude", "service", Route{}},
+		{"codex", "terminal", Route{Channel: Pane}},
+		{"codex", "service", Route{Channel: Service}},
+		{"pi", "terminal", Route{Channel: Inbox, Fallback: Pane}},
+		{"pi", "service", Route{}},
+		{"omp", "terminal", Route{Channel: Pane}},
+		{"omp", "service", Route{}},
+		{"aider", "terminal", Route{}},
+	} {
+		if got := InterruptRoute(c.agent, c.runtime); got != c.want {
+			t.Errorf("InterruptRoute(%s, %s) = %+v, want %+v", c.agent, c.runtime, got, c.want)
 		}
 	}
 }

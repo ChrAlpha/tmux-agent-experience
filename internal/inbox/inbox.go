@@ -30,8 +30,9 @@ import (
 // may be sent again.
 var ErrNotTaken = errors.New("the agent took nothing")
 
-// Refusal reports an agent that refused a request for a session it no longer
-// serves. Nothing was delivered.
+// Refusal reports an agent that refused a request, for a session it no
+// longer serves, one with no turn, or an interrupt it does not serve.
+// Nothing was delivered.
 type Refusal struct {
 	Reason string
 	Detail string
@@ -175,11 +176,27 @@ func cleanName(name string) string {
 // after it handed the text to the session it still serves, or refuses a
 // session it no longer serves, or says it took nothing.
 func (c *Conn) Extension(ctx context.Context, text, session string) error {
+	return c.extension(ctx, struct {
+		Send    string `json:"send"`
+		Session string `json:"session"`
+	}{Send: text, Session: session})
+}
+
+// Interrupt asks tmag's extension in Pi or oh-my-pi to stop session's turn
+// and reads its answer. The extension refuses a session it no longer serves,
+// an idle session, or an agent that serves no interrupt.
+func (c *Conn) Interrupt(ctx context.Context, session string) error {
+	return c.extension(ctx, struct {
+		Interrupt bool   `json:"interrupt"`
+		Session   string `json:"session"`
+	}{Interrupt: true, Session: session})
+}
+
+// extension writes request as one line and reads the extension's answer,
+// with the framing both requests share.
+func (c *Conn) extension(ctx context.Context, request any) error {
 	return c.within(ctx, func() error {
-		line, err := json.Marshal(struct {
-			Send    string `json:"send"`
-			Session string `json:"session"`
-		}{Send: text, Session: session})
+		line, err := json.Marshal(request)
 		if err != nil {
 			return err
 		}
