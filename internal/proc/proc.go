@@ -14,7 +14,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ChrAlpha/tmux-agent-experience/internal/contextio"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/helper"
 )
 
@@ -50,8 +49,14 @@ type Table struct {
 }
 
 // NewTable indexes the given processes.
-func NewTable(ps []Process) *Table {
-	t := &Table{byPID: make(map[int]Process, len(ps)), children: make(map[int][]int, len(ps)), complete: true}
+func NewTable(ps []Process) *Table { return newTable(ps, true) }
+
+// newIncompleteTable indexes a partial view, such as a hook's own lineage.
+// Nothing destructive may treat it as complete evidence.
+func newIncompleteTable(ps []Process) *Table { return newTable(ps, false) }
+
+func newTable(ps []Process, complete bool) *Table {
+	t := &Table{byPID: make(map[int]Process, len(ps)), children: make(map[int][]int, len(ps)), complete: complete}
 	for _, p := range ps {
 		if p.Uncertain {
 			t.complete = false
@@ -92,6 +97,25 @@ func SnapshotContext(ctx context.Context) (*Table, error) {
 	if !table.Complete() {
 		return nil, fmt.Errorf("process table incomplete")
 	}
+	return table, nil
+}
+
+// LineageContext reads only the processes needed to prove pid's host: its
+// ancestors up to the nearest agent client or service, and that host's
+// parent. On Linux it reads those /proc entries; elsewhere it falls back to
+// the full table. The result never passes for a complete table.
+func LineageContext(ctx context.Context, pid int) (*Table, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if _, err := os.Stat("/proc/self/stat"); err == nil {
+		return readProcLineageContext(ctx, pid)
+	}
+	table, err := SnapshotContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	table.complete = false
 	return table, nil
 }
 
@@ -520,44 +544,8 @@ func (t *Table) FindAgent(root int) (Process, string, bool) {
 	return Process{}, "", false
 }
 
-func readProcFSContext(ctx context.Context) ([]Process, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	if _, err := os.Stat("/proc/self/stat"); err != nil {
-		return nil, err
-	}
-	var ps []Process
-	err := contextio.Entries(ctx, "/proc", func(e os.DirEntry) error {
-		pid, err := strconv.Atoi(e.Name())
-		if err != nil {
-			return nil //nolint:nilerr // Non-PID names such as self are expected /proc entries, not an incomplete process view.
-		}
-		p, ok := readProcEntryContext(ctx, pid)
-		if !ok {
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			if _, err := os.Stat("/proc/" + strconv.Itoa(pid)); os.IsNotExist(err) {
-				return nil
-			}
-			p = Process{PID: pid, Uncertain: true}
-		}
-		ps = append(ps, p)
-		return ctx.Err()
-	})
-	if err != nil {
-		return nil, err
-	}
-	return ps, nil
-}
-
-func readProcEntryContext(ctx context.Context, pid int) (Process, bool) {
-	dir := "/proc/" + strconv.Itoa(pid)
-	stat, err := contextio.ReadFile(ctx, dir+"/stat", 64<<10)
-	if err != nil {
-		return Process{}, false
-	}
+// parseProcStat reads one /proc/<pid>/stat row.
+func parseProcStat(pid int, stat []byte) (Process, bool) {
 	// Format: pid (comm) state ppid ...; comm may contain spaces and parentheses.
 	open := bytes.IndexByte(stat, '(')
 	end := bytes.LastIndexByte(stat, ')')
@@ -579,11 +567,27 @@ func readProcEntryContext(ctx context.Context, pid int) (Process, bool) {
 	if len(fields) > 19 {
 		p.Start = fields[19] // starttime, in clock ticks after boot
 	}
-	if cmdline, err := contextio.ReadFile(ctx, dir+"/cmdline", 4<<20); err == nil {
-		p.Argv = strings.Split(strings.TrimRight(string(cmdline), "\x00"), "\x00")
-		p.Args = strings.TrimSpace(strings.Join(p.Argv, " "))
-	}
 	return p, true
+}
+
+// candidateCommand reports whether a process with this executable name may be
+// an agent or an agent's launcher: only those need their command line read.
+func candidateCommand(comm string) bool {
+	switch {
+	case comm == "claude", comm == "claude.exe",
+		comm == "pi", comm == "pi-rpc", comm == "omp",
+		comm == "node", comm == "bun":
+		return true
+	case strings.HasPrefix(comm, "codex"):
+		return true
+	}
+	return false
+}
+
+// setCommandLine fills p.Args and p.Argv from a NUL-separated /proc cmdline.
+func setCommandLine(p *Process, cmdline []byte) {
+	p.Argv = strings.Split(strings.TrimRight(string(cmdline), "\x00"), "\x00")
+	p.Args = strings.TrimSpace(strings.Join(p.Argv, " "))
 }
 
 func readPS() ([]Process, error) { return readPSContext(context.Background()) }

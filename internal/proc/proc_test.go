@@ -1,10 +1,13 @@
 package proc
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -259,6 +262,84 @@ func TestTreeWalks(t *testing.T) {
 	cyclic := NewTable([]Process{{PID: 2, PPID: 3}, {PID: 3, PPID: 2}})
 	if got := cyclic.Ancestors(2); len(got) != 2 {
 		t.Fatalf("cycle not cut: %v", got)
+	}
+}
+
+func TestLineageIsIncompleteAndCoversTheHook(t *testing.T) {
+	table, err := LineageContext(context.Background(), os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if table.Complete() {
+		t.Fatal("lineage passed for a complete process table")
+	}
+	if _, ok := table.Get(os.Getpid()); !ok {
+		t.Fatal("lineage does not name the hook")
+	}
+}
+
+func TestCandidateCommandsCoverEveryAgentAndLauncher(t *testing.T) {
+	for _, comm := range []string{"claude", "claude.exe", "codex", "codex-code-mode", "pi", "pi-rpc", "omp", "node", "bun"} {
+		if !candidateCommand(comm) {
+			t.Errorf("%s is not read for its arguments", comm)
+		}
+	}
+	for _, comm := range []string{"sh", "zsh", "sleep", "2.1.317"} {
+		if candidateCommand(comm) {
+			t.Errorf("%s is read for arguments it cannot need", comm)
+		}
+	}
+}
+
+func TestSnapshotReadsArgumentsOnlyForCandidates(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("command lines come from ps elsewhere")
+	}
+	// The candidate is this test binary run under the name node: a system
+	// binary may pick its program from the path it ran as instead of argv[0],
+	// as Ubuntu's multi-call coreutils does, while a Go binary ignores both.
+	// The kernel still names the process after the symlink.
+	if os.Getenv("TMAG_PROC_TEST_CHILD") != "" {
+		time.Sleep(time.Minute)
+		return
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "node")
+	if err := os.Symlink(exe, link); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(link, "-test.run=^TestSnapshotReadsArgumentsOnlyForCandidates$")
+	cmd.Env = append(os.Environ(), "TMAG_PROC_TEST_CHILD=1")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }()
+	// execve closes the exec pipe Start waits on before it copies the new argv.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		b, _ := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", cmd.Process.Pid))
+		if len(b) > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the child's command line stayed empty")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	table, err := Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, ok := table.Get(cmd.Process.Pid)
+	if !ok || p.Comm != "node" || !slices.Equal(p.Argv, cmd.Args) {
+		t.Fatalf("candidate process = %+v, %v", p, ok)
+	}
+	me, ok := table.Get(os.Getpid())
+	if !ok || candidateCommand(me.Comm) || me.Args != "" {
+		t.Fatalf("non-candidate process = %+v, %v", me, ok)
 	}
 }
 
