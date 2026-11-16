@@ -29,7 +29,31 @@ const (
 	KindPlan       = "plan"       // a request to approve a plan (blocks as permission)
 	KindBackground = "background" // working on background tasks after the turn ended
 	KindError      = "error"      // idle after a failed turn
+	KindCompacting = "compacting" // compacting the conversation during a turn
 )
+
+// Permission classes, as Claude Code names them in its envelope: a session
+// either bypasses permission prompts or asks for them.
+const (
+	PermissionBypass    = "bypass"
+	PermissionPrompting = "prompting"
+)
+
+// permissionClass maps the permission_mode Claude Code and Codex report onto
+// the class tmag attests. Anything else is no class at all.
+func permissionClass(mode string) string {
+	switch mode {
+	case "bypassPermissions":
+		return PermissionBypass
+	case "default", "acceptEdits", "plan", "dontAsk":
+		return PermissionPrompting
+	}
+	return ""
+}
+
+// PermissionClass is the class a payload's permission_mode names, "" when it
+// names none tmag knows.
+func (p Payload) PermissionClass() string { return permissionClass(p.PermissionMode) }
 
 // Payload is the subset of hook input tmag reads. Claude Code and Codex share
 // these field names, and tmag's extensions for Pi and oh-my-pi use them too.
@@ -52,6 +76,13 @@ type Payload struct {
 	ToolName         string `json:"tool_name"`
 	ToolUseID        string `json:"tool_use_id"`
 	NotificationType string `json:"notification_type"`
+	// PermissionMode is how the agent asks for permission, in Claude Code's
+	// values; tmag records only the class it names.
+	PermissionMode string `json:"permission_mode"`
+	// Trigger says why a compaction started: "manual" or "auto".
+	Trigger string `json:"trigger"`
+	// Error is why a turn failed, as StopFailure names it.
+	Error string `json:"error"`
 	// TranscriptPath is where the agent writes the session's transcript: a
 	// path, not content.
 	TranscriptPath string `json:"transcript_path"`
@@ -96,8 +127,13 @@ func Decode(data []byte) (Payload, error) {
 			*f = ""
 		}
 	}
-	for _, f := range []*string{&p.HookEventName, &p.SessionID, &p.Source, &p.Reason, &p.StopReason, &p.Mode, &p.PromptID, &p.TurnID, &p.AgentID, &p.ToolName, &p.ToolUseID, &p.NotificationType} {
+	for _, f := range []*string{&p.HookEventName, &p.SessionID, &p.Source, &p.Reason, &p.StopReason, &p.Mode, &p.PromptID, &p.TurnID, &p.AgentID, &p.ToolName, &p.ToolUseID, &p.NotificationType, &p.Trigger, &p.Error} {
 		*f = cut(*f)
+	}
+	switch p.PermissionMode {
+	case "bypassPermissions", "default", "acceptEdits", "plan", "dontAsk":
+	default:
+		p.PermissionMode = ""
 	}
 	if p.BackgroundTasks != nil {
 		tasks := *p.BackgroundTasks
@@ -236,6 +272,11 @@ type Transition struct {
 	// says an answer hook waits under that name (see package answer).
 	Request string
 	Waits   bool
+	// Reason is why a Set ends a failed turn, as StopFailure names it.
+	Reason string
+	// OnlyCompacting applies a Set only while the session is compacting: a
+	// failed compaction ends one that was marked and changes nothing otherwise.
+	OnlyCompacting bool
 	// Synthetic marks a transition tmag made for its own delivery, not a
 	// report by the agent: it does not clear the inbox backpressure.
 	Synthetic bool
@@ -375,7 +416,18 @@ func mapClaude(p Payload) Transition {
 	case "Stop":
 		return Transition{Action: Set, State: Idle, Turn: turn(p), Background: tasks(p.BackgroundTasks)}
 	case "StopFailure":
-		return Transition{Action: Set, State: Idle, Kind: KindError, Turn: turn(p), KeepSubagents: true}
+		return Transition{Action: Set, State: Idle, Kind: KindError, Turn: turn(p), Reason: p.Error, KeepSubagents: true}
+	case "PreCompact":
+		// A compaction runs inside the turn it belongs to; an idle session
+		// compacted by hand starts working for it.
+		return Transition{Action: Set, State: Working, Kind: KindCompacting, Turn: turn(p), KeepSubagents: true}
+	case "PostCompact":
+		// An automatic compaction returns to the running turn; a manual one
+		// leaves the session idle.
+		if p.Trigger == "manual" {
+			return Transition{Action: Set, State: Idle, Turn: turn(p), KeepSubagents: true}
+		}
+		return Transition{Action: Set, State: Working, Turn: turn(p), KeepSubagents: true}
 	case "SessionEnd":
 		return Transition{Action: End}
 	}
@@ -409,6 +461,13 @@ func mapCodex(p Payload) Transition {
 	case "Stop", "Interrupt":
 		// Stop lists no background work; running subagents stay tracked.
 		return Transition{Action: Set, State: Idle, Turn: turn(p)}
+	case "PreCompact":
+		return Transition{Action: Set, State: Working, Kind: KindCompacting, Turn: turn(p), KeepSubagents: true}
+	case "PostCompact":
+		if p.Trigger == "manual" {
+			return Transition{Action: Set, State: Idle, Turn: turn(p), KeepSubagents: true}
+		}
+		return Transition{Action: Set, State: Working, Turn: turn(p), KeepSubagents: true}
 	case "SessionEnd":
 		return Transition{Action: End}
 	}
@@ -463,8 +522,26 @@ func mapPi(p Payload) Transition {
 	case "agent_settled":
 		// Pi runs no more on its own: the turn is over, aborted or not.
 		return settled(p)
+	case "session_before_compact":
+		return Transition{Action: Set, State: Working, Kind: KindCompacting, Turn: turn(p), KeepSubagents: true}
+	case "session_compact":
+		return compacted(p)
+	case "session_compact_failed":
+		tr := compacted(p)
+		tr.OnlyCompacting = true
+		return tr
 	}
 	return Transition{}
+}
+
+// compacted ends a compaction: a manual one leaves the session idle, an
+// automatic one returns to the running turn.
+func compacted(p Payload) Transition {
+	state := Working
+	if p.Trigger == "manual" {
+		state = Idle
+	}
+	return Transition{Action: Set, State: state, Turn: turn(p), KeepSubagents: true}
 }
 
 func mapOMP(p Payload) Transition {
