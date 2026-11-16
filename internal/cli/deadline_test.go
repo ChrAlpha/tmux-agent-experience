@@ -211,7 +211,7 @@ func TestDeferredReconciliationTimeoutReachesHookLog(t *testing.T) {
 	setup, cancel := context.WithTimeout(context.Background(), 600*time.Millisecond)
 	defer cancel()
 	a := app{ctx: context.Background(), setup: setup, log: log,
-		stdin: strings.NewReader(fmt.Sprintf(`{"session_id":%q,"hook_event_name":"UserPromptSubmit","prompt_id":"turn"}`, hookID))}
+		stdin: strings.NewReader(fmt.Sprintf(`{"session_id":%q,"hook_event_name":"SessionStart","source":"startup"}`, hookID))}
 	started := time.Now()
 	if code := a.cmdHook([]string{proc.Claude}); code != ExitOK {
 		t.Fatalf("hook exit = %d", code)
@@ -227,7 +227,7 @@ func TestDeferredReconciliationTimeoutReachesHookLog(t *testing.T) {
 		t.Fatalf("timed-out hook also logged slow: %q", data)
 	}
 	rec, ok, err := store.Get(context.Background(), proc.Claude, hookID)
-	if err != nil || !ok || rec.State() != adapter.Working {
+	if err != nil || !ok || rec.State() != adapter.Idle {
 		t.Fatalf("state before reconciliation = %+v, %v, %v", rec, ok, err)
 	}
 	if _, ok, err := store.Get(context.Background(), proc.Claude, goneID); !ok || err != nil {

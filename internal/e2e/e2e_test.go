@@ -2258,7 +2258,8 @@ func TestUnchangedHookRestoresItsPanesAttachment(t *testing.T) {
 	h.eventually("the turn ends", func() bool { return strings.HasSuffix(h.eventNames(sidA), "Stop:idle") })
 	before := h.eventNames(sidA)
 	s, _ := h.sessionOf(sidA)
-	// Lose the attachment, as a hook that died before attaching leaves it.
+	// Lose the attachment and its hint, as a hook that died before attaching
+	// leaves them: the hint is what lets a later hook skip looking at the pane.
 	h.tmux("set-option", "-p", "-u", "-t", pane, "@tmag_session")
 	store := session.Store{Dir: h.state}
 	if err := store.Lock(context.Background(), "claude", sidA, func() error {

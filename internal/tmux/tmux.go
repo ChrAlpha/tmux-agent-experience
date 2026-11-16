@@ -72,6 +72,10 @@ func clean(name string) string {
 	return "#{s/[\x01-\x1f\x7f]//:" + name + "}"
 }
 
+// CleanFormat strips control characters from a free-text format value, so
+// that an option or title cannot inject a field separator or a newline.
+func CleanFormat(name string) string { return clean(name) }
+
 var paneFormat = func() string {
 	fields := []string{
 		"#{pane_id}", "#{pane_pid}", clean("pane_current_command"), clean("pane_current_path"),
@@ -278,27 +282,65 @@ func (s Server) GlobalOption(ctx context.Context, name string) string {
 // GlobalOptionContext returns an unset option as "", nil while preserving
 // command, cancellation and decoding errors. It performs no value expansion.
 func (s Server) GlobalOptionContext(ctx context.Context, name string) (string, error) {
+	values, err := s.GlobalOptionsContext(ctx, name)
+	if err != nil {
+		return "", err
+	}
+	return values[name], nil
+}
+
+// GlobalOptionsContext reads several global options in one tmux invocation.
+// An unset option is absent, and values are not expanded. It performs no
+// command or environment expansion, and preserves cancellation and decoding
+// errors.
+func (s Server) GlobalOptionsContext(ctx context.Context, names ...string) (map[string]string, error) {
 	// Read tmux's quoted representation so literal backslashes and control
 	// characters remain distinguishable. tmux 3.4 additionally escapes dollar
 	// variables when printing; probe that layer in the same command invocation.
 	const probe = "$TMAG_OPTION_PRINT"
-	out, err := s.Run(ctx, "show-option", "-gq", name, ";", "display-message", "-p", probe)
+	args := make([]string, 0, 3*len(names)+3)
+	for _, name := range names {
+		args = append(args, "show-option", "-gq", name, ";")
+	}
+	args = append(args, "display-message", "-p", probe)
+	out, err := s.Run(ctx, args...)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	line, printed, _ := strings.Cut(string(out), "\n")
-	value, ok := strings.CutPrefix(line, name+" ")
-	if !ok {
-		return "", nil
+	return ParseGlobalOptions(out, names...)
+}
+
+// ParseGlobalOptions decodes the show-option output of GlobalOptionsContext,
+// including its $TMAG_OPTION_PRINT probe, from a tmux invocation that also
+// carried other output.
+func ParseGlobalOptions(out []byte, names ...string) (map[string]string, error) {
+	const probe = "$TMAG_OPTION_PRINT"
+	lines := strings.Split(string(out), "\n")
+	printed := false
+	for _, line := range lines {
+		if strings.TrimSpace(line) == `\`+probe {
+			printed = true
+		}
 	}
-	if strings.TrimSpace(printed) == `\`+probe {
-		value = unescapePrintedDollars(value)
+	values := make(map[string]string, len(names))
+	for _, name := range names {
+		for _, line := range lines {
+			value, ok := strings.CutPrefix(line, name+" ")
+			if !ok {
+				continue
+			}
+			if printed {
+				value = unescapePrintedDollars(value)
+			}
+			value, err := unquoteOption(value)
+			if err != nil {
+				return nil, err
+			}
+			values[name] = strings.TrimSpace(value)
+			break
+		}
 	}
-	value, err = unquoteOption(value)
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(value), nil
+	return values, nil
 }
 
 // unescapePrintedDollars reverses just the extra printing layer of tmux 3.4.
@@ -383,6 +425,12 @@ func (s Server) LastInput(ctx context.Context) (time.Time, bool) {
 	if err != nil {
 		return time.Time{}, false
 	}
+	return ClientActivity(out)
+}
+
+// ClientActivity reads the newest client activity time from list-clients
+// output.
+func ClientActivity(out []byte) (time.Time, bool) {
 	var last int64
 	for _, f := range strings.Fields(string(out)) {
 		if n, err := strconv.ParseInt(f, 10, 64); err == nil && n > last {

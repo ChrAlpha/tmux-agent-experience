@@ -17,9 +17,9 @@ import (
 	"github.com/ChrAlpha/tmux-agent-experience/internal/tmux"
 )
 
-// The pane a session B attached to between the hook's process snapshot and
-// its pane listing stays attached: reconciliation reads the process table
-// again after the panes, so the fresher attachment has its client.
+// The pane a session B attached to between the hook's lineage read and its
+// pane listing stays attached: reconciliation reads a complete process table
+// after the panes, so the fresher attachment has its client.
 func TestReconciliationReadsProcessesAfterPanes(t *testing.T) {
 	t.Setenv("TMUX", "")
 	t.Setenv("TMUX_PANE", "")
@@ -38,32 +38,29 @@ func TestReconciliationReadsProcessesAfterPanes(t *testing.T) {
 		"agent": "claude", "session": "b-session", "pid": "200", "start": "s-b",
 		"evidence": "process", "state": "idle",
 	}}}
-	previousProcesses, previousPanes := loadProcesses, loadPanes
-	t.Cleanup(func() { loadProcesses, loadPanes = previousProcesses, previousPanes })
-	calls := 0
-	loadProcesses = func(_ context.Context, w *attach.World) error {
-		calls++
-		ps := []proc.Process{{PID: 100, PPID: 1, Comm: "sh", Args: "sh"}}
-		if calls > 1 {
-			ps = append(ps, proc.Process{PID: 200, PPID: 100, Comm: "claude", Args: "claude", Start: "s-b"})
-		}
-		w.Proc = proc.NewTable(ps)
-		return nil
-	}
+	previousLineage, previousProcesses, previousPanes := loadLineage, loadProcesses, loadPanes
+	t.Cleanup(func() { loadLineage, loadProcesses, loadPanes = previousLineage, previousProcesses, previousPanes })
+	loadLineage = func(context.Context, int) (*proc.Table, error) { return proc.NewTable(nil), nil }
+	listed := false
 	loadPanes = func(_ context.Context, w *attach.World) error {
-		if calls != 1 {
-			t.Fatalf("panes listed after the hook refreshed the process table")
-		}
+		listed = true
 		w.Panes = panes
 		return nil
 	}
+	loadProcesses = func(_ context.Context, w *attach.World) error {
+		if !listed {
+			t.Fatal("process table read before the panes")
+		}
+		w.Proc = proc.NewTable([]proc.Process{
+			{PID: 100, PPID: 1, Comm: "sh", Args: "sh"},
+			{PID: 200, PPID: 100, Comm: "claude", Args: "claude", Start: "s-b"},
+		})
+		return nil
+	}
 
-	payload := `{"session_id":"a-session","hook_event_name":"UserPromptSubmit","prompt_id":"turn"}`
+	payload := `{"session_id":"a-session","hook_event_name":"SessionStart","source":"startup"}`
 	if err := RunContext(ctx, Input{Agent: proc.Claude, Payload: strings.NewReader(payload), Log: log, PID: 0}); err != nil {
 		t.Fatal(err)
-	}
-	if calls != 2 {
-		t.Fatalf("process table read %d times, want one before and one after the panes", calls)
 	}
 	if _, ok, err := store.Get(ctx, proc.Claude, "b-session"); !ok || err != nil {
 		t.Fatalf("attached session B lost: ok=%v err=%v", ok, err)
@@ -98,33 +95,63 @@ func TestReconciliationSkipsWithoutFreshProcessEvidence(t *testing.T) {
 	if err := store.Put(ctx, b); err != nil {
 		t.Fatal(err)
 	}
-	previousProcesses, previousPanes := loadProcesses, loadPanes
-	t.Cleanup(func() { loadProcesses, loadPanes = previousProcesses, previousPanes })
-	calls := 0
-	loadProcesses = func(_ context.Context, w *attach.World) error {
-		calls++
-		if calls > 1 {
-			return errors.New("process table unreadable")
-		}
-		w.Proc = proc.NewTable([]proc.Process{{PID: 100, PPID: 1, Comm: "sh", Args: "sh"}})
-		return nil
-	}
+	previousLineage, previousProcesses, previousPanes := loadLineage, loadProcesses, loadPanes
+	t.Cleanup(func() { loadLineage, loadProcesses, loadPanes = previousLineage, previousProcesses, previousPanes })
+	loadLineage = func(context.Context, int) (*proc.Table, error) { return proc.NewTable(nil), nil }
+	listed := false
 	loadPanes = func(_ context.Context, w *attach.World) error {
+		listed = true
 		w.Panes = []tmux.Pane{{Server: "r1", ID: "%1", PID: 100, Command: "claude", Options: map[string]string{
 			"agent": "claude", "session": "b-session", "pid": "200", "start": "s-b",
 			"evidence": "process", "state": "idle",
 		}}}
 		return nil
 	}
+	loadProcesses = func(context.Context, *attach.World) error {
+		if !listed {
+			t.Fatal("process table read before the panes")
+		}
+		return errors.New("process table unreadable")
+	}
 
+	payload := `{"session_id":"a-session","hook_event_name":"SessionStart","source":"startup"}`
+	if err := RunContext(ctx, Input{Agent: proc.Claude, Payload: strings.NewReader(payload), Log: log, PID: 0}); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := os.ReadFile(filepath.Join(root, "hook.log")); err == nil {
+		t.Fatalf("skipped reconciliation was logged: %s", data)
+	}
+}
+
+// Tool hooks do not reconcile: a session whose host is gone stays until a
+// session start or end, or a read path, reconciles it.
+func TestToolHookDoesNotReconcile(t *testing.T) {
+	t.Setenv("TMUX", "")
+	t.Setenv("TMUX_PANE", "")
+	t.Setenv("TMUX_TMPDIR", t.TempDir())
+	root := t.TempDir()
+	log := eventlog.Open(root)
+	store := session.Store{Dir: root}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	gone := session.Record{Agent: proc.Claude, ID: "gone-session", Main: adapter.Idle,
+		Host: session.Host{PID: 200, Start: "s-gone"}}
+	if err := store.Put(ctx, gone); err != nil {
+		t.Fatal(err)
+	}
+	previousLineage, previousProcesses, previousPanes := loadLineage, loadProcesses, loadPanes
+	t.Cleanup(func() { loadLineage, loadProcesses, loadPanes = previousLineage, previousProcesses, previousPanes })
+	loadLineage = func(context.Context, int) (*proc.Table, error) { return proc.NewTable(nil), nil }
+	loadPanes = func(context.Context, *attach.World) error { return nil }
+	loadProcesses = func(_ context.Context, w *attach.World) error {
+		w.Proc = proc.NewTable(nil)
+		return nil
+	}
 	payload := `{"session_id":"a-session","hook_event_name":"UserPromptSubmit","prompt_id":"turn"}`
 	if err := RunContext(ctx, Input{Agent: proc.Claude, Payload: strings.NewReader(payload), Log: log, PID: 0}); err != nil {
 		t.Fatal(err)
 	}
-	if calls != 2 {
-		t.Fatalf("process table read %d times, want a refresh after the panes", calls)
-	}
-	if data, err := os.ReadFile(filepath.Join(root, "hook.log")); err == nil {
-		t.Fatalf("skipped reconciliation was logged: %s", data)
+	if _, ok, err := store.Get(ctx, proc.Claude, "gone-session"); !ok || err != nil {
+		t.Fatalf("a tool hook reconciled: ok=%v err=%v", ok, err)
 	}
 }
