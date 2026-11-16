@@ -8,6 +8,7 @@ package session
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -41,6 +42,14 @@ type Record struct {
 	// Inbox is the socket the session's own agent serves for messages, and
 	// the process that serves it, as its hooks proved it.
 	Inbox *Inbox `json:"inbox,omitempty"`
+	// Pane is the pane this session was proven to run in by process ancestry,
+	// and the client process it was proven for. A later hook of the same host
+	// uses it to update that pane without listing panes or the process table.
+	Pane *PaneHint `json:"pane,omitempty"`
+	// AttachGeneration is bumped under the session lock by every Attach that
+	// publishes an attachment of the session. A hook that reads it before
+	// listing panes uses it to refuse a hint its world is too old to judge.
+	AttachGeneration uint64 `json:"attach_generation,omitempty"`
 
 	// Main is the main agent's own state (working, idle or unknown) and
 	// MainKind qualifies it (error after a failed turn).
@@ -96,6 +105,61 @@ func SameInbox(a, b *Inbox) bool {
 		return a == nil && b == nil
 	}
 	return *a == *b
+}
+
+// PaneHint is a pane in which a session's host was proven by process
+// ancestry, and the client process that proof was about.
+type PaneHint struct {
+	Server string `json:"server"`
+	ID     string `json:"id"`
+	PID    int    `json:"pid"`
+	Start  string `json:"start,omitempty"`
+}
+
+// Bounds of a pane hint, like every field a record keeps: a socket path fits
+// in PATH_MAX, a tmux pane id is short, and a process start is a tick count or
+// ps's lstart words.
+const (
+	maxPaneServer = 1024
+	maxPaneID     = 16
+	maxPaneStart  = 64
+)
+
+// Valid reports whether h names a pane and client a hook could prove.
+func (h PaneHint) Valid() bool {
+	if h.PID <= 0 || len(h.Server) == 0 || len(h.Server) > maxPaneServer || !filepath.IsAbs(h.Server) ||
+		len(h.ID) < 2 || len(h.ID) > maxPaneID || len(h.Start) == 0 || len(h.Start) > maxPaneStart {
+		return false
+	}
+	if h.ID[0] != '%' {
+		return false
+	}
+	for i := 1; i < len(h.ID); i++ {
+		if h.ID[i] < '0' || h.ID[i] > '9' {
+			return false
+		}
+	}
+	for i := 0; i < len(h.Server); i++ {
+		if c := h.Server[i]; c < 0x20 || c == 0x7f {
+			return false
+		}
+	}
+	for i := 0; i < len(h.Start); i++ {
+		switch c := h.Start[i]; {
+		case c >= '0' && c <= '9', c >= 'A' && c <= 'Z', c >= 'a' && c <= 'z',
+			c == ' ', c == ':', c == '.', c == '_', c == '+', c == '-':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func validPaneHint(h *PaneHint) *PaneHint {
+	if h == nil || !h.Valid() {
+		return nil
+	}
+	return h
 }
 
 // Request is a pending prompt under the id tmag answers it by.
@@ -463,6 +527,7 @@ func answerUnnamed(pending []adapter.Prompt) []adapter.Prompt {
 }
 
 func normalize(r *Record) {
+	r.Pane = validPaneHint(r.Pane)
 	r.Pending = newest(r.Pending, maxPending)
 	// A request closes with its prompt.
 	r.Requests = slices.DeleteFunc(r.Requests, func(q Request) bool { return !slices.Contains(r.Pending, q.Prompt) })
@@ -499,9 +564,18 @@ func newest[S ~[]E, E any](s S, n int) S {
 	return s
 }
 
+// SamePaneHint reports whether a and b name the same pane and client.
+func SamePaneHint(a, b *PaneHint) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return *a == *b
+}
+
 func (r Record) equal(o Record) bool {
 	return r.Agent == o.Agent && r.ID == o.ID && r.Cwd == o.Cwd && r.Host == o.Host && r.Transcript == o.Transcript &&
-		SameInbox(r.Inbox, o.Inbox) && r.Main == o.Main && r.MainKind == o.MainKind && r.Turn == o.Turn &&
+		SameInbox(r.Inbox, o.Inbox) && SamePaneHint(r.Pane, o.Pane) && r.AttachGeneration == o.AttachGeneration &&
+		r.Main == o.Main && r.MainKind == o.MainKind && r.Turn == o.Turn &&
 		slices.Equal(r.Pending, o.Pending) && slices.Equal(r.Requests, o.Requests) && slices.Equal(r.Calls, o.Calls) &&
 		slices.Equal(r.Done, o.Done) && slices.Equal(r.Background, o.Background) &&
 		slices.Equal(r.Subagents, o.Subagents) && r.Since.Equal(o.Since) && r.Sent.Equal(o.Sent) &&

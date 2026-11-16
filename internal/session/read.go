@@ -62,6 +62,7 @@ func (s Store) Get(ctx context.Context, agent, id string) (Record, bool, error) 
 	if rec.Agent != agent || rec.ID != id || rec.Host.PID < 0 {
 		return fault("identity")
 	}
+	rec.Pane = validPaneHint(rec.Pane)
 	switch rec.Main {
 	case "", "idle", "working", "unknown":
 	default:

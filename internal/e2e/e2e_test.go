@@ -2260,6 +2260,17 @@ func TestUnchangedHookRestoresItsPanesAttachment(t *testing.T) {
 	s, _ := h.sessionOf(sidA)
 	// Lose the attachment, as a hook that died before attaching leaves it.
 	h.tmux("set-option", "-p", "-u", "-t", pane, "@tmag_session")
+	store := session.Store{Dir: h.state}
+	if err := store.Lock(context.Background(), "claude", sidA, func() error {
+		rec, ok, err := store.Get(context.Background(), "claude", sidA)
+		if err != nil || !ok {
+			return err
+		}
+		rec.Pane = nil
+		return store.Put(context.Background(), rec)
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if p, _, _ := h.paneIn(pane); p.Session != "" {
 		t.Fatalf("the pane still shows %s", p.Session)
 	}
