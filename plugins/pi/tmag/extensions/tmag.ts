@@ -114,6 +114,18 @@ export default function (pi: ExtensionAPI) {
 			report({ hook_event_name: "ui_prompt_end", ...payload(ctx) });
 		}),
 	);
+	// Compaction qualifies the turn it runs in. A failed one ends a
+	// compaction tmag marked; a failure that never started one changes
+	// nothing there, as the adapter decides from the record.
+	for (const name of ["session_before_compact", "session_compact", "session_compact_failed"] as const) {
+		pi.on(
+			name,
+			quietly((event, ctx) => {
+				latest = ctx;
+				report({ hook_event_name: name, ...payload(ctx), trigger: event.reason, turn_id: lastTurn(ctx) });
+			}),
+		);
+	}
 	pi.on(
 		"agent_settled",
 		quietly((event, ctx) => {

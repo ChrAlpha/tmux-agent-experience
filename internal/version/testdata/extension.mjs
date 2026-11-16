@@ -183,6 +183,10 @@ if (host === "pi") {
 	idle = true;
 	await emit("ui_prompt_start", { kind: "select" });
 	await emit("ui_prompt_end");
+	// Compaction events, and a failure that may come without one before it.
+	await emit("session_before_compact", { reason: "manual" });
+	await emit("session_compact", { reason: "manual" });
+	await emit("session_compact_failed", { reason: "auto", willRetry: false });
 	await stalledAtClose();
 	try {
 		unlinkSync(stale);
