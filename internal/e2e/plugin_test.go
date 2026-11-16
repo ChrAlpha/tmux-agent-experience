@@ -105,8 +105,18 @@ func (h *harness) waitBinary(plugin string) {
 }
 
 func (h *harness) key(key string) string {
-	out, _ := exec.Command("tmux", "-L", h.name, "list-keys", "-T", "prefix", key).CombinedOutput()
-	return string(out)
+	// tmux 3.2 drops modifiers from a list-keys key argument, so ask for the
+	// table and match the key column here; 3.3a lists M-a correctly either way.
+	out, _ := exec.Command("tmux", "-L", h.name, "list-keys", "-T", "prefix").CombinedOutput()
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		for i := 0; i+2 < len(fields); i++ {
+			if fields[i] == "-T" && fields[i+1] == "prefix" && fields[i+2] == key {
+				return line
+			}
+		}
+	}
+	return ""
 }
 
 func TestPluginInstallsBinaryAndSetsUp(t *testing.T) {
