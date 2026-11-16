@@ -75,6 +75,26 @@ func TestClient(t *testing.T) {
 			}
 			_ = json.Unmarshal(m.Params, &p)
 			_ = c.Reply(m.ID, map[string]any{"turn": map[string]string{"id": "turn-" + p.ThreadID + "-" + p.Input[0].Text}})
+		case "turn/steer":
+			var p struct {
+				ThreadID       string `json:"threadId"`
+				ExpectedTurnID string `json:"expectedTurnId"`
+				Input          []struct {
+					Type         string          `json:"type"`
+					Text         string          `json:"text"`
+					TextElements json.RawMessage `json:"text_elements"`
+				} `json:"input"`
+			}
+			_ = json.Unmarshal(m.Params, &p)
+			if p.ExpectedTurnID != "turn-t1-hi" {
+				_ = c.Fail(m.ID, "expected active turn id "+p.ExpectedTurnID+" but found turn-t1-hi")
+				return
+			}
+			if len(p.Input) != 1 || p.Input[0].Text != "more" || string(p.Input[0].TextElements) != "[]" {
+				_ = c.Fail(m.ID, "unexpected steer input")
+				return
+			}
+			_ = c.Reply(m.ID, map[string]string{"turnId": p.ExpectedTurnID})
 		case "turn/interrupt":
 			_ = c.Fail(m.ID, "no active turn to interrupt")
 		}
@@ -100,6 +120,12 @@ func TestClient(t *testing.T) {
 	}
 	if id, err := c.StartTurn(ctx, "t1", "hi"); err != nil || id != "turn-t1-hi" {
 		t.Fatalf("StartTurn = %q, %v", id, err)
+	}
+	if err := c.SteerTurn(ctx, "t1", "turn-t1-hi", "more"); err != nil {
+		t.Fatalf("SteerTurn = %v", err)
+	}
+	if err := c.SteerTurn(ctx, "t1", "stale", "more"); !errors.Is(err, codexsvc.ErrTurnChanged) {
+		t.Fatalf("a stale steer = %v", err)
 	}
 	var rpc *codexsvc.RPCError
 	if err := c.InterruptTurn(ctx, "t1", "x"); err == nil || !strings.Contains(err.Error(), "no active turn") {

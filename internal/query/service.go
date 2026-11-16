@@ -94,7 +94,12 @@ func throughService(outer context.Context, log *eventlog.Log, v View, s Session,
 	ctx, cancelDelivery := context.WithTimeout(outer, serviceTimeout)
 	defer cancelDelivery()
 	if err := verb.deliver(ctx, c); err != nil {
-		return d, deliveryFailure(d, err)
+		failure := deliveryFailure(d, err)
+		var refused *RefusedError
+		if errors.As(failure, &refused) {
+			return Delivery{}, failure // a refusal proves nothing was delivered
+		}
+		return d, failure
 	}
 	return d, nil
 }
@@ -103,6 +108,9 @@ func throughService(outer context.Context, log *eventlog.Log, v View, s Session,
 // JSON-RPC error response from the Codex daemon refuses the request, which
 // proves nothing was taken; anything else leaves the outcome unknown.
 func deliveryFailure(d Delivery, err error) error {
+	if errors.Is(err, codexsvc.ErrTurnChanged) {
+		return &RefusedError{RefuseChanged, fmt.Sprintf("%s's active turn changed before it took the prompt: %v", d.Session.ID, err)}
+	}
 	var rpc *codexsvc.RPCError
 	if errors.As(err, &rpc) {
 		return &NotTakenError{Seq: d.Seq, Target: d.Session.ID, Err: err}
@@ -183,18 +191,28 @@ func inboxChanged(s Session, rec session.Record, proven *session.Inbox) error {
 	return &RefusedError{RefuseChanged, fmt.Sprintf("%s's inbox changed while it was reached", s.ID)}
 }
 
+// threadStatus reads the daemon's status for s, refusing a thread it no
+// longer has loaded.
+func threadStatus(ctx context.Context, c *codexsvc.Client, s Session) (string, error) {
+	st, err := c.ThreadStatus(ctx, s.ID)
+	if err != nil {
+		return "", err
+	}
+	if st == codexsvc.StatusNotLoaded {
+		return st, &RefusedError{RefuseChanged, fmt.Sprintf("the Codex daemon no longer has %s loaded", s.ID)}
+	}
+	return st, nil
+}
+
 // threadIn checks that the daemon has the thread loaded in one of the
 // given statuses.
 func threadIn(ctx context.Context, c *codexsvc.Client, s Session, reason string, want ...string) error {
-	st, err := c.ThreadStatus(ctx, s.ID)
+	st, err := threadStatus(ctx, c, s)
 	if err != nil {
 		return err
 	}
-	switch {
-	case slices.Contains(want, st):
+	if slices.Contains(want, st) {
 		return nil
-	case st == codexsvc.StatusNotLoaded:
-		return &RefusedError{RefuseChanged, fmt.Sprintf("the Codex daemon no longer has %s loaded", s.ID)}
 	}
 	return &RefusedError{reason, fmt.Sprintf("the Codex daemon has %s %s", s.ID, st)}
 }
