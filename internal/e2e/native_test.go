@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ChrAlpha/tmux-agent-experience/internal/adapter"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/attach"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/query"
@@ -194,5 +195,46 @@ func TestInterruptRechecksNativeIdle(t *testing.T) {
 	h.waitSession(sidA, "idle")
 	if got := h.tmux("display-message", "-p", "-t", pane, "#{@tmag_state}"); got != "idle" {
 		t.Fatalf("locked native Idle refusal plus idle_prompt and list left hinted pane %s; want idle", got)
+	}
+}
+
+// A Codex manual compaction arrives as Stop, then PreCompact and PostCompact
+// with no prompt around it: it works for the compaction and returns idle. Its
+// compaction payloads carry no permission_mode, which leaves the class last
+// reported as it was.
+func TestCodexCompactionReachesTheView(t *testing.T) {
+	h := start(t)
+	hook := func(payload map[string]any) {
+		t.Helper()
+		b, _ := json.Marshal(payload)
+		if r := h.tmag(string(b), "hook", "codex"); r.code != 0 || r.out != "" {
+			t.Fatalf("hook: %d %s", r.code, r.out)
+		}
+	}
+	base := func(event string, more map[string]any) map[string]any {
+		p := map[string]any{"hook_event_name": event, "session_id": sidC, "cwd": h.dir}
+		for k, v := range more {
+			p[k] = v
+		}
+		return p
+	}
+	hook(base("SessionStart", map[string]any{"source": "startup", "permission_mode": "bypassPermissions"}))
+	hook(base("UserPromptSubmit", map[string]any{"turn_id": "t1"}))
+	hook(base("Stop", map[string]any{"turn_id": "t1"}))
+	h.waitSession(sidC, "idle")
+
+	hook(base("PreCompact", map[string]any{"trigger": "manual", "turn_id": "t2"}))
+	h.eventually("the manual compaction to work", func() bool {
+		s, ok := h.sessionOf(sidC)
+		return ok && s.State == "working" && s.Kind == "compacting"
+	})
+	rec, ok, err := (session.Store{Dir: h.state}).Get(context.Background(), "codex", sidC)
+	if err != nil || !ok || rec.Permission != adapter.PermissionBypass {
+		t.Fatalf("the class without a permission_mode = %+v, %v", rec, err)
+	}
+	hook(base("PostCompact", map[string]any{"trigger": "manual", "turn_id": "t2"}))
+	h.waitSession(sidC, "idle")
+	if got := h.eventNames(sidC); !strings.Contains(got, "PreCompact:working") || !strings.Contains(got, "PostCompact:idle") {
+		t.Fatalf("events = %s", got)
 	}
 }
