@@ -11,7 +11,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -28,7 +27,23 @@ const exchangeBudget = time.Second
 // removes it: younger, it may be one whose hook is still starting to listen.
 const staleAfter = time.Minute
 
-var requestName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
+// validRequestName reports whether id can name a request, and so a socket.
+func validRequestName(id string) bool {
+	if len(id) == 0 || len(id) > 128 {
+		return false
+	}
+	for i := 0; i < len(id); i++ {
+		c := id[i]
+		if c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' {
+			continue
+		}
+		if i > 0 && (c == '.' || c == '_' || c == '-') {
+			continue
+		}
+		return false
+	}
+	return true
+}
 
 // socketBase holds socketDir; tests point it elsewhere.
 var socketBase = "/tmp"
@@ -57,7 +72,7 @@ func socketDir() (string, error) {
 // socketPath is where the hook of request id of state directory stateDir
 // listens: the request ids of different state directories never meet.
 func socketPath(stateDir, id string) (string, error) {
-	if !requestName.MatchString(id) {
+	if !validRequestName(id) {
 		return "", ErrInvalid
 	}
 	dir, err := socketDir()
