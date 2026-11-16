@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -120,7 +121,7 @@ func TestPluginInstallsBinaryAndSetsUp(t *testing.T) {
 		}
 	}
 	right := h.tmux("show-option", "-gqv", "status-right")
-	if !strings.Contains(right, "/scripts/tmag' status --tmux --server '#{socket_path}')") || !strings.HasSuffix(right, " | %H:%M") {
+	if !strings.Contains(right, "#{?") || strings.Contains(right, "#(") || !strings.HasSuffix(right, " | %H:%M") {
 		t.Errorf("status-right = %q", right)
 	}
 	if got := h.tmux("show-option", "-gqv", "@tmag-alert"); got != "blocked,finished" {
@@ -146,6 +147,91 @@ func TestPluginInstallsBinaryAndSetsUp(t *testing.T) {
 	h.eventually("stale status to disappear", func() bool { return status() == "" })
 	if _, _, ok := h.paneIn(pane); ok {
 		t.Fatal("exited agent still listed")
+	}
+}
+
+// The status line counts panes, not sessions: the same session in two panes
+// counts twice, while `tmag status` counts the session once.
+func TestStatusFormatCountsPanes(t *testing.T) {
+	h := start(t)
+	h.tmux("set-option", "-g", "status-right", "#{tmag_status}")
+	h.waitBinary(h.loadPlugin(false, nil))
+	first := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_HOOKS": "1"}, "sh", "-c", filepath.Join(bin, "claude")+"; exec sleep 600")
+	second := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_HOOKS": "1"}, "sh", "-c", filepath.Join(bin, "claude")+"; exec sleep 600")
+	h.waitPane(first, "idle", "process")
+	h.waitPane(second, "idle", "process")
+	sock := h.tmux("display-message", "-p", "#{socket_path}")
+	if r := h.tmag("", "status", "--server", sock); strings.TrimSpace(r.out) != "1 idle" {
+		t.Fatalf("tmag status = %q", r.out)
+	}
+	right := h.tmux("show-option", "-gqv", "status-right")
+	if got := h.tmux("display-message", "-p", right); strings.TrimSpace(got) != "2 idle" {
+		t.Fatalf("status line = %q", got)
+	}
+	h.tmux("send-keys", "-t", first, "block", "Enter")
+	h.waitPane(first, "blocked", "process")
+	if r := h.tmag("", "prune"); r.code != 0 {
+		t.Fatalf("prune: %d %s", r.code, r.out)
+	}
+	if r := h.tmag("", "status", "--server", sock); strings.TrimSpace(r.out) != "1 blocked" {
+		t.Fatalf("tmag status after block = %q", r.out)
+	}
+	if got := h.tmux("display-message", "-p", right); !strings.HasPrefix(got, "#[fg=red,bold]2 blocked#[default]") {
+		t.Fatalf("styled status line = %q", got)
+	}
+	if runtime.GOOS != "linux" {
+		return
+	}
+	// An attached client draws the same format without starting a process.
+	var drawn bytes.Buffer
+	client := exec.Command("script", "-qfc", "tmux -L "+h.name+" attach -t main", "/dev/null")
+	client.Env = append(os.Environ(), "TERM=xterm-256color")
+	client.Stdout = &drawn
+	if err := client.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = client.Process.Kill()
+		_ = client.Wait()
+	})
+	h.eventually("an attached client", func() bool { return h.tmux("list-clients") != "" })
+	time.Sleep(300 * time.Millisecond)
+	_ = client.Process.Kill()
+	_ = client.Wait()
+	if got := drawn.String(); !strings.Contains(got, "2 blocked") {
+		t.Fatalf("attached status line = %q", got)
+	}
+}
+
+// A pane retained by remain-on-exit keeps its last command, but is dead: the
+// pure status format must not count it as a live agent.
+func TestStatusFormatSkipsRetainedDeadPanes(t *testing.T) {
+	h := start(t)
+	h.tmux("set-option", "-g", "status-right", "#{tmag_status}")
+	h.waitBinary(h.loadPlugin(false, nil))
+	h.tmux("set-option", "-gw", "remain-on-exit", "on")
+	pane := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_HOOKS": "1"}, filepath.Join(bin, "claude"))
+	h.waitPane(pane, "idle", "process")
+	right := h.tmux("show-option", "-gqv", "status-right")
+	if got := h.tmux("display-message", "-p", right); strings.TrimSpace(got) != "1 idle" {
+		t.Fatalf("status line = %q, want 1 idle", got)
+	}
+	border := func() string { return h.tmux("display-message", "-p", "-t", pane, "#{E:@tmag-pane-status}") }
+	if got := border(); got != "claude idle" {
+		t.Fatalf("pane border = %q, want claude idle", got)
+	}
+	pid := h.tmux("display-message", "-p", "-t", pane, "#{pane_pid}")
+	if out, err := exec.Command("kill", "-KILL", pid).CombinedOutput(); err != nil {
+		t.Fatalf("kill: %v %s", err, out)
+	}
+	h.eventually("the retained pane to be dead", func() bool {
+		return h.tmux("display-message", "-p", "-t", pane, "#{pane_dead}") == "1"
+	})
+	if got := h.tmux("display-message", "-p", right); got != "" {
+		t.Fatalf("a retained dead agent is still counted: %q", got)
+	}
+	if got := border(); got != "" {
+		t.Fatalf("a retained dead agent still names its pane: %q", got)
 	}
 }
 

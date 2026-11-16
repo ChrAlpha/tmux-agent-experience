@@ -47,21 +47,40 @@ tmux set-option -g @tmag-answer "$(option @tmag-answer on)"
 # to remove it.
 tmux set-option -g @tmag-peers "$(option @tmag-peers on)"
 
-# A pane's live state, for pane-border-format and friends. It is empty once the
-# agent that wrote it has exited: at once when another program takes the pane,
-# and at the next tmag hook, status refresh or picker when an agent of the same
-# name replaced it without the first reporting its exit.
+# A pane is live only while its agent still runs in it: a dead pane retained by
+# remain-on-exit, a pane another program took, and a pane of the same name that
+# replaced an agent without its exit all show nothing. A same-name replacement
+# is cleared at the next reconciling read (a session start or end hook, tmag
+# status, prune or the picker), not by a tool hook or the pure status format.
+live='#{&&:#{@tmag_state},#{==:#{pane_current_command}|#{pane_dead},#{@tmag_cmd}|0}}'
+
+# A pane's live state, for pane-border-format and friends.
 if [ -z "$(tmux show-option -gqv @tmag-pane-status)" ]; then
-	tmux set-option -g @tmag-pane-status '#{?#{&&:#{@tmag_state},#{==:#{pane_current_command},#{@tmag_cmd}}},#{@tmag_agent} #{@tmag_state}#{?#{@tmag_kind}, #{@tmag_kind},},}'
+	tmux set-option -g @tmag-pane-status "#{?#{$live},#{@tmag_agent} #{@tmag_state}#{?#{@tmag_kind}, #{@tmag_kind},},}"
 fi
 
-# Status-line placeholder, interpolated the way TPM plugins conventionally do.
+# Status-line placeholder: a pure tmux format that counts live panes by
+# state, the same panes @tmag-pane-status names. It starts no process.
+blocked="#{n:#{S:#{W:#{P:#{?#{&&:#{==:#{@tmag_state},blocked},$live},X,}}}}}"
+working="#{n:#{S:#{W:#{P:#{?#{&&:#{==:#{@tmag_state},working},$live},X,}}}}}"
+idle="#{n:#{S:#{W:#{P:#{?#{&&:#{==:#{@tmag_state},idle},$live},X,}}}}}"
+replacement="#{?$blocked,#[fg=red#,bold]$blocked blocked#[default],}#{?$working,#{?$blocked, · ,}$working working,}#{?$idle,#{?$blocked, · ,#{?$working, · ,}}$idle idle,}"
 placeholder='#{tmag_status}'
-replacement="#('$tmag' status --tmux --server '#{socket_path}')"
 for name in status-left status-right; do
 	value="$(tmux show-option -gqv "$name")"
 	case "$value" in
-	*"$placeholder"*) tmux set-option -g "$name" "${value//"$placeholder"/$replacement}" ;;
+	*"$placeholder"*)
+		# Replace every occurrence without a pattern substitution: Bash 5.2
+		# treats "&" in a replacement as the matched text, and the format's
+		# && conditions would expand to the placeholder.
+		rest="$value"
+		built=''
+		while [ "${rest#*"$placeholder"}" != "$rest" ]; do
+			built="${built}${rest%%"$placeholder"*}$replacement"
+			rest="${rest#*"$placeholder"}"
+		done
+		tmux set-option -g "$name" "$built$rest"
+		;;
 	esac
 done
 
