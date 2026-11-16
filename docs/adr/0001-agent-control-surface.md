@@ -464,8 +464,9 @@ alone, so the tunnel is the one way in.
   sender attests a prompting class or none. tmag reports the send as written
   and, when it knows the receiver is bypass and no `bypass` was attested,
   says after the delivery line that the message waits for the person's
-  approval in the receiver's pane; a person's own message attests the
-  receiver's class and is not held for that reason.
+  approval in the receiver's pane. `send --wait` says the same before it
+  starts waiting; a person's own message attests the receiver's class and is
+  not held for that reason.
 - What remains out of reach, reported as `refused:unsupported` or as state:
   - `interrupt` for Claude background sessions: no terminal. `send` reaches
     them through their inbox;

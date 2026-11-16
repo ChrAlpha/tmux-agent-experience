@@ -428,6 +428,9 @@ func (a *app) cmdSend(args []string) int {
 		a.reportDelivery("sent to", d)
 		return ExitOK
 	}
+	// A waiter learns before waiting that the receiver may hold its prompt;
+	// a person's prompt typed into an idle pane is never held.
+	a.reportHeld(d)
 	prompted := d.Session.Turn
 	return a.awaitAndReport("send", pos[0], d.Session, d.Seq, query.WaitOptions{
 		States: []string{adapter.Idle, adapter.Blocked}, Prompted: &prompted,
@@ -625,7 +628,17 @@ func (a *app) reportDelivery(what string, d query.Delivery) {
 		}
 		fmt.Fprintf(a.stdout, "%s %s (%s) seq %d\n", what, shortID(d.Session.ID), where, d.Seq)
 	}
+	a.reportHeld(d)
+}
+
+// heldLine says what a receiver that bypasses permission prompts does with a
+// message that does not attest bypass: it waits for the person's approval.
+const heldLine = "the message waits for the person's approval in the receiver's pane"
+
+// reportHeld says that the receiver holds the message for its person. It is
+// not a refusal: the message reached the receiver's inbox.
+func (a *app) reportHeld(d query.Delivery) {
 	if d.Held {
-		fmt.Fprintln(a.stderr, "the message waits for the person's approval in the receiver's pane")
+		fmt.Fprintln(a.stderr, heldLine)
 	}
 }

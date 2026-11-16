@@ -338,3 +338,32 @@ func TestSendAttestsPermissionClass(t *testing.T) {
 	readEventually(t, outA, "inbox claude "+sidB[:8]+" via tmag mode=prompting session="+sidA)
 	f.agrees(h)
 }
+
+// A --wait delivery through Claude's inbox says before waiting when the
+// receiver will hold it for its person. A person's --wait is typed into the
+// idle pane, which Claude does not hold.
+func TestSendWaitSaysWhenClaudeWillHold(t *testing.T) {
+	h := start(t)
+	f := h.follow()
+	outA, outB := filepath.Join(h.dir, "a"), filepath.Join(h.dir, "b")
+	a := h.spawn(h.dir, map[string]string{
+		"FAKE_SESSION": sidA, "FAKE_OUT": outA, "FAKE_HOOKS": "1", "FAKE_INBOX": "1",
+		"FAKE_TURN_MS": "1000", "FAKE_PERMISSION_MODE": "bypassPermissions",
+	}, filepath.Join(bin, "claude"))
+	b := h.spawn(h.dir, map[string]string{
+		"FAKE_SESSION": sidB, "FAKE_OUT": outB, "FAKE_HOOKS": "1",
+		"FAKE_TURN_MS": "1000", "FAKE_PERMISSION_MODE": "default",
+	}, filepath.Join(bin, "claude"))
+	h.waitPane(a, "idle", "process")
+	h.waitPane(b, "idle", "process")
+
+	agentSend(t, h, b, "send", sidA[:8], "--wait", "--timeout", "20s", "wait held")
+	readEventually(t, outB, "the message waits for the person's approval in the receiver's pane")
+	h.waitSession(sidA, "idle")
+
+	if r := h.tmag("", "send", sidA[:8], "--wait", "person wait"); r.code != 0 || strings.Contains(r.out, "waits for the person's approval") {
+		t.Fatalf("a person's --wait to an idle bypass session: %d %s", r.code, r.out)
+	}
+	h.waitSession(sidA, "idle")
+	f.agrees(h)
+}

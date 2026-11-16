@@ -51,7 +51,7 @@ func TestDeliverySaysWhenClaudeHoldsAMessage(t *testing.T) {
 	if got, want := stdout.String(), "sent to 1787a44e (inbox) seq 7\n"; got != want {
 		t.Errorf("stdout = %q, want %q", got, want)
 	}
-	if got, want := stderr.String(), "the message waits for the person's approval in the receiver's pane\n"; got != want {
+	if got, want := stderr.String(), heldLine+"\n"; got != want {
 		t.Errorf("stderr = %q, want %q", got, want)
 	}
 }
