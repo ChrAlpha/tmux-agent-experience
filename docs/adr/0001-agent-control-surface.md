@@ -9,7 +9,8 @@
   `wait` on a pane lasts until its agent shows a session; amended 2026-11-16:
   a Claude message attests the sender's permission class and the receiver's
   session, a native status file ends an unreported turn, and compaction and
-  failure reasons reach the view
+  failure reasons reach the view; Pi interrupts through its proven inbox, and
+  a Codex send into an active turn steers with `expectedTurnId`
 - Date: 2026-11-03
 - Evidence: [Claude Code control channels](../research/claude-control-channels.md)
   (2.1.317), [Codex control channels](../research/codex-control-channels.md)
@@ -84,9 +85,9 @@ Codex hook name, so tmag's own event for a delivered interrupt is `Halt`.
 | --- | --- | --- | --- |
 | Claude Code, terminal | person: pane while idle, inbox while working; agent: inbox, pane as fallback while idle; `--wait`: person pane, agent inbox | pane: one Esc | answer hook |
 | Claude Code, background (`--bg`) | inbox: cross-session socket; a person's `--wait` is unsupported | unsupported | answer hook |
-| Codex, daemon (`runtime: service`) | service: `turn/start` (joins an active turn; `--wait` needs idle) | service: `turn/interrupt` | service: join, answer the replayed request |
+| Codex, daemon (`runtime: service`) | service: `turn/start` when idle, `turn/steer` with the checked `expectedTurnId` when active; `--wait` needs idle | service: `turn/interrupt` | service: join, answer the replayed request |
 | Codex, `--no-daemon` (`runtime: terminal`) | pane: paste, Enter, while idle only | pane: one Esc | unsupported |
-| Pi, oh-my-pi, terminal | person: pane while idle, inbox while working; agent: inbox, pane as fallback while idle; `--wait`: person pane, agent inbox | pane: one Esc | unsupported |
+| Pi, oh-my-pi, terminal | person: pane while idle, inbox while working; agent: inbox, pane as fallback while idle; `--wait`: person pane, agent inbox | Pi: inbox when proven, pane otherwise; oh-my-pi: pane, one Esc | unsupported |
 | Pi, oh-my-pi, serving a program | unsupported | unsupported | unsupported |
 
 Why each cell:
@@ -112,7 +113,8 @@ Why each cell:
 - **Codex daemon, send and interrupt: the protocol.** It needs no pane (a
   thread outlives its terminal), bypasses the composer, and the TUI shows the
   turn as if typed. A send without `--wait` accepts an idle or active thread:
-  `turn/start` starts one or joins the running turn. `--wait` needs an idle
+  `turn/start` starts an idle turn, and `turn/steer` adds to the active turn
+  only while it is still the turn tmag checked. `--wait` needs an idle
   thread, because only then does its prompt start a turn of its own.
 - **Claude, sends: the session's own inbox.** Claude Code serves one socket
   per session and exports its path to hooks and Bash as
@@ -135,11 +137,13 @@ Why each cell:
   the session its process now serves; that close looks exactly like the one
   after acceptance or a hold, so tmag reports the frame read, never that the
   session took it.
-- **Codex daemon, sends: `turn/start`.** On Codex 0.167 a `turn/start` on an
-  active thread joins that turn with the same id, and on an idle thread starts
-  one. A send without `--wait` takes this as it is; `--wait` requires idle so
-  that its prompt starts a turn of its own. `turn/steer` adds only a
-  precondition that can fail.
+- **Codex daemon, sends: `turn/start` or `turn/steer`.** On Codex 0.167 a
+  `turn/start` on an active thread joins that turn with the same id, and on an
+  idle thread starts one. A send without `--wait` into an active turn instead
+  uses `turn/steer` with `expectedTurnId` set to the turn tmag checked, so the
+  daemon takes it only if that is still the active turn; a mismatch is a
+  `changed` refusal and takes nothing. An idle thread keeps `turn/start`.
+  `--wait` requires idle so that its prompt starts a turn of its own.
 - **Pi and oh-my-pi, sends: the extension's socket.** The package's extension
   serves a Unix socket inside the agent and hands the text to
   `sendUserMessage`: Pi as `deliverAs: "steer"`, which starts a turn when idle
@@ -150,6 +154,13 @@ Why each cell:
   delivery the extension reads the agent's current session from its live
   session manager and refuses it `changed` if they differ, so nothing is
   delivered. The queue stays in the agent.
+- **Pi, interrupts: the extension's socket.** Pi 1.5's `ctx.abort()` stops a
+  running turn, a dialog layer included, and ends it with
+  `agent_settled aborted:true`; it needs no Escape and no dialog key. The same
+  socket and framing carry an interrupt request, with the same session check:
+  a session Pi no longer serves is refused `changed`, and an idle one
+  `idle`. An extension that supplies no abort, as oh-my-pi's does not, refuses
+  it `unsupported`; oh-my-pi keeps the pane's Escape.
 - **Pane input.** It is the person's channel for an idle interactive Claude,
   Pi or oh-my-pi session, and the agent's idle fallback when no inbox can be
   proven. For Codex `--no-daemon`, which has no inbox, it is the only channel,
@@ -172,24 +183,26 @@ Why each cell:
   person's. It does not bypass Claude Code's inbound controls: a session that
   bypasses permission prompts can hold the agent's message for the person's
   approval, as the Claude cell says.
-- **Interrupt by one Esc**, only while the session is working or blocked:
-  pressed twice on an empty composer, Esc opens a rewind menu in both agents,
-  so after an interrupt another is refused until the agent reports again, or
-  for 90 seconds. Claude reports no hook on an interrupt, and was seen not to
-  send its idle notification either, so tmag records what it delivered: the
-  `Halt` event reports the session idle, its prompts declined (see
-  [What tmag's deliveries do](#what-tmags-deliveries-do)). Codex reports
-  `Interrupt` itself.
+- **Interrupt**, only while the session is working or blocked. Claude takes
+  one Esc; Pi's proven inbox calls `ctx.abort()`, with the pane's Esc as the
+  fallback; oh-my-pi takes one Esc. Pressed twice on an empty composer, Esc
+  opens a rewind menu in both agents, so after an interrupt another is refused
+  until the agent reports again, or for 90 seconds. Claude reports no hook on
+  an interrupt, and was seen not to send its idle notification either, so tmag
+  records what it delivered: the `Halt` event reports the session idle, its
+  prompts declined (see [What tmag's deliveries do](#what-tmags-deliveries-do)).
+  Codex reports `Interrupt` itself.
 
 `internal/driver` alone maps a verb, the session's agent and its `runtime`
 to a channel (`pane`, `service`, `hook` or `inbox`). Send has no single
 channel: the driver also takes the caller (person or agent), the response
 mode and whether the session is idle, and returns the inbox first with the
-pane as an idle fallback. A session lists in `capabilities` the verbs some
-channel carries to it; they follow from agent and runtime only, so every
-event that reports the session carries them, and clients never branch on the
-agent. A pane channel still needs the attachment when the verb is used, and
-is refused `unbound` without one.
+pane as an idle fallback. Pi's interrupt is a route too: its proven inbox
+first, the pane otherwise, for the same reason. A session lists in
+`capabilities` the verbs some channel carries to it; they follow from agent
+and runtime only, so every event that reports the session carries them, and
+clients never branch on the agent. A pane channel still needs the attachment
+when the verb is used, and is refused `unbound` without one.
 
 ### Callers
 
