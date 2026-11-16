@@ -66,6 +66,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -531,8 +532,9 @@ func tool(agent, session string, args []string) (int, string) {
 }
 
 // serveInbox serves the fake's inbox: one line per send, Claude Code's
-// envelope or the extension's request. Claude Code answers nothing, and
-// closes after the frame; the extension answers after taking the text.
+// envelope or the extension's request. Claude Code answers nothing: it
+// reads the frame to tmag's EOF, then closes; the extension answers after
+// taking the text.
 func serveInbox(ln net.Listener, agent string, messages chan<- message) {
 	for {
 		conn, err := ln.Accept()
@@ -542,7 +544,8 @@ func serveInbox(ln net.Listener, agent string, messages chan<- message) {
 		go func() {
 			defer conn.Close()
 			_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-			line, err := bufio.NewReader(conn).ReadString('\n')
+			r := bufio.NewReader(conn)
+			line, err := r.ReadString('\n')
 			if err != nil {
 				return
 			}
@@ -559,6 +562,10 @@ func serveInbox(ln net.Listener, agent string, messages chan<- message) {
 				m := envelope(msg.Message.Content)
 				m.session = msg.SessionID
 				messages <- m
+				// Claude Code closes its side only after tmag's EOF proves
+				// the frame was read; closing first fails tmag's half-close
+				// on macOS.
+				_, _ = io.Copy(io.Discard, r)
 				return
 			}
 			var msg struct {

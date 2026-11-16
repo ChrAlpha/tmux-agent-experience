@@ -87,7 +87,7 @@ func throughService(outer context.Context, log *eventlog.Log, v View, s Session,
 	var d Delivery
 	d, err = recordDelivery(ctx, log, s, verb.gate, driver.Service, nil, func() error {
 		return &RefusedError{RefuseChanged, fmt.Sprintf("%s has ended", s.ID)}
-	}, verb.mark)
+	}, verb.mark, nil)
 	if err != nil {
 		return Delivery{}, err
 	}
@@ -120,8 +120,10 @@ func unknownDelivery(d Delivery, err error) error {
 // wait for the same lock, so what the delivery causes is logged after it.
 // The channel is reached and checked already, so only the session's own gate
 // runs again; proven, when not nil, is the inbox that channel was proven on.
-// gone says what a session that ended meanwhile is.
-func recordDelivery(ctx context.Context, log *eventlog.Log, s Session, gate stateGate, via string, proven *session.Inbox, gone func() error, mark func(*session.Record) eventlog.Event) (Delivery, error) {
+// gone says what a session that ended meanwhile is. decide, when not nil,
+// fixes what the delivery depends on before it is marked and logged: it runs
+// under the session's lock, after the fresh gate and record read.
+func recordDelivery(ctx context.Context, log *eventlog.Log, s Session, gate stateGate, via string, proven *session.Inbox, gone func() error, mark func(*session.Record) eventlog.Event, decide func(View, session.Record)) (Delivery, error) {
 	store := session.Store{Dir: log.Dir}
 	var d Delivery
 	var freshWorld *attach.World
@@ -149,6 +151,9 @@ func recordDelivery(ctx context.Context, log *eventlog.Log, s Session, gate stat
 		}
 		if err := inboxChanged(s, rec, proven); err != nil {
 			return err
+		}
+		if decide != nil {
+			decide(fresh, rec)
 		}
 		ev := mark(&rec)
 		ev.Agent, ev.Session, ev.Via = fs.Agent, fs.ID, via
