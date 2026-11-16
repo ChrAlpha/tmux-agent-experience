@@ -74,7 +74,17 @@ const sessionManager = {
 	getLeafEntry: () => entries.at(-1),
 	getEntry: (entryId) => entries.find((e) => e.id === entryId),
 };
-const ctx = (extra = {}) => ({ cwd: "/work", mode: "tui", isIdle: () => idle, sessionManager, ...extra });
+let aborts = 0;
+const ctx = (extra = {}) => ({
+	cwd: "/work",
+	mode: "tui",
+	isIdle: () => idle,
+	abort: () => {
+		aborts += 1;
+	},
+	sessionManager,
+	...extra,
+});
 const sub = { agent: { kind: "sub" } };
 
 async function emit(name, event = {}, extra, api = main) {
@@ -105,19 +115,29 @@ function readAnswer(conn) {
 	});
 }
 
-/** Sends one message for session and waits for its answer. */
-async function deliver(text, session = id) {
+/** Sends one request line and waits for its parsed answer. */
+async function exchange(request) {
 	const conn = connect(inbox);
 	await new Promise((resolve, reject) => {
 		conn.once("connect", resolve);
 		conn.once("error", reject);
 	});
 	const answer = readAnswer(conn);
-	conn.write(JSON.stringify({ send: text, session }) + "\n");
+	conn.write(JSON.stringify(request) + "\n");
 	const reply = await answer;
 	conn.end();
-	const parsed = JSON.parse(reply);
+	return JSON.parse(reply);
+}
+
+/** Sends one message for session and waits for it to be taken. */
+async function deliver(text, session = id) {
+	const parsed = await exchange({ send: text, session });
 	if (!parsed.ok) throw new Error(`send refused: ${parsed.error}`);
+}
+
+/** Asks the extension to stop session's turn. */
+function interrupt(session = id) {
+	return exchange({ interrupt: true, session });
 }
 
 /** The inbox close unlinks its socket. */
@@ -150,6 +170,12 @@ if (host === "pi") {
 	await emit("session_start", { reason: "resume" });
 	await waitInbox();
 	if (uid !== undefined && !existsSync(stale)) throw new Error("a fresh refusing socket was removed");
+	const changedInterrupt = await interrupt("s-other");
+	if (changedInterrupt.ok !== false || changedInterrupt.refused !== "changed" || aborts !== 0)
+		throw new Error(`an interrupt for another session was not refused: ${JSON.stringify(changedInterrupt)}`);
+	const idleInterrupt = await interrupt();
+	if (idleInterrupt.ok !== false || idleInterrupt.refused !== "idle" || aborts !== 0)
+		throw new Error(`an idle interrupt was not refused: ${JSON.stringify(idleInterrupt)}`);
 	await deliver("send-idle");
 	// A prompt: Pi records the user message once the handlers return.
 	idle = false;
@@ -161,6 +187,8 @@ if (host === "pi") {
 	append({ type: "message", message: prompt });
 	await emit("tool_execution_start", { toolCallId: "c1", toolName: "bash", args: { command: "secret" } });
 	await deliver("send-running");
+	const workedInterrupt = await interrupt();
+	if (workedInterrupt.ok !== true || aborts !== 1) throw new Error(`a working interrupt was not delivered: ${JSON.stringify(workedInterrupt)}`);
 	await emit("tool_execution_start", { toolCallId: "c2", toolName: "read", parentToolCallId: "c1" });
 	await emit("tool_execution_end", { toolCallId: "c2", toolName: "read", parentToolCallId: "c1" });
 	await emit("ui_prompt_start", { kind: "confirm", title: "secret" });
@@ -211,6 +239,9 @@ if (host === "pi") {
 	await emit("tool_execution_start", { toolCallId: "c2", toolName: "bash" });
 	await emit("tool_approval_requested", { toolCallId: "c2", toolName: "bash" });
 	await deliver("send-running");
+	const unsupported = await interrupt();
+	if (unsupported.ok !== false || unsupported.refused !== "unsupported")
+		throw new Error(`oh-my-pi interrupt was not refused: ${JSON.stringify(unsupported)}`);
 	await emit("tool_approval_resolved", { toolCallId: "c2", toolName: "bash", approved: true });
 	await emit("tool_execution_end", { toolCallId: "c2", toolName: "bash" });
 	append({ type: "message", message: assistant("stop") });

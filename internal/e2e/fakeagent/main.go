@@ -45,7 +45,7 @@
 // Run as "codex app-server ..." it imitates Codex's shared daemon instead: it
 // runs `tmag hook codex` for every JSON payload line on stdin, as its own
 // child, outside any pane's agent, and serves the control socket under
-// $CODEX_HOME (thread/read, turn/start, turn/interrupt, and approvals: a
+// $CODEX_HOME (thread/read, turn/start, turn/steer, turn/interrupt, and approvals: a
 // PermissionRequest it runs becomes an approval request that thread/resume
 // replays and a client answers, about the call the thread's last PreToolUse
 // of that tool started, as Codex names it). A line {"tool":[ARGS],
@@ -65,6 +65,7 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -83,8 +84,18 @@ import (
 )
 
 // message is one inbox delivery: name, mode and session are Claude Code's
-// envelope, empty for Pi's and oh-my-pi's extension framing.
-type message struct{ name, mode, session, text string }
+// envelope, empty for Pi's and oh-my-pi's extension framing. An interrupt asks
+// the loop to stop its running turn; done reports what the loop did.
+type message struct {
+	name, mode, session, text string
+	interrupt                 bool
+	done                      chan error
+}
+
+var (
+	errInboxChanged = errors.New("this agent now serves another session")
+	errInboxIdle    = errors.New("this agent runs no turn to interrupt")
+)
 
 // names are the names an agent's hooks give the events the fake reports:
 // a session's start and end, a prompt, a tool call's start and end, a turn's
@@ -390,6 +401,23 @@ loop:
 			ends = nil
 			end()
 		case m := <-messages:
+			if m.interrupt {
+				switch {
+				case m.session != session:
+					m.done <- errInboxChanged
+				case ends == nil:
+					m.done <- errInboxIdle
+				default:
+					ends = nil
+					dialog = nil
+					record("interrupted")
+					if piLike(agent) {
+						stopped(turn, "aborted")
+					}
+					m.done <- nil
+				}
+				continue
+			}
 			if m.name != "" {
 				line := "inbox " + m.name
 				if m.mode != "" {
@@ -531,10 +559,10 @@ func tool(agent, session string, args []string) (int, string) {
 	return cmd.ProcessState.ExitCode(), string(out)
 }
 
-// serveInbox serves the fake's inbox: one line per send, Claude Code's
-// envelope or the extension's request. Claude Code answers nothing: it
-// reads the frame to tmag's EOF, then closes; the extension answers after
-// taking the text.
+// serveInbox serves the fake's inbox: one line per send or interrupt,
+// Claude Code's envelope or the extension's request. Claude Code answers
+// nothing: it reads the frame to tmag's EOF, then closes; the extension
+// answers after taking the text or stopping the turn.
 func serveInbox(ln net.Listener, agent string, messages chan<- message) {
 	for {
 		conn, err := ln.Accept()
@@ -569,9 +597,32 @@ func serveInbox(ln net.Listener, agent string, messages chan<- message) {
 				return
 			}
 			var msg struct {
-				Send string `json:"send"`
+				Send      string `json:"send"`
+				Interrupt bool   `json:"interrupt"`
+				Session   string `json:"session"`
 			}
 			if json.Unmarshal([]byte(line), &msg) != nil {
+				return
+			}
+			if msg.Interrupt {
+				done := make(chan error, 1)
+				messages <- message{interrupt: true, session: msg.Session, done: done}
+				if os.Getenv("FAKE_INBOX_DROP") == "1" {
+					return
+				}
+				if err := <-done; err != nil {
+					reason := ""
+					switch {
+					case errors.Is(err, errInboxChanged):
+						reason = "changed"
+					case errors.Is(err, errInboxIdle):
+						reason = "idle"
+					}
+					reply, _ := json.Marshal(map[string]any{"ok": false, "refused": reason, "error": err.Error()})
+					_, _ = conn.Write(append(reply, '\n'))
+					return
+				}
+				_, _ = conn.Write([]byte("{\"ok\":true}\n"))
 				return
 			}
 			messages <- message{text: msg.Send}
@@ -959,6 +1010,18 @@ func (d *fakeDaemon) answer(c *svctest.Conn, m svctest.Message) {
 			defer d.mu.Unlock()
 			stop()
 		})
+	case "turn/steer":
+		var steer struct {
+			ExpectedTurnID string `json:"expectedTurnId"`
+		}
+		_ = json.Unmarshal(m.Params, &steer)
+		current, busy := d.turns[p.ThreadID]
+		if !busy || current != steer.ExpectedTurnID {
+			_ = c.Fail(m.ID, fmt.Sprintf("expected active turn id %s but found %s", steer.ExpectedTurnID, current))
+			return
+		}
+		d.record(p.ThreadID, inputText(m.Params))
+		_ = c.Reply(m.ID, map[string]string{"turnId": current})
 	case "turn/interrupt":
 		if d.turns[p.ThreadID] != p.TurnID {
 			_ = c.Fail(m.ID, fmt.Sprintf("expected active turn id %s but found %s", p.TurnID, d.turns[p.ThreadID]))
