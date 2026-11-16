@@ -2,7 +2,8 @@
 
 - Status: accepted; amended 2026-11-10 (when agents look at peers, and the
   `next:` line after refusals); amended again 2026-11-10 (one `send` verb,
-  and replies through the asker's channel)
+  and replies through the asker's channel); amended 2026-11-16 (a message
+  attests the sender's permission class and names the receiver's session)
 - Date: 2026-11-04
 - Builds on: [ADR 0001](0001-agent-control-surface.md), whose verbs agents
   use here unchanged.
@@ -92,8 +93,12 @@ is what `tmag reply` writes, and nobody answers it, so two agents do not
 reply to each other forever; the fourth is what `send` writes, for something
 a peer should know now. Claude Code carries the sender's name in its own
 envelope as well: `<agent> <first 8 characters of its session> via tmag`, or
-`tmag` for a person or owner client. tmag says nothing about the sender's
-permission mode.
+`tmag` for a person or owner client. It also attests the sender's permission
+class: a person or owner client speaks with the receiver's class, an agent
+with its own recorded class, and neither when tmag cannot prove one. The
+receiver session tmag recorded is on the message line too. A bypass receiver
+holds a message that attests no bypass; tmag still reports the delivery, and
+says it waits for the person's approval in the receiver's pane.
 
 No prompt or message given to `send` or `reply` may start with `[tmag]`, in
 any case and after leading blanks (a usage error), so a first line that did
