@@ -11,7 +11,9 @@ import (
 	"time"
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/adapter"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/attach"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
 )
 
@@ -55,6 +57,45 @@ func TestHookContactIsRecordedWithoutChangingStateAge(t *testing.T) {
 		t.Fatalf("contact alone was logged: %+v %v", events, err)
 	}
 }
+
+// A hook whose process table cannot be read still records the state, and
+// leaves the host and inbox it had recorded alone.
+func TestHookRecordsStateWithoutAProcessTable(t *testing.T) {
+	t.Setenv("TMUX", "")
+	t.Setenv("TMUX_PANE", "")
+	t.Setenv("TMUX_TMPDIR", t.TempDir())
+	root := t.TempDir()
+	log := eventlog.Open(root)
+	store := session.Store{Dir: root}
+	host := session.Host{PID: 123, Start: "s123", Role: proc.Service}
+	inbox := &session.Inbox{Path: "/tmp/inbox.sock", PID: 123, Start: "s123"}
+	rec := session.Record{Agent: proc.Claude, ID: "state-first", Main: adapter.Idle, Host: host, Inbox: inbox}
+	if err := store.Put(context.Background(), rec); err != nil {
+		t.Fatal(err)
+	}
+	previous := loadProcesses
+	loadProcesses = func(context.Context, *attach.World) error { return errors.New("process table unreadable") }
+	t.Cleanup(func() { loadProcesses = previous })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	payload := `{"session_id":"state-first","hook_event_name":"UserPromptSubmit","prompt_id":"turn"}`
+	if err := RunContext(ctx, Input{Agent: proc.Claude, Payload: strings.NewReader(payload), Log: log, PID: os.Getpid()}); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := store.Get(context.Background(), proc.Claude, "state-first")
+	if err != nil || !ok {
+		t.Fatalf("record: %+v %v %v", got, ok, err)
+	}
+	if got.State() != adapter.Working || got.Host != host || !session.SameInbox(got.Inbox, inbox) {
+		t.Fatalf("state=%s host=%+v inbox=%+v, want working, %+v, %+v", got.State(), got.Host, got.Inbox, host, inbox)
+	}
+	events, _, err := log.Since(context.Background(), 0)
+	if err != nil || len(events) != 1 || events[0].Session != "state-first" || events[0].State != adapter.Working {
+		t.Fatalf("events = %+v, %v", events, err)
+	}
+}
+
 func TestHookFailureLogIsBoundedMetadataAndHonorsCancellation(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "hook.log")

@@ -27,24 +27,50 @@ type World struct {
 // attachment they carry.
 func Load(ctx context.Context) (*World, error) {
 	w := &World{}
-	servers, err := tmux.ServersContext(ctx)
-	if err != nil {
+	if err := w.LoadPanes(ctx); err != nil {
 		return nil, err
 	}
-	for _, s := range servers {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		if panes, err := s.Panes(ctx); err == nil {
-			w.Panes = append(w.Panes, panes...)
-		}
+	if err := w.LoadProcesses(ctx); err != nil {
+		return nil, err
 	}
+	return w, nil
+}
+
+// LoadProcesses fills w with the process table. A hook reads only its own
+// lineage before recording state, so no tmux call stands between an event and
+// its record; after saving it lists panes and loads the full table here for
+// proof and reconciliation.
+func (w *World) LoadProcesses(ctx context.Context) error {
 	pt, err := proc.SnapshotContext(ctx)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	w.Proc = pt
-	return w, nil
+	return nil
+}
+
+// LoadPanes lists the panes of every reachable tmux server into w, keeping
+// its process table. Sockets with no live server are skipped. A scan that
+// fails leaves w's panes as they were.
+func (w *World) LoadPanes(ctx context.Context) error {
+	servers, err := tmux.ServersContext(ctx)
+	if err != nil {
+		return err
+	}
+	var panes []tmux.Pane
+	for _, s := range servers {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if p, err := s.Panes(ctx); err == nil {
+			panes = append(panes, p...)
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	w.Panes = panes
+	return nil
 }
 
 // Client is an agent's interactive process running in a pane.
