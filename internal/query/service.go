@@ -7,6 +7,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/ChrAlpha/tmux-agent-experience/internal/attach"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/codexsvc"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/driver"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
@@ -123,21 +124,28 @@ func unknownDelivery(d Delivery, err error) error {
 func recordDelivery(ctx context.Context, log *eventlog.Log, s Session, gate stateGate, via string, proven *session.Inbox, gone func() error, mark func(*session.Record) eventlog.Event) (Delivery, error) {
 	store := session.Store{Dir: log.Dir}
 	var d Delivery
+	var freshWorld *attach.World
+	nativeIdle := false
 	err := store.Lock(ctx, s.Agent, s.ID, func() error {
-		fresh, _, err := Load(ctx, store)
+		rec, ok, err := store.Get(ctx, s.Agent, s.ID)
+		if err != nil || !ok {
+			return gone()
+		}
+		rec, nativeIdle, err = attach.Env{Log: log, Store: store}.IdleLocked(ctx, rec)
 		if err != nil {
 			return err
 		}
+		fresh, w, err := Load(ctx, store)
+		if err != nil {
+			return err
+		}
+		freshWorld = w
 		fs, ok := fresh.Session(s.Agent, s.ID)
 		if !ok {
 			return gone()
 		}
 		if err := gate(fs, fresh, time.Now()); err != nil {
 			return err
-		}
-		rec, ok, err := store.Get(ctx, s.Agent, s.ID)
-		if err != nil || !ok {
-			return gone()
 		}
 		if err := inboxChanged(s, rec, proven); err != nil {
 			return err
@@ -153,6 +161,11 @@ func recordDelivery(ctx context.Context, log *eventlog.Log, s Session, gate stat
 		d = Delivery{Session: fs, Via: via, Seq: ev.Seq}
 		return nil
 	})
+	if nativeIdle {
+		if perr := projectNativeIdle(ctx, log, store, freshWorld, s.Agent, s.ID); perr != nil {
+			err = errors.Join(err, perr)
+		}
+	}
 	return d, err
 }
 

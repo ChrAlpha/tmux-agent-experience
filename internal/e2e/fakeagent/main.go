@@ -15,6 +15,9 @@
 //	FAKE_INBOX    "1" to serve the session's inbox: Claude Code's envelope,
 //	              or Pi's and oh-my-pi's extension framing
 //	FAKE_INBOX_DROP "1" to take a send and drop the extension's answer
+//	FAKE_STATUS   "1" to write Claude Code's session status file, under
+//	              CLAUDE_CONFIG_DIR or $HOME/.claude
+//	FAKE_PERMISSION_MODE the permission_mode its hooks report
 //	FAKE_ANSWER   "1" to open "block" (Bash) and "ask" (a question) as Claude
 //	              Code does: the answer hook waits beside the dialog, and the
 //	              next line ("yes" or anything else) answers it in the terminal
@@ -67,6 +70,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -74,11 +78,12 @@ import (
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/codexsvc"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/codexsvc/svctest"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
 )
 
-// message is one inbox delivery: name is the sender of Claude Code's
-// envelope, "" for Pi's and oh-my-pi's extension framing.
-type message struct{ name, text string }
+// message is one inbox delivery: name, mode and session are Claude Code's
+// envelope, empty for Pi's and oh-my-pi's extension framing.
+type message struct{ name, mode, session, text string }
 
 // names are the names an agent's hooks give the events the fake reports:
 // a session's start and end, a prompt, a tool call's start and end, a turn's
@@ -126,6 +131,22 @@ func main() {
 	}
 	session := os.Getenv("FAKE_SESSION")
 	cwd, _ := os.Getwd()
+	writeStatus := func(string) {}
+	if agent == "claude" && os.Getenv("FAKE_STATUS") == "1" {
+		if path, start, ok := claudeStatus(); ok {
+			writeStatus = func(status string) {
+				if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+					return
+				}
+				b, _ := json.Marshal(map[string]any{
+					"sessionId": session, "status": status,
+					"statusUpdatedAt": time.Now().UnixMilli(), "procStart": start,
+				})
+				_ = os.WriteFile(path, b, 0o600)
+			}
+			writeStatus("idle")
+		}
+	}
 	turnMS, err := strconv.Atoi(os.Getenv("FAKE_TURN_MS"))
 	if err != nil {
 		turnMS = 200
@@ -166,6 +187,9 @@ func main() {
 		payload := map[string]any{"hook_event_name": event, "session_id": session, "cwd": cwd, "transcript_path": transcript}
 		if mode := os.Getenv("FAKE_MODE"); mode != "" {
 			payload["mode"] = mode
+		}
+		if mode := os.Getenv("FAKE_PERMISSION_MODE"); mode != "" {
+			payload["permission_mode"] = mode
 		}
 		if inbox != "" && piLike(agent) {
 			payload["inbox"] = inbox
@@ -240,10 +264,12 @@ func main() {
 		turn, asked = fmt.Sprintf("t%d", n), line
 		writeTurn(agent, session, transcript, turn, line, "")
 		hook(ev.prompt, map[string]any{turnKey: turn, "prompt": line})
+		writeStatus("busy")
 	}
 	end := func() {
 		writeTurn(agent, session, transcript, turn, "", reply(asked))
 		stopped(turn, "stop")
+		writeStatus("idle")
 	}
 	// ask opens a dialog like Claude Code's: the call starts, the answer
 	// hook waits beside the dialog, and whichever answers first decides.
@@ -339,6 +365,7 @@ loop:
 				// Claude Code reports an interrupt to no hook; Codex does,
 				// and Pi and oh-my-pi end the turn aborted.
 				ends = nil
+				writeStatus("idle")
 				record("interrupted")
 				switch {
 				case agent == "codex":
@@ -363,7 +390,14 @@ loop:
 			end()
 		case m := <-messages:
 			if m.name != "" {
-				record("inbox " + m.name)
+				line := "inbox " + m.name
+				if m.mode != "" {
+					line += " mode=" + m.mode
+				}
+				if m.session != "" {
+					line += " session=" + m.session
+				}
+				record(line)
 			}
 			if ends != nil || dialog != nil {
 				// Working: the message is read at the agent's next step.
@@ -514,15 +548,17 @@ func serveInbox(ln net.Listener, agent string, messages chan<- message) {
 			}
 			if agent == "claude" {
 				var msg struct {
-					Message struct {
+					SessionID string `json:"session_id"`
+					Message   struct {
 						Content string `json:"content"`
 					} `json:"message"`
 				}
 				if json.Unmarshal([]byte(line), &msg) != nil {
 					return
 				}
-				name, text := envelope(msg.Message.Content)
-				messages <- message{name: name, text: text}
+				m := envelope(msg.Message.Content)
+				m.session = msg.SessionID
+				messages <- m
 				return
 			}
 			var msg struct {
@@ -540,21 +576,56 @@ func serveInbox(ln net.Listener, agent string, messages chan<- message) {
 	}
 }
 
-// envelope reads the name and text of Claude Code's cross-session envelope.
-func envelope(content string) (name, text string) {
-	rest, ok := strings.CutPrefix(content, `<cross-session-message from-name="`)
+// envelope reads the attributes and text of Claude Code's cross-session
+// envelope, as tmag writes them.
+var envelopeAttr = regexp.MustCompile(`([a-z][a-z-]*)="([^"]*)"`)
+
+func envelope(content string) message {
+	rest, ok := strings.CutPrefix(content, `<cross-session-message`)
 	if !ok {
-		return "", content
+		return message{text: content}
 	}
-	name, rest, ok = strings.Cut(rest, "\">\n")
+	attrs, body, ok := strings.Cut(rest, ">\n")
 	if !ok {
-		return "", content
+		return message{text: content}
 	}
-	text, ok = strings.CutSuffix(rest, "\n</cross-session-message>")
+	m := message{}
+	for _, a := range envelopeAttr.FindAllStringSubmatch(attrs, -1) {
+		switch a[1] {
+		case "from-name":
+			m.name = a[2]
+		case "from-mode":
+			m.mode = a[2]
+		}
+	}
+	text, ok := strings.CutSuffix(body, "\n</cross-session-message>")
 	if !ok {
-		return name, rest
+		text = body
 	}
-	return name, text
+	m.text = text
+	return m
+}
+
+// claudeStatus names Claude Code's status file for this process and its
+// start, as the hooks record it: CLAUDE_CONFIG_DIR/sessions or
+// HOME/.claude/sessions, under the pid.
+func claudeStatus() (path, start string, ok bool) {
+	dir := os.Getenv("CLAUDE_CONFIG_DIR")
+	if dir == "" {
+		dir = filepath.Join(os.Getenv("HOME"), ".claude")
+	}
+	if !filepath.IsAbs(dir) {
+		return "", "", false
+	}
+	tb, err := proc.Snapshot()
+	if err != nil {
+		return "", "", false
+	}
+	self, found := tb.Get(os.Getpid())
+	if !found || self.Start == "" {
+		return "", "", false
+	}
+	return filepath.Join(dir, "sessions", fmt.Sprint(os.Getpid())+".json"), self.Start, true
 }
 
 // prompt is a permission dialog of a tool call.

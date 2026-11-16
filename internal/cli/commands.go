@@ -242,6 +242,9 @@ func (a *app) cmdInspect(args []string) int {
 		if !s.LastHookAt.IsZero() {
 			fmt.Fprintf(a.stdout, "last hook: %s (contact only)\n", s.LastHookAt.UTC().Format(time.RFC3339Nano))
 		}
+		if s.Reason != "" {
+			fmt.Fprintf(a.stdout, "reason: %s\n", s.Reason)
+		}
 		here := tmux.DefaultServer().Socket
 		for _, p := range s.Panes {
 			fmt.Fprintf(a.stdout, "shown in: %s (%s, %s)\n", paneName(here, p.Server, p.ID), p.Evidence, p.View)
@@ -259,7 +262,11 @@ func (a *app) cmdInspect(args []string) int {
 		}
 	}
 	for _, e := range events {
-		fmt.Fprintf(a.stdout, "%6d  %s  %-18s %s\n", e.Seq, e.Time.Local().Format("15:04:05"), e.Event, describe(e.State, e.Kind))
+		what := describe(e.State, e.Kind)
+		if e.Reason != "" {
+			what += " " + e.Reason
+		}
+		fmt.Fprintf(a.stdout, "%6d  %s  %-18s %s\n", e.Seq, e.Time.Local().Format("15:04:05"), e.Event, what)
 	}
 	return ExitOK
 }
@@ -611,11 +618,14 @@ func (a *app) reportWait(s query.Session, state, kind, turn string, started bool
 func (a *app) reportDelivery(what string, d query.Delivery) {
 	if a.json {
 		a.emit(map[string]any{"session": d.Session, "pane": d.Pane, "via": d.Via, "seq": d.Seq})
-		return
+	} else {
+		where := d.Via
+		if d.Pane != nil {
+			where = paneName(tmux.DefaultServer().Socket, d.Pane.Server, d.Pane.ID)
+		}
+		fmt.Fprintf(a.stdout, "%s %s (%s) seq %d\n", what, shortID(d.Session.ID), where, d.Seq)
 	}
-	where := d.Via
-	if d.Pane != nil {
-		where = paneName(tmux.DefaultServer().Socket, d.Pane.Server, d.Pane.ID)
+	if d.Held {
+		fmt.Fprintln(a.stderr, "the message waits for the person's approval in the receiver's pane")
 	}
-	fmt.Fprintf(a.stdout, "%s %s (%s) seq %d\n", what, shortID(d.Session.ID), where, d.Seq)
 }

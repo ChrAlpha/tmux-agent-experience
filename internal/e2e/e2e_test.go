@@ -1251,7 +1251,7 @@ func (f *follower) apply(line []byte) {
 				since = e.Since
 			}
 			f.sessions[key] = query.Session{
-				LastHookAt: e.LastHookAt, ID: e.Session, Agent: e.Agent, State: e.State, Kind: e.Kind, Turn: e.Turn, Since: since,
+				LastHookAt: e.LastHookAt, ID: e.Session, Agent: e.Agent, State: e.State, Kind: e.Kind, Reason: e.Reason, Turn: e.Turn, Since: since,
 				Cwd: e.Cwd, Runtime: e.Runtime, Transcript: e.Transcript, Subagents: e.Subagents,
 				Capabilities: e.Capabilities, Requests: e.Requests,
 			}

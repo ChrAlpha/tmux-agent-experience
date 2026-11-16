@@ -2,6 +2,7 @@ package query
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -38,6 +39,9 @@ type Delivery struct {
 	Pane    *Pane  // the pane typed into; nil for other channels
 	Via     string // the channel (see package driver)
 	Seq     int64  // the event logged for it
+	// Held says the receiver's Claude Code holds the message for its person
+	// to approve: it is delivered to the inbox, not yet to the agent.
+	Held bool
 }
 
 // prepare stores what the world proves, so that an attachment checked
@@ -115,6 +119,11 @@ func paneOf(s Session, named *Pane, v View) (Pane, error) {
 // stateGate checks that a session is in a state a verb acts on.
 type stateGate func(s Session, v View, now time.Time) error
 
+// BeforePaneLock, when a test sets it, runs after preparation and before a
+// pane verb takes its locks. It stages a state change between the first and
+// the locked gate; production never sets it.
+var BeforePaneLock func()
+
 // paneVerb is a verb typed into a pane, under the pane's lock and the
 // session's, with the session as stored.
 type paneVerb struct {
@@ -147,14 +156,30 @@ func throughPane(ctx context.Context, log *eventlog.Log, v View, s Session, name
 	}
 	store := session.Store{Dir: log.Dir}
 	var d Delivery
+	var freshWorld *attach.World
+	nativeIdle := false
+	if BeforePaneLock != nil {
+		BeforePaneLock()
+	}
 	err = attach.Lock(ctx, log.Dir, p.Server, p.ID, func() error {
 		return store.Lock(ctx, s.Agent, s.ID, func() error {
 			// Again, against fresh state: the agent may have started a turn,
-			// exited, switched threads or received another prompt since.
-			fresh, _, err := Load(ctx, store)
+			// exited, switched threads or received another prompt since. A
+			// native idle proved meanwhile is applied and logged here, before
+			// the gate reads the session again.
+			rec, ok, err := store.Get(ctx, s.Agent, s.ID)
+			if err != nil || !ok {
+				return &RefusedError{RefuseChanged, fmt.Sprintf("%s has ended", s.ID)}
+			}
+			rec, nativeIdle, err = attach.Env{Log: log, Store: store}.IdleLocked(ctx, rec)
 			if err != nil {
 				return err
 			}
+			fresh, w, err := Load(ctx, store)
+			if err != nil {
+				return err
+			}
+			freshWorld = w
 			fp, ok := findPane(fresh, p.Server, p.ID)
 			if !ok || fp.Session != s.ID || fp.Agent != s.Agent || !stored(fresh, fp) {
 				return &RefusedError{RefuseChanged, fmt.Sprintf("%s no longer shows %s", p.ID, s.ID)}
@@ -168,10 +193,6 @@ func throughPane(ctx context.Context, log *eventlog.Log, v View, s Session, name
 			}
 			if err := gate(fs, fresh, time.Now()); err != nil {
 				return err
-			}
-			rec, ok, err := store.Get(ctx, s.Agent, s.ID)
-			if err != nil || !ok {
-				return &RefusedError{RefuseChanged, fmt.Sprintf("%s has ended", s.ID)}
 			}
 			mark, ev, after := verb.plan(fs, fp, rec)
 			ev.Agent, ev.Session, ev.Via = fs.Agent, fs.ID, driver.Pane
@@ -194,7 +215,22 @@ func throughPane(ctx context.Context, log *eventlog.Log, v View, s Session, name
 			return nil
 		})
 	})
+	if nativeIdle {
+		if perr := projectNativeIdle(ctx, log, store, freshWorld, s.Agent, s.ID); perr != nil {
+			err = errors.Join(err, perr)
+		}
+	}
 	return d, err
+}
+
+// projectNativeIdle projects the latest record after a control lock is
+// released, so a native idle saved under the lock reaches its proven panes.
+func projectNativeIdle(ctx context.Context, log *eventlog.Log, store session.Store, w *attach.World, agent, id string) error {
+	rec, ok, err := store.Get(ctx, agent, id)
+	if err != nil || !ok {
+		return err
+	}
+	return attach.Env{Log: log, Store: store}.ProjectAttached(ctx, w, rec)
 }
 
 // paneGate applies the pane's checks: it shows the session's main agent,
