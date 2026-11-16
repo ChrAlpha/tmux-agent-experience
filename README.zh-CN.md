@@ -10,7 +10,7 @@
 
 - **需要你时，及时提醒。** Agent 等待回应或完成任务时，所在 tmux window 会显示 bell 标记。用 tmux 的 `prefix + M-n` / `M-p` 即可跳转。
 - **直接找到下一个需要关注的 agent。** `prefix + A` 跳到等待最久的 agent，优先处理 blocked 状态；`prefix + a` 打开 agent 树。
-- **进度就在眼前。** 在状态栏加入 `#{tmag_status}`，显示 `2 blocked · 1 working`；在 pane 边框加入 `#{E:@tmag-pane-status}`，显示 `codex blocked permission` 等标签。
+- **进度就在眼前。** 在状态栏加入 `#{tmag_status}`，按状态统计 pane，显示 `2 blocked · 1 working`；在 pane 边框加入 `#{E:@tmag-pane-status}`，显示 `codex blocked permission` 等标签。
 - **让 agents 协作。** Agents 可以发现彼此、查看状态、发送 prompts 并读取回复。请一个 agent 邀请另一个参与当前任务。
 - **离开终端，也能操作。** 通过可选的本地 HTTP API 回应 permission requests、发送 prompts 或中断任务；每个客户端均需 owner 授权。也可以将提醒接入自己的通知命令。
 
