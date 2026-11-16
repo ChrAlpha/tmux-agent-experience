@@ -47,6 +47,42 @@ func TestDoctorReportsUnreadableRecordsContactAndIncompleteProbe(t *testing.T) {
 		t.Fatalf("cancellation became empty healthy result: %+v", got)
 	}
 }
+
+// doctor counts hook.log entries per category: historical failures stay ok,
+// timeouts and slow hooks warn, and legacy lines stay redacted.
+func TestDoctorCountsHookCategories(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	a := app{log: eventlog.Open(root)}
+	now := time.Now().UTC().Format(time.RFC3339)
+	write := func(lines ...string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(root, "hook.log"), []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(now + " claude failed")
+	got := a.checkHookErrors(ctx)
+	if got.Status != "ok" || !strings.Contains(got.Detail, "1 failed") || !strings.Contains(got.Detail, "latest: claude failed") {
+		t.Fatalf("historical failure: %+v", got)
+	}
+	write(now+" claude timeout", now+" claude slow")
+	got = a.checkHookErrors(ctx)
+	if got.Status != "warn" || !strings.Contains(got.Detail, "1 timeout") || !strings.Contains(got.Detail, "1 slow") || !strings.Contains(got.Detail, "latest: claude slow") {
+		t.Fatalf("timeout and slow: %+v", got)
+	}
+	write(now + " claude slow")
+	got = a.checkHookErrors(ctx)
+	if got.Status != "warn" || !strings.Contains(got.Detail, "1 slow") {
+		t.Fatalf("slow alone: %+v", got)
+	}
+	write(now + " notify private legacy sentinel")
+	got = a.checkHookErrors(ctx)
+	if got.Status != "ok" || !strings.Contains(got.Detail, "1 legacy") || !strings.Contains(got.Detail, "redacted") || strings.Contains(got.Detail, "sentinel") {
+		t.Fatalf("legacy line: %+v", got)
+	}
+}
+
 func TestHostProbeContainsHangingCommandAndRetainedPipe(t *testing.T) {
 	for _, script := range []string{"exec /bin/sleep 60", "/bin/sleep 60 & exit 0"} {
 		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)

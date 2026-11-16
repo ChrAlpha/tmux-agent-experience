@@ -83,13 +83,16 @@ type app struct {
 	json      bool
 	setup     context.Context
 	setupDone func()
+	// started is when the process began, for a slow hook report; zero in
+	// in-process callers.
+	started time.Time
 }
 
 // Main runs tmag with the given arguments (without the program name).
 func Main(args []string) int {
 	ctx, stop := signalContext()
 	defer stop()
-	a := &app{ctx: ctx, stdin: os.Stdin, stdout: os.Stdout, stderr: os.Stderr}
+	a := &app{ctx: ctx, stdin: os.Stdin, stdout: os.Stdout, stderr: os.Stderr, started: time.Now()}
 	if len(args) > 0 && (args[0] == "hook" || args[0] == "answer-hook") {
 		// Process containment belongs only to this CLI entry point. Cooperative
 		// work stops early enough to close pipes, reap helpers and release locks.

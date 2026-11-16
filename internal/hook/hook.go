@@ -74,7 +74,7 @@ func Run(in Input) error {
 // Deadline, including input. Payload readers must cooperate with cancellation;
 // the CLI owns its inherited input with contextio.Own. No read worker is left
 // behind if an injected reader does not support cancellation.
-func RunContext(parent context.Context, in Input) error {
+func RunContext(parent context.Context, in Input) (err error) {
 	ctx, cancel := context.WithTimeout(parent, Deadline)
 	defer cancel()
 	if err := ctx.Err(); err != nil {
@@ -215,8 +215,8 @@ func RunContext(parent context.Context, in Input) error {
 	}
 
 	// The record and its event are in place. Pane work comes after them and
-	// cannot undo them: an error still reaches hook.log, but leaves the
-	// recorded state as the agent reported it.
+	// cannot undo them: an error still reaches hook.log through the caller, but
+	// leaves the recorded state as the agent reported it.
 	if err := loadPanes(ctx, w); err != nil {
 		return err
 	}
@@ -226,15 +226,16 @@ func RunContext(parent context.Context, in Input) error {
 		// that attached meanwhile, and reconciliation would detach it. Without
 		// fresh complete evidence there is nothing to reconcile against.
 		defer func() {
-			if err := loadProcesses(ctx, w); err != nil {
+			if loadErr := loadProcesses(ctx, w); loadErr != nil {
+				if ctx.Err() != nil {
+					err = errors.Join(err, ctx.Err())
+				}
 				return
 			}
 			if !w.Proc.Complete() {
 				return
 			}
-			if err := attach.Reconcile(ctx, env, w); err != nil {
-				RecordErrorContext(ctx, in.Log.Dir, in.Agent, err)
-			}
+			err = errors.Join(err, attach.Reconcile(ctx, env, w))
 		}()
 	}
 	if ended {
@@ -267,14 +268,16 @@ func RunContext(parent context.Context, in Input) error {
 		}
 		shown = append(shown, c.Pane)
 	}
-	for _, s := range w.Attached(rec) {
-		if len(shown) > 0 && s.Client.Pane.Server == shown[0].Server && s.Client.Pane.ID == shown[0].ID {
-			continue // just attached, projection included
+	if w.Proc != nil {
+		for _, s := range w.Attached(rec) {
+			if len(shown) > 0 && s.Client.Pane.Server == shown[0].Server && s.Client.Pane.ID == shown[0].ID {
+				continue // just attached, projection included
+			}
+			if err := env.Show(ctx, s.Client.Pane, s.Attachment); err != nil {
+				return err
+			}
+			shown = append(shown, s.Client.Pane)
 		}
-		if err := env.Show(ctx, s.Client.Pane, s.Attachment); err != nil {
-			return err
-		}
-		shown = append(shown, s.Client.Pane)
 	}
 	for _, pane := range shown {
 		alert(ctx, tmux.Server{Socket: pane.Server}, pane, ring)
@@ -395,11 +398,6 @@ func RecordErrorContext(parent context.Context, dir, agent string, err error) {
 	if err == nil || parent.Err() != nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(parent, 100*time.Millisecond)
-	defer cancel()
-	if !proc.IsAgent(agent) && agent != "notify" {
-		agent = "hook"
-	}
 	category := "failed"
 	var record *session.RecordError
 	switch {
@@ -411,6 +409,25 @@ func RecordErrorContext(parent context.Context, dir, agent string, err error) {
 		category = "limited"
 	case errors.As(err, &record):
 		category = "records_unavailable"
+	}
+	recordHookLog(parent, dir, agent, category)
+}
+
+// RecordSlowContext logs a hook that succeeded but took longer than
+// SlowAfter. The caller supplies a budget that survives the hook's setup
+// deadline: the report belongs in the reserve before the hard cutoff.
+func RecordSlowContext(parent context.Context, dir, agent string) {
+	if parent.Err() != nil {
+		return
+	}
+	recordHookLog(parent, dir, agent, "slow")
+}
+
+func recordHookLog(parent context.Context, dir, agent, category string) {
+	ctx, cancel := context.WithTimeout(parent, 100*time.Millisecond)
+	defer cancel()
+	if !proc.IsAgent(agent) && agent != "notify" {
+		agent = "hook"
 	}
 	// The line contains fixed categories only, never err.Error(), command output
 	// or hook input. Exclusion covers the ceiling check, truncation and append.
