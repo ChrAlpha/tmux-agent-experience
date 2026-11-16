@@ -65,9 +65,9 @@ type Request struct {
 // hook), tmag sent it a prompt, a pane started or stopped showing it, or it
 // ended.
 //
-// An event that carries State reports the session in full: State, Kind, Turn,
-// Cwd, Runtime, Transcript, Subagents, Capabilities and Requests are then what
-// the session is, and a field left out is empty.
+// An event that carries State reports the session in full: State, Kind,
+// Reason, Turn, Cwd, Runtime, Transcript, Subagents, Capabilities and
+// Requests are then what the session is, and a field left out is empty.
 type Event struct {
 	// LastHookAt is the session's last hook contact when the event was
 	// logged.
@@ -79,6 +79,8 @@ type Event struct {
 	Event      string    `json:"event"`
 	State      string    `json:"state,omitempty"`
 	Kind       string    `json:"kind,omitempty"`
+	// Reason is why a failed turn ended, with kind error.
+	Reason string `json:"reason,omitempty"`
 	// Since is when the reported state/kind last changed.
 	Since *time.Time `json:"since,omitempty"`
 	Turn  string     `json:"turn,omitempty"`
@@ -119,6 +121,7 @@ const (
 	Attach = "Attach" // a pane started showing the session
 	Detach = "Detach" // a pane stopped showing the session
 	Exit   = "Exit"   // the session's process ended without SessionEnd
+	Idle   = "Idle"   // a native status file ended a turn no hook reported
 	End    = "SessionEnd"
 )
 

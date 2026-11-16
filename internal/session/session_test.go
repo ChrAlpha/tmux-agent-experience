@@ -74,6 +74,38 @@ func is(t *testing.T, rec Record, state, kind string) {
 	}
 }
 
+// A failed turn keeps why it failed until the next Set; a compaction
+// qualifies a working turn and ends with the turn it belongs to.
+func TestFailureReasonAndCompaction(t *testing.T) {
+	failed := play(t, adapter.Transition{Action: adapter.Set, State: adapter.Idle, Kind: adapter.KindError, Reason: "model_not_found", Turn: "p1"})
+	is(t, failed, adapter.Idle, adapter.KindError)
+	if failed.Reason != "model_not_found" || failed.Reports().Reason != "model_not_found" {
+		t.Fatalf("failure reason = %q, report %+v", failed.Reason, failed.Reports())
+	}
+	if next, _ := Apply(failed, submit, t0); next.Reason != "" {
+		t.Fatalf("the next turn kept the failure reason %q", next.Reason)
+	}
+
+	compacting := play(t, adapter.Transition{Action: adapter.Set, State: adapter.Working, Kind: adapter.KindCompacting, Turn: "p1", KeepSubagents: true})
+	is(t, compacting, adapter.Working, adapter.KindCompacting)
+	if worked, _ := Apply(compacting, adapter.Transition{Action: adapter.Set, State: adapter.Working, Turn: "p1", KeepSubagents: true}, t0); worked.Kind() != "" {
+		t.Fatalf("the turn after a compaction kept kind %q", worked.Kind())
+	}
+	if idle, _ := Apply(compacting, adapter.Transition{Action: adapter.Set, State: adapter.Idle, Turn: "p1", KeepSubagents: true}, t0); idle.State() != adapter.Idle {
+		t.Fatalf("a manual compaction left %s", idle.State())
+	}
+
+	// A failed compaction ends one that was marked, and nothing otherwise.
+	marked := play(t, adapter.Transition{Action: adapter.Set, State: adapter.Working, Kind: adapter.KindCompacting, Turn: "p1", KeepSubagents: true})
+	if failed, _ := Apply(marked, adapter.Transition{Action: adapter.Set, State: adapter.Idle, Turn: "p1", OnlyCompacting: true}, t0); failed.State() != adapter.Idle || failed.Kind() != "" {
+		t.Fatalf("a failed compaction left %s/%s", failed.State(), failed.Kind())
+	}
+	working := play(t, submit)
+	if same, changed := Apply(working, adapter.Transition{Action: adapter.Set, State: adapter.Idle, Turn: "p1", OnlyCompacting: true}, t0); changed || same.State() != working.State() {
+		t.Fatal("a failed compaction that was not marked changed the session")
+	}
+}
+
 func TestUnrelatedCompletionKeepsPromptOpen(t *testing.T) {
 	// Subagent B waits for Bash approval while subagent A finishes its own Bash.
 	is(t, play(t, askFor("B", "Bash"), answerOf("A", "Bash")), adapter.Blocked, adapter.KindPermission)
