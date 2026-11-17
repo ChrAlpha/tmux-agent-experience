@@ -177,12 +177,13 @@ func TestReadFileIsBounded(t *testing.T) {
 }
 
 // Lines cross chunk boundaries and outgrow a chunk; a line still being
-// written comes as it is, and one longer than the bound comes as nil.
+// written (the last, without a newline) comes as it is, and one longer
+// than the bound comes as nil.
 func TestBackward(t *testing.T) {
 	long := strings.Repeat("x", 3*backwardChunk)
 	over := strings.Repeat("z", 5*backwardChunk)
-	lines := []string{"a", long, "", "b", over, strings.Repeat("y", backwardChunk-1), "c"}
-	data := []byte(strings.Join(lines, "\n") + "\n{partial")
+	lines := []string{"a", long, "", "b", over, strings.Repeat("y", backwardChunk-1), "c", "{partial"}
+	data := []byte(strings.Join(lines, "\n"))
 	type line struct {
 		text  string
 		nil   bool
@@ -196,15 +197,14 @@ func TestBackward(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	all := append(lines, "{partial")
 	var want []line
 	at := len(data)
-	for i := len(all) - 1; i >= 0; i-- {
-		at -= len(all[i])
-		if all[i] == over {
+	for i := len(lines) - 1; i >= 0; i-- {
+		at -= len(lines[i])
+		if lines[i] == over {
 			want = append(want, line{"", true, at})
 		} else {
-			want = append(want, line{all[i], false, at})
+			want = append(want, line{lines[i], false, at})
 		}
 		at-- // the newline before it
 	}
