@@ -175,13 +175,19 @@ func (r Record) ShownFor(pid int, start string) (Shown, bool) {
 func (r Record) Lists(s Shown) bool { return slices.Contains(r.Shown, s) }
 
 // List lists s as the attachment of its pane, replacing what the record
-// listed for that pane, and reports whether the record changed.
+// listed for that pane, and reports whether the record changed. A record
+// that lists maxShown other panes lists no more: each may still show the
+// session, so none is dropped to make room.
 func (r *Record) List(s Shown) bool {
 	if r.Lists(s) {
 		return false
 	}
-	r.Unlist(s.Server, s.Pane)
-	r.Shown = newest(append(r.Shown, s), maxShown)
+	others := slices.DeleteFunc(slices.Clone(r.Shown), func(o Shown) bool { return o.Server == s.Server && o.Pane == s.Pane })
+	if len(others) >= maxShown {
+		return false
+	}
+	others = append(others, s)
+	r.Shown = others
 	return true
 }
 

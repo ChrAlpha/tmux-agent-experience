@@ -43,6 +43,11 @@ type Attachment struct {
 	Evidence string
 }
 
+// entry is how a session's record lists a, stored on pane p.
+func (a Attachment) entry(p tmux.Pane) session.Shown {
+	return session.Shown{Server: p.Server, Pane: p.ID, PID: a.PID, Start: a.Start}
+}
+
 // keeps reports whether a stands against b: it is the same attachment, or
 // a process proof of the client and session b names, which a title
 // inference never replaces: a process proof lasts as long as its client.

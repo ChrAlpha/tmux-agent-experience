@@ -111,6 +111,7 @@ func Links(w *World, live []session.Record) []Link {
 //   - a session whose host process is gone without SessionEnd ends (Exit);
 //   - a pane whose stored attachment Links no longer confirms loses it
 //     (Detach), and one Links attaches by title gains it (Attach);
+//   - a confirmed attachment its record does not list is listed again;
 //   - a projection that lags its session is rewritten.
 //
 // Every change is decided again under the pane's or session's lock against
@@ -154,8 +155,14 @@ func Reconcile(ctx context.Context, env Env, w *World) error {
 		linked[[2]string{p.Server, p.ID}] = true
 		switch {
 		case l.Stored:
-			if projectionFromPane(p) != ProjectionOf(*l.Session) {
-				a, _ := FromPane(p)
+			// An attachment the record does not list is listed again, so
+			// that hooks project onto it; a listed one only catches up.
+			a, _ := FromPane(p)
+			if !l.Session.Lists(a.entry(p)) {
+				if err := env.Attach(ctx, w, l.Client, *l.Session, a.Evidence); err != nil {
+					return err
+				}
+			} else if projectionFromPane(p) != ProjectionOf(*l.Session) {
 				if err := env.Show(ctx, p, a); err != nil {
 					return err
 				}
@@ -296,7 +303,8 @@ func (env Env) clearBroken(ctx context.Context, p tmux.Pane) error {
 //
 // The session's record lists the pane before the pane shows the session,
 // under the session's lock, so a hook that saved a newer state either sees
-// the pane listed or has its state read here. A session the pane stops
+// the pane listed or has its state read here. A record that lists as many
+// panes as it takes gets no more, and the pane is left as it was. A session the pane stops
 // showing unlists it after the pane changed, under that session's own lock.
 // The pane changes first, then the events are logged: a Detach of the
 // session the pane stops showing, then the Attach; a change of evidence or
@@ -317,7 +325,7 @@ func (env Env) Attach(ctx context.Context, w *World, c Client, rec session.Recor
 			}
 		}
 		next := Attachment{Agent: rec.Agent, Session: rec.ID, PID: c.Process.PID, Start: c.Process.Start, Evidence: evidence}
-		entry := session.Shown{Server: fresh.Server, Pane: fresh.ID, PID: next.PID, Start: next.Start}
+		entry := next.entry(fresh)
 		cur, had := FromPane(fresh)
 		if had && cur.keeps(next) {
 			return env.Store.Lock(ctx, next.Agent, next.Session, func() error {
@@ -330,7 +338,7 @@ func (env Env) Attach(ctx context.Context, w *World, c Client, rec session.Recor
 						return err
 					}
 				}
-				if projectionFromPane(fresh) == ProjectionOf(latest) {
+				if !latest.Lists(entry) || projectionFromPane(fresh) == ProjectionOf(latest) {
 					return nil
 				}
 				return writeProjection(ctx, srv, fresh.ID, ProjectionOf(latest))
@@ -346,6 +354,7 @@ func (env Env) Attach(ctx context.Context, w *World, c Client, rec session.Recor
 		}
 		replaced := had && (cur.Agent != next.Agent || cur.Session != next.Session)
 		ev := eventlog.Event{Agent: next.Agent, Session: next.Session, Event: eventlog.Attach, Pane: ref(fresh), Evidence: next.Evidence}
+		attached := false
 		err = env.Store.Lock(ctx, next.Agent, next.Session, func() error {
 			latest, ok, err := env.Store.Get(ctx, next.Agent, next.Session)
 			if err != nil || !ok {
@@ -356,9 +365,13 @@ func (env Env) Attach(ctx context.Context, w *World, c Client, rec session.Recor
 					return err
 				}
 			}
+			if !latest.Lists(entry) {
+				return nil // the record lists as many panes as it takes
+			}
 			if err := write(ctx, srv, fresh.ID, fresh.Command, next, ProjectionOf(latest)); err != nil {
 				return err
 			}
+			attached = true
 			latest.Report(&ev)
 			if replaced {
 				if err := env.append(ctx, eventlog.Event{Agent: cur.Agent, Session: cur.Session, Event: eventlog.Detach, Pane: ref(fresh)}); err != nil {
@@ -367,7 +380,7 @@ func (env Env) Attach(ctx context.Context, w *World, c Client, rec session.Recor
 			}
 			return env.append(ctx, ev)
 		})
-		if err != nil || !replaced {
+		if err != nil || !attached || !replaced {
 			return err
 		}
 		return env.unlist(ctx, cur, fresh)

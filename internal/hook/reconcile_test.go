@@ -29,11 +29,11 @@ func TestReconciliationReadsProcessesAfterPanes(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	b := session.Record{Agent: proc.Claude, ID: "b-session", Main: adapter.Idle,
-		Host: session.Host{PID: 200, Start: "s-b"}}
+		Host: session.Host{PID: 200, Start: "s-b"}, Shown: []session.Shown{{Server: "/r1", Pane: "%1", PID: 200, Start: "s-b"}}}
 	if err := store.Put(ctx, b); err != nil {
 		t.Fatal(err)
 	}
-	panes := []tmux.Pane{{Server: "r1", ID: "%1", PID: 100, Command: "claude", Options: map[string]string{
+	panes := []tmux.Pane{{Server: "/r1", ID: "%1", PID: 100, Command: "claude", Options: map[string]string{
 		"agent": "claude", "session": "b-session", "pid": "200", "start": "s-b",
 		"evidence": "process", "state": "idle",
 	}}}

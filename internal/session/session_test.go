@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -606,7 +607,7 @@ func TestShownBounds(t *testing.T) {
 }
 
 // A record lists one attachment per pane, the newest last, and a bounded
-// number of them.
+// number of them: a full record takes no other pane, and drops none.
 func TestRecordListsPanes(t *testing.T) {
 	var rec Record
 	a := Shown{Server: "/tmp/s", Pane: "%1", PID: 10, Start: "1"}
@@ -620,14 +621,24 @@ func TestRecordListsPanes(t *testing.T) {
 	if got, ok := rec.ShownFor(11, "2"); !ok || got != b {
 		t.Fatalf("ShownFor = %+v, %v", got, ok)
 	}
-	for i := range maxShown + 1 {
-		rec.List(Shown{Server: "/tmp/s", Pane: "%" + strconv.Itoa(100+i), PID: 20 + i, Start: "3"})
+	for i := range maxShown - 1 {
+		if !rec.List(Shown{Server: "/tmp/s", Pane: "%" + strconv.Itoa(100+i), PID: 20 + i, Start: "3"}) {
+			t.Fatalf("a record with room refused pane %d", i)
+		}
+	}
+	full := slices.Clone(rec.Shown)
+	if rec.List(Shown{Server: "/tmp/s", Pane: "%999", PID: 99, Start: "3"}) || !slices.Equal(rec.Shown, full) {
+		t.Fatalf("a full record changed to list another pane: %+v", rec.Shown)
+	}
+	c := Shown{Server: "/tmp/s", Pane: "%1", PID: 12, Start: "4"}
+	if !rec.List(c) || !rec.Lists(c) || rec.Lists(b) || len(rec.Shown) != maxShown {
+		t.Fatalf("a full record did not take a listed pane's new client: %+v", rec.Shown)
 	}
 	rec, _ = Apply(rec, adapter.Transition{Action: adapter.Set, State: adapter.Idle}, t0)
-	if len(rec.Shown) != maxShown || rec.Shown[len(rec.Shown)-1].Pane != "%"+strconv.Itoa(100+maxShown) {
+	if len(rec.Shown) != maxShown {
 		t.Fatalf("listed %d panes: %+v", len(rec.Shown), rec.Shown)
 	}
-	if !rec.Unlist("/tmp/s", "%"+strconv.Itoa(100+maxShown)) || rec.Unlist("/tmp/s", "%999") {
+	if !rec.Unlist("/tmp/s", "%100") || rec.Unlist("/tmp/s", "%999") {
 		t.Fatal("unlisting a listed pane, or one never listed")
 	}
 }

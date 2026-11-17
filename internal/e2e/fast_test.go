@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -571,4 +572,65 @@ func TestFastHookNotifyPreservesNewlines(t *testing.T) {
 		b, err := os.ReadFile(sent)
 		return err == nil && string(b) == "finished"
 	})
+}
+
+// A record lists at most eight panes, and drops none to list another: a
+// ninth pane showing the thread stays unattached rather than leave one of
+// the eight showing it unlisted. A full pass lists again an attachment whose
+// listing was lost, so that hooks project onto it.
+func TestARecordListsEightPanesAndAFullPassRelistsThem(t *testing.T) {
+	h := start(t)
+	d := h.daemon()
+	d.hook(map[string]any{"hook_event_name": "UserPromptSubmit", "session_id": sidB, "cwd": h.dir, "turn_id": "t1"})
+	h.waitSession(sidB, "working")
+	var panes []string
+	for i := range 9 {
+		panes = append(panes, h.spawn(h.dir, map[string]string{"FAKE_TITLE": codexTitle("thread "+strconv.Itoa(i), sidB)}, filepath.Join(bin, "codex")))
+	}
+	h.eventually("nine clients ready", func() bool {
+		for _, p := range panes {
+			if !strings.Contains(h.tmux("capture-pane", "-p", "-t", p), "ready") {
+				return false
+			}
+		}
+		return true
+	})
+	ctx := context.Background()
+	store := session.Store{Dir: h.state}
+	attached := func() (shown []string, rec session.Record) {
+		t.Helper()
+		if r := h.tmag("", "prune"); r.code != 0 {
+			t.Fatal(r.out)
+		}
+		rec, ok, err := store.Get(ctx, proc.Codex, sidB)
+		if err != nil || !ok {
+			t.Fatalf("record: %v, %v", ok, err)
+		}
+		for _, p := range panes {
+			if h.tmux("display-message", "-p", "-t", p, "#{@tmag_session}") == sidB {
+				shown = append(shown, p)
+				if !listsPane(rec, p) {
+					t.Fatalf("%s shows the session its record does not list: %+v", p, rec.Shown)
+				}
+			}
+		}
+		return shown, rec
+	}
+	shown, rec := attached()
+	if len(shown) != 8 || len(rec.Shown) != 8 {
+		t.Fatalf("attached %v, listed %+v", shown, rec.Shown)
+	}
+	if again, _ := attached(); !slices.Equal(again, shown) {
+		t.Fatalf("a second pass moved attachments: %v, then %v", shown, again)
+	}
+
+	// A listing lost, as when the state directory is purged under a running
+	// session, comes back with the next full pass.
+	rec.Shown = rec.Shown[1:]
+	if err := store.Put(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+	if again, rec := attached(); !slices.Equal(again, shown) || len(rec.Shown) != 8 {
+		t.Fatalf("after a lost listing: attached %v, listed %+v", again, rec.Shown)
+	}
 }

@@ -90,14 +90,16 @@ promise is documented in the package, and changes with it.
   `thread-id` title item, never `$TMUX_PANE`, names or directories;
   ambiguity is no attachment. A session's record lists every pane attached
   to it, with the client each attachment is for: an Attach lists the pane and
-  writes it under the session's lock, a Detach unlists it after clearing it.
-  A hook writes a listed pane only under that pane's lock, from the record
-  read there, through a guard inside tmux that the pane still holds the
-  attachment and runs the program it was attached with; a refused pane is
-  unlisted. A hook takes the full proof path only at a session's start or
-  end, or when its host is a client under tmux whose pane the record does not
-  list or whose guard refused. Bells, borders, the picker, the status line
-  and `jump` show only proven attachments; anything else is `unknown`.
+  writes it under the session's lock, a full pass lists again each
+  attachment it confirms, and a pane leaves the list only once tmux shows it
+  holds the attachment no more. A hook writes a listed pane only under that
+  pane's lock, from the record read there, through a guard inside tmux that
+  the pane still holds the attachment and runs the program it was attached
+  with, and that a Codex title still shows the session. A hook takes the full
+  proof path only at a session's start or end, or when its host is a client
+  under tmux whose pane the record does not list or it could not write.
+  Bells, borders, the picker, the status line and `jump` show only proven
+  attachments; anything else is `unknown`.
 - **Control is gated.** `send`, `interrupt` and `answer` act only through a
   channel proven to reach the session, after checking the state they need
   again under the locks they need; an inbox is proven when its listener is
