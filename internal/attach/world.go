@@ -30,23 +30,12 @@ func Load(ctx context.Context) (*World, error) {
 	if err := w.LoadPanes(ctx); err != nil {
 		return nil, err
 	}
-	if err := w.LoadProcesses(ctx); err != nil {
-		return nil, err
-	}
-	return w, nil
-}
-
-// LoadProcesses fills w with the process table. A hook reads only its own
-// lineage before recording state, so no tmux call stands between an event and
-// its record; after saving it lists panes and loads the full table here for
-// proof and reconciliation.
-func (w *World) LoadProcesses(ctx context.Context) error {
 	pt, err := proc.Snapshot(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	w.Proc = pt
-	return nil
+	return w, nil
 }
 
 // LoadPanes lists the panes of every reachable tmux server into w, keeping
