@@ -3,6 +3,7 @@ package attach
 import (
 	"context"
 	"os/exec"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -63,6 +64,7 @@ func TestGuardPredicates(t *testing.T) {
 		}
 	}
 	entry := session.Shown{Server: srv.Socket, Pane: pane, PID: 123, Start: "12345"}
+	rec := session.Record{Agent: "claude", ID: "session"}
 	projection := func() string {
 		out, err := srv.Run(ctx, "display-message", "-p", "-t", pane, "#{@tmag_state}|#{@tmag_kind}|#{@tmag_since}")
 		if err != nil {
@@ -73,25 +75,28 @@ func TestGuardPredicates(t *testing.T) {
 
 	// The right pane accepts and writes the projection.
 	set("claude", "session", "123", "12345", cmd, "idle")
-	if got, ok := guardedWrite(ctx, entry, "claude", "session", Projection{State: "working"}, false, nil); !ok || projection() != "working||" || got.Pane.ID != pane {
+	if got, out := guardedWrite(ctx, entry, rec, Projection{State: "working"}, false, nil); out != wrote || projection() != "working||" || got.Pane.ID != pane {
 		t.Fatalf("the full guard refused: projection=%q", projection())
 	}
 
-	// Each predicate alone must refuse without touching the projection.
+	// Each predicate alone must refuse without touching the projection. A
+	// pane whose options name another attachment holds the listed one no
+	// more; one that holds it but runs another program may show it again.
 	for _, tc := range []struct {
 		name                           string
 		agent, id, pid, start, command string
+		want                           outcome
 	}{
-		{"foreign agent", "codex", "session", "123", "12345", cmd},
-		{"foreign session", "claude", "other", "123", "12345", cmd},
-		{"other pid", "claude", "session", "999", "12345", cmd},
-		{"other start", "claude", "session", "123", "99999", cmd},
-		{"another program", "claude", "session", "123", "12345", "zsh"},
+		{"foreign agent", "codex", "session", "123", "12345", cmd, gone},
+		{"foreign session", "claude", "other", "123", "12345", cmd, gone},
+		{"other pid", "claude", "session", "999", "12345", cmd, gone},
+		{"other start", "claude", "session", "123", "99999", cmd, gone},
+		{"another program", "claude", "session", "123", "12345", "zsh", unwritten},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			set(tc.agent, tc.id, tc.pid, tc.start, tc.command, "idle")
-			if _, ok := guardedWrite(ctx, entry, "claude", "session", Projection{State: "working"}, false, nil); ok {
-				t.Fatal("the guard accepted a false predicate")
+			if _, out := guardedWrite(ctx, entry, rec, Projection{State: "working"}, false, nil); out != tc.want {
+				t.Fatalf("outcome %d, want %d", out, tc.want)
 			}
 			if got := projection(); got != "idle|old|111" {
 				t.Fatalf("projection changed on refusal: %q", got)
@@ -122,8 +127,8 @@ func TestGuardPredicates(t *testing.T) {
 		t.Fatalf("pane is not dead: %q", dead)
 	}
 	set("claude", "session", "123", "12345", "true", "idle")
-	if _, ok := guardedWrite(ctx, entry, "claude", "session", Projection{State: "working"}, false, nil); ok {
-		t.Fatal("the guard accepted a dead pane")
+	if _, out := guardedWrite(ctx, entry, rec, Projection{State: "working"}, false, nil); out != unwritten {
+		t.Fatalf("a dead pane that still holds the attachment: outcome %d", out)
 	}
 	if got := projection(); got != "idle|old|111" {
 		t.Fatalf("projection changed on a dead pane: %q", got)
@@ -136,42 +141,55 @@ func TestValuesWithTmuxSyntaxAreNeverUsed(t *testing.T) {
 		{Server: "/tmp/tmux.sock", Pane: "%x", PID: 10, Start: "10"},
 		{Server: "/tmp/tmux.sock", Pane: "%1", PID: 0, Start: "10"},
 	} {
-		if _, ok := guardedWrite(context.Background(), s, "claude", "session", Projection{State: "working"}, false, nil); ok {
-			t.Fatalf("entry %+v was used", s)
+		if _, out := guardedWrite(context.Background(), s, session.Record{Agent: "claude", ID: "session"}, Projection{State: "working"}, false, nil); out != unwritten {
+			t.Fatalf("entry %+v was used: %d", s, out)
 		}
 	}
-	if _, ok := guardedWrite(context.Background(), session.Shown{Server: "/tmp/tmux.sock", Pane: "%1", PID: 10, Start: "10"},
-		"claude", "bad id #{}", Projection{State: "working"}, false, nil); ok {
+	if _, out := guardedWrite(context.Background(), session.Shown{Server: "/tmp/tmux.sock", Pane: "%1", PID: 10, Start: "10"},
+		session.Record{Agent: "claude", ID: "bad id #{}"}, Projection{State: "working"}, false, nil); out != unwritten {
 		t.Fatal("a session id with tmux syntax was used")
 	}
 }
 
 // Project writes the latest state to the panes the record lists, reads the
-// options it is asked for with them, and unlists a pane that no longer
-// shows the session.
-func TestProjectWritesListedPanesAndUnlistsRefusedOnes(t *testing.T) {
+// options it is asked for with them, and unlists a pane tmux shows to hold
+// the attachment no more: closed, or on a server that is gone. A pane that
+// may still hold it stays listed.
+func TestProjectWritesListedPanesAndUnlistsGoneOnes(t *testing.T) {
 	srv, pane, cmd := startTmuxPane(t)
 	ctx := context.Background()
 	if _, err := srv.Run(ctx, "set-option", "-g", "@tmag-alert", "finished"); err != nil {
 		t.Fatal(err)
 	}
-	if err := srv.SetPaneOptions(ctx, pane, map[string]string{
-		"agent": proc.Claude, "session": "s1", "pid": "123", "start": "12345", "evidence": Process, "cmd": cmd, "state": "working",
-	}, nil); err != nil {
+	attach := func(pane, pid, start, cmd string) {
+		t.Helper()
+		if err := srv.SetPaneOptions(ctx, pane, map[string]string{
+			"agent": proc.Claude, "session": "s1", "pid": pid, "start": start, "evidence": Process, "cmd": cmd, "state": "working",
+		}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	attach(pane, "123", "12345", cmd)
+	out, err := srv.Run(ctx, "new-window", "-d", "-P", "-F", "#{pane_id}", "/bin/sh", "-c", "sleep 60")
+	if err != nil {
 		t.Fatal(err)
 	}
+	behind := strings.TrimSpace(string(out))
+	attach(behind, "125", "12347", "another-program")
 	dir := t.TempDir()
 	env := Env{Log: eventlog.Open(dir), Store: session.Store{Dir: dir}}
 	listed := session.Shown{Server: srv.Socket, Pane: pane, PID: 123, Start: "12345"}
-	gone := session.Shown{Server: srv.Socket, Pane: "%99", PID: 124, Start: "12346"}
-	old := session.Record{Agent: proc.Claude, ID: "s1", Main: adapter.Working, Shown: []session.Shown{listed, gone}}
+	stale := session.Shown{Server: srv.Socket, Pane: behind, PID: 125, Start: "12347"}
+	closed := session.Shown{Server: srv.Socket, Pane: "%99", PID: 124, Start: "12346"}
+	serverless := session.Shown{Server: sockettest.Dir(t) + "/gone", Pane: "%1", PID: 126, Start: "12348"}
+	old := session.Record{Agent: proc.Claude, ID: "s1", Main: adapter.Working, Shown: []session.Shown{listed, stale, closed, serverless}}
 	latest := old
 	latest.Main, latest.Since = adapter.Idle, time.Unix(200, 0).UTC()
 	if err := env.Store.Put(ctx, latest); err != nil {
 		t.Fatal(err)
 	}
 
-	written, refused, err := env.Project(ctx, old, "@tmag-alert")
+	written, missed, err := env.Project(ctx, old, "@tmag-alert")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,11 +199,112 @@ func TestProjectWritesListedPanesAndUnlistsRefusedOnes(t *testing.T) {
 	if got := written[0].Pane.Options["state"]; got != adapter.Idle {
 		t.Fatalf("an older hook wrote its own state, %q, over the latest", got)
 	}
-	if len(refused) != 1 || refused[0] != gone {
-		t.Fatalf("refused %+v", refused)
+	if len(missed) != 3 {
+		t.Fatalf("missed %+v", missed)
 	}
 	stored, _, err := env.Store.Get(ctx, proc.Claude, "s1")
-	if err != nil || !stored.Lists(listed) || stored.Lists(gone) {
+	if err != nil || !stored.Lists(listed) || !stored.Lists(stale) || stored.Lists(closed) || stored.Lists(serverless) {
 		t.Fatalf("listed after Project: %+v, %v", stored.Shown, err)
+	}
+
+	// A tmux that cannot run proves nothing: every pane stays listed.
+	t.Setenv("PATH", t.TempDir())
+	latest = stored
+	latest.Main = adapter.Working
+	if err := env.Store.Put(ctx, latest); err != nil {
+		t.Fatal(err)
+	}
+	if written, missed, err := env.Project(ctx, latest); err != nil || len(written) != 0 || len(missed) != 2 {
+		t.Fatalf("without tmux: written %+v, missed %+v, %v", written, missed, err)
+	}
+	if after, _, err := env.Store.Get(ctx, proc.Claude, "s1"); err != nil || !slices.Equal(after.Shown, stored.Shown) {
+		t.Fatalf("listed without tmux: %+v, %v", after.Shown, err)
+	}
+}
+
+// A Codex pane is written only while its title shows the session, as Check
+// judges it: a client that went on to another thread keeps its attachment
+// for a full pass to move, but takes no projection of the thread it left.
+func TestProjectWritesACodexPaneOnlyWhileItsTitleShowsTheSession(t *testing.T) {
+	srv, pane, cmd := startTmuxPane(t)
+	ctx := context.Background()
+	const a, b = "019a0000-0000-7000-8000-a00000000000", "019a0000-0000-7000-8000-b00000000000"
+	if err := srv.SetPaneOptions(ctx, pane, map[string]string{
+		"agent": proc.Codex, "session": a, "pid": "123", "start": "12345", "evidence": TitleID, "cmd": cmd, "state": "idle",
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	env := Env{Log: eventlog.Open(dir), Store: session.Store{Dir: dir}}
+	entry := session.Shown{Server: srv.Socket, Pane: pane, PID: 123, Start: "12345"}
+	rec := session.Record{Agent: proc.Codex, ID: a, Main: adapter.Working, Shown: []session.Shown{entry}}
+	if err := env.Store.Put(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+	state := func() string {
+		t.Helper()
+		out, err := srv.Run(ctx, "display-message", "-p", "-t", pane, "#{@tmag_state}")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	for _, tc := range []struct {
+		title string
+		want  string
+	}{
+		{"other | repo | " + b[:29] + "...", "idle"},
+		{"repo", "idle"},
+		{"⠋ work | repo | " + a[:29] + "...", "working"},
+	} {
+		if _, err := srv.Run(ctx, "select-pane", "-t", pane, "-T", tc.title); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := env.Project(ctx, rec); err != nil {
+			t.Fatal(err)
+		}
+		if got := state(); got != tc.want {
+			t.Fatalf("title %q: pane state %q, want %q", tc.title, got, tc.want)
+		}
+		if stored, _, _ := env.Store.Get(ctx, proc.Codex, a); !stored.Lists(entry) {
+			t.Fatalf("title %q unlisted a pane that still holds the attachment", tc.title)
+		}
+	}
+}
+
+// Project reads the record under the pane's lock: a state saved while
+// another tmag holds that lock is the one written, not the state Project
+// was called with.
+func TestProjectReadsTheRecordUnderThePaneLock(t *testing.T) {
+	srv, pane, cmd := startTmuxPane(t)
+	ctx := context.Background()
+	if err := srv.SetPaneOptions(ctx, pane, map[string]string{
+		"agent": proc.Claude, "session": "s1", "pid": "123", "start": "12345", "evidence": Process, "cmd": cmd, "state": "idle",
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	env := Env{Log: eventlog.Open(dir), Store: session.Store{Dir: dir}}
+	entry := session.Shown{Server: srv.Socket, Pane: pane, PID: 123, Start: "12345"}
+	working := session.Record{Agent: proc.Claude, ID: "s1", Main: adapter.Working, Shown: []session.Shown{entry}}
+	if err := env.Store.Put(ctx, working); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan []Projected, 1)
+	if err := Lock(ctx, dir, srv.Socket, pane, func() error {
+		go func() {
+			written, _, _ := env.Project(ctx, working)
+			done <- written
+		}()
+		time.Sleep(100 * time.Millisecond) // Project waits for the lock meanwhile
+		blocked := working
+		blocked.Main = adapter.Idle
+		return env.Store.Put(ctx, blocked)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	written := <-done
+	if len(written) != 1 || !written[0].Newer || written[0].Pane.Options["state"] != adapter.Idle {
+		t.Fatalf("Project wrote %+v, not the record saved under the lock", written)
 	}
 }

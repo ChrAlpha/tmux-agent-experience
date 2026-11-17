@@ -147,7 +147,8 @@ func (me self) unproven(rec session.Record) bool {
 // The session's record and event are saved before the hook asks tmux
 // anything. The panes the record lists are then updated without listing panes
 // or the process table, when the projection changed; only a session's start
-// or end, or a host in a pane the record does not list, takes the full path.
+// or end, or a host in a pane the record does not list or Project could not
+// write, takes the full path.
 func Run(parent context.Context, in Input) error {
 	ctx, cancel := context.WithTimeout(parent, Deadline)
 	defer cancel()
@@ -210,13 +211,12 @@ func Run(parent context.Context, in Input) error {
 	if ring != "" {
 		options = []string{notify.Option, "@tmag-alert"}
 	}
-	written, refused, err := env.Project(ctx, rec, options...)
+	written, missed, err := env.Project(ctx, rec, options...)
 	if err != nil {
 		return err
 	}
-	if own, ok := me.listed(rec); ok && slices.Contains(refused, own) {
-		// The hook's own pane no longer shows the session as listed: prove
-		// it again.
+	if own, ok := me.listed(rec); ok && slices.Contains(missed, own) {
+		// The hook's own pane was not written as listed: prove it again.
 		return prove(ctx, env, in, p, prev, rec, wrote, me)
 	}
 	if ring == "" || slices.ContainsFunc(written, func(w attach.Projected) bool { return w.Newer }) {

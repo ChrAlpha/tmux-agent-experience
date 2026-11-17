@@ -6,6 +6,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
+	"net"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -120,6 +122,18 @@ func (s Server) RunInput(ctx context.Context, stdin []byte, args ...string) ([]b
 		return out, fmt.Errorf("tmux %s: %s", strings.Join(args, " "), msg)
 	}
 	return out, nil
+}
+
+// Listening reports whether a server may still listen on the socket: false
+// only when connecting is refused or the socket is gone, as after its server
+// exited.
+func (s Server) Listening(ctx context.Context) bool {
+	c, err := (&net.Dialer{}).DialContext(ctx, "unix", s.Socket)
+	if err == nil {
+		_ = c.Close()
+		return true
+	}
+	return !errors.Is(err, syscall.ECONNREFUSED) && !errors.Is(err, fs.ErrNotExist)
 }
 
 // Panes lists every pane on the server.
