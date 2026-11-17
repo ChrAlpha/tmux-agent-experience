@@ -146,3 +146,17 @@ func TestPiLast(t *testing.T) {
 		t.Errorf("no turn: %v", err)
 	}
 }
+
+// A line too long to decode may be a turn's prompt: the read fails rather
+// than give the turn before it the reply after it.
+func TestLineTooLongFailsTheRead(t *testing.T) {
+	big := strings.Replace(piPrompt2, `"content":"second"`, `"content":"`+strings.Repeat("x", 4096)+`"`, 1)
+	path := write(t, piHeader, piPrompt1, piReply1, big, piFinal)
+	if _, err := read(context.Background(), path, PiJSONL, 1, 1024); !errors.Is(err, ErrLineTooLong) {
+		t.Fatalf("read past a line over its bound: %v", err)
+	}
+	turns, err := read(context.Background(), path, PiJSONL, 1, maxLine)
+	if err != nil || len(turns) != 1 || turns[0].ID != "8525eceb" {
+		t.Fatalf("read within the bound: %+v, %v", turns, err)
+	}
+}
