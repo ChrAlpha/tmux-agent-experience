@@ -74,7 +74,7 @@ func SendPlan(agent, runtime string, caller Caller, wait, idle bool) Plan {
 		switch {
 		case agent == proc.Codex:
 			return Plan{Try: []string{Service}}
-		case agent == proc.Claude && !(caller == Person && wait):
+		case agent == proc.Claude && (caller != Person || !wait):
 			return Plan{Try: []string{Inbox}}
 		}
 		return Plan{}
