@@ -57,9 +57,11 @@ promise is documented in the package, and changes with it.
   `query.Send` writes from the proven caller; a person's gets none, and no
   prompt or message given to tmag may start with `[tmag]`. A caller never
   names itself.
-- **Hooks fail open.** `tmag hook` exits 0, never writes stdout and finishes
-  within `hook.Deadline`, also through the `tmag-peers` launcher; failures go
-  to `hook.log` as metadata. Pi's and oh-my-pi's extensions run it in the
+- **Hooks fail open.** `tmag hook` saves the session's record and event before
+  it asks tmux anything, then exits 0, never writes stdout and finishes
+  within `hook.Deadline`, also through the `tmag-peers` launcher; failures,
+  and successes slower than `hook.SlowAfter`, go to `hook.log` as metadata.
+  Pi's and oh-my-pi's extensions run it in the
   order of the events without holding up the agent; the only prompt they hand
   it is one a send wrote to their inbox. `answer-hook` exits 0 too and sets up
   within that deadline, then waits for a decision within its own hook

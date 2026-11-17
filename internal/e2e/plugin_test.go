@@ -351,6 +351,9 @@ func TestPickerClearsStaleRecords(t *testing.T) {
 	h.waitPane(pane, "idle", "process")
 	h.tmux("send-keys", "-t", pane, "block", "Enter")
 	h.waitPane(pane, "blocked", "process")
+	// Only the picker below may clear the stale record, so the hook that
+	// reported it must have exited first.
+	h.waitHookExit(claude)
 	if err := exec.Command("pkill", "-KILL", "-o", "-f", "^"+claude+"$").Run(); err != nil {
 		t.Fatalf("pkill: %v", err)
 	}

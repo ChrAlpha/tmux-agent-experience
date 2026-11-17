@@ -209,7 +209,8 @@ func (a *app) checkHookErrors(ctx context.Context) check {
 	if err != nil {
 		return check{"hooks", "warn", "hook log unreadable or probe incomplete"}
 	}
-	count, latest := 0, ""
+	counts := map[string]int{}
+	latest := ""
 	cutoff := time.Now().Add(-24 * time.Hour)
 	for _, line := range strings.Split(string(data), "\n") {
 		if ctx.Err() != nil {
@@ -223,16 +224,41 @@ func (a *app) checkHookErrors(ctx context.Context) check {
 		if err != nil || !at.After(cutoff) {
 			continue
 		}
-		count++
-		latest = "legacy record (message redacted)"
-		if len(fields) == 3 && (proc.IsAgent(fields[1]) || fields[1] == "notify" || fields[1] == "hook") {
-			switch fields[2] {
-			case "failed", "timeout", "canceled", "records_unavailable", "limited":
-				latest = fields[1] + " " + fields[2]
-			}
+		category := "legacy"
+		if len(fields) == 3 && (proc.IsAgent(fields[1]) || fields[1] == "notify" || fields[1] == "hook") && hookCategory(fields[2]) {
+			category = fields[2]
+			latest = fields[1] + " " + fields[2]
+		} else {
+			latest = "legacy record (message redacted)"
+		}
+		counts[category]++
+	}
+	var parts []string
+	for _, category := range []string{"failed", "timeout", "canceled", "records_unavailable", "limited", "slow", "legacy"} {
+		if n := counts[category]; n > 0 {
+			parts = append(parts, fmt.Sprintf("%d %s", n, category))
 		}
 	}
-	return check{"hooks", "ok", fmt.Sprintf("%d historical failure(s) in 24h; latest: %s; current health checked separately", count, latest)}
+	if len(parts) == 0 {
+		return check{"hooks", "ok", "no hook failures in the last 24h"}
+	}
+	// Historical failures alone stay ok: current health is checked separately.
+	// Timeouts and slow hooks are the latency signal worth acting on.
+	status := "ok"
+	if counts["timeout"] > 0 || counts["slow"] > 0 {
+		status = "warn"
+	}
+	return check{"hooks", status, fmt.Sprintf("%s in the last 24h; latest: %s; current health checked separately", strings.Join(parts, ", "), latest)}
+}
+
+// hookCategory reports whether category is one of the fixed hook.log
+// categories; anything else is a legacy line whose message doctor redacts.
+func hookCategory(category string) bool {
+	switch category {
+	case "failed", "timeout", "canceled", "records_unavailable", "limited", "slow":
+		return true
+	}
+	return false
 }
 
 // checkRecords reports the session records, and those tmag cannot read,

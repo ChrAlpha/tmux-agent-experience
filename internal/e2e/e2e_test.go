@@ -227,6 +227,22 @@ func (h *harness) eventually(what string, cond func() bool) {
 	h.t.Fatalf("timed out waiting for %s; view: %+v", what, h.view())
 }
 
+// waitHookExit waits until the fake agent has no child process: the hook it
+// ran synchronously, which reported the state the test is about to change,
+// has exited.
+func (h *harness) waitHookExit(agent string) {
+	h.t.Helper()
+	out, err := exec.Command("pgrep", "-o", "-f", "^"+agent+"$").Output()
+	if err != nil {
+		h.t.Fatalf("find the fake agent: %v", err)
+	}
+	pid := strings.TrimSpace(string(out))
+	h.eventually("the hook that reported the agent's state to exit", func() bool {
+		children, _ := exec.Command("pgrep", "-P", pid).Output()
+		return strings.TrimSpace(string(children)) == ""
+	})
+}
+
 // waitPane waits until the pane shows a session in state, by evidence; an
 // empty evidence waits until it shows none.
 func (h *harness) waitPane(pane, state, evidence string) (query.Pane, query.Session) {
@@ -1770,6 +1786,10 @@ func TestStaleAttachmentIsClearedForTmuxDisplays(t *testing.T) {
 			h.tmux("send-keys", "-t", pane, "block", "Enter")
 			h.waitPane(pane, "blocked", "process")
 			// Killed while blocked, without SessionEnd; a silent claude follows.
+			// Only the trigger below may clear the stale attachment, so the hook
+			// that reported it must have exited first: the fake runs it as its
+			// child.
+			h.waitHookExit(claude)
 			if err := exec.Command("pkill", "-KILL", "-o", "-f", "^"+claude+"$").Run(); err != nil {
 				t.Fatalf("pkill: %v", err)
 			}

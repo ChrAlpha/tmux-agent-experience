@@ -98,23 +98,30 @@ func (a *app) cmdAnswerHook(args []string) (code int) {
 		fmt.Fprintln(a.stderr, "usage: tmag answer-hook claude")
 		return ExitOK
 	}
-	ctx, cancel := a.hookContext()
-	defer cancel()
 	defer func() {
 		if r := recover(); r != nil {
-			hook.RecordErrorContext(ctx, a.log.Dir, args[0], fmt.Errorf("answer hook panic: %v", r))
+			a.recordHookError(args[0], fmt.Errorf("answer hook panic: %v", r))
 			code = ExitOK
 		}
 	}()
 	if err := a.answerHook(); err != nil {
-		hook.RecordErrorContext(ctx, a.log.Dir, args[0], err)
+		a.recordHookError(args[0], err)
 	}
 	return ExitOK
 }
 
-func (a *app) answerHook() error {
+func (a *app) answerHook() (err error) {
 	// A signal ends the wait from the start: whatever the hook has opened is
 	// closed on the way out, and nothing is printed.
+	start := a.startedAt()
+	waited := false
+	defer func() {
+		// Only the setup counts for an answer hook: its wait for a decision is
+		// long by design.
+		if err == nil && !waited {
+			a.recordHookSlow(proc.Claude, start)
+		}
+	}()
 	ctx, stop := a.signalContext()
 	defer stop()
 	setup, finish := a.hookContext()
@@ -157,9 +164,13 @@ func (a *app) answerHook() error {
 	if err := setup.Err(); err != nil {
 		return err
 	}
+	// Setup is over at this boundary; the decision wait that follows is long by
+	// design and never counts towards a slow report.
+	a.recordHookSlow(proc.Claude, start)
 	if a.setupDone != nil {
 		a.setupDone()
 	}
+	waited = true
 	ctx, cancel = context.WithTimeout(ctx, answerWindow-250*time.Millisecond)
 	defer cancel()
 	writer := a.stdout

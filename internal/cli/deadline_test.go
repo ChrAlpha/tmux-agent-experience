@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,9 +16,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ChrAlpha/tmux-agent-experience/internal/adapter"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/answer"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/hook"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
 )
 
@@ -102,6 +105,20 @@ func TestHookCLIInheritedInput(t *testing.T) {
 				if stdout.Len() != 0 {
 					t.Fatalf("fail-open stdout=%q", stdout.String())
 				}
+				if signaled {
+					data, err := os.ReadFile(filepath.Join(dir, "state", "hook.log"))
+					if err != nil {
+						t.Fatalf("canceled hook was not logged: %v", err)
+					}
+					lines := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
+					fields := strings.Fields(lines[0])
+					if len(lines) != 1 || len(fields) != 3 || fields[1] != "claude" || fields[2] != "canceled" {
+						t.Fatalf("canceled log = %q", data)
+					}
+					if _, err := time.Parse(time.RFC3339, fields[0]); err != nil || strings.Contains(lines[0], "never-apply") {
+						t.Fatalf("canceled log is not metadata only: %q", lines[0])
+					}
+				}
 				// Complete the payload after exit: it must not have been handed
 				// to an abandoned reader that can apply it later.
 				_, _ = io.WriteString(w, "\n")
@@ -110,6 +127,179 @@ func TestHookCLIInheritedInput(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// A hook that runs out of its setup budget still reaches hook.log from the
+// reserve before the hard cutoff; a successful slow hook is logged as slow.
+func TestHookReportsTimeoutsAndSlowHooks(t *testing.T) {
+	t.Setenv("TMUX", "")
+	t.Setenv("TMUX_PANE", "")
+	t.Setenv("TMUX_TMPDIR", t.TempDir())
+	root := t.TempDir()
+	a := app{ctx: context.Background(), log: eventlog.Open(root), stdin: strings.NewReader("")}
+	expired, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	cancel()
+	a.setup = expired
+	if code := a.cmdHook([]string{"claude"}); code != ExitOK {
+		t.Fatalf("timed out hook exit = %d", code)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "hook.log"))
+	if err != nil || !strings.Contains(string(data), " claude timeout\n") {
+		t.Fatalf("timeout log = %q, %v", data, err)
+	}
+
+	root = t.TempDir()
+	slow := app{ctx: context.Background(), log: eventlog.Open(root),
+		stdin:   strings.NewReader(`{"session_id":"slow","hook_event_name":"Ignored"}`),
+		started: time.Now().Add(-2 * time.Second)}
+	if code := slow.cmdHook([]string{"claude"}); code != ExitOK {
+		t.Fatalf("slow hook exit = %d", code)
+	}
+	data, err = os.ReadFile(filepath.Join(root, "hook.log"))
+	if err != nil || !strings.Contains(string(data), " claude slow\n") {
+		t.Fatalf("slow log = %q, %v", data, err)
+	}
+}
+
+// sessionStripe mirrors session.Store's lock stripe, so a test can hold one
+// session's lock without holding the hook's own.
+func sessionStripe(agent, id string) byte {
+	sum := sha256.Sum256([]byte("session\x00" + agent + "\x00" + id))
+	return sum[0]
+}
+
+// A hook whose body succeeds but whose deferred reconciliation runs out of
+// budget reports a timeout from the reserve after the setup deadline, with
+// its own record already saved.
+func TestDeferredReconciliationTimeoutReachesHookLog(t *testing.T) {
+	t.Setenv("TMUX", "")
+	t.Setenv("TMUX_PANE", "")
+	t.Setenv("TMUX_TMPDIR", t.TempDir())
+	root := t.TempDir()
+	log := eventlog.Open(root)
+	store := session.Store{Dir: root}
+	hookID := "hook-session"
+	goneID := "gone-session"
+	for sessionStripe(proc.Claude, goneID) == sessionStripe(proc.Claude, hookID) {
+		goneID += "x"
+	}
+	gone := session.Record{Agent: proc.Claude, ID: goneID, Main: adapter.Idle,
+		Host: session.Host{PID: 1 << 30, Start: "s-gone"}}
+	if err := store.Put(context.Background(), gone); err != nil {
+		t.Fatal(err)
+	}
+
+	held := make(chan struct{})
+	release := make(chan struct{})
+	locked := make(chan error, 1)
+	go func() {
+		locked <- store.Lock(context.Background(), proc.Claude, goneID, func() error {
+			close(held)
+			<-release
+			return nil
+		})
+	}()
+	<-held
+	t.Cleanup(func() {
+		close(release)
+		if err := <-locked; err != nil {
+			t.Errorf("release held lock: %v", err)
+		}
+	})
+
+	setup, cancel := context.WithTimeout(context.Background(), 600*time.Millisecond)
+	defer cancel()
+	a := app{ctx: context.Background(), setup: setup, log: log,
+		stdin: strings.NewReader(fmt.Sprintf(`{"session_id":%q,"hook_event_name":"UserPromptSubmit","prompt_id":"turn"}`, hookID))}
+	started := time.Now()
+	if code := a.cmdHook([]string{proc.Claude}); code != ExitOK {
+		t.Fatalf("hook exit = %d", code)
+	}
+	if elapsed := time.Since(started); elapsed >= hook.Deadline {
+		t.Fatalf("hook took %s, past its hard deadline", elapsed)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "hook.log"))
+	if err != nil || strings.Count(string(data), " claude timeout\n") != 1 {
+		t.Fatalf("timeout log = %q, %v", data, err)
+	}
+	if strings.Contains(string(data), " claude slow\n") {
+		t.Fatalf("timed-out hook also logged slow: %q", data)
+	}
+	rec, ok, err := store.Get(context.Background(), proc.Claude, hookID)
+	if err != nil || !ok || rec.State() != adapter.Working {
+		t.Fatalf("state before reconciliation = %+v, %v, %v", rec, ok, err)
+	}
+	if _, ok, err := store.Get(context.Background(), proc.Claude, goneID); !ok || err != nil {
+		t.Fatalf("busy session ended despite its held lock: ok=%v err=%v", ok, err)
+	}
+}
+
+// An answer hook reports a slow setup at the boundary where it starts waiting
+// for a decision; the wait itself never counts.
+func TestAnswerHookReportsSlowSetupAtTheWaitBoundary(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		started time.Time
+		wait    time.Duration
+		slow    bool
+	}{
+		{"slow setup", time.Now().Add(-2 * time.Second), 0, true},
+		{"fast setup and long wait", time.Now(), 600 * time.Millisecond, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("TMUX", "")
+			t.Setenv("TMUX_PANE", "")
+			t.Setenv("TMUX_TMPDIR", t.TempDir())
+			root := t.TempDir()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			setup, endSetup := context.WithCancel(ctx)
+			defer endSetup()
+			ready := make(chan struct{})
+			a := app{ctx: ctx, setup: setup, log: eventlog.Open(root), started: tc.started,
+				stdout: &bytes.Buffer{}, setupDone: func() { endSetup(); close(ready) },
+				stdin: strings.NewReader(`{"session_id":"answer-boundary","hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"true"}}`)}
+			done := make(chan error, 1)
+			go func() { done <- a.answerHook() }()
+			select {
+			case <-ready:
+			case err := <-done:
+				t.Fatalf("setup failed: %v", err)
+			case <-time.After(3 * time.Second):
+				t.Fatal("setup did not finish")
+			}
+			rec, ok, err := (session.Store{Dir: root}).Get(context.Background(), proc.Claude, "answer-boundary")
+			if err != nil || !ok || len(rec.Requests) != 1 {
+				t.Fatalf("request = %+v, %v, %v", rec, ok, err)
+			}
+			probe, stop := context.WithTimeout(context.Background(), time.Second)
+			if _, err := answer.Show(probe, root, rec.Requests[0].ID); err != nil {
+				stop()
+				t.Fatalf("hook did not enter its decision wait: %v", err)
+			}
+			stop()
+			if tc.wait > 0 {
+				time.Sleep(tc.wait)
+			}
+			cancel()
+			select {
+			case err := <-done:
+				if err != nil && !errors.Is(err, context.Canceled) {
+					t.Fatal(err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("decision wait ignored cancellation")
+			}
+			data, err := os.ReadFile(filepath.Join(root, "hook.log"))
+			got := strings.Count(string(data), " claude slow\n")
+			if tc.slow && got != 1 {
+				t.Fatalf("slow entries = %d, want 1: %q, %v", got, data, err)
+			}
+			if !tc.slow && got != 0 {
+				t.Fatalf("decision wait counted as slow setup: %q", data)
+			}
+		})
 	}
 }
 

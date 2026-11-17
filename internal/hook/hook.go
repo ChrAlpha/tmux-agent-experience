@@ -31,6 +31,17 @@ import (
 // some of which run on every tool call.
 const Deadline = 3 * time.Second
 
+// SlowAfter is how long a successful hook may take before hook.log records it
+// as slow: agents wait for hooks, on every tool call too.
+const SlowAfter = 500 * time.Millisecond
+
+// loadProcesses reads the process table into w, and loadPanes lists the
+// panes. Tests replace them to stage a world between the hook's snapshots.
+var (
+	loadProcesses = func(ctx context.Context, w *attach.World) error { return w.LoadProcesses(ctx) }
+	loadPanes     = func(ctx context.Context, w *attach.World) error { return w.LoadPanes(ctx) }
+)
+
 // maxPayload bounds how much hook input is read; Stop payloads embed the last
 // assistant message, which is decoded away but must still be consumed.
 const maxPayload = 64 << 20
@@ -63,7 +74,7 @@ func Run(in Input) error {
 // Deadline, including input. Payload readers must cooperate with cancellation;
 // the CLI owns its inherited input with contextio.Own. No read worker is left
 // behind if an injected reader does not support cancellation.
-func RunContext(parent context.Context, in Input) error {
+func RunContext(parent context.Context, in Input) (err error) {
 	ctx, cancel := context.WithTimeout(parent, Deadline)
 	defer cancel()
 	if err := ctx.Err(); err != nil {
@@ -98,26 +109,29 @@ func RunContext(parent context.Context, in Input) error {
 		now = in.Now
 	}
 
-	w, err := attach.Load(ctx)
-	if err != nil {
-		return err
+	// Unlike attach.Load, the hook reads the process table before it lists
+	// panes, so that the session's record and event are saved before any tmux
+	// server can hold the hook up. The hook's own proof stays fresh: Attach
+	// re-reads the pane under its lock and snapshots the process table again
+	// before it writes an attachment.
+	w := &attach.World{}
+	hostKnown := false
+	var host proc.Host
+	if err := loadProcesses(ctx, w); err != nil {
+		// An unreadable process table proves no host and no inbox. Leave
+		// the record's host and inbox as they were and record the state.
+		w = &attach.World{}
+	} else {
+		host, hostKnown = w.Proc.HostOf(in.PID)
+		if hostKnown && p.Mode != "" && p.Mode != "tui" {
+			// Pi and oh-my-pi say when they run for a program rather than a
+			// person, which their process does not show: such a session runs as
+			// a service, which no pane shows and no channel controls. The claim
+			// only takes away, so it needs no proof.
+			host.Role = proc.Service
+		}
 	}
 	env := attach.Env{Log: in.Log, Store: session.Store{Dir: in.Log.Dir}}
-	// Housekeeping on the world as loaded, once the hook's own work is done.
-	defer func() {
-		if err := attach.Reconcile(ctx, env, w); err != nil {
-			RecordErrorContext(ctx, in.Log.Dir, in.Agent, err)
-		}
-	}()
-
-	host, hostKnown := w.Proc.HostOf(in.PID)
-	if hostKnown && p.Mode != "" && p.Mode != "tui" {
-		// Pi and oh-my-pi say when they run for a program rather than a
-		// person, which their process does not show: such a session runs as
-		// a service, which no pane shows and no channel controls. The claim
-		// only takes away, so it needs no proof.
-		host.Role = proc.Service
-	}
 	contact := now().UTC()
 	ev := eventlog.Event{Agent: in.Agent, Session: p.SessionID, Event: p.HookEventName, Cwd: p.Cwd, LastHookAt: contact}
 	// The inbox a hook's agent names, and the process that serves it, are
@@ -136,6 +150,8 @@ func RunContext(parent context.Context, in Input) error {
 		return rec, found, err
 	}
 
+	var prev, rec session.Record
+	wrote, ended := false, false
 	if tr.Action == adapter.End {
 		// Whatever the agent calls it, the contract's end of a session is
 		// SessionEnd, which followers drop the session on.
@@ -153,51 +169,77 @@ func RunContext(parent context.Context, in Input) error {
 		if err != nil {
 			return err
 		}
-		return env.DetachAll(ctx, w, in.Agent, p.SessionID)
+		ended = true
+	} else {
+		err = env.Store.Lock(ctx, in.Agent, p.SessionID, func() error {
+			cur, found, err := get()
+			if err != nil {
+				return err
+			}
+			if !found {
+				cur = session.Record{Agent: in.Agent, ID: p.SessionID}
+			}
+			base := cur
+			if p.Cwd != "" {
+				base.Cwd = p.Cwd
+			}
+			if hostKnown {
+				base.Host = session.Host{PID: host.Process.PID, Start: host.Process.Start, Role: host.Role}
+			}
+			if p.TranscriptPath != "" {
+				base.Transcript = p.TranscriptPath
+			}
+			if inbox != nil {
+				base.Inbox = inbox
+			}
+			next, changed := session.Apply(base, tr, now())
+			recorded := moved(cur, base)
+			if found && !changed && !recorded && contact.Sub(cur.LastHookAt) < ContactInterval {
+				prev, rec = cur, cur // nothing to write
+				return nil
+			}
+			if contact.After(next.LastHookAt) {
+				next.LastHookAt = contact
+			}
+			// Calls and other background work change without an event; whatever
+			// an event reports of the session (session.Report) is logged.
+			if err := env.Store.Save(ctx, in.Log, cur, next, ev); err != nil {
+				return err
+			}
+			prev, rec, wrote = cur, next, true
+			return nil
+		})
+		if err != nil || rec.ID == "" {
+			return err
+		}
 	}
 
-	var prev, rec session.Record
-	wrote := false
-	err = env.Store.Lock(ctx, in.Agent, p.SessionID, func() error {
-		cur, found, err := get()
-		if err != nil {
-			return err
-		}
-		if !found {
-			cur = session.Record{Agent: in.Agent, ID: p.SessionID}
-		}
-		base := cur
-		if p.Cwd != "" {
-			base.Cwd = p.Cwd
-		}
-		if hostKnown {
-			base.Host = session.Host{PID: host.Process.PID, Start: host.Process.Start, Role: host.Role}
-		}
-		if p.TranscriptPath != "" {
-			base.Transcript = p.TranscriptPath
-		}
-		if inbox != nil {
-			base.Inbox = inbox
-		}
-		next, changed := session.Apply(base, tr, now())
-		recorded := moved(cur, base)
-		if found && !changed && !recorded && contact.Sub(cur.LastHookAt) < ContactInterval {
-			prev, rec = cur, cur // nothing to write
-			return nil
-		}
-		if contact.After(next.LastHookAt) {
-			next.LastHookAt = contact
-		}
-		// Calls and other background work change without an event; whatever
-		// an event reports of the session (session.Report) is logged.
-		if err := env.Store.Save(ctx, in.Log, cur, next, ev); err != nil {
-			return err
-		}
-		prev, rec, wrote = cur, next, true
-		return nil
-	})
-	if err != nil || rec.ID == "" {
+	// The record and its event are in place. Pane work comes after them and
+	// cannot undo them: an error still reaches hook.log through the caller, but
+	// leaves the recorded state as the agent reported it.
+	if err := loadPanes(ctx, w); err != nil {
 		return err
+	}
+	if w.Proc != nil {
+		// Housekeeping comes last, on a process table read after the panes as
+		// attach.Load reads them: a table older than a pane could miss a client
+		// that attached meanwhile, and reconciliation would detach it. Without
+		// fresh complete evidence there is nothing to reconcile against.
+		defer func() {
+			if loadErr := loadProcesses(ctx, w); loadErr != nil {
+				if ctx.Err() != nil {
+					err = errors.Join(err, ctx.Err())
+				}
+				return
+			}
+			if !w.Proc.Complete() {
+				return
+			}
+			err = errors.Join(err, attach.Reconcile(ctx, env, w))
+		}()
+	}
+	if ended {
+		return env.DetachAll(ctx, w, in.Agent, p.SessionID)
 	}
 	if !wrote {
 		// Nothing changed, but the hook still proves its pane shows the
@@ -226,14 +268,16 @@ func RunContext(parent context.Context, in Input) error {
 		}
 		shown = append(shown, c.Pane)
 	}
-	for _, s := range w.Attached(rec) {
-		if len(shown) > 0 && s.Client.Pane.Server == shown[0].Server && s.Client.Pane.ID == shown[0].ID {
-			continue // just attached, projection included
+	if w.Proc != nil {
+		for _, s := range w.Attached(rec) {
+			if len(shown) > 0 && s.Client.Pane.Server == shown[0].Server && s.Client.Pane.ID == shown[0].ID {
+				continue // just attached, projection included
+			}
+			if err := env.Show(ctx, s.Client.Pane, s.Attachment); err != nil {
+				return err
+			}
+			shown = append(shown, s.Client.Pane)
 		}
-		if err := env.Show(ctx, s.Client.Pane, s.Attachment); err != nil {
-			return err
-		}
-		shown = append(shown, s.Client.Pane)
 	}
 	for _, pane := range shown {
 		alert(ctx, tmux.Server{Socket: pane.Server}, pane, ring)
@@ -354,11 +398,6 @@ func RecordErrorContext(parent context.Context, dir, agent string, err error) {
 	if err == nil || parent.Err() != nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(parent, 100*time.Millisecond)
-	defer cancel()
-	if !proc.IsAgent(agent) && agent != "notify" {
-		agent = "hook"
-	}
 	category := "failed"
 	var record *session.RecordError
 	switch {
@@ -370,6 +409,25 @@ func RecordErrorContext(parent context.Context, dir, agent string, err error) {
 		category = "limited"
 	case errors.As(err, &record):
 		category = "records_unavailable"
+	}
+	recordHookLog(parent, dir, agent, category)
+}
+
+// RecordSlowContext logs a hook that succeeded but took longer than
+// SlowAfter. The caller supplies a budget that survives the hook's setup
+// deadline: the report belongs in the reserve before the hard cutoff.
+func RecordSlowContext(parent context.Context, dir, agent string) {
+	if parent.Err() != nil {
+		return
+	}
+	recordHookLog(parent, dir, agent, "slow")
+}
+
+func recordHookLog(parent context.Context, dir, agent, category string) {
+	ctx, cancel := context.WithTimeout(parent, 100*time.Millisecond)
+	defer cancel()
+	if !proc.IsAgent(agent) && agent != "notify" {
+		agent = "hook"
 	}
 	// The line contains fixed categories only, never err.Error(), command output
 	// or hook input. Exclusion covers the ceiling check, truncation and append.
