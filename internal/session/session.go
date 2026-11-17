@@ -52,11 +52,20 @@ type Record struct {
 	AttachGeneration uint64 `json:"attach_generation,omitempty"`
 
 	// Main is the main agent's own state (working, idle or unknown) and
-	// MainKind qualifies it (error after a failed turn).
+	// MainKind qualifies it (error after a failed turn, compacting during one).
 	Main     string `json:"main"`
 	MainKind string `json:"main_kind,omitempty"`
+	// Reason is why the last turn failed, with KindError.
+	Reason string `json:"reason,omitempty"`
 	// Turn is the main agent's current or last turn.
 	Turn string `json:"turn,omitempty"`
+
+	// Permission is the latest permission class the session's hooks reported:
+	// bypass or prompting. It is not part of what an event reports.
+	Permission string `json:"permission,omitempty"`
+	// StatusFile is where Claude Code writes the session's native status, as
+	// its hooks found it. tmag reads it to see a turn end without a hook.
+	StatusFile string `json:"status_file,omitempty"`
 
 	// Pending are the prompts awaiting the user, oldest first.
 	Pending []adapter.Prompt `json:"pending,omitempty"`
@@ -211,6 +220,7 @@ func (r Record) RequestRefs() []eventlog.Request {
 type Report struct {
 	State      string
 	Kind       string
+	Reason     string
 	Turn       string
 	Cwd        string
 	Runtime    string
@@ -225,7 +235,7 @@ type Report struct {
 // logged.
 func (r Record) Reports() Report {
 	return Report{
-		State: r.State(), Kind: r.Kind(), Turn: r.Turn, Cwd: r.Cwd, Runtime: string(r.Host.Role),
+		State: r.State(), Kind: r.Kind(), Reason: r.Reason, Turn: r.Turn, Cwd: r.Cwd, Runtime: string(r.Host.Role),
 		Transcript: r.Transcript, Subagents: strings.Join(r.RunningSubagents(), "\n"),
 		Requests: strings.Join(r.requestIDs(), "\n"), Since: r.Since.UTC(),
 	}
@@ -243,7 +253,7 @@ func (r Record) requestIDs() []string {
 func (r Record) Report(ev *eventlog.Event) {
 	ev.Agent, ev.Session = r.Agent, r.ID
 	ev.LastHookAt = r.LastHookAt
-	ev.State, ev.Kind, ev.Turn, ev.Cwd = r.State(), r.Kind(), r.Turn, r.Cwd
+	ev.State, ev.Kind, ev.Reason, ev.Turn, ev.Cwd = r.State(), r.Kind(), r.Reason, r.Turn, r.Cwd
 	ev.Since = nil
 	if !r.Since.IsZero() {
 		since := r.Since.UTC()
@@ -320,7 +330,7 @@ func (r Record) view() (string, string) {
 	case len(r.Pending) > 0:
 		return adapter.Blocked, r.Pending[0].Kind()
 	case r.Main == adapter.Working:
-		return adapter.Working, ""
+		return adapter.Working, r.MainKind
 	case r.Main == adapter.Idle && len(r.Background) > 0:
 		return adapter.Working, adapter.KindBackground
 	case r.Main == "":
@@ -355,6 +365,10 @@ func Apply(cur Record, tr adapter.Transition, now time.Time) (Record, bool) {
 		if tr.Late && tr.Turn != cur.Turn {
 			return cur, false
 		}
+		// A failed compaction ends one that was marked, and nothing otherwise.
+		if tr.OnlyCompacting && cur.MainKind != adapter.KindCompacting {
+			return cur, false
+		}
 		if tr.Fresh {
 			rec.Background, rec.Turn = nil, ""
 		}
@@ -367,7 +381,7 @@ func Apply(cur Record, tr adapter.Transition, now time.Time) (Record, bool) {
 		rec.Pending = slices.DeleteFunc(rec.Pending, func(p adapter.Prompt) bool { return !keep(p.Agent) })
 		rec.Calls = slices.DeleteFunc(rec.Calls, func(c adapter.Call) bool { return !keep(c.Agent) })
 		rec.Done = nil
-		rec.Main, rec.MainKind = tr.State, tr.Kind
+		rec.Main, rec.MainKind, rec.Reason = tr.State, tr.Kind, tr.Reason
 		if tr.State == adapter.Working {
 			rec.Sent = time.Time{} // the turn confirms the prompt tmag sent
 		}
@@ -498,7 +512,7 @@ func asked(calls []adapter.Call, tr adapter.Transition) string {
 // a prompt of its own, as Claude's queued prompts do.
 func (r *Record) running(main bool) {
 	if main && r.Main != adapter.Working {
-		r.Main, r.MainKind = adapter.Working, ""
+		r.Main, r.MainKind, r.Reason = adapter.Working, "", ""
 	}
 }
 
@@ -575,7 +589,8 @@ func SamePaneHint(a, b *PaneHint) bool {
 func (r Record) equal(o Record) bool {
 	return r.Agent == o.Agent && r.ID == o.ID && r.Cwd == o.Cwd && r.Host == o.Host && r.Transcript == o.Transcript &&
 		SameInbox(r.Inbox, o.Inbox) && SamePaneHint(r.Pane, o.Pane) && r.AttachGeneration == o.AttachGeneration &&
-		r.Main == o.Main && r.MainKind == o.MainKind && r.Turn == o.Turn &&
+		r.Main == o.Main && r.MainKind == o.MainKind && r.Reason == o.Reason &&
+		r.Permission == o.Permission && r.StatusFile == o.StatusFile && r.Turn == o.Turn &&
 		slices.Equal(r.Pending, o.Pending) && slices.Equal(r.Requests, o.Requests) && slices.Equal(r.Calls, o.Calls) &&
 		slices.Equal(r.Done, o.Done) && slices.Equal(r.Background, o.Background) &&
 		slices.Equal(r.Subagents, o.Subagents) && r.Since.Equal(o.Since) && r.Sent.Equal(o.Sent) &&

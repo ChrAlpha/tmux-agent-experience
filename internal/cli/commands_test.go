@@ -39,6 +39,23 @@ func TestDeliveryNamesThePaneWithItsServer(t *testing.T) {
 	}
 }
 
+// A message Claude Code will hold is still delivered, and says so after the
+// delivery line; it is not a refusal.
+func TestDeliverySaysWhenClaudeHoldsAMessage(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	a := app{ctx: context.Background(), stdout: &stdout, stderr: &stderr}
+	a.reportDelivery("sent to", query.Delivery{
+		Session: query.Session{ID: "1787a44e-5b0c-4c39-9a6e-0d6c3c2f7b10"},
+		Via:     "inbox", Seq: 7, Held: true,
+	})
+	if got, want := stdout.String(), "sent to 1787a44e (inbox) seq 7\n"; got != want {
+		t.Errorf("stdout = %q, want %q", got, want)
+	}
+	if got, want := stderr.String(), heldLine+"\n"; got != want {
+		t.Errorf("stderr = %q, want %q", got, want)
+	}
+}
+
 // A blocked session's open requests are listed by inspect without --json,
 // under the ids request and answer take: the skill sends the person there
 // for a blocked peer.

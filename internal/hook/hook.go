@@ -197,6 +197,14 @@ func RunContext(parent context.Context, in Input) (err error) {
 			if inbox != nil {
 				base.Inbox = inbox
 			}
+			if class := p.PermissionClass(); class != "" {
+				base.Permission = class
+			}
+			if hostKnown {
+				if status := statusFileOf(in.Agent, host.Process.PID, os.Getenv); status != "" {
+					base.StatusFile = status
+				}
+			}
 			next, changed := session.Apply(base, tr, now())
 			recorded := moved(cur, base)
 			if found && !changed && !recorded && contact.Sub(cur.LastHookAt) < ContactInterval {

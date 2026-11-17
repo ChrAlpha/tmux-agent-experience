@@ -139,6 +139,8 @@ func TestMovedCoversWhatHooksRecord(t *testing.T) {
 		"host":       func(r *session.Record) { r.Host.Start = "s11" },
 		"transcript": func(r *session.Record) { r.Transcript = "/u.jsonl" },
 		"inbox":      func(r *session.Record) { r.Inbox = &session.Inbox{Path: "/tmp/other.sock", PID: 10, Start: "s10"} },
+		"permission": func(r *session.Record) { r.Permission = adapter.PermissionBypass },
+		"status":     func(r *session.Record) { r.StatusFile = "/home/me/.claude/sessions/10.json" },
 	} {
 		next := base
 		change(&next)

@@ -53,6 +53,9 @@ func TestExtensionsReport(t *testing.T) {
 			"agent_settled s1 stop=aborted",
 			"agent_start s1",
 			"agent_settled s1 stop=error",
+			"session_before_compact s1 trigger=manual turn=e2",
+			"session_compact s1 trigger=manual turn=e2",
+			"session_compact_failed s1 trigger=auto turn=e2",
 			"session_shutdown s1 reason=quit",
 		},
 		"omp": {
@@ -130,7 +133,7 @@ func TestExtensionsReport(t *testing.T) {
 					t.Errorf("inbox changed from %q to %q", inbox, v)
 				}
 				line := fmt.Sprintf("%s %s", p["hook_event_name"], p["session_id"])
-				for _, f := range [][2]string{{"source", "source"}, {"reason", "reason"}, {"turn_id", "turn"}, {"tool_name", "tool"}, {"tool_use_id", "call"}, {"stop_reason", "stop"}} {
+				for _, f := range [][2]string{{"source", "source"}, {"reason", "reason"}, {"trigger", "trigger"}, {"turn_id", "turn"}, {"tool_name", "tool"}, {"tool_use_id", "call"}, {"stop_reason", "stop"}} {
 					if v, ok := p[f[0]]; ok {
 						line += fmt.Sprintf(" %s=%v", f[1], v)
 					}

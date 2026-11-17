@@ -7,6 +7,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/ChrAlpha/tmux-agent-experience/internal/attach"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/codexsvc"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/driver"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
@@ -86,7 +87,7 @@ func throughService(outer context.Context, log *eventlog.Log, v View, s Session,
 	var d Delivery
 	d, err = recordDelivery(ctx, log, s, verb.gate, driver.Service, nil, func() error {
 		return &RefusedError{RefuseChanged, fmt.Sprintf("%s has ended", s.ID)}
-	}, verb.mark)
+	}, verb.mark, nil)
 	if err != nil {
 		return Delivery{}, err
 	}
@@ -119,15 +120,28 @@ func unknownDelivery(d Delivery, err error) error {
 // wait for the same lock, so what the delivery causes is logged after it.
 // The channel is reached and checked already, so only the session's own gate
 // runs again; proven, when not nil, is the inbox that channel was proven on.
-// gone says what a session that ended meanwhile is.
-func recordDelivery(ctx context.Context, log *eventlog.Log, s Session, gate stateGate, via string, proven *session.Inbox, gone func() error, mark func(*session.Record) eventlog.Event) (Delivery, error) {
+// gone says what a session that ended meanwhile is. decide, when not nil,
+// fixes what the delivery depends on before it is marked and logged: it runs
+// under the session's lock, after the fresh gate and record read.
+func recordDelivery(ctx context.Context, log *eventlog.Log, s Session, gate stateGate, via string, proven *session.Inbox, gone func() error, mark func(*session.Record) eventlog.Event, decide func(View, session.Record)) (Delivery, error) {
 	store := session.Store{Dir: log.Dir}
 	var d Delivery
+	var freshWorld *attach.World
+	nativeIdle := false
 	err := store.Lock(ctx, s.Agent, s.ID, func() error {
-		fresh, _, err := Load(ctx, store)
+		rec, ok, err := store.Get(ctx, s.Agent, s.ID)
+		if err != nil || !ok {
+			return gone()
+		}
+		rec, nativeIdle, err = attach.Env{Log: log, Store: store}.IdleLocked(ctx, rec)
 		if err != nil {
 			return err
 		}
+		fresh, w, err := Load(ctx, store)
+		if err != nil {
+			return err
+		}
+		freshWorld = w
 		fs, ok := fresh.Session(s.Agent, s.ID)
 		if !ok {
 			return gone()
@@ -135,12 +149,11 @@ func recordDelivery(ctx context.Context, log *eventlog.Log, s Session, gate stat
 		if err := gate(fs, fresh, time.Now()); err != nil {
 			return err
 		}
-		rec, ok, err := store.Get(ctx, s.Agent, s.ID)
-		if err != nil || !ok {
-			return gone()
-		}
 		if err := inboxChanged(s, rec, proven); err != nil {
 			return err
+		}
+		if decide != nil {
+			decide(fresh, rec)
 		}
 		ev := mark(&rec)
 		ev.Agent, ev.Session, ev.Via = fs.Agent, fs.ID, via
@@ -153,6 +166,11 @@ func recordDelivery(ctx context.Context, log *eventlog.Log, s Session, gate stat
 		d = Delivery{Session: fs, Via: via, Seq: ev.Seq}
 		return nil
 	})
+	if nativeIdle {
+		if perr := projectNativeIdle(ctx, log, store, freshWorld, s.Agent, s.ID); perr != nil {
+			err = errors.Join(err, perr)
+		}
+	}
 	return d, err
 }
 

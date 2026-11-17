@@ -155,12 +155,12 @@ func TestClaudeFraming(t *testing.T) {
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	if err := dial(t, sock).Claude(ctx, "tmag", "hello"); err != nil {
+	if err := dial(t, sock).Claude(ctx, ClaudeMessage{Name: "tmag", Mode: "prompting", Session: "s1", Text: "hello"}); err != nil {
 		t.Fatal(err)
 	}
 	// The framing, exactly: one user message whose content is the envelope,
-	// and no auth line.
-	if got, want := <-lines, `{"type":"user","message":{"role":"user","content":"<cross-session-message from-name=\"tmag\">\nhello\n</cross-session-message>"}}`+"\n"; got != want {
+	// the receiver's session, and no auth line.
+	if got, want := <-lines, `{"type":"user","message":{"role":"user","content":"<cross-session-message from-name=\"tmag\" from-mode=\"prompting\">\nhello\n</cross-session-message>"},"session_id":"s1"}`+"\n"; got != want {
 		t.Fatalf("line = %q, want %q", got, want)
 	}
 	if err := <-eofs; !errors.Is(err, io.EOF) {
@@ -179,28 +179,41 @@ func TestClaudeRequiresEOF(t *testing.T) {
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
-	if err := dial(t, sock).Claude(ctx, "tmag", "hello"); err == nil {
+	if err := dial(t, sock).Claude(ctx, ClaudeMessage{Name: "tmag", Text: "hello"}); err == nil {
 		t.Fatal("Claude returned without EOF")
 	}
 }
 
 func TestClaudeLineEscapesTheText(t *testing.T) {
-	line, err := claudeLine("tmag", "a \"quoted\"\nline")
+	line, err := claudeLine(ClaudeMessage{Name: "tmag", Session: "s1", Text: "a \"quoted\"\nline"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	var m struct {
-		Type    string `json:"type"`
-		Message struct {
-			Role    string `json:"role"`
-			Content string `json:"content"`
-		} `json:"message"`
+	// A line without a class attests none: the attribute is absent, not empty.
+	want := `{"type":"user","message":{"role":"user","content":"<cross-session-message from-name=\"tmag\">\na \"quoted\"\nline\n</cross-session-message>"},"session_id":"s1"}` + "\n"
+	if string(line) != want {
+		t.Fatalf("line = %q, want %q", line, want)
 	}
-	if err := json.Unmarshal(line, &m); err != nil || m.Type != "user" || m.Message.Role != "user" || m.Message.Content != "<cross-session-message from-name=\"tmag\">\na \"quoted\"\nline\n</cross-session-message>" {
-		t.Fatalf("line %q decodes to %+v, %v", line, m, err)
-	}
-	if strings.Count(string(line), "\n") != 1 {
-		t.Fatalf("line %q is not one line", line)
+}
+
+// Only the classes Claude Code accepts reach its envelope: bypass and
+// prompting; a raw mode or anything else attests nothing.
+func TestClaudeLineKeepsOnlyTheClass(t *testing.T) {
+	for mode, want := range map[string]bool{
+		"bypass":            true,
+		"prompting":         true,
+		"bypassPermissions": false,
+		"default":           false,
+		"":                  false,
+	} {
+		line, err := claudeLine(ClaudeMessage{Name: "tmag", Mode: mode, Session: "s1", Text: "hi"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := strings.Contains(string(line), `from-mode=\"`)
+		if got != want {
+			t.Errorf("mode %q wrote an attribute: %v, want %v: %s", mode, got, want, line)
+		}
 	}
 }
 
@@ -218,7 +231,7 @@ func TestCleanName(t *testing.T) {
 			t.Errorf("cleanName(%q) = %q, want %q", c.in, got, c.want)
 		}
 	}
-	line, err := claudeLine(`a"b<c>&d`, "hi")
+	line, err := claudeLine(ClaudeMessage{Name: `a"b<c>&d`, Text: "hi"})
 	if err != nil || !strings.Contains(string(line), `from-name=\"abc&d\"`) {
 		t.Fatalf("the envelope does not carry the cleaned name: %q, %v", line, err)
 	}

@@ -21,6 +21,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ChrAlpha/tmux-agent-experience/internal/adapter"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
 )
@@ -82,14 +83,24 @@ func (c *Conn) Serves(ctx context.Context, in session.Inbox) bool {
 	return in.PID > 0 && in.Start != "" && c.PeerPID == in.PID && proc.RunningContext(ctx, in.PID, in.Start)
 }
 
-// Claude writes text as one message line on Claude Code's cross-session
-// inbox, under an envelope naming the sender, closes the write half and waits
-// for Claude Code to close its side. Claude Code answers nothing on this
+// ClaudeMessage is one message for Claude Code's cross-session inbox: who
+// sends it, the permission class tmag can attest for the sender, the receiver
+// session it is for, and the text.
+type ClaudeMessage struct {
+	Name    string
+	Mode    string // bypass or prompting, "" when tmag attests none
+	Session string
+	Text    string
+}
+
+// Claude writes m as one message line on Claude Code's cross-session inbox,
+// under an envelope naming the sender, closes the write half and waits for
+// Claude Code to close its side. Claude Code answers nothing on this
 // connection: its EOF once it sees tmag's proves the inbox read the frame, and
 // nothing more.
-func (c *Conn) Claude(ctx context.Context, name, text string) error {
+func (c *Conn) Claude(ctx context.Context, m ClaudeMessage) error {
 	return c.within(ctx, func() error {
-		line, err := claudeLine(name, text)
+		line, err := claudeLine(m)
 		if err != nil {
 			return err
 		}
@@ -105,20 +116,26 @@ func (c *Conn) Claude(ctx context.Context, name, text string) error {
 	})
 }
 
-// claudeLine is the one line Claude Code's inbox takes: a user message whose
-// content is the canonical envelope naming the sender, then the text. The auth
-// line its docs describe is optional and tmag sends none; the name carries no
-// permission class.
-func claudeLine(name, text string) ([]byte, error) {
+// claudeLine is the one line Claude Code's inbox takes: a user message for
+// the receiver session whose content is the canonical envelope naming the
+// sender and the class tmag attests, then the text. The auth line its docs
+// describe is optional and tmag sends none. Attributes keep Claude Code's
+// builder order; from-mode goes after from-name.
+func claudeLine(msg ClaudeMessage) ([]byte, error) {
+	attrs := ` from-name="` + cleanName(msg.Name) + `"`
+	if mode := cleanMode(msg.Mode); mode != "" {
+		attrs += ` from-mode="` + mode + `"`
+	}
 	m := struct {
 		Type    string `json:"type"`
 		Message struct {
 			Role    string `json:"role"`
 			Content string `json:"content"`
 		} `json:"message"`
-	}{Type: "user"}
+		SessionID string `json:"session_id,omitempty"`
+	}{Type: "user", SessionID: msg.Session}
 	m.Message.Role = "user"
-	m.Message.Content = `<cross-session-message from-name="` + cleanName(name) + `">` + "\n" + text + "\n</cross-session-message>"
+	m.Message.Content = `<cross-session-message` + attrs + `>` + "\n" + msg.Text + "\n</cross-session-message>"
 	// Claude Code's own builder writes the tags as they are, not as JSON's
 	// HTML escapes.
 	var buf bytes.Buffer
@@ -128,6 +145,16 @@ func claudeLine(name, text string) ([]byte, error) {
 		return nil, err
 	}
 	return buf.Bytes(), nil
+}
+
+// cleanMode keeps a class Claude Code's envelope accepts: bypass or
+// prompting, nothing else.
+func cleanMode(mode string) string {
+	switch mode {
+	case adapter.PermissionBypass, adapter.PermissionPrompting:
+		return mode
+	}
+	return ""
 }
 
 // cleanName removes what Claude Code's own builder removes from a sender's

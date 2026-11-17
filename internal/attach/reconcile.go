@@ -5,6 +5,8 @@ import (
 	"errors"
 	"time"
 
+	"github.com/ChrAlpha/tmux-agent-experience/internal/adapter"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/claudestatus"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
@@ -135,6 +137,14 @@ func Reconcile(ctx context.Context, env Env, w *World) error {
 			return err
 		}
 	}
+	for i := range live {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := env.IdleFromStatus(ctx, w, &live[i]); err != nil {
+			return err
+		}
+	}
 	linked := map[[2]string]bool{}
 	for _, l := range Links(w, live) {
 		if err := ctx.Err(); err != nil {
@@ -176,6 +186,89 @@ func Reconcile(ctx context.Context, env Env, w *World) error {
 		}
 	}
 	return ctx.Err()
+}
+
+// IdleFromStatus ends a Claude turn that its status file reports over while
+// no hook did, as an interrupt leaves it. The file is read, if there is one,
+// before the session's lock and again under it, against the record as it is
+// then. A transition is projected onto the session's proven attachments after
+// the session lock is released. r becomes the session as stored.
+func (env Env) IdleFromStatus(ctx context.Context, w *World, r *session.Record) error {
+	if r.Agent != proc.Claude || r.StatusFile == "" || r.Main != adapter.Working || r.State() != adapter.Working {
+		return nil
+	}
+	if !liveHost(ctx, r.Host) || !statusProvesIdle(ctx, r.StatusFile, r.ID, r.Host.Start, r.LastHookAt) {
+		return nil
+	}
+	var next session.Record
+	changed := false
+	err := env.Store.Lock(ctx, r.Agent, r.ID, func() error {
+		cur, ok, err := env.Store.Get(ctx, r.Agent, r.ID)
+		if err != nil || !ok {
+			return err
+		}
+		next, changed, err = env.IdleLocked(ctx, cur)
+		if err != nil || !changed {
+			return err
+		}
+		*r = next
+		return nil
+	})
+	if err != nil || !changed {
+		return err
+	}
+	return env.ProjectAttached(ctx, w, next)
+}
+
+// IdleLocked applies and logs a native Claude idle transition if the caller's
+// current record, read under the session's lock, is working and its status
+// file proves the turn over. The caller holds the session's lock; this takes
+// no other lock before it and does not project.
+func (env Env) IdleLocked(ctx context.Context, rec session.Record) (session.Record, bool, error) {
+	if rec.Agent != proc.Claude || rec.StatusFile == "" || rec.Main != adapter.Working || rec.State() != adapter.Working {
+		return rec, false, nil
+	}
+	if !liveHost(ctx, rec.Host) || !statusProvesIdle(ctx, rec.StatusFile, rec.ID, rec.Host.Start, rec.LastHookAt) {
+		return rec, false, nil
+	}
+	next, changed := session.Apply(rec, adapter.Transition{Action: adapter.Set, State: adapter.Idle, Turn: rec.Turn, Synthetic: true}, time.Now())
+	if !changed {
+		return rec, false, nil
+	}
+	ev := eventlog.Event{Event: eventlog.Idle, Cwd: rec.Cwd}
+	if err := env.Store.Save(ctx, env.Log, rec, next, ev); err != nil {
+		return rec, false, err
+	}
+	return next, true, nil
+}
+
+// ProjectAttached rewrites the projection of every proven attachment of rec.
+// It runs after the session lock: Show takes each pane's lock first and
+// reads the record afresh, preserving the pane-before-session lock order.
+func (env Env) ProjectAttached(ctx context.Context, w *World, rec session.Record) error {
+	if w == nil || w.Proc == nil {
+		return nil
+	}
+	for _, s := range w.Attached(rec) {
+		if err := env.Show(ctx, s.Client.Pane, s.Attachment); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// liveHost reports whether the recorded host still runs as it did: a session
+// whose host exited gets no state inferred from a file it left behind.
+func liveHost(ctx context.Context, host session.Host) bool {
+	return host.PID > 0 && host.Start != "" && proc.RunningContext(ctx, host.PID, host.Start)
+}
+
+// statusProvesIdle reports whether Claude Code's status file at path proves
+// the session idle after its last hook contact. A file that is missing,
+// unreadable, foreign or malformed changes nothing.
+func statusProvesIdle(ctx context.Context, path, sessionID, procStart string, lastHookAt time.Time) bool {
+	status, err := claudestatus.Read(ctx, path)
+	return err == nil && status.IdleAfter(sessionID, procStart, lastHookAt)
 }
 
 // clearBroken removes tmag options that hold no attachment, if they still

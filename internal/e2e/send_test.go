@@ -287,3 +287,83 @@ func TestReplyReachesAPaneOnlyAsker(t *testing.T) {
 	readEventually(t, outA, "[tmag] Reply from claude "+sidB+", another agent, to your prompt. Do not reply to it.", "answer soon")
 	f.agrees(h)
 }
+
+// tmag attests the sender's permission class in Claude Code's envelope, from
+// what it proves: a person speaks with the receiver's class and an agent with
+// its own. A bypass receiver holds a prompting agent's message, which tmag
+// says after the delivery line without refusing it.
+func TestSendAttestsPermissionClass(t *testing.T) {
+	h := start(t)
+	f := h.follow()
+	outA, outB := filepath.Join(h.dir, "a"), filepath.Join(h.dir, "b")
+	a := h.spawn(h.dir, map[string]string{
+		"FAKE_SESSION": sidA, "FAKE_OUT": outA, "FAKE_HOOKS": "1", "FAKE_INBOX": "1",
+		"FAKE_TURN_MS": "3000", "FAKE_PERMISSION_MODE": "bypassPermissions",
+	}, filepath.Join(bin, "claude"))
+	b := h.spawn(h.dir, map[string]string{
+		"FAKE_SESSION": sidB, "FAKE_OUT": outB, "FAKE_HOOKS": "1", "FAKE_INBOX": "1",
+		"FAKE_TURN_MS": "3000", "FAKE_PERMISSION_MODE": "default",
+	}, filepath.Join(bin, "claude"))
+	h.waitPane(a, "idle", "process")
+	h.waitPane(b, "idle", "process")
+
+	// A person's working prompt speaks with the bypass receiver's class.
+	if r := h.tmag("", "send", sidA[:8], "sleep"); r.code != 0 {
+		t.Fatalf("send: %d %s", r.code, r.out)
+	}
+	h.waitSession(sidA, "working")
+	if r := h.tmag("", "send", sidA[:8], "person to bypass"); r.code != 0 || strings.Contains(r.out, "waits for the person's approval") {
+		t.Fatalf("a person's message to a bypass session: %d %s", r.code, r.out)
+	}
+	readEventually(t, outA, "inbox tmag mode=bypass session="+sidA)
+	h.tmux("send-keys", "-t", a, "/end", "Enter")
+	h.waitSession(sidA, "idle")
+
+	// A person's working prompt speaks with the default receiver's class.
+	if r := h.tmag("", "send", sidB[:8], "sleep"); r.code != 0 {
+		t.Fatalf("send: %d %s", r.code, r.out)
+	}
+	h.waitSession(sidB, "working")
+	if r := h.tmag("", "send", sidB[:8], "person to default"); r.code != 0 || strings.Contains(r.out, "waits for the person's approval") {
+		t.Fatalf("a person's message to a default session: %d %s", r.code, r.out)
+	}
+	readEventually(t, outB, "inbox tmag mode=prompting session="+sidB)
+	h.tmux("send-keys", "-t", b, "/end", "Enter")
+	h.waitSession(sidB, "idle")
+
+	// A prompting agent's message to a bypass receiver is held there; tmag
+	// still delivered it, says so, and exits 0.
+	agentSend(t, h, b, "send", sidA[:8], "agent to bypass")
+	readEventually(t, outB, "the message waits for the person's approval in the receiver's pane")
+	readEventually(t, outA, "inbox claude "+sidB[:8]+" via tmag mode=prompting session="+sidA)
+	f.agrees(h)
+}
+
+// A --wait delivery through Claude's inbox says before waiting when the
+// receiver will hold it for its person. A person's --wait is typed into the
+// idle pane, which Claude does not hold.
+func TestSendWaitSaysWhenClaudeWillHold(t *testing.T) {
+	h := start(t)
+	f := h.follow()
+	outA, outB := filepath.Join(h.dir, "a"), filepath.Join(h.dir, "b")
+	a := h.spawn(h.dir, map[string]string{
+		"FAKE_SESSION": sidA, "FAKE_OUT": outA, "FAKE_HOOKS": "1", "FAKE_INBOX": "1",
+		"FAKE_TURN_MS": "1000", "FAKE_PERMISSION_MODE": "bypassPermissions",
+	}, filepath.Join(bin, "claude"))
+	b := h.spawn(h.dir, map[string]string{
+		"FAKE_SESSION": sidB, "FAKE_OUT": outB, "FAKE_HOOKS": "1",
+		"FAKE_TURN_MS": "1000", "FAKE_PERMISSION_MODE": "default",
+	}, filepath.Join(bin, "claude"))
+	h.waitPane(a, "idle", "process")
+	h.waitPane(b, "idle", "process")
+
+	agentSend(t, h, b, "send", sidA[:8], "--wait", "--timeout", "20s", "wait held")
+	readEventually(t, outB, "the message waits for the person's approval in the receiver's pane")
+	h.waitSession(sidA, "idle")
+
+	if r := h.tmag("", "send", sidA[:8], "--wait", "person wait"); r.code != 0 || strings.Contains(r.out, "waits for the person's approval") {
+		t.Fatalf("a person's --wait to an idle bypass session: %d %s", r.code, r.out)
+	}
+	h.waitSession(sidA, "idle")
+	f.agrees(h)
+}

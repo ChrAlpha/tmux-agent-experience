@@ -60,8 +60,10 @@ func inboxFor(w *attach.World, pid int, agent, path string) *session.Inbox {
 }
 
 // moved reports whether a hook changed what it records of a session beside
-// its state: its cwd, host, transcript or inbox, each saved without waiting
-// for an event to report a state change.
+// its state: its cwd, host, transcript, inbox, permission class or native
+// status file, each saved without waiting for an event to report a state
+// change.
 func moved(cur, base session.Record) bool {
-	return base.Cwd != cur.Cwd || base.Host != cur.Host || base.Transcript != cur.Transcript || !session.SameInbox(base.Inbox, cur.Inbox)
+	return base.Cwd != cur.Cwd || base.Host != cur.Host || base.Transcript != cur.Transcript ||
+		!session.SameInbox(base.Inbox, cur.Inbox) || base.Permission != cur.Permission || base.StatusFile != cur.StatusFile
 }

@@ -1,8 +1,10 @@
 package query
 
 import (
+	"bufio"
 	"context"
 	"errors"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -238,6 +240,112 @@ func TestSenderName(t *testing.T) {
 		if got := senderName(c.caller); got != c.want {
 			t.Errorf("%s: senderName = %q, want %q", c.name, got, c.want)
 		}
+	}
+}
+
+// tmag attests a class only when it proves one: a person speaks with the
+// receiver's class, an agent with its own, and an unknown sender with none.
+func TestClaudeModeAttestsOnlyAProvenClass(t *testing.T) {
+	receiver := session.Record{Agent: proc.Claude, ID: "r1", Permission: adapter.PermissionBypass}
+	asked := session.Record{Agent: proc.Claude, ID: "a1", Permission: adapter.PermissionPrompting}
+	v := View{records: []session.Record{receiver, asked}}
+	agent := Caller{By: &eventlog.Actor{Agent: proc.Claude, Session: "a1"}}
+	named := Caller{By: &eventlog.Actor{Agent: proc.Claude, Session: "a2"}}
+	unproven := Caller{By: &eventlog.Actor{Agent: proc.Claude}}
+	for _, c := range []struct {
+		name   string
+		caller Caller
+		rec    session.Record
+		want   string
+	}{
+		{"a person speaks with the receiver's bypass class", Caller{}, receiver, adapter.PermissionBypass},
+		{"a person speaks with the receiver's prompting class", Caller{}, asked, adapter.PermissionPrompting},
+		{"a person of an unknown receiver", Caller{}, session.Record{Agent: proc.Claude, ID: "r2"}, ""},
+		{"an owner client is a person", Caller{Credential: "cred"}, receiver, adapter.PermissionBypass},
+		{"an agent speaks with its own class", agent, receiver, adapter.PermissionPrompting},
+		{"an agent of an unknown session", named, receiver, ""},
+		{"an agent of no proven session", unproven, receiver, ""},
+	} {
+		if got := claudeMode(v, c.rec, c.caller); got != c.want {
+			t.Errorf("%s: %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// A sender whose class changed since prepare is attested by what its record
+// says at the delivery decision, not by the view prepare read. The receiver
+// record is the one recordDelivery re-read under its lock.
+func TestClaudeAttestationUsesTheDeliveryDecision(t *testing.T) {
+	t.Setenv("TMUX", "")
+	t.Setenv("TMUX_PANE", "")
+	t.Setenv("TMUX_TMPDIR", t.TempDir())
+	ctx := context.Background()
+	log := eventlog.Open(t.TempDir())
+	store := session.Store{Dir: log.Dir}
+	tb, err := proc.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	self, ok := tb.Get(os.Getpid())
+	if !ok || self.Start == "" {
+		t.Fatal("this process is not in its own process table")
+	}
+	sockDir, err := os.MkdirTemp("/tmp", "tm-") // socket paths are short
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(sockDir) })
+	sock := filepath.Join(sockDir, "inbox.sock")
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	lines := make(chan string, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		r := bufio.NewReader(conn)
+		line, _ := r.ReadString('\n')
+		lines <- line
+		// Claude Code closes its side only after tmag's EOF proves the frame
+		// was read; closing first fails tmag's half-close on macOS.
+		_, _ = io.Copy(io.Discard, r)
+	}()
+	receiver := session.Record{
+		Agent: proc.Claude, ID: "receiver", Main: adapter.Idle, Permission: adapter.PermissionBypass,
+		Host:  session.Host{PID: self.PID, Start: self.Start, Role: proc.Terminal},
+		Inbox: &session.Inbox{Path: sock, PID: self.PID, Start: self.Start},
+	}
+	sender := session.Record{
+		Agent: proc.Claude, ID: "sender", Main: adapter.Idle, Permission: adapter.PermissionPrompting,
+		Host: session.Host{PID: self.PID, Start: self.Start, Role: proc.Terminal},
+	}
+	if err := store.Put(ctx, receiver); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Put(ctx, sender); err != nil {
+		t.Fatal(err)
+	}
+	// prepare saw bypass; the sender's hook then reported prompting.
+	stale := sender
+	stale.Permission = adapter.PermissionBypass
+	caller := Caller{By: &eventlog.Actor{Agent: proc.Claude, Session: sender.ID}}
+	v := View{records: []session.Record{stale, receiver}}
+	d, err := throughInbox(ctx, log, v, Session{Agent: proc.Claude, ID: receiver.ID, State: adapter.Idle},
+		"hello", caller, liveGate, driver.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	line := <-lines
+	if !strings.Contains(line, `from-mode=\"prompting\"`) || strings.Contains(line, `from-mode=\"bypass\"`) {
+		t.Fatalf("the frame attests the stale class: %s", line)
+	}
+	if !d.Held {
+		t.Fatal("a prompting agent's message to a bypass receiver was not reported held")
 	}
 }
 

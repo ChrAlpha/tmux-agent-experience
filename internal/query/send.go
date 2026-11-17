@@ -255,6 +255,12 @@ func throughInbox(outer context.Context, log *eventlog.Log, v View, s Session, t
 	defer c.Close()
 
 	sent := time.Now().UTC().Truncate(time.Second)
+	// The envelope's class and the hold warning are what tmag proves at the
+	// delivery decision, after recordDelivery re-checks the receiver under
+	// its lock and reads the sender's record afresh. A later hook may change
+	// either class; the frame still attests what was true then.
+	var fromMode string
+	var held bool
 	d, err := recordDelivery(ctx, log, s, gate, driver.Inbox, rec.Inbox, func() error {
 		return sessionEnded(s.ID)
 	}, func(rec *session.Record) eventlog.Event {
@@ -268,6 +274,8 @@ func throughInbox(outer context.Context, log *eventlog.Log, v View, s Session, t
 			rec.Queued = sent
 		}
 		return sentEvent(*rec, text, caller)
+	}, func(fresh View, receiver session.Record) {
+		fromMode, held = claudeDelivery(fresh, receiver, caller)
 	})
 	if err != nil {
 		return Delivery{}, err
@@ -275,7 +283,8 @@ func throughInbox(outer context.Context, log *eventlog.Log, v View, s Session, t
 	ctx, cancelDelivery := context.WithTimeout(outer, serviceTimeout)
 	defer cancelDelivery()
 	if s.Agent == proc.Claude {
-		err = c.Claude(ctx, senderName(caller), text)
+		d.Held = held
+		err = c.Claude(ctx, inbox.ClaudeMessage{Name: senderName(caller), Mode: fromMode, Session: rec.ID, Text: text})
 	} else {
 		err = c.Extension(ctx, text, s.ID)
 	}
@@ -283,6 +292,34 @@ func throughInbox(outer context.Context, log *eventlog.Log, v View, s Session, t
 		return d, inboxFailure(d, err)
 	}
 	return d, nil
+}
+
+// claudeDelivery decides a Claude delivery's permission class and whether the
+// receiver will hold it. v is the fresh view read under the receiver's lock:
+// a person or owner client speaks with the receiver's class from receiver,
+// and an agent with its own class as its freshly read record says.
+func claudeDelivery(v View, receiver session.Record, caller Caller) (mode string, held bool) {
+	mode = claudeMode(v, receiver, caller)
+	held = receiver.Permission == adapter.PermissionBypass && mode != adapter.PermissionBypass
+	return mode, held
+}
+
+// claudeMode is the permission class tmag can attest for a sender to Claude
+// Code: a person or owner client speaks with the receiver's own class, and an
+// agent with its own recorded class, when its session is known.
+func claudeMode(v View, rec session.Record, caller Caller) string {
+	if caller.By == nil {
+		return rec.Permission
+	}
+	if caller.By.Session == "" {
+		return ""
+	}
+	for _, r := range v.records {
+		if r.Agent == caller.By.Agent && r.ID == caller.By.Session {
+			return r.Permission
+		}
+	}
+	return ""
 }
 
 // inboxFailure reports a failed inbox write: an explicit refusal or a

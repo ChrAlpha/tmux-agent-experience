@@ -51,6 +51,11 @@ func TestMap(t *testing.T) {
 		{"claude stop without task list", "claude", map[string]any{"hook_event_name": "Stop", "prompt_id": "p1"}, Transition{Action: Set, State: Idle, Turn: "p1"}},
 		{"claude stop with background", "claude", map[string]any{"hook_event_name": "Stop", "background_tasks": []any{map[string]any{"id": "a7", "type": "subagent", "description": "secret"}}}, Transition{Action: Set, State: Idle, Background: &[]string{"a7"}}},
 		{"claude stop failure", "claude", map[string]any{"hook_event_name": "StopFailure"}, Transition{Action: Set, State: Idle, Kind: KindError, KeepSubagents: true}},
+		{"claude stop failure names why", "claude", map[string]any{"hook_event_name": "StopFailure", "error": "model_not_found"}, Transition{Action: Set, State: Idle, Kind: KindError, Reason: "model_not_found", KeepSubagents: true}},
+		{"claude compacts", "claude", map[string]any{"hook_event_name": "PreCompact", "trigger": "auto", "prompt_id": "p1"}, Transition{Action: Set, State: Working, Kind: KindCompacting, Turn: "p1", KeepSubagents: true}},
+		{"claude manual compaction", "claude", map[string]any{"hook_event_name": "PreCompact", "trigger": "manual", "prompt_id": "p1"}, Transition{Action: Set, State: Working, Kind: KindCompacting, Turn: "p1", KeepSubagents: true}},
+		{"claude compacted automatically", "claude", map[string]any{"hook_event_name": "PostCompact", "trigger": "auto", "prompt_id": "p1"}, Transition{Action: Set, State: Working, Turn: "p1", KeepSubagents: true}},
+		{"claude compacted by hand", "claude", map[string]any{"hook_event_name": "PostCompact", "trigger": "manual", "prompt_id": "p1"}, Transition{Action: Set, State: Idle, Turn: "p1", KeepSubagents: true}},
 		{"claude subagent stop ignored", "claude", map[string]any{"hook_event_name": "Stop", "agent_id": "a1"}, Transition{}},
 		{"claude end", "claude", map[string]any{"hook_event_name": "SessionEnd", "reason": "other"}, Transition{Action: End}},
 		{"codex start", "codex", map[string]any{"hook_event_name": "SessionStart", "source": "startup"}, Transition{Action: Set, State: Idle, Fresh: true}},
@@ -62,6 +67,9 @@ func TestMap(t *testing.T) {
 		{"codex model request", "codex", map[string]any{"hook_event_name": "PreModelRequest", "turn_id": "t2", "agent_id": "a"}, Transition{Action: Settle, Turn: "t2", Call: Call{Agent: "a"}}},
 		{"codex interrupt", "codex", map[string]any{"hook_event_name": "Interrupt", "turn_id": "t1"}, Transition{Action: Set, State: Idle, Turn: "t1"}},
 		{"codex stop", "codex", map[string]any{"hook_event_name": "Stop", "turn_id": "t1"}, Transition{Action: Set, State: Idle, Turn: "t1"}},
+		{"codex compacts by hand", "codex", map[string]any{"hook_event_name": "PreCompact", "trigger": "manual", "turn_id": "t2"}, Transition{Action: Set, State: Working, Kind: KindCompacting, Turn: "t2", KeepSubagents: true}},
+		{"codex compacted automatically", "codex", map[string]any{"hook_event_name": "PostCompact", "trigger": "auto", "turn_id": "t2"}, Transition{Action: Set, State: Working, Turn: "t2", KeepSubagents: true}},
+		{"codex compacted by hand", "codex", map[string]any{"hook_event_name": "PostCompact", "trigger": "manual", "turn_id": "t2"}, Transition{Action: Set, State: Idle, Turn: "t2", KeepSubagents: true}},
 		{"codex subagent start", "codex", map[string]any{"hook_event_name": "SubagentStart", "turn_id": "t9", "agent_id": "a", "agent_type": "default"}, Transition{Action: Spawn, Turn: "t9", Call: Call{Agent: "a"}}},
 		{"codex subagent stop", "codex", map[string]any{"hook_event_name": "SubagentStop", "turn_id": "t9", "agent_id": "a"}, Transition{Action: Reap, Turn: "t9", Call: Call{Agent: "a"}}},
 		{"pi start", "pi", map[string]any{"hook_event_name": "session_start", "source": "startup"}, Transition{Action: Set, State: Idle, Fresh: true}},
@@ -75,6 +83,10 @@ func TestMap(t *testing.T) {
 		{"pi dialog closed", "pi", map[string]any{"hook_event_name": "ui_prompt_end"}, Transition{Action: Answer, Prompt: Prompt{Tool: dialog}}},
 		{"pi settled", "pi", map[string]any{"hook_event_name": "agent_settled", "stop_reason": "aborted"}, Transition{Action: Set, State: Idle}},
 		{"pi failed turn", "pi", map[string]any{"hook_event_name": "agent_settled", "stop_reason": "error"}, Transition{Action: Set, State: Idle, Kind: KindError}},
+		{"pi compacts", "pi", map[string]any{"hook_event_name": "session_before_compact", "trigger": "manual", "turn_id": "t1"}, Transition{Action: Set, State: Working, Kind: KindCompacting, Turn: "t1", KeepSubagents: true}},
+		{"pi compacted automatically", "pi", map[string]any{"hook_event_name": "session_compact", "trigger": "auto", "turn_id": "t1"}, Transition{Action: Set, State: Working, Turn: "t1", KeepSubagents: true}},
+		{"pi compacted by hand", "pi", map[string]any{"hook_event_name": "session_compact", "trigger": "manual", "turn_id": "t1"}, Transition{Action: Set, State: Idle, Turn: "t1", KeepSubagents: true}},
+		{"pi compaction failed", "pi", map[string]any{"hook_event_name": "session_compact_failed", "trigger": "manual", "turn_id": "t1"}, Transition{Action: Set, State: Idle, Turn: "t1", KeepSubagents: true, OnlyCompacting: true}},
 		{"pi end", "pi", map[string]any{"hook_event_name": "session_shutdown", "reason": "new"}, Transition{Action: End}},
 		{"pi reload goes on", "pi", map[string]any{"hook_event_name": "session_shutdown", "reason": "reload"}, Transition{}},
 		{"omp start", "omp", map[string]any{"hook_event_name": "session_start"}, Transition{Action: Set, State: Idle, Fresh: true}},
@@ -113,6 +125,29 @@ func TestDecodeDropsContent(t *testing.T) {
 	}
 }
 
+// A payload's permission_mode keeps its class and nothing else: the raw mode
+// never reaches a record, and an unknown one is dropped.
+func TestDecodeKeepsPermissionClass(t *testing.T) {
+	for mode, want := range map[string]string{
+		"bypassPermissions": PermissionBypass,
+		"default":           PermissionPrompting,
+		"acceptEdits":       PermissionPrompting,
+		"plan":              PermissionPrompting,
+		"dontAsk":           PermissionPrompting,
+		"":                  "",
+		"allow":             "",
+		"bypass\n":          "",
+	} {
+		p := payload(t, map[string]any{"hook_event_name": "PreToolUse", "permission_mode": mode})
+		if p.PermissionClass() != want {
+			t.Errorf("permission_mode %q is class %q, want %q", mode, p.PermissionClass(), want)
+		}
+		if want == "" && p.PermissionMode != "" {
+			t.Errorf("permission_mode %q kept %q", mode, p.PermissionMode)
+		}
+	}
+}
+
 func TestDecodeRejectsIncomplete(t *testing.T) {
 	for _, in := range []string{`{}`, `{"session_id":"x"}`, `{"hook_event_name":"Stop"}`, `not json`} {
 		if _, err := Decode([]byte(in)); err == nil {
@@ -133,7 +168,7 @@ func TestDecodeBoundsWhatItKeeps(t *testing.T) {
 	payload := `{"hook_event_name":"Stop","session_id":"s1","cwd":"/` + strings.Repeat("d", MaxPath) + `",` +
 		`"transcript_path":"/t.jsonl","inbox":"/` + strings.Repeat("i", MaxPath) + `",` +
 		`"tool_name":"` + long + `","prompt_id":"` + long + `",` +
-		`"reason":"` + long + `","stop_reason":"` + long + `","mode":"` + long + `",` +
+		`"reason":"` + long + `","stop_reason":"` + long + `","mode":"` + long + `","error":"` + long + `","trigger":"` + long + `",` +
 		`"background_tasks":[` + strings.Join(tasks, ",") + `]}`
 	p, err := Decode([]byte(payload))
 	if err != nil {
@@ -146,7 +181,7 @@ func TestDecodeBoundsWhatItKeeps(t *testing.T) {
 	if err != nil || inboxed.Inbox != "/tmp/pi.sock" {
 		t.Errorf("inbox %q: %v", inboxed.Inbox, err)
 	}
-	for _, f := range []string{p.ToolName, p.PromptID, p.Reason, p.StopReason, p.Mode, (*p.BackgroundTasks)[0].ID} {
+	for _, f := range []string{p.ToolName, p.PromptID, p.Reason, p.StopReason, p.Mode, p.Error, p.Trigger, (*p.BackgroundTasks)[0].ID} {
 		if len(f) > MaxName || !utf8.ValidString(f) || !strings.HasPrefix(long, f) {
 			t.Errorf("a name was not cut cleanly: %d bytes", len(f))
 		}

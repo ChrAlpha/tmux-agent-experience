@@ -6,7 +6,10 @@
   amended again 2026-11-10: one `send` verb delivers now, with `--wait` for a
   turn of its own and `--reply` for an answer; `reply` uses the asker's
   channel; amended 2026-11-12: targets take tmux's target-pane syntax, and
-  `wait` on a pane lasts until its agent shows a session
+  `wait` on a pane lasts until its agent shows a session; amended 2026-11-16:
+  a Claude message attests the sender's permission class and the receiver's
+  session, a native status file ends an unreported turn, and compaction and
+  failure reasons reach the view
 - Date: 2026-11-03
 - Evidence: [Claude Code control channels](../research/claude-control-channels.md)
   (2.1.317), [Codex control channels](../research/codex-control-channels.md)
@@ -116,16 +119,22 @@ Why each cell:
   `CLAUDE_CODE_MESSAGING_SOCKET`. It labels a message there as from another
   session, so it cannot approve anything or change configuration; the
   receiver's inbound controls apply, and a session that bypasses permission
-  prompts holds the message for the person unless its inbound setting is
-  `accept`. Background sessions bind one too, so send reaches them where
-  interrupt has no terminal. An agent's prompt always takes this channel; a
-  person's takes it while the session works, and stays typed while it is
-  idle. tmag names the sender in Claude Code's envelope and never asserts a
-  permission mode; Claude Code answers nothing on the connection, and the EOF
-  after tmag closes its write half is the only proof that the frame was read.
-  A send racing a session switch in the same Claude process may reach the
-  session that replaced the one it named: the socket belongs to the process,
-  and tmag cannot close that race.
+  prompts holds a message that does not attest its own class. Background
+  sessions bind one too, so send reaches them where interrupt has no
+  terminal. An agent's prompt always takes this channel; a person's takes it
+  while the session works, and stays typed while it is idle. tmag names the
+  sender in Claude Code's envelope and attests the permission class it
+  proves: a person or owner client speaks with the receiver's own class, an
+  agent with its own recorded class (`bypass` for `bypassPermissions`,
+  `prompting` otherwise), and neither when unknown. The message line also
+  names the receiver session tmag recorded, so a message proven for one
+  session cannot land in another after `/clear` or `/resume`. Claude Code
+  answers nothing on the connection, and the EOF after tmag closes its write
+  half is the only proof that the frame was read. After `/clear` or
+  `/resume`, Claude silently drops a frame whose `session_id` does not match
+  the session its process now serves; that close looks exactly like the one
+  after acceptance or a hold, so tmag reports the frame read, never that the
+  session took it.
 - **Codex daemon, sends: `turn/start`.** On Codex 0.167 a `turn/start` on an
   active thread joins that turn with the same id, and on an idle thread starts
   one. A send without `--wait` takes this as it is; `--wait` requires idle so
@@ -354,8 +363,14 @@ session is idle and has one.
   (`permission`, `question` or `plan`), `tool`, `agent` for a subagent's,
   `since`), and `subagents` (ids of running subagents).
 - `list --json`: `caller`, with the caller's `pane` and `by`.
+- Session `reason` carries why a failed turn ended, when its `kind` is
+  `error`. Kinds are open: a client accepts one it does not know. tmag adds
+  `compacting` while Claude Code, Codex or Pi compacts a working turn; a
+  manual compaction of an idle session works for it and ends idle. A Pi
+  `session_compact_failed` ends a marked compaction and changes nothing
+  otherwise.
 - Events: an event with `state` reports the session in full: `state`,
-  `kind`, `turn`, `cwd`, `runtime`, `transcript`, `subagents`,
+  `kind`, `reason`, `turn`, `cwd`, `runtime`, `transcript`, `subagents`,
   `capabilities` and `requests`, and every change to any of them is such an
   event, so a client applying events to a snapshot stays current.
   `capabilities` lists `send` for every agent and runtime with a channel that
@@ -363,7 +378,11 @@ session is idle and has one.
   Code background session thus lists `send` and `answer`; using an inbox
   still needs the session's recorded socket. New tmag events `Halt` and
   `Answer` (with `request` and `decision`); `Send` also carries `via` `inbox`
-  when it wrote the session's own channel.
+  when it wrote the session's own channel. `Idle` reports a Claude turn that
+  its native status file proved over while no hook did (an interrupt, say):
+  tmag reads only `sessionId`, `status`, `statusUpdatedAt` and `procStart`
+  from the file the hook recorded, and applies the idle transition an
+  interrupt of tmag's applies.
   `Send`, `Halt` and `Answer` carry `from` (now on `Answer` too) and `by`
   (see [Callers](#callers)).
 - Errors: `refused:unsupported`, `refused:idle`, `refused:self`,
@@ -441,9 +460,13 @@ alone, so the tunnel is the one way in.
   marked experimental by Codex, as the `thread-id` title item already is; the
   methods used are in its stable schema, and `tmag doctor` reports when the
   daemon does not answer as expected.
-- A Claude Code session that bypasses permission prompts holds a message sent
-  to its inbox until its person accepts it. tmag reports the send as written;
-  whether it was accepted shows in the session's next turn.
+- A Claude Code session that bypasses permission prompts holds a message whose
+  sender attests a prompting class or none. tmag reports the send as written
+  and, when it knows the receiver is bypass and no `bypass` was attested,
+  says after the delivery line that the message waits for the person's
+  approval in the receiver's pane. `send --wait` says the same before it
+  starts waiting; a person's own message attests the receiver's class and is
+  not held for that reason.
 - What remains out of reach, reported as `refused:unsupported` or as state:
   - `interrupt` for Claude background sessions: no terminal. `send` reaches
     them through their inbox;

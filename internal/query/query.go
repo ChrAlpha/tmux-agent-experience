@@ -27,14 +27,16 @@ type Shown struct {
 
 // Session is one agent session, wherever it runs.
 type Session struct {
-	LastHookAt time.Time  `json:"last_hook_at,omitzero"`
-	ID         string     `json:"id"`
-	Agent      string     `json:"agent"`
-	State      string     `json:"state"`
-	Kind       string     `json:"kind,omitempty"`
-	Turn       string     `json:"turn,omitempty"`
-	Since      *time.Time `json:"since,omitempty"`
-	Cwd        string     `json:"cwd,omitempty"`
+	LastHookAt time.Time `json:"last_hook_at,omitzero"`
+	ID         string    `json:"id"`
+	Agent      string    `json:"agent"`
+	State      string    `json:"state"`
+	Kind       string    `json:"kind,omitempty"`
+	// Reason is why a failed turn ended, with kind error.
+	Reason string     `json:"reason,omitempty"`
+	Turn   string     `json:"turn,omitempty"`
+	Since  *time.Time `json:"since,omitempty"`
+	Cwd    string     `json:"cwd,omitempty"`
 	// Runtime is how the session runs: in a terminal's own agent process, or
 	// in a background service; "" when its hooks did not say.
 	Runtime string `json:"runtime,omitempty"`
@@ -96,7 +98,7 @@ func Build(w *attach.World, recs []session.Record) View {
 	for _, r := range live {
 		s := Session{
 			LastHookAt: r.LastHookAt,
-			ID:         r.ID, Agent: r.Agent, State: r.State(), Kind: r.Kind(), Turn: r.Turn,
+			ID:         r.ID, Agent: r.Agent, State: r.State(), Kind: r.Kind(), Reason: r.Reason, Turn: r.Turn,
 			Cwd: r.Cwd, Runtime: string(r.Host.Role), Transcript: r.TranscriptRef(), Subagents: r.RunningSubagents(),
 			Capabilities: r.Capabilities(), Requests: r.RequestRefs(), Panes: shown[[2]string{r.Agent, r.ID}],
 		}
@@ -165,7 +167,9 @@ type Snapshot struct {
 	View
 }
 
-// TakeSnapshot reads the log's head, then the view.
+// TakeSnapshot reads the log's head, then the view, after a native status
+// file has ended any Claude turn no hook reported. Events it logs are after
+// Seq, so a follower applies them to the snapshot.
 func TakeSnapshot(ctx context.Context, log *eventlog.Log) (Snapshot, error) {
 	ctx, cancel := context.WithTimeout(ctx, eventlog.ReadTimeout)
 	defer cancel()
@@ -173,10 +177,22 @@ func TakeSnapshot(ctx context.Context, log *eventlog.Log) (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, err
 	}
-	v, w, err := Load(ctx, session.Store{Dir: log.Dir})
+	store := session.Store{Dir: log.Dir}
+	w, err := attach.Load(ctx)
 	if err != nil {
 		return Snapshot{}, err
 	}
+	recs, _, err := store.All(ctx)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	env := attach.Env{Log: log, Store: store}
+	for i := range recs {
+		if err := env.IdleFromStatus(ctx, w, &recs[i]); err != nil {
+			return Snapshot{}, err
+		}
+	}
+	v := Build(w, recs)
 	return Snapshot{Seq: seq, Caller: callerFor(ctx, v, w), View: v}, ctx.Err()
 }
 
