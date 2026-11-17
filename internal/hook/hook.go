@@ -1,7 +1,6 @@
 // Package hook handles one agent hook invocation: map the event, apply it to
-// the session, attach the session to the pane it runs in when the hook
-// proves one, update the panes that show it, alert the person, and log what
-// changed.
+// the session, update the panes its record lists, or prove the pane the
+// hook runs in, alert the person, and log what changed.
 package hook
 
 import (
@@ -35,14 +34,6 @@ const Deadline = 3 * time.Second
 // as slow: agents wait for hooks, on every tool call too.
 const SlowAfter = 500 * time.Millisecond
 
-// loadLineage reads the hook's own ancestry; loadPanes and loadProcesses
-// build the full world. Tests replace them to stage snapshots.
-var (
-	loadLineage   = proc.Lineage
-	loadProcesses = func(ctx context.Context, w *attach.World) error { return w.LoadProcesses(ctx) }
-	loadPanes     = func(ctx context.Context, w *attach.World) error { return w.LoadPanes(ctx) }
-)
-
 // maxPayload bounds how much hook input is read; Stop payloads embed the last
 // assistant message, which is decoded away but must still be consumed.
 const maxPayload = 64 << 20
@@ -63,13 +54,101 @@ type Input struct {
 	// Request is the id an answer hook waits under, for the prompt this
 	// event opens; "" for a plain hook.
 	Request string
+	// Sources are where the hook reads what it proves; the zero value reads
+	// the real process table and tmux servers.
+	Sources Sources
+}
+
+// Sources are where a hook reads what it proves: its own ancestry, every
+// tmux server's panes and the whole process table. A nil field reads the
+// real one.
+type Sources struct {
+	Lineage   func(ctx context.Context, pid int) (*proc.Table, error)
+	Panes     func(ctx context.Context) ([]tmux.Pane, error)
+	Processes func(ctx context.Context) (*proc.Table, error)
+}
+
+// world lists every server's panes, then reads the process table, so that a
+// proof never checks an attachment against a table older than it. complete
+// is false when the table could not be read: the hook then proves nothing.
+func (s Sources) world(ctx context.Context) (w *attach.World, complete bool, err error) {
+	w = &attach.World{}
+	if s.Panes != nil {
+		w.Panes, err = s.Panes(ctx)
+	} else {
+		err = w.LoadPanes(ctx)
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	read := proc.Snapshot
+	if s.Processes != nil {
+		read = s.Processes
+	}
+	if w.Proc, err = read(ctx); err != nil {
+		w.Proc = nil
+		return w, false, ctx.Err()
+	}
+	return w, w.Proc.Complete(), nil
+}
+
+// self is what a hook proves of itself from its own ancestry: a handful of
+// /proc entries, not every process. The table is incomplete by construction,
+// so it can never authorize reconciliation.
+type self struct {
+	table *proc.Table
+	host  proc.Host
+	known bool // the hook runs under an agent's client or service
+	tmux  bool // and a tmux server is among its ancestors
+}
+
+func (s Sources) self(ctx context.Context, pid int, p adapter.Payload) self {
+	read := proc.Lineage
+	if s.Lineage != nil {
+		read = s.Lineage
+	}
+	t, err := read(ctx, pid)
+	if err != nil {
+		return self{}
+	}
+	me := self{table: t, tmux: t.UnderTmux(pid)}
+	me.host, me.known = t.HostOf(pid)
+	if me.known && p.Mode != "" && p.Mode != "tui" {
+		// Pi and oh-my-pi say when they run for a program rather than a
+		// person, which their process does not show: such a session runs as
+		// a service, which no pane shows and no channel controls. The claim
+		// only takes away, so it needs no proof.
+		me.host.Role = proc.Service
+	}
+	return me
+}
+
+// listed is the pane the record lists for the hook's own host.
+func (me self) listed(rec session.Record) (session.Shown, bool) {
+	if !me.known {
+		return session.Shown{}, false
+	}
+	return rec.ShownFor(me.host.Process.PID, me.host.Process.Start)
+}
+
+// unproven reports whether the hook's host is a client in a pane the record
+// does not list: only a process proof, on the full path, can attach it.
+// Service hosts and clients outside tmux run in no pane.
+func (me self) unproven(rec session.Record) bool {
+	_, ok := me.listed(rec)
+	return me.known && me.host.Role == proc.Terminal && me.tmux && !ok
 }
 
 // Run processes a hook using the earlier of the parent's budget and
 // Deadline, including input. It never writes to stdout: agents inject hook
 // stdout into the model context. A payload that may block must stop on
 // cancellation: the CLI owns its inherited input with contextio.Own.
-func Run(parent context.Context, in Input) (err error) {
+//
+// The session's record and event are saved before the hook asks tmux
+// anything. The panes the record lists are then updated without listing panes
+// or the process table, when the projection changed; only a session's start
+// or end, or a host in a pane the record does not list, takes the full path.
+func Run(parent context.Context, in Input) error {
 	ctx, cancel := context.WithTimeout(parent, Deadline)
 	defer cancel()
 	if err := ctx.Err(); err != nil {
@@ -95,9 +174,6 @@ func Run(parent context.Context, in Input) (err error) {
 	}
 	if tr.Action == adapter.Ask {
 		tr.Request, tr.Waits = in.Request, in.Request != ""
-		if !tr.Waits {
-			tr.Request = session.NewRequestID()
-		}
 	}
 	if !session.ValidID(p.SessionID) {
 		return fmt.Errorf("unusable session id %q", p.SessionID)
@@ -106,125 +182,12 @@ func Run(parent context.Context, in Input) (err error) {
 	if in.Now != nil {
 		now = in.Now
 	}
-
-	// The hook's host is proven from its own lineage, not from the world: a
-	// handful of /proc entries, not every process. The table is incomplete by
-	// construction, so it can never authorize reconciliation.
-	w := &attach.World{}
-	hostKnown := false
-	var host proc.Host
-	if lineage, lerr := loadLineage(ctx, in.PID); lerr == nil {
-		w.Proc = lineage
-		host, hostKnown = lineage.HostOf(in.PID)
-		if hostKnown && p.Mode != "" && p.Mode != "tui" {
-			// Pi and oh-my-pi say when they run for a program rather than a
-			// person, which their process does not show: such a session runs as
-			// a service, which no pane shows and no channel controls. The claim
-			// only takes away, so it needs no proof.
-			host.Role = proc.Service
-		}
-	}
+	me := in.Sources.self(ctx, in.PID, p)
 	env := attach.Env{Log: in.Log, Store: session.Store{Dir: in.Log.Dir}}
-	contact := now().UTC()
-	ev := eventlog.Event{Agent: in.Agent, Session: p.SessionID, Event: p.HookEventName, Cwd: p.Cwd, LastHookAt: contact}
-	// The inbox a hook's agent names, and the process that serves it, are
-	// recorded for a send to prove later. The hook never connects to it.
-	inbox := inboxFor(w, in.PID, in.Agent, inboxOf(in.Agent, p, os.Getenv))
-
-	// A record that cannot be read is the hook's to replace: the session's
-	// state comes from its hooks, and this one reports it anew.
-	get := func() (session.Record, bool, error) {
-		rec, found, err := env.Store.Get(ctx, in.Agent, p.SessionID)
-		var fault *session.RecordError
-		if errors.As(err, &fault) {
-			RecordError(ctx, in.Log.Dir, in.Agent, err)
-			return session.Record{}, false, nil
-		}
-		return rec, found, err
+	prev, rec, wrote, err := save(ctx, env, in, p, tr, me, now)
+	if err != nil {
+		return err
 	}
-
-	var prev, rec session.Record
-	var hint session.PaneHint
-	wrote, ended, fast := false, false, false
-	if tr.Action == adapter.End {
-		// Whatever the agent calls it, the contract's end of a session is
-		// SessionEnd, which followers drop the session on.
-		ev.Event = eventlog.End
-		err := env.Store.Lock(ctx, in.Agent, p.SessionID, func() error {
-			cur, found, err := get()
-			if err != nil {
-				return err
-			}
-			if !found {
-				cur = session.Record{Agent: in.Agent, ID: p.SessionID}
-			}
-			return env.Store.End(ctx, in.Log, cur, ev)
-		})
-		if err != nil {
-			return err
-		}
-		ended = true
-	} else {
-		err = env.Store.Lock(ctx, in.Agent, p.SessionID, func() error {
-			cur, found, err := get()
-			if err != nil {
-				return err
-			}
-			if !found {
-				cur = session.Record{Agent: in.Agent, ID: p.SessionID}
-			}
-			if !reconcileEvent(p.HookEventName) {
-				if h, ok := matchingHint(cur, host, hostKnown); ok {
-					hint, fast = h, true
-				}
-			}
-			base := cur
-			if base.AttachGeneration == 0 {
-				base.AttachGeneration = uint64(time.Now().UnixNano())
-			}
-			if p.Cwd != "" {
-				base.Cwd = p.Cwd
-			}
-			if hostKnown {
-				base.Host = session.Host{PID: host.Process.PID, Start: host.Process.Start, Role: host.Role}
-			}
-			if p.TranscriptPath != "" {
-				base.Transcript = p.TranscriptPath
-			}
-			if inbox != nil {
-				base.Inbox = inbox
-			}
-			if class := p.PermissionClass(); class != "" {
-				base.Permission = class
-			}
-			if hostKnown {
-				if status := statusFileOf(in.Agent, host.Process.PID, os.Getenv); status != "" {
-					base.StatusFile = status
-				}
-			}
-			next, changed := session.Apply(base, tr, now())
-			recorded := moved(cur, base)
-			if found && !changed && !recorded && contact.Sub(cur.LastHookAt) < ContactInterval {
-				prev, rec = cur, cur // nothing to write
-				return nil
-			}
-			if contact.After(next.LastHookAt) {
-				next.LastHookAt = contact
-			}
-			// Calls and other background work change without an event; whatever
-			// an event reports of the session (session.Report) is logged.
-			if err := env.Store.Save(ctx, in.Log, cur, next, ev); err != nil {
-				return err
-			}
-			prev, rec, wrote = cur, next, true
-			return nil
-		})
-		if err != nil || rec.ID == "" {
-			return err
-		}
-	}
-
-	generation := rec.AttachGeneration
 	// An answer hook whose prompt closed (answered in the terminal, the call
 	// ran, the turn ended) would otherwise wait on: the agent ignores what it
 	// prints now.
@@ -236,92 +199,172 @@ func Run(parent context.Context, in Input) (err error) {
 	}
 	answer.Close(ctx, in.Log.Dir, closed...)
 
-	// The record and its event are in place. A hinted pane whose projection
-	// did not change needs no tmux process at all; one that changed it gets a
-	// guarded update under the pane's lock. That lock, and the record read
-	// inside it, keep this hook from overwriting a newer projection written
-	// between its own record save and its tmux invocation.
-	if fast {
-		if attach.ProjectionOf(prev) == attach.ProjectionOf(rec) {
-			return nil
-		}
-		// The alert is known before any tmux call, so a finishing hook can
-		// read presence in the same guarded invocation.
-		ring := Alert(prev.State(), rec.State())
-		latest, pane, enabled, notifier, present, siblings, written, perr := projectHint(ctx, env, in.Agent, p.SessionID, hint, ring != "")
-		if perr != nil {
-			return perr
-		}
-		if written && !siblings {
-			if attach.ProjectionOf(latest) != attach.ProjectionOf(rec) {
-				return nil // a newer record won; its own hook reports the change
-			}
-			if ring != "" {
-				alertWith(enabled, pane, ring)
-				return tell(ctx, latest, []tmux.Pane{pane}, ring, &serverOptions{
-					Server: pane.Server, Alert: enabled, Notify: notifier, Present: present, PresentKnown: true,
-				})
-			}
-			return nil
-		}
+	if tr.Action == adapter.End || reconcileEvent(p.HookEventName) || me.unproven(rec) {
+		return prove(ctx, env, in, p, prev, rec, wrote, me)
 	}
-
-	// The full path: panes first, then the process table, so that
-	// reconciliation never checks an attachment against a table older than it.
-	w = &attach.World{}
-	if err := loadPanes(ctx, w); err != nil {
-		return err
-	}
-	procErr := loadProcesses(ctx, w)
-	if procErr != nil {
-		w.Proc = nil
-	}
-	if reconcileEvent(p.HookEventName) {
-		if procErr != nil {
-			if ctx.Err() != nil {
-				err = errors.Join(err, ctx.Err())
-			}
-		} else if w.Proc != nil && w.Proc.Complete() {
-			// Housekeeping comes last, on a process table read after the panes:
-			// a table older than a pane could miss a client that attached
-			// meanwhile, and reconciliation would detach it.
-			defer func() {
-				err = errors.Join(err, attach.Reconcile(ctx, env, w))
-			}()
-		}
-	}
-	if ended {
-		return env.DetachAll(ctx, w, in.Agent, p.SessionID)
-	}
-	if !wrote {
-		// Nothing changed, but the hook still proves its pane shows the
-		// session: an earlier hook may have died before attaching it.
-		if w.Proc != nil {
-			if c, ok := w.ClientOf(host); hostKnown && ok && !c.Shows(rec) {
-				return env.AttachFromHook(ctx, w, c, rec, attach.Process, generation)
-			}
-		}
-		return nil
+	if attach.ProjectionOf(prev) == attach.ProjectionOf(rec) {
+		return nil // no tmux process at all
 	}
 	ring := Alert(prev.State(), rec.State())
-	var shown []tmux.Pane
-	if w.Proc != nil {
-		if c, ok := w.ClientOf(host); hostKnown && ok {
-			if err := env.AttachFromHook(ctx, w, c, rec, attach.Process, generation); err != nil {
-				return err
-			}
-			shown = append(shown, c.Pane)
-		}
-		for _, s := range w.Attached(rec) {
-			if len(shown) > 0 && s.Client.Pane.Server == shown[0].Server && s.Client.Pane.ID == shown[0].ID {
-				continue // just attached, projection included
-			}
-			if err := env.Show(ctx, s.Client.Pane, s.Attachment); err != nil {
-				return err
-			}
-			shown = append(shown, s.Client.Pane)
-		}
+	var options []string
+	if ring != "" {
+		options = []string{notify.Option, "@tmag-alert"}
 	}
+	written, refused, err := env.Project(ctx, rec, options...)
+	if err != nil {
+		return err
+	}
+	if own, ok := me.listed(rec); ok && slices.Contains(refused, own) {
+		// The hook's own pane no longer shows the session as listed: prove
+		// it again.
+		return prove(ctx, env, in, p, prev, rec, wrote, me)
+	}
+	if ring == "" || slices.ContainsFunc(written, func(w attach.Projected) bool { return w.Newer }) {
+		return nil // a newer state's own hook alerts for it
+	}
+	known := map[string]attach.Projected{}
+	var shown []tmux.Pane
+	for _, w := range written {
+		if w.Read {
+			known[w.Pane.Server] = w
+		}
+		shown = append(shown, w.Pane)
+	}
+	for _, w := range written {
+		alertWith(known[w.Pane.Server].Options["@tmag-alert"], w.Pane, ring)
+	}
+	return tell(ctx, rec, shown, ring, known)
+}
+
+// save applies the event to the session's record and logs what it reports,
+// under the session's lock. A record that cannot be read is the hook's to
+// replace: the session's state comes from its hooks, and this one reports
+// it anew. wrote is false when the hook changed nothing worth saving.
+func save(ctx context.Context, env attach.Env, in Input, p adapter.Payload, tr adapter.Transition, me self, now func() time.Time) (prev, rec session.Record, wrote bool, err error) {
+	get := func() (session.Record, bool, error) {
+		cur, found, err := env.Store.Get(ctx, in.Agent, p.SessionID)
+		var fault *session.RecordError
+		if errors.As(err, &fault) {
+			RecordError(ctx, in.Log.Dir, in.Agent, err)
+			found, err = false, nil
+		}
+		if err == nil && !found {
+			cur = session.Record{Agent: in.Agent, ID: p.SessionID}
+		}
+		return cur, found, err
+	}
+	contact := now().UTC()
+	ev := eventlog.Event{Agent: in.Agent, Session: p.SessionID, Event: p.HookEventName, Cwd: p.Cwd, LastHookAt: contact}
+	if tr.Action == adapter.End {
+		// Whatever the agent calls it, the contract's end of a session is
+		// SessionEnd, which followers drop the session on.
+		ev.Event = eventlog.End
+		err = env.Store.Lock(ctx, in.Agent, p.SessionID, func() error {
+			cur, _, err := get()
+			if err != nil {
+				return err
+			}
+			prev = cur
+			return env.Store.End(ctx, in.Log, cur, ev)
+		})
+		return prev, session.Record{}, err == nil, err
+	}
+	// The inbox a hook's agent names, and the process that serves it, are
+	// recorded for a send to prove later. The hook never connects to it.
+	inbox := inboxFor(me.table, in.PID, in.Agent, inboxOf(in.Agent, p, os.Getenv))
+	err = env.Store.Lock(ctx, in.Agent, p.SessionID, func() error {
+		cur, found, err := get()
+		if err != nil {
+			return err
+		}
+		base := cur
+		if p.Cwd != "" {
+			base.Cwd = p.Cwd
+		}
+		if me.known {
+			base.Host = session.Host{PID: me.host.Process.PID, Start: me.host.Process.Start, Role: me.host.Role}
+			if status := statusFileOf(in.Agent, me.host.Process.PID, os.Getenv); status != "" {
+				base.StatusFile = status
+			}
+		}
+		if p.TranscriptPath != "" {
+			base.Transcript = p.TranscriptPath
+		}
+		if inbox != nil {
+			base.Inbox = inbox
+		}
+		if class := p.PermissionClass(); class != "" {
+			base.Permission = class
+		}
+		next, changed := session.Apply(base, tr, now())
+		if found && !changed && base.Same(cur) && contact.Sub(cur.LastHookAt) < ContactInterval {
+			prev, rec = cur, cur // nothing to write
+			return nil
+		}
+		if contact.After(next.LastHookAt) {
+			next.LastHookAt = contact
+		}
+		// Calls and other background work change without an event; whatever
+		// an event reports of the session (session.Report) is logged.
+		if err := env.Store.Save(ctx, in.Log, cur, next, ev); err != nil {
+			return err
+		}
+		prev, rec, wrote = cur, next, true
+		return nil
+	})
+	return prev, rec, wrote, err
+}
+
+// prove takes the full path: it lists every server's panes and reads the
+// process table, attaches the hook's own pane when the hook proves its host
+// is the pane's own agent, updates the other panes that show the session,
+// and alerts. A session's start or end also reconciles every pane, last, on
+// a process table read after the panes: a table older than a pane could miss
+// a client that attached meanwhile, and reconciliation would detach it.
+func prove(ctx context.Context, env attach.Env, in Input, p adapter.Payload, prev, rec session.Record, wrote bool, me self) (err error) {
+	w, complete, err := in.Sources.world(ctx)
+	if err != nil {
+		return err
+	}
+	if complete && reconcileEvent(p.HookEventName) {
+		defer func() {
+			err = errors.Join(err, attach.Reconcile(ctx, env, w))
+		}()
+	}
+	if rec.ID == "" {
+		return env.DetachAll(ctx, w, in.Agent, p.SessionID)
+	}
+	if !complete {
+		return nil
+	}
+	var shown []tmux.Pane
+	if c, ok := w.ClientOf(me.host); me.known && ok {
+		if _, listed := me.listed(rec); !listed || !c.Shows(rec) {
+			if err := env.Attach(ctx, w, c, rec, attach.Process); err != nil {
+				return err
+			}
+		} else if wrote {
+			if a, ok := attach.FromPane(c.Pane); ok {
+				if err := env.Show(ctx, c.Pane, a); err != nil {
+					return err
+				}
+			}
+		}
+		shown = append(shown, c.Pane)
+	}
+	if !wrote {
+		return nil
+	}
+	for _, s := range w.Attached(rec) {
+		if len(shown) > 0 && s.Client.Pane.Server == shown[0].Server && s.Client.Pane.ID == shown[0].ID {
+			continue // the hook's own pane, written above
+		}
+		if err := env.Show(ctx, s.Client.Pane, s.Attachment); err != nil {
+			return err
+		}
+		shown = append(shown, s.Client.Pane)
+	}
+	ring := Alert(prev.State(), rec.State())
 	for _, pane := range shown {
 		alert(ctx, tmux.Server{Socket: pane.Server}, pane, ring)
 	}
@@ -355,6 +398,9 @@ func Alert(prev, next string) string {
 // (@tmag-alert) and nobody is looking at the pane. tmux turns the bell into the
 // window's alert flag, which prefix + M-n jumps to.
 func alert(ctx context.Context, srv tmux.Server, pane tmux.Pane, kind string) {
+	if kind == "" || pane.Watched {
+		return
+	}
 	enabled, _ := srv.Option(ctx, "@tmag-alert")
 	alertWith(enabled, pane, kind)
 }
@@ -376,26 +422,16 @@ func alertNames(enabled, kind string) bool {
 	return false
 }
 
-// serverOptions are the alert and notify values a hinted invocation already
-// read from the pane's server.
-type serverOptions struct {
-	Server string
-	Alert  string
-	Notify string
-	// Present is the hinted server's client activity result, when PresentKnown.
-	Present      bool
-	PresentKnown bool
-}
-
 // tell runs the person's @tmag-notify for an alert, for every session,
 // unless they are at the terminal that shows it: a pane shows the session on
 // a tmux server one of whose clients had their input within notify.Present,
 // and the bell reaches them there. A session no pane shows rings no bell, so
 // its alerts always run the command. Each distinct command set on a server
 // whose @tmag-alert names the alert runs once, detached, so the hook does not
-// wait for the network. known, from a hinted invocation, is not queried again;
-// every other server costs one option read.
-func tell(ctx context.Context, rec session.Record, shown []tmux.Pane, kind string, known *serverOptions) error {
+// wait for the network. A server known from Project, which read its options
+// and client activity with its first pane, is not asked again; every other
+// server costs one option read.
+func tell(ctx context.Context, rec session.Record, shown []tmux.Pane, kind string, known map[string]attach.Projected) error {
 	if kind == "" {
 		return nil
 	}
@@ -405,16 +441,13 @@ func tell(ctx context.Context, rec session.Record, shown []tmux.Pane, kind strin
 	}
 	var commands []string
 	for _, srv := range servers {
-		var command, enabled string
-		if known != nil && srv.Socket == known.Server {
-			command, enabled = known.Notify, known.Alert
-		} else {
-			values, err := srv.Options(ctx, notify.Option, "@tmag-alert")
-			if err != nil {
+		values := known[srv.Socket].Options
+		if _, ok := known[srv.Socket]; !ok {
+			if values, err = srv.Options(ctx, notify.Option, "@tmag-alert"); err != nil {
 				continue
 			}
-			command, enabled = values[notify.Option], values["@tmag-alert"]
 		}
+		command, enabled := values[notify.Option], values["@tmag-alert"]
 		if command == "" || slices.Contains(commands, command) || !alertNames(enabled, kind) {
 			continue
 		}
@@ -423,11 +456,7 @@ func tell(ctx context.Context, rec session.Record, shown []tmux.Pane, kind strin
 	if len(commands) == 0 {
 		return nil // as by default: one tmux call per server, nothing more
 	}
-	if known != nil && known.PresentKnown {
-		if known.Present {
-			return nil
-		}
-	} else if present(ctx, shown) {
+	if present(ctx, shown, known) {
 		return nil
 	}
 	a := notify.Alert{Kind: kind, Agent: rec.Agent, Session: rec.ID, State: rec.State(), StateKind: rec.Kind(), Cwd: rec.Cwd}
@@ -455,15 +484,20 @@ func tell(ctx context.Context, rec session.Record, shown []tmux.Pane, kind strin
 }
 
 // present reports whether the person is at a terminal that shows one of the
-// panes: its tmux server had their input within notify.Present.
-func present(ctx context.Context, shown []tmux.Pane) bool {
+// panes: its tmux server had their input within notify.Present. A server
+// known from Project is not asked again.
+func present(ctx context.Context, shown []tmux.Pane, known map[string]attach.Projected) bool {
 	seen := map[string]bool{}
 	for _, p := range shown {
 		if seen[p.Server] {
 			continue
 		}
 		seen[p.Server] = true
-		if last, ok := (tmux.Server{Socket: p.Server}).LastInput(ctx); ok && time.Since(last) < notify.Present {
+		last := known[p.Server].Activity
+		if _, ok := known[p.Server]; !ok {
+			last, _ = (tmux.Server{Socket: p.Server}).LastInput(ctx)
+		}
+		if !last.IsZero() && time.Since(last) < notify.Present {
 			return true
 		}
 	}

@@ -72,14 +72,12 @@ func TestHookRecordsStateWithoutAProcessTable(t *testing.T) {
 	if err := store.Put(context.Background(), rec); err != nil {
 		t.Fatal(err)
 	}
-	previous := loadLineage
-	loadLineage = func(context.Context, int) (*proc.Table, error) { return nil, errors.New("process table unreadable") }
-	t.Cleanup(func() { loadLineage = previous })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	payload := `{"session_id":"state-first","hook_event_name":"UserPromptSubmit","prompt_id":"turn"}`
-	if err := Run(ctx, Input{Agent: proc.Claude, Payload: strings.NewReader(payload), Log: log, PID: os.Getpid()}); err != nil {
+	unreadable := Sources{Lineage: func(context.Context, int) (*proc.Table, error) { return nil, errors.New("process table unreadable") }}
+	if err := Run(ctx, Input{Agent: proc.Claude, Payload: strings.NewReader(payload), Log: log, PID: os.Getpid(), Sources: unreadable}); err != nil {
 		t.Fatal(err)
 	}
 	got, ok, err := store.Get(context.Background(), proc.Claude, "state-first")

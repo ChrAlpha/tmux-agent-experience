@@ -88,17 +88,16 @@ promise is documented in the package, and changes with it.
   wherever it runs, in daemons and background supervisors too.
 - **A pane shows a session only on proof.** Process ancestry or the Codex
   `thread-id` title item, never `$TMUX_PANE`, names or directories;
-  ambiguity is no attachment. A record may carry a pane hint, {server, pane
-  id}, with the client it was proven for, for a pane in which its host was
-  proven by process ancestry. Only a hook that proved its own host's pane sets
-  it, and only while no Attach has published since the hook read the record and
-  no attachment of the session is on another server; every Attach publishes a
-  generation and any Attach of another pane clears the hint. A later hook
-  updates that pane only through a guard inside tmux; the same invocation lists
-  other panes on that server naming the session, and if there are any the hook
-  takes the full path for them. A failed guard clears the hint and takes the
-  full proof path. Bells, borders, the picker, the status line and `jump` show
-  only proven attachments; anything else is `unknown`.
+  ambiguity is no attachment. A session's record lists every pane attached
+  to it, with the client each attachment is for: an Attach lists the pane and
+  writes it under the session's lock, a Detach unlists it after clearing it.
+  A hook writes a listed pane only under that pane's lock, from the record
+  read there, through a guard inside tmux that the pane still holds the
+  attachment and runs the program it was attached with; a refused pane is
+  unlisted. A hook takes the full proof path only at a session's start or
+  end, or when its host is a client under tmux whose pane the record does not
+  list or whose guard refused. Bells, borders, the picker, the status line
+  and `jump` show only proven attachments; anything else is `unknown`.
 - **Control is gated.** `send`, `interrupt` and `answer` act only through a
   channel proven to reach the session, after checking the state they need
   again under the locks they need; an inbox is proven when its listener is
@@ -223,8 +222,8 @@ gh workflow run stress.yml --ref BRANCH -f run='^TestA$' -f count=20   # the sam
 ## Testing
 
 - Unit tests build worlds from `proc.NewTable` and literal `tmux.Pane`s;
-  only `internal/hook`'s tests of the guarded pane update start a tmux server,
-  and skip without one.
+  only `internal/attach`'s tests of the guarded pane update start a tmux
+  server, and skip without one.
 - Tests run tmag as a person from outside the test's process tree
   (`harness.tmag`), and as an agent from a fake agent's tool.
 - E2E tests start private servers (`tmux -L e2e` under a temporary

@@ -2,7 +2,6 @@ package e2e
 
 import (
 	"context"
-	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,13 +18,19 @@ import (
 	"github.com/ChrAlpha/tmux-agent-experience/internal/tmux"
 )
 
-func hasHint(rec session.Record, pane string) bool {
-	return rec.Pane != nil && rec.Pane.ID == pane && rec.Pane.Start != ""
+// listsPane reports whether rec lists pane for a proven client.
+func listsPane(rec session.Record, pane string) bool {
+	for _, s := range rec.Shown {
+		if s.Pane == pane && s.Start != "" {
+			return true
+		}
+	}
+	return false
 }
 
-// A hinted session's state hooks start no tmux process when the projection
-// stays the same, and exactly one when it changes.
-func TestHintedHookUpdatesOnePaneWithOneTmuxProcess(t *testing.T) {
+// A session's state hooks start no tmux process when the projection stays
+// the same, and exactly one for the pane its record lists when it changes.
+func TestListedHookUpdatesItsPaneWithOneTmuxProcess(t *testing.T) {
 	real, err := exec.LookPath("tmux")
 	if err != nil {
 		t.Fatal(err)
@@ -62,12 +67,12 @@ func TestHintedHookUpdatesOnePaneWithOneTmuxProcess(t *testing.T) {
 	}, claude)
 	h.waitPane(pane, "idle", "process")
 	store := session.Store{Dir: h.state}
-	h.eventually("a pane hint", func() bool {
+	h.eventually("the pane listed", func() bool {
 		rec, ok, err := store.Get(context.Background(), proc.Claude, sidA)
-		return err == nil && ok && hasHint(rec, pane)
+		return err == nil && ok && listsPane(rec, pane)
 	})
-	// SessionStart publishes the hint before it finishes; wait for it to exit
-	// so its remaining reads are not counted with the first prompt.
+	// SessionStart lists the pane before it finishes; wait for it to exit so
+	// its remaining reads are not counted with the first prompt.
 	h.waitHookExit(claude)
 	hookInvocations := func() int {
 		b, _ := os.ReadFile(log)
@@ -116,8 +121,9 @@ func TestHintedHookUpdatesOnePaneWithOneTmuxProcess(t *testing.T) {
 		t.Fatalf("one-server Stop with notifier: got %d tmux processes, want 1", got)
 	}
 
-	// A finishing hook reuses the hinted server's options and reads each
-	// other server once: three servers cost three tmux processes, not four.
+	// A finishing hook reuses the options its pane's server printed with the
+	// guarded write and reads each other server once: three servers cost
+	// three tmux processes, not four.
 	for _, name := range []string{"e2e-extra-one", "e2e-extra-two"} {
 		cmd := exec.Command("tmux", "-L", name, "-f", "/dev/null", "new-session", "-d", "-s", "extra", "/bin/sh")
 		if out, err := cmd.CombinedOutput(); err != nil {
@@ -162,26 +168,26 @@ func TestHintedHookUpdatesOnePaneWithOneTmuxProcess(t *testing.T) {
 	}
 }
 
-// The guard writes nothing when the pane's attachment changed under the hint;
-// the hook clears it and takes the full proof path, which restores the pane.
-func TestHintGuardRefusesAChangedAttachment(t *testing.T) {
+// The guard writes nothing when the pane's attachment changed under its
+// listing; the hook unlists it and takes the full proof path, which restores
+// the pane and lists it again.
+func TestGuardRefusesAChangedAttachment(t *testing.T) {
 	h := start(t)
 	pane := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_HOOKS": "1", "FAKE_TURN_MS": "100"}, filepath.Join(bin, "claude"))
 	h.waitPane(pane, "idle", "process")
 	store := session.Store{Dir: h.state}
-	h.eventually("a pane hint", func() bool {
+	h.eventually("the pane listed", func() bool {
 		rec, ok, err := store.Get(context.Background(), proc.Claude, sidA)
-		return err == nil && ok && hasHint(rec, pane)
+		return err == nil && ok && listsPane(rec, pane)
 	})
 	h.tmux("set-option", "-p", "-t", pane, "@tmag_session", sidB)
 	h.tmux("send-keys", "-t", pane, "/pretool", "Enter")
 	h.eventually("the full path restored the attachment", func() bool {
 		return h.tmux("display-message", "-p", "-t", pane, "#{@tmag_session}|#{@tmag_state}|#{@tmag_kind}") == sidA+"|working|"
 	})
-	// The Attach writes the pane before it saves the hint.
-	h.eventually("the full path restored the hint", func() bool {
+	h.eventually("the full path listed the pane again", func() bool {
 		rec, ok, err := store.Get(context.Background(), proc.Claude, sidA)
-		return err == nil && ok && hasHint(rec, pane)
+		return err == nil && ok && listsPane(rec, pane)
 	})
 }
 
@@ -189,7 +195,7 @@ func TestHintGuardRefusesAChangedAttachment(t *testing.T) {
 // waiting for a reconciling read.
 func TestSharedSessionProjection(t *testing.T) {
 	h := start(t)
-	// High pane ids also exercise the sibling list's #{pane_id} output.
+	// High pane ids also exercise pane ids in the guarded call.
 	for range 10 {
 		h.tmux("new-window", "-d", "/bin/sh", "-c", "sleep 600")
 	}
@@ -216,8 +222,9 @@ func TestSharedSessionProjection(t *testing.T) {
 	h.eventually("all attached panes blocked", func() bool { return state(first) == "blocked" })
 }
 
-// A sibling pane whose proven client died is not projected or belled by the
-// full path: its options still name the session, but Check refuses it.
+// A pane whose proven client died is not projected or belled: its options
+// still name the session, but it no longer runs the program it was attached
+// with, so the guard refuses it.
 func TestDeadSiblingClientIsNotProjected(t *testing.T) {
 	h := start(t)
 	claude := filepath.Join(bin, "claude")
@@ -258,13 +265,14 @@ func TestDeadSiblingClientIsNotProjected(t *testing.T) {
 	}
 }
 
-// Attach writes a pane's old projection, then reads the record again; a hook
-// that saved a newer state meanwhile is picked up by that second projection.
-func TestAttachPicksUpAChangedRecord(t *testing.T) {
+// Attach lists the pane and writes it under the session's lock: a hook that
+// saves a newer state meanwhile waits for it, then finds the pane listed, so
+// its projection reaches the pane.
+func TestHookAfterAttachFindsThePaneListed(t *testing.T) {
 	h := start(t)
 	pane := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_HOOKS": "1"}, filepath.Join(bin, "claude"))
 	h.waitPane(pane, "idle", "process")
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	store := session.Store{Dir: h.state}
 	w, err := attach.Load(ctx)
@@ -280,13 +288,11 @@ func TestAttachPicksUpAChangedRecord(t *testing.T) {
 	if c.Process.PID == 0 {
 		t.Fatal("no client in the pane")
 	}
-	sock := h.tmux("display-message", "-p", "#{socket_path}")
-	hint := session.PaneHint{Server: sock, ID: pane, PID: c.Process.PID, Start: c.Process.Start}
 	rec, ok, err := store.Get(ctx, proc.Claude, sidA)
 	if err != nil || !ok {
 		t.Fatal(err)
 	}
-	rec.Main, rec.Since, rec.Pane = "working", time.Unix(100, 0), &hint
+	rec.Main, rec.Since, rec.Shown = "working", time.Unix(100, 0), nil
 	if err := store.Put(ctx, rec); err != nil {
 		t.Fatal(err)
 	}
@@ -314,40 +320,52 @@ func TestAttachPicksUpAChangedRecord(t *testing.T) {
 	t.Setenv("PATH", wrap+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	env := attach.Env{Log: eventlog.Open(h.state), Store: store}
-	done := make(chan error, 1)
-	go func() { done <- env.Attach(ctx, w, c, rec, attach.Process) }()
-	for deadline := time.Now().Add(2 * time.Second); ; time.Sleep(10 * time.Millisecond) {
-		if _, err := os.Stat(blocked); err == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("Attach never reached its write")
-		}
-	}
-	if err := store.Lock(ctx, proc.Claude, sidA, func() error {
-		cur, ok, err := store.Get(ctx, proc.Claude, sidA)
-		if err != nil || !ok {
-			return err
-		}
-		cur.Main, cur.Since = "idle", time.Unix(200, 0)
-		return store.Put(ctx, cur)
-	}); err != nil {
-		t.Fatal(err)
+	attached := make(chan error, 1)
+	go func() { attached <- env.Attach(ctx, w, c, rec, attach.Process) }()
+	h.eventually("Attach reached its write", func() bool {
+		_, err := os.Stat(blocked)
+		return err == nil
+	})
+	saved := make(chan error, 1)
+	go func() {
+		saved <- store.Lock(ctx, proc.Claude, sidA, func() error {
+			cur, ok, err := store.Get(ctx, proc.Claude, sidA)
+			if err != nil || !ok {
+				return err
+			}
+			cur.Main, cur.Since = "idle", time.Unix(200, 0)
+			return store.Put(ctx, cur)
+		})
+	}()
+	select {
+	case err := <-saved:
+		t.Fatalf("a hook saved while Attach wrote the pane: %v", err)
+	case <-time.After(200 * time.Millisecond):
 	}
 	if err := os.WriteFile(release, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := <-done; err != nil {
+	if err := <-attached; err != nil {
 		t.Fatal(err)
 	}
+	if err := <-saved; err != nil {
+		t.Fatal(err)
+	}
+	latest, _, err := store.Get(ctx, proc.Claude, sidA)
+	if err != nil || !listsPane(latest, pane) {
+		t.Fatalf("the hook found the pane unlisted: %+v, %v", latest.Shown, err)
+	}
+	if _, refused, err := env.Project(ctx, latest); err != nil || len(refused) != 0 {
+		t.Fatalf("Project: refused %+v, %v", refused, err)
+	}
 	if got := h.tmux("display-message", "-p", "-t", pane, "#{@tmag_state}|#{@tmag_since}"); got != "idle|200" {
-		t.Fatalf("pane projection = %q, want the record saved during Attach", got)
+		t.Fatalf("pane projection = %q, want the record saved after Attach", got)
 	}
 }
 
-// A title-id attachment on another server clears a process hint, so the next
-// hook takes the full path and updates both panes.
-func TestOtherServerTitleAttachmentClearsHint(t *testing.T) {
+// A title-id attachment on another server is listed too, so a hook that
+// updates its own pane updates that one as well.
+func TestOtherServerTitleAttachmentIsProjected(t *testing.T) {
 	h := start(t)
 	a := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_HOOKS": "1"}, filepath.Join(bin, "codex"))
 	h.eventually("A ready", func() bool {
@@ -367,8 +385,8 @@ func TestOtherServerTitleAttachmentClearsHint(t *testing.T) {
 		t.Fatalf("B evidence = %q", evidence)
 	}
 	rec, ok, err := (session.Store{Dir: h.state}).Get(context.Background(), "codex", sidA)
-	if err != nil || !ok || rec.Pane != nil {
-		t.Fatalf("hint after cross-server title attach = %+v, %v, %v", rec.Pane, ok, err)
+	if err != nil || !ok || !listsPane(rec, a) || !listsPane(rec, b) {
+		t.Fatalf("listed after the cross-server title attach = %+v, %v, %v", rec.Shown, ok, err)
 	}
 	h.tmux("send-keys", "-t", a, "/pretool", "Enter")
 	h.eventually("A working", func() bool {
@@ -379,75 +397,10 @@ func TestOtherServerTitleAttachmentClearsHint(t *testing.T) {
 	})
 }
 
-// Two Attaches that captured the same stale world, both from hooks that read
-// the same generation, cannot publish a hint that hides the other server.
-func TestCrossServerStaleWorldCannotPublishHint(t *testing.T) {
-	h := start(t)
-	a := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_HOOKS": "1"}, filepath.Join(bin, "claude"))
-	h.eventually("A ready", func() bool {
-		return strings.Contains(h.tmux("capture-pane", "-p", "-t", a), "ready")
-	})
-	h2 := &harness{t: t, name: "second", dir: h.dir, state: h.state}
-	h2.tmux("-f", "/dev/null", "new-session", "-d", "-s", "main", "/bin/sh")
-	t.Cleanup(func() { _ = exec.Command("tmux", "-L", h2.name, "kill-server").Run() })
-	b := h2.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_HOOKS": "1"}, filepath.Join(bin, "claude"))
-	h.eventually("B ready", func() bool {
-		return strings.Contains(h2.tmux("capture-pane", "-p", "-t", b), "ready")
-	})
-	ctx := context.Background()
-	store := session.Store{Dir: h.state}
-	rec, ok, err := store.Get(ctx, "claude", sidA)
-	if err != nil || !ok {
-		t.Fatal(err)
-	}
-	sa, sb := tmux.ServerByName(h.name), tmux.ServerByName(h2.name)
-	for _, pair := range []struct {
-		s tmux.Server
-		p string
-	}{{sa, a}, {sb, b}} {
-		if err := pair.s.ClearPaneOptions(ctx, pair.p); err != nil {
-			t.Fatal(err)
-		}
-	}
-	rec.Pane, rec.AttachGeneration = nil, 0
-	if err := store.Put(ctx, rec); err != nil {
-		t.Fatal(err)
-	}
-	w, err := attach.Load(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pa, _ := w.Find(sa.Socket, a)
-	pb, _ := w.Find(sb.Socket, b)
-	ca, oka := w.ClientIn(pa)
-	cb, okb := w.ClientIn(pb)
-	if !oka || !okb {
-		t.Fatal("missing clients")
-	}
-	env := attach.Env{Store: store, Log: eventlog.Open(h.state)}
-	if err := env.AttachFromHook(ctx, w, ca, rec, attach.Process, rec.AttachGeneration); err != nil {
-		t.Fatal(err)
-	}
-	if err := env.AttachFromHook(ctx, w, cb, rec, attach.Process, rec.AttachGeneration); err != nil {
-		t.Fatal(err)
-	}
-	current, _, _ := store.Get(ctx, "claude", sidA)
-	if current.Pane != nil {
-		t.Fatalf("stale-world Attach published hint %+v", current.Pane)
-	}
-	h2.tmux("send-keys", "-t", b, "/pretool", "Enter")
-	h.eventually("B working", func() bool {
-		return h2.tmux("display-message", "-p", "-t", b, "#{@tmag_state}") == "working"
-	})
-	h.eventually("A working", func() bool {
-		return h.tmux("display-message", "-p", "-t", a, "#{@tmag_state}") == "working"
-	})
-}
-
-// A canceled Attach cannot leave a visible pane behind: the generation bump
-// and hint clear are durable before the pane options are written. The PATH
-// wrapper is the barrier at the actual write, not a sleep.
-func TestPartialAttachIsNotPublished(t *testing.T) {
+// A canceled Attach cannot leave a pane showing the session that its record
+// does not list: the listing is durable before the pane options are written.
+// The PATH wrapper is the barrier at the actual write, not a sleep.
+func TestCanceledAttachLeavesItsPaneListed(t *testing.T) {
 	h := start(t)
 	a := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_HOOKS": "1"}, filepath.Join(bin, "claude"))
 	h.eventually("A ready", func() bool {
@@ -463,16 +416,17 @@ func TestPartialAttachIsNotPublished(t *testing.T) {
 	ctx := context.Background()
 	store := session.Store{Dir: h.state}
 	rec, ok, err := store.Get(ctx, "claude", sidA)
-	if err != nil || !ok || rec.Pane == nil {
-		t.Fatalf("initial hint = %+v, %v, %v", rec.Pane, ok, err)
+	if err != nil || !ok || !listsPane(rec, a) {
+		t.Fatalf("initial listing = %+v, %v, %v", rec.Shown, ok, err)
 	}
 	w, err := attach.Load(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
+	second := h2.tmux("display-message", "-p", "#{socket_path}")
 	var cb attach.Client
 	for _, p := range w.Panes {
-		if p.ID == b && p.Server != rec.Pane.Server {
+		if p.ID == b && p.Server == second {
 			cb, _ = w.ClientIn(p)
 		}
 	}
@@ -517,221 +471,12 @@ func TestPartialAttachIsNotPublished(t *testing.T) {
 		t.Fatal("canceled Attach succeeded")
 	}
 	current, _, _ := store.Get(ctx, "claude", sidA)
-	if current.Pane != nil {
-		t.Fatalf("canceled Attach kept a hint: %+v", current.Pane)
-	}
-	if current.AttachGeneration == rec.AttachGeneration {
-		t.Fatal("canceled Attach did not advance the generation")
+	if h2.tmux("display-message", "-p", "-t", b, "#{@tmag_session}") == sidA && !listsPane(current, b) {
+		t.Fatalf("a pane shows the session its record does not list: %+v", current.Shown)
 	}
 	h.tmux("send-keys", "-t", a, "/pretool", "Enter")
 	h.eventually("A working", func() bool {
 		return h.tmux("display-message", "-p", "-t", a, "#{@tmag_state}") == "working"
-	})
-}
-
-// A record deleted and recreated cannot make an old hook's generation token
-// match a new publication on another server.
-func TestEndGenerationABACannotPublishHint(t *testing.T) {
-	h := start(t)
-	a := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_HOOKS": "1", "FAKE_TITLE": sidA[:29] + "..."}, filepath.Join(bin, "codex"))
-	h.eventually("A ready", func() bool {
-		return strings.Contains(h.tmux("capture-pane", "-p", "-t", a), "ready")
-	})
-	h2 := &harness{t: t, name: "second", dir: h.dir, state: h.state}
-	h2.tmux("-f", "/dev/null", "new-session", "-d", "-s", "main", "/bin/sh")
-	t.Cleanup(func() { _ = exec.Command("tmux", "-L", h2.name, "kill-server").Run() })
-	b := h2.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_HOOKS": "1", "FAKE_TITLE": sidA[:29] + "..."}, filepath.Join(bin, "codex"))
-	h.eventually("B ready", func() bool {
-		return strings.Contains(h2.tmux("capture-pane", "-p", "-t", b), "ready")
-	})
-	ctx := context.Background()
-	store := session.Store{Dir: h.state}
-	rec, ok, err := store.Get(ctx, "codex", sidA)
-	if err != nil || !ok {
-		t.Fatal(err)
-	}
-	sa, sb := tmux.ServerByName(h.name), tmux.ServerByName(h2.name)
-	for _, pair := range []struct {
-		s tmux.Server
-		p string
-	}{{sa, a}, {sb, b}} {
-		if err := pair.s.ClearPaneOptions(ctx, pair.p); err != nil {
-			t.Fatal(err)
-		}
-	}
-	rec.Pane, rec.AttachGeneration = nil, 0
-	if err := store.Put(ctx, rec); err != nil {
-		t.Fatal(err)
-	}
-	w, err := attach.Load(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pa, _ := w.Find(sa.Socket, a)
-	pb, _ := w.Find(sb.Socket, b)
-	ca, oka := w.ClientIn(pa)
-	cb, okb := w.ClientIn(pb)
-	if !oka || !okb {
-		t.Fatal("missing clients")
-	}
-	env := attach.Env{Store: store, Log: eventlog.Open(h.state)}
-	if err := env.Attach(ctx, w, ca, rec, attach.Process); err != nil {
-		t.Fatal(err)
-	}
-	attached, err := attach.Load(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := env.DetachAll(ctx, attached, rec.Agent, rec.ID); err != nil {
-		t.Fatal(err)
-	}
-	rec, _, err = store.Get(ctx, rec.Agent, rec.ID)
-	if err != nil || rec.AttachGeneration == 0 || rec.Pane != nil {
-		t.Fatalf("setup: %+v, %v", rec, err)
-	}
-	w, err = attach.Load(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	oldGeneration := rec.AttachGeneration
-	if err := store.Lock(ctx, rec.Agent, rec.ID, func() error {
-		return store.End(ctx, env.Log, rec, eventlog.Event{Event: eventlog.End})
-	}); err != nil {
-		t.Fatal(err)
-	}
-	reborn := rec
-	reborn.AttachGeneration = 0
-	if err := store.Lock(ctx, rec.Agent, rec.ID, func() error { return store.Put(ctx, reborn) }); err != nil {
-		t.Fatal(err)
-	}
-	if err := env.Attach(ctx, w, cb, reborn, attach.TitleID); err != nil {
-		t.Fatal(err)
-	}
-	if err := env.AttachFromHook(ctx, w, ca, rec, attach.Process, oldGeneration); err != nil {
-		t.Fatal(err)
-	}
-	current, _, _ := store.Get(ctx, rec.Agent, sidA)
-	if current.Pane != nil {
-		t.Fatalf("End ABA published hint %+v at generation %d", current.Pane, current.AttachGeneration)
-	}
-	h.tmux("send-keys", "-t", a, "/pretool", "Enter")
-	h.eventually("B working", func() bool {
-		return h2.tmux("display-message", "-p", "-t", b, "#{@tmag_state}") == "working"
-	})
-	h.eventually("A working", func() bool {
-		return h.tmux("display-message", "-p", "-t", a, "#{@tmag_state}") == "working"
-	})
-}
-
-// A hook cannot capture a prepared token while the publishing Attach's pane
-// is still invisible: the Attach holds the session lock through its write.
-func TestPreparePublicationGapCannotPublishHint(t *testing.T) {
-	h := start(t)
-	a := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_HOOKS": "1"}, filepath.Join(bin, "claude"))
-	h.eventually("A ready", func() bool {
-		return strings.Contains(h.tmux("capture-pane", "-p", "-t", a), "ready")
-	})
-	h2 := &harness{t: t, name: "second", dir: h.dir, state: h.state}
-	h2.tmux("-f", "/dev/null", "new-session", "-d", "-s", "main", "/bin/sh")
-	t.Cleanup(func() { _ = exec.Command("tmux", "-L", h2.name, "kill-server").Run() })
-	b := h2.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA}, filepath.Join(bin, "claude"))
-	h.eventually("B ready", func() bool {
-		return strings.Contains(h2.tmux("capture-pane", "-p", "-t", b), "ready")
-	})
-	ctx := context.Background()
-	store := session.Store{Dir: h.state}
-	rec, ok, err := store.Get(ctx, "claude", sidA)
-	if err != nil || !ok || rec.Pane == nil {
-		t.Fatalf("initial hint = %+v, %v, %v", rec.Pane, ok, err)
-	}
-	w, err := attach.Load(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var cb attach.Client
-	for _, p := range w.Panes {
-		if p.ID == b && p.Server != rec.Pane.Server {
-			cb, _ = w.ClientIn(p)
-		}
-	}
-	if cb.Process.PID == 0 {
-		t.Fatal("missing B client")
-	}
-	real, err := exec.LookPath("tmux")
-	if err != nil {
-		t.Fatal(err)
-	}
-	root := t.TempDir()
-	blocked, release := filepath.Join(root, "blocked"), filepath.Join(root, "release")
-	t.Cleanup(func() { _ = os.WriteFile(release, nil, 0o600) })
-	wrap := filepath.Join(root, "bin")
-	if err := os.MkdirAll(wrap, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	script := "#!/bin/sh\n" +
-		"if [ \"$3\" = '" + cb.Pane.Server + "' ] && [ \"$4\" = set-option ] && [ ! -e '" + release + "' ]; then\n" +
-		"  : > '" + blocked + "'\n" +
-		"  while [ ! -e '" + release + "' ]; do sleep 0.01; done\n" +
-		"fi\n" +
-		"exec '" + strings.ReplaceAll(real, "'", "'\\''") + "' \"$@\"\n"
-	if err := os.WriteFile(filepath.Join(wrap, "tmux"), []byte(script), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", wrap+string(os.PathListSeparator)+os.Getenv("PATH"))
-	env := attach.Env{Store: store, Log: eventlog.Open(h.state)}
-	actx, cancel := context.WithTimeout(ctx, 3*time.Second)
-	defer cancel()
-	done := make(chan error, 1)
-	go func() { done <- env.Attach(actx, w, cb, rec, attach.Process) }()
-	h.eventually("B reached its write", func() bool {
-		_, err := os.Stat(blocked)
-		return err == nil
-	})
-	// The session lock is held across the pane write; a bounded probe cannot
-	// enter until the barrier is released.
-	probeCtx, probeCancel := context.WithTimeout(ctx, 150*time.Millisecond)
-	entered := false
-	probeErr := store.Lock(probeCtx, "claude", sidA, func() error { entered = true; return nil })
-	probeCancel()
-	if entered || !errors.Is(probeErr, context.DeadlineExceeded) {
-		t.Fatalf("session lock accessible before the pane write: entered=%v err=%v", entered, probeErr)
-	}
-	if err := os.WriteFile(release, nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := <-done; err != nil {
-		t.Fatal(err)
-	}
-	var captured session.Record
-	if err := store.Lock(actx, "claude", sidA, func() error {
-		var err error
-		captured, _, err = store.Get(actx, "claude", sidA)
-		return err
-	}); err != nil {
-		t.Fatal(err)
-	}
-	frozen, err := attach.Load(actx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pa, _ := frozen.Find(rec.Pane.Server, a)
-	ca, ok := frozen.ClientIn(pa)
-	if !ok {
-		t.Fatal("missing A client")
-	}
-	if err := env.AttachFromHook(actx, frozen, ca, captured, attach.Process, captured.AttachGeneration); err != nil {
-		t.Fatal(err)
-	}
-	current, _, _ := store.Get(ctx, "claude", sidA)
-	if current.Pane != nil {
-		t.Fatalf("a hook captured a token before the pane was visible: %+v", current.Pane)
-	}
-	h.tmux("send-keys", "-t", a, "/pretool", "Enter")
-	h.eventually("A working", func() bool {
-		return h.tmux("display-message", "-p", "-t", a, "#{@tmag_state}") == "working"
-	})
-	h.eventually("B follows A", func() bool {
-		return h2.tmux("display-message", "-p", "-t", b, "#{@tmag_state}") == "working"
 	})
 }
 
@@ -750,7 +495,7 @@ func TestFailedReplacementDoesNotLogDetach(t *testing.T) {
 		t.Fatalf("missing record: %v", err)
 	}
 	next := rec
-	next.ID, next.Pane = sidB, nil
+	next.ID, next.Shown = sidB, nil
 	if err := store.Put(ctx, next); err != nil {
 		t.Fatal(err)
 	}
@@ -803,8 +548,9 @@ func TestFailedReplacementDoesNotLogDetach(t *testing.T) {
 }
 
 // A multiline notifier is executable command data, not a display field: a
-// hinted hook must pass it through without stripping its newlines.
-func TestHintedNotifyPreservesNewlines(t *testing.T) {
+// hook that updates its listed pane must pass it through without stripping
+// its newlines.
+func TestFastHookNotifyPreservesNewlines(t *testing.T) {
 	h := start(t)
 	sent := filepath.Join(h.dir, "notified")
 	h.tmux("set-option", "-g", "@tmag-alert", "finished")

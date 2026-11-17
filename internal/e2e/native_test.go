@@ -95,9 +95,9 @@ func TestCompactionAndFailureReachTheView(t *testing.T) {
 	}
 }
 
-// A native Idle reached through a read path also projects the hinted pane,
+// A native Idle reached through a read path also projects the listed pane,
 // before a later no-op idle_prompt hook returns.
-func TestNativeIdleProjectsHintedPane(t *testing.T) {
+func TestNativeIdleProjectsTheListedPane(t *testing.T) {
 	h := start(t)
 	out := filepath.Join(h.dir, "received")
 	pane := h.spawn(h.dir, map[string]string{
@@ -111,14 +111,14 @@ func TestNativeIdleProjectsHintedPane(t *testing.T) {
 	})
 	store := session.Store{Dir: h.state}
 	before, ok, err := store.Get(context.Background(), "claude", sidA)
-	if err != nil || !ok || !hasHint(before, pane) {
-		t.Fatalf("no hint: %+v %v", before, err)
+	if err != nil || !ok || !listsPane(before, pane) {
+		t.Fatalf("the pane is not listed: %+v %v", before, err)
 	}
 	h.tmux("send-keys", "-t", pane, "Escape")
 	h.waitSession(sidA, "idle") // list applies and projects the native Idle transition.
 	after, ok, err := store.Get(context.Background(), "claude", sidA)
-	if err != nil || !ok || !hasHint(after, pane) {
-		t.Fatalf("lost hint: %+v %v", after, err)
+	if err != nil || !ok || !listsPane(after, pane) {
+		t.Fatalf("the pane was unlisted: %+v %v", after, err)
 	}
 	if got := h.tmux("display-message", "-p", "-t", pane, "#{@tmag_state}"); got != "idle" {
 		t.Fatalf("after list: record=%s pane=%s", after.State(), got)
@@ -130,7 +130,7 @@ func TestNativeIdleProjectsHintedPane(t *testing.T) {
 	h.tmux("send-keys", "-t", pane, "/barrier", "Enter")
 	readEventually(t, out, "/barrier")
 	if got := h.tmux("display-message", "-p", "-t", pane, "#{@tmag_state}"); got != "idle" {
-		t.Fatalf("native Idle and subsequent idle_prompt left hinted pane %s; want idle", got)
+		t.Fatalf("native Idle and subsequent idle_prompt left the listed pane %s; want idle", got)
 	}
 }
 
@@ -184,7 +184,7 @@ func TestInterruptRechecksNativeIdle(t *testing.T) {
 		t.Fatalf("record not idle after the locked refusal: %+v %v", rec, err)
 	}
 	if got := h.tmux("display-message", "-p", "-t", pane, "#{@tmag_state}"); got != "idle" {
-		t.Fatalf("the locked native Idle refusal left the hinted pane %s; want idle", got)
+		t.Fatalf("the locked native Idle refusal left the listed pane %s; want idle", got)
 	}
 	// A later idle_prompt and read must leave the pane idle, not project the
 	// old working state back.
@@ -194,7 +194,7 @@ func TestInterruptRechecksNativeIdle(t *testing.T) {
 	readEventually(t, out, "/barrier")
 	h.waitSession(sidA, "idle")
 	if got := h.tmux("display-message", "-p", "-t", pane, "#{@tmag_state}"); got != "idle" {
-		t.Fatalf("locked native Idle refusal plus idle_prompt and list left hinted pane %s; want idle", got)
+		t.Fatalf("locked native Idle refusal plus idle_prompt and list left the listed pane %s; want idle", got)
 	}
 }
 

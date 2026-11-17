@@ -6,8 +6,10 @@
 package session
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -42,14 +44,11 @@ type Record struct {
 	// Inbox is the socket the session's own agent serves for messages, and
 	// the process that serves it, as its hooks proved it.
 	Inbox *Inbox `json:"inbox,omitempty"`
-	// Pane is the pane this session was proven to run in by process ancestry,
-	// and the client process it was proven for. A later hook of the same host
-	// uses it to update that pane without listing panes or the process table.
-	Pane *PaneHint `json:"pane,omitempty"`
-	// AttachGeneration is bumped under the session lock by every Attach that
-	// publishes an attachment of the session. A hook that reads it before
-	// listing panes uses it to refuse a hint its world is too old to judge.
-	AttachGeneration uint64 `json:"attach_generation,omitempty"`
+	// Shown lists every pane attached to the session, on any server and by
+	// any evidence, with the client each attachment is for: an Attach lists a
+	// pane before the pane shows the session, and a Detach unlists it after.
+	// A hook updates these panes without listing panes or processes.
+	Shown []Shown `json:"shown,omitempty"`
 
 	// Main is the main agent's own state (working, idle or unknown) and
 	// MainKind qualifies it (error after a failed turn, compacting during one).
@@ -67,11 +66,8 @@ type Record struct {
 	// its hooks found it. tmag reads it to see a turn end without a hook.
 	StatusFile string `json:"status_file,omitempty"`
 
-	// Pending are the prompts awaiting the user, oldest first.
-	Pending []adapter.Prompt `json:"pending,omitempty"`
-	// Requests name the pending prompts, so they can be answered: each has
-	// one, and a prompt two answer hooks wait on has two. A request closes
-	// with its prompt.
+	// Requests are the prompts awaiting the user, oldest first, each under an
+	// id tmag answers it by: a prompt two answer hooks wait on has two.
 	Requests []Request `json:"requests,omitempty"`
 	// Calls are the tool calls started and not yet over.
 	Calls []adapter.Call `json:"calls,omitempty"`
@@ -116,45 +112,46 @@ func SameInbox(a, b *Inbox) bool {
 	return *a == *b
 }
 
-// PaneHint is a pane in which a session's host was proven by process
-// ancestry, and the client process that proof was about.
-type PaneHint struct {
+// Shown is a pane attached to a session, and the client process the
+// attachment is for.
+type Shown struct {
 	Server string `json:"server"`
-	ID     string `json:"id"`
+	Pane   string `json:"pane"`
 	PID    int    `json:"pid"`
 	Start  string `json:"start,omitempty"`
 }
 
-// Bounds of a pane hint, like every field a record keeps: a socket path fits
-// in PATH_MAX, a tmux pane id is short, and a process start is a tick count or
-// ps's lstart words.
+// Bounds of a listed pane, like every field a record keeps: a socket path
+// fits in PATH_MAX, a tmux pane id is short, and a process start is a tick
+// count or ps's lstart words. A record lists a few panes at most.
 const (
-	maxPaneServer = 1024
-	maxPaneID     = 16
-	maxPaneStart  = 64
+	maxShownServer = 1024
+	maxShownPane   = 16
+	maxShownStart  = 64
+	maxShown       = 8
 )
 
-// Valid reports whether h names a pane and client a hook could prove.
-func (h PaneHint) Valid() bool {
-	if h.PID <= 0 || len(h.Server) == 0 || len(h.Server) > maxPaneServer || !filepath.IsAbs(h.Server) ||
-		len(h.ID) < 2 || len(h.ID) > maxPaneID || len(h.Start) == 0 || len(h.Start) > maxPaneStart {
+// Valid reports whether s names a pane of a server and a client process.
+func (s Shown) Valid() bool {
+	if s.PID <= 0 || len(s.Server) == 0 || len(s.Server) > maxShownServer || !filepath.IsAbs(s.Server) ||
+		len(s.Pane) < 2 || len(s.Pane) > maxShownPane || len(s.Start) > maxShownStart {
 		return false
 	}
-	if h.ID[0] != '%' {
+	if s.Pane[0] != '%' {
 		return false
 	}
-	for i := 1; i < len(h.ID); i++ {
-		if h.ID[i] < '0' || h.ID[i] > '9' {
+	for i := 1; i < len(s.Pane); i++ {
+		if s.Pane[i] < '0' || s.Pane[i] > '9' {
 			return false
 		}
 	}
-	for i := 0; i < len(h.Server); i++ {
-		if c := h.Server[i]; c < 0x20 || c == 0x7f {
+	for i := 0; i < len(s.Server); i++ {
+		if c := s.Server[i]; c < 0x20 || c == 0x7f {
 			return false
 		}
 	}
-	for i := 0; i < len(h.Start); i++ {
-		switch c := h.Start[i]; {
+	for i := 0; i < len(s.Start); i++ {
+		switch c := s.Start[i]; {
 		case c >= '0' && c <= '9', c >= 'A' && c <= 'Z', c >= 'a' && c <= 'z',
 			c == ' ', c == ':', c == '.', c == '_', c == '+', c == '-':
 		default:
@@ -164,11 +161,38 @@ func (h PaneHint) Valid() bool {
 	return true
 }
 
-func validPaneHint(h *PaneHint) *PaneHint {
-	if h == nil || !h.Valid() {
-		return nil
+// ShownFor returns the listed pane attached for the client pid, started at
+// start.
+func (r Record) ShownFor(pid int, start string) (Shown, bool) {
+	i := slices.IndexFunc(r.Shown, func(s Shown) bool { return s.PID == pid && s.Start == start })
+	if i < 0 {
+		return Shown{}, false
 	}
-	return h
+	return r.Shown[i], true
+}
+
+// Lists reports whether the record lists s.
+func (r Record) Lists(s Shown) bool { return slices.Contains(r.Shown, s) }
+
+// List lists s as the attachment of its pane, replacing what the record
+// listed for that pane, and reports whether the record changed.
+func (r *Record) List(s Shown) bool {
+	if r.Lists(s) {
+		return false
+	}
+	r.Unlist(s.Server, s.Pane)
+	r.Shown = newest(append(r.Shown, s), maxShown)
+	return true
+}
+
+// Unlist stops listing the pane, and reports whether the record changed.
+func (r *Record) Unlist(server, pane string) bool {
+	n := len(r.Shown)
+	r.Shown = slices.DeleteFunc(r.Shown, func(s Shown) bool { return s.Server == server && s.Pane == pane })
+	if len(r.Shown) == 0 {
+		r.Shown = nil
+	}
+	return len(r.Shown) != n
 }
 
 // Request is a pending prompt under the id tmag answers it by.
@@ -204,6 +228,18 @@ func (r Record) Request(id string) (Request, bool) {
 		return Request{}, false
 	}
 	return r.Requests[i], true
+}
+
+// Pending are the prompts awaiting the user, oldest first: those its open
+// requests name.
+func (r Record) Pending() []adapter.Prompt {
+	var out []adapter.Prompt
+	for _, q := range r.Requests {
+		if !slices.Contains(out, q.Prompt) {
+			out = append(out, q.Prompt)
+		}
+	}
+	return out
 }
 
 // RequestRefs are the session's requests as events and views report them.
@@ -302,7 +338,6 @@ func (r Record) RunningSubagents() []string {
 // a session accumulates, so that a record, and an event reporting it, stay
 // small whatever an agent sends. The oldest entries go first.
 const (
-	maxPending   = 32
 	maxRequests  = 64
 	maxCalls     = 64
 	maxDone      = 64
@@ -327,8 +362,8 @@ func (r Record) Kind() string {
 
 func (r Record) view() (string, string) {
 	switch {
-	case len(r.Pending) > 0:
-		return adapter.Blocked, r.Pending[0].Kind()
+	case len(r.Requests) > 0:
+		return adapter.Blocked, r.Requests[0].Prompt.Kind()
 	case r.Main == adapter.Working:
 		return adapter.Working, r.MainKind
 	case r.Main == adapter.Idle && len(r.Background) > 0:
@@ -350,7 +385,7 @@ func (r Record) ShowsSubagent(id string) bool { return slices.Contains(r.Subagen
 // calls settled or the agent stopped, or the main agent's turn ended.
 func Apply(cur Record, tr adapter.Transition, now time.Time) (Record, bool) {
 	rec := cur
-	rec.Pending = slices.Clone(cur.Pending)
+	rec.Shown = slices.Clone(cur.Shown)
 	rec.Requests = slices.Clone(cur.Requests)
 	rec.Calls = slices.Clone(cur.Calls)
 	rec.Done = slices.Clone(cur.Done)
@@ -378,7 +413,7 @@ func Apply(cur Record, tr adapter.Transition, now time.Time) (Record, bool) {
 		keep := func(agent string) bool {
 			return agent != "" && (tr.KeepSubagents || slices.Contains(rec.Background, agent))
 		}
-		rec.Pending = slices.DeleteFunc(rec.Pending, func(p adapter.Prompt) bool { return !keep(p.Agent) })
+		rec.Requests = slices.DeleteFunc(rec.Requests, func(q Request) bool { return !keep(q.Prompt.Agent) })
 		rec.Calls = slices.DeleteFunc(rec.Calls, func(c adapter.Call) bool { return !keep(c.Agent) })
 		rec.Done = nil
 		rec.Main, rec.MainKind, rec.Reason = tr.State, tr.Kind, tr.Reason
@@ -388,14 +423,13 @@ func Apply(cur Record, tr adapter.Transition, now time.Time) (Record, bool) {
 	case adapter.Ask:
 		// A reminder cannot be told apart from a prompt already pending, and
 		// outside a turn it cannot be about one.
-		if tr.Reminder && (len(cur.Pending) > 0 || cur.State() != adapter.Working) {
+		if tr.Reminder && (len(cur.Requests) > 0 || cur.State() != adapter.Working) {
 			return cur, false
 		}
-		rec.Calls = startCall(rec.Calls, rec.Done, tr.Call)
-		opened := !slices.Contains(rec.Pending, tr.Prompt)
-		if opened {
-			rec.Pending = append(rec.Pending, tr.Prompt)
+		if tr.Request == "" {
+			tr.Request = NewRequestID()
 		}
+		rec.Calls = startCall(rec.Calls, rec.Done, tr.Call)
 		rec.Requests = request(rec.Requests, tr, asked(rec.Calls, tr), now)
 		rec.running(main)
 	case adapter.Start:
@@ -409,10 +443,10 @@ func Apply(cur Record, tr adapter.Transition, now time.Time) (Record, bool) {
 			rec.Done = append(rec.Done, c.ID)
 		}
 		running := slices.ContainsFunc(rec.Calls, func(o adapter.Call) bool { return o.Agent == c.Agent && o.Tool == c.Tool })
-		if i := slices.Index(rec.Pending, adapter.Prompt{Agent: c.Agent, Tool: c.Tool}); i >= 0 && !running {
-			rec.Pending = slices.Delete(rec.Pending, i, i+1)
+		if p := (adapter.Prompt{Agent: c.Agent, Tool: c.Tool}); !running && asks(rec.Requests, p) {
+			rec.Requests = closePrompt(rec.Requests, p)
 		} else {
-			rec.Pending = answerUnnamed(rec.Pending)
+			rec.Requests = answerUnnamed(rec.Requests)
 		}
 	case adapter.Settle:
 		rec.settle(tr.Call.Agent)
@@ -420,20 +454,16 @@ func Apply(cur Record, tr adapter.Transition, now time.Time) (Record, bool) {
 		if tr.Request != "" {
 			// Decided through tmag: the request closes, and its prompt with
 			// it unless another request waits on the same prompt.
-			q, ok := rec.Request(tr.Request)
-			if !ok {
+			if _, ok := rec.Request(tr.Request); !ok {
 				return cur, false
 			}
-			rec.Requests = slices.DeleteFunc(rec.Requests, func(o Request) bool { return o.ID == q.ID })
-			if !slices.ContainsFunc(rec.Requests, func(o Request) bool { return o.Prompt == q.Prompt }) {
-				rec.Pending = slices.DeleteFunc(rec.Pending, func(p adapter.Prompt) bool { return p == q.Prompt })
-			}
+			rec.Requests = slices.DeleteFunc(rec.Requests, func(o Request) bool { return o.ID == tr.Request })
 			break
 		}
-		if i := slices.Index(rec.Pending, tr.Prompt); i >= 0 {
-			rec.Pending = slices.Delete(rec.Pending, i, i+1)
+		if asks(rec.Requests, tr.Prompt) {
+			rec.Requests = closePrompt(rec.Requests, tr.Prompt)
 		} else {
-			rec.Pending = answerUnnamed(rec.Pending)
+			rec.Requests = answerUnnamed(rec.Requests)
 		}
 	case adapter.Spawn:
 		agent := tr.Call.Agent
@@ -461,16 +491,15 @@ func Apply(cur Record, tr adapter.Transition, now time.Time) (Record, bool) {
 	if rec.State() != cur.State() || rec.Kind() != cur.Kind() || cur.Since.IsZero() {
 		rec.Since = now.UTC().Truncate(time.Second)
 	}
-	return rec, !rec.equal(cur)
+	return rec, !rec.Same(cur)
 }
 
-// request names the prompt an Ask is about. A prompt without a request
-// gets the Ask's id; an answer hook's id names the prompt's request no hook
-// waits on, or else adds one: two hooks may wait on equal prompts. Each Ask
-// asks anew, so the request it names is about call from now on.
+// request opens the prompt an Ask is about. A prompt no request names gets
+// the Ask's id; an answer hook's id names the prompt's request no hook waits
+// on, or else adds one: two hooks may wait on equal prompts. Each Ask asks
+// anew, so the request it names is about call from now on.
 func request(reqs []Request, tr adapter.Transition, call string, now time.Time) []Request {
-	named := slices.ContainsFunc(reqs, func(q Request) bool { return q.Prompt == tr.Prompt })
-	if tr.Request == "" || (named && !tr.Waits) {
+	if asks(reqs, tr.Prompt) && !tr.Waits {
 		for i := range reqs {
 			if reqs[i].Prompt == tr.Prompt && !reqs[i].Hook {
 				reqs[i].Call = call
@@ -520,7 +549,7 @@ func (r *Record) running(main bool) {
 // asked the user is settled, as is any prompt that named no tool.
 func (r *Record) settle(agent string) {
 	r.Calls = slices.DeleteFunc(r.Calls, func(o adapter.Call) bool { return o.Agent == agent })
-	r.Pending = slices.DeleteFunc(r.Pending, func(p adapter.Prompt) bool { return p.Agent == agent || p.Tool == "" })
+	r.Requests = slices.DeleteFunc(r.Requests, func(q Request) bool { return q.Prompt.Agent == agent || q.Prompt.Tool == "" })
 }
 
 func startCall(calls []adapter.Call, done []string, c adapter.Call) []adapter.Call {
@@ -530,69 +559,57 @@ func startCall(calls []adapter.Call, done []string, c adapter.Call) []adapter.Ca
 	return append(calls, c)
 }
 
-// answerUnnamed closes a prompt that named no tool. It says nothing about the
-// tool, and a reminder does not reliably name the agent that asked: any
-// finished tool answers it.
-func answerUnnamed(pending []adapter.Prompt) []adapter.Prompt {
-	if i := slices.IndexFunc(pending, func(p adapter.Prompt) bool { return p.Tool == "" }); i >= 0 {
-		return slices.Delete(pending, i, i+1)
+// asks reports whether a request names prompt p.
+func asks(reqs []Request, p adapter.Prompt) bool {
+	return slices.ContainsFunc(reqs, func(q Request) bool { return q.Prompt == p })
+}
+
+// closePrompt closes prompt p: every request naming it.
+func closePrompt(reqs []Request, p adapter.Prompt) []Request {
+	return slices.DeleteFunc(reqs, func(q Request) bool { return q.Prompt == p })
+}
+
+// answerUnnamed closes the oldest prompt that named no tool. It says nothing
+// about the tool, and a reminder does not reliably name the agent that
+// asked: any finished tool answers it.
+func answerUnnamed(reqs []Request) []Request {
+	if i := slices.IndexFunc(reqs, func(q Request) bool { return q.Prompt.Tool == "" }); i >= 0 {
+		return closePrompt(reqs, reqs[i].Prompt)
 	}
-	return pending
+	return reqs
 }
 
 func normalize(r *Record) {
-	r.Pane = validPaneHint(r.Pane)
-	r.Pending = newest(r.Pending, maxPending)
-	// A request closes with its prompt.
-	r.Requests = slices.DeleteFunc(r.Requests, func(q Request) bool { return !slices.Contains(r.Pending, q.Prompt) })
+	r.Shown = newest(validShown(r.Shown), maxShown)
 	r.Requests = newest(r.Requests, maxRequests)
 	r.Calls = newest(r.Calls, maxCalls)
 	r.Done = newest(r.Done, maxDone)
 	r.Background = newest(r.Background, maxTasks)
 	r.Subagents = newest(r.Subagents, maxSubagents)
-	if len(r.Pending) == 0 {
-		r.Pending = nil
-	}
-	if len(r.Requests) == 0 {
-		r.Requests = nil
-	}
-	if len(r.Calls) == 0 {
-		r.Calls = nil
-	}
-	if len(r.Done) == 0 {
-		r.Done = nil
-	}
-	if len(r.Background) == 0 {
-		r.Background = nil
-	}
-	if len(r.Subagents) == 0 {
-		r.Subagents = nil
-	}
 }
 
-// newest keeps the last n entries of s.
+// validShown keeps the entries of s a hook could prove.
+func validShown(s []Shown) []Shown {
+	return slices.DeleteFunc(slices.Clone(s), func(e Shown) bool { return !e.Valid() })
+}
+
+// newest keeps the last n entries of s, and none as nil, so that records
+// that hold the same store alike.
 func newest[S ~[]E, E any](s S, n int) S {
-	if len(s) > n {
+	switch {
+	case len(s) == 0:
+		return nil
+	case len(s) > n:
 		return slices.Clone(s[len(s)-n:])
 	}
 	return s
 }
 
-// SamePaneHint reports whether a and b name the same pane and client.
-func SamePaneHint(a, b *PaneHint) bool {
-	if a == nil || b == nil {
-		return a == nil && b == nil
-	}
-	return *a == *b
-}
-
-func (r Record) equal(o Record) bool {
-	return r.Agent == o.Agent && r.ID == o.ID && r.Cwd == o.Cwd && r.Host == o.Host && r.Transcript == o.Transcript &&
-		SameInbox(r.Inbox, o.Inbox) && SamePaneHint(r.Pane, o.Pane) && r.AttachGeneration == o.AttachGeneration &&
-		r.Main == o.Main && r.MainKind == o.MainKind && r.Reason == o.Reason &&
-		r.Permission == o.Permission && r.StatusFile == o.StatusFile && r.Turn == o.Turn &&
-		slices.Equal(r.Pending, o.Pending) && slices.Equal(r.Requests, o.Requests) && slices.Equal(r.Calls, o.Calls) &&
-		slices.Equal(r.Done, o.Done) && slices.Equal(r.Background, o.Background) &&
-		slices.Equal(r.Subagents, o.Subagents) && r.Since.Equal(o.Since) && r.Sent.Equal(o.Sent) &&
-		r.Queued.Equal(o.Queued) && r.Halted.Equal(o.Halted)
+// Same reports whether r and o hold the same session as they would be
+// stored, contact time aside.
+func (r Record) Same(o Record) bool {
+	r.LastHookAt, o.LastHookAt = time.Time{}, time.Time{}
+	a, errA := json.Marshal(r)
+	b, errB := json.Marshal(o)
+	return errA == nil && errB == nil && bytes.Equal(a, b)
 }

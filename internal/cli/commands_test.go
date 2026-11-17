@@ -71,7 +71,6 @@ func TestInspectListsOpenRequests(t *testing.T) {
 	elicit := adapter.Prompt{Tool: "@elicitation"}
 	rec := session.Record{
 		Agent: "claude", ID: "1787a44e-5b0c-4c39-9a6e-0d6c3c2f7b10", Main: adapter.Working,
-		Pending:  []adapter.Prompt{bash, write, elicit},
 		Requests: []session.Request{{ID: "3fdce4c70dfa", Prompt: bash}, {ID: "9b41e07a2c55", Prompt: write}, {ID: "c0d2a8f61e93", Prompt: elicit}},
 	}
 	if err := (session.Store{Dir: log.Dir}).Put(context.Background(), rec); err != nil {

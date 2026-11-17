@@ -11,7 +11,7 @@ import (
 // Layout names how this tmag lays out its state directory. The default
 // directory is the layout's own, so tmags of different layouts never share
 // one; a directory TMAG_STATE_DIR names serves one layout only.
-const Layout = "v2"
+const Layout = "v3"
 
 // DefaultDir resolves the state directory: $TMAG_STATE_DIR as it is,
 // or else the directory of this process's realm (proc.Realm) under Base and
