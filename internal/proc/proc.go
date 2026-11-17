@@ -78,13 +78,7 @@ func Snapshot(ctx context.Context) (*Table, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	ps, err := readProcFS(ctx)
-	if err != nil {
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
-		ps, err = readPS(ctx)
-	}
+	ps, err := snapshot(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -106,15 +100,7 @@ func Lineage(ctx context.Context, pid int) (*Table, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if _, err := os.Stat("/proc/self/stat"); err == nil {
-		return readProcLineage(ctx, pid)
-	}
-	table, err := Snapshot(ctx)
-	if err != nil {
-		return nil, err
-	}
-	table.complete = false
-	return table, nil
+	return lineage(ctx, pid)
 }
 
 // Get returns the process with the given pid.
@@ -368,19 +354,7 @@ func Running(ctx context.Context, pid int, start string) bool {
 	if ctx.Err() != nil {
 		return true
 	}
-	if _, err := os.Stat("/proc/self/stat"); err == nil {
-		p, ok := readProcEntry(ctx, pid)
-		if ctx.Err() != nil {
-			return true
-		}
-		if !ok {
-			_, err := os.Stat("/proc/" + strconv.Itoa(pid))
-			return !os.IsNotExist(err)
-		}
-		return start == "" || p.Start == start
-	}
-	t, err := Snapshot(ctx)
-	return err != nil || t.Alive(pid, start)
+	return running(ctx, pid, start)
 }
 
 // Alive reports whether the process with p's pid is still p.

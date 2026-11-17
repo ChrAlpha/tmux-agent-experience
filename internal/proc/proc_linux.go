@@ -12,10 +12,10 @@ import (
 	"syscall"
 )
 
-// readProcFS reads every process through /proc with raw system calls.
-// It reads stat for every pid, cmdline only for names that can be an agent or
+// snapshot reads every process through /proc with raw system calls. It reads
+// stat for every pid, cmdline only for names that can be an agent or
 // launcher, and walks pids with a small bounded worker pool.
-func readProcFS(ctx context.Context) ([]Process, error) {
+func snapshot(ctx context.Context) ([]Process, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -91,10 +91,10 @@ func readProcFS(ctx context.Context) ([]Process, error) {
 	return out, nil
 }
 
-// readProcLineage reads pid and its ancestors up to the nearest agent
-// client or service and that host's parent. The table is incomplete by
-// construction: it proves nothing about processes outside the lineage.
-func readProcLineage(ctx context.Context, pid int) (*Table, error) {
+// lineage reads pid and its ancestors up to the nearest agent client or
+// service and that host's parent. The table is incomplete by construction: it
+// proves nothing about processes outside the lineage.
+func lineage(ctx context.Context, pid int) (*Table, error) {
 	if pid <= 0 {
 		return nil, os.ErrInvalid
 	}
@@ -128,11 +128,25 @@ func readProcLineage(ctx context.Context, pid int) (*Table, error) {
 	return newIncompleteTable(ps), nil
 }
 
+// running reads one /proc entry. An entry that exists but cannot be read
+// counts as running.
+func running(ctx context.Context, pid int, start string) bool {
+	p, ok := readProcEntry(ctx, pid)
+	if ctx.Err() != nil {
+		return true
+	}
+	if !ok {
+		_, err := os.Stat("/proc/" + strconv.Itoa(pid))
+		return !os.IsNotExist(err)
+	}
+	return start == "" || p.Start == start
+}
+
 // readProcEntry reads one /proc entry: stat always, cmdline only when
 // the executable name can be an agent or launcher.
 func readProcEntry(ctx context.Context, pid int) (Process, bool) {
 	dir := "/proc/" + strconv.Itoa(pid)
-	stat, err := readFileContext(ctx, dir+"/stat", 64<<10)
+	stat, err := readProcFile(ctx, dir+"/stat", 64<<10)
 	if err != nil {
 		return Process{}, false
 	}
@@ -141,15 +155,15 @@ func readProcEntry(ctx context.Context, pid int) (Process, bool) {
 		return Process{}, false
 	}
 	if candidateCommand(p.Comm) {
-		if cmdline, err := readFileContext(ctx, dir+"/cmdline", 4<<20); err == nil {
+		if cmdline, err := readProcFile(ctx, dir+"/cmdline", 4<<20); err == nil {
 			setCommandLine(&p, cmdline)
 		}
 	}
 	return p, true
 }
 
-// readFileContext reads a /proc file with raw system calls, stopping at limit.
-func readFileContext(ctx context.Context, path string, limit int) ([]byte, error) {
+// readProcFile reads a /proc file with raw system calls, stopping at limit.
+func readProcFile(ctx context.Context, path string, limit int) ([]byte, error) {
 	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_CLOEXEC, 0)
 	if err != nil {
 		return nil, err

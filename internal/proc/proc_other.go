@@ -2,25 +2,24 @@
 
 package proc
 
-import (
-	"context"
-	"errors"
-)
+import "context"
 
-// readProcFS is unavailable without /proc; Snapshot falls back
-// to ps.
-func readProcFS(context.Context) ([]Process, error) {
-	return nil, errors.New("proc: no /proc")
+// snapshot reads every process from ps.
+func snapshot(ctx context.Context) ([]Process, error) { return readPS(ctx) }
+
+// lineage reads the full table from ps: without /proc no single process can
+// be read alone.
+func lineage(ctx context.Context, _ int) (*Table, error) {
+	t, err := Snapshot(ctx)
+	if err != nil {
+		return nil, err
+	}
+	t.complete = false
+	return t, nil
 }
 
-// readProcEntry is unavailable without /proc; Running uses the
-// process table there.
-func readProcEntry(context.Context, int) (Process, bool) {
-	return Process{}, false
-}
-
-// readProcLineage is unavailable without /proc; Lineage uses
-// the full table from ps.
-func readProcLineage(context.Context, int) (*Table, error) {
-	return nil, errors.New("proc: no /proc")
+// running reads the full table from ps.
+func running(ctx context.Context, pid int, start string) bool {
+	t, err := Snapshot(ctx)
+	return err != nil || t.Alive(pid, start)
 }
