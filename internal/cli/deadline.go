@@ -47,7 +47,7 @@ func (a *app) reportContext() (context.Context, context.CancelFunc) {
 func (a *app) recordHookError(agent string, err error) {
 	ctx, cancel := a.reportContext()
 	defer cancel()
-	hook.RecordErrorContext(ctx, a.log.Dir, agent, err)
+	hook.RecordError(ctx, a.log.Dir, agent, err)
 }
 
 // recordHookSlow writes a successful hook that took longer than
@@ -58,5 +58,5 @@ func (a *app) recordHookSlow(agent string, start time.Time) {
 	}
 	ctx, cancel := a.reportContext()
 	defer cancel()
-	hook.RecordSlowContext(ctx, a.log.Dir, agent)
+	hook.RecordSlow(ctx, a.log.Dir, agent)
 }

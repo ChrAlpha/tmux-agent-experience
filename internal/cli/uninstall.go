@@ -25,7 +25,8 @@ func (a *app) cmdUninstall(args []string) int {
 		}
 		cleared := 0
 		ctx := context.Background()
-		for _, s := range tmux.Servers() {
+		servers, _ := tmux.Servers(ctx)
+		for _, s := range servers {
 			panes, err := s.Panes(ctx)
 			if err != nil {
 				continue

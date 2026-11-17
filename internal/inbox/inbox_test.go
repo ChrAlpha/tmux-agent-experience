@@ -277,7 +277,7 @@ func TestServesTheRecordedProcess(t *testing.T) {
 	c := dial(t, sock)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	tb, err := proc.Snapshot()
+	tb, err := proc.Snapshot(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}

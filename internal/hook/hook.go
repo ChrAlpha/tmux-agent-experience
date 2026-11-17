@@ -38,7 +38,7 @@ const SlowAfter = 500 * time.Millisecond
 // loadLineage reads the hook's own ancestry; loadPanes and loadProcesses
 // build the full world. Tests replace them to stage snapshots.
 var (
-	loadLineage   = proc.LineageContext
+	loadLineage   = proc.Lineage
 	loadProcesses = func(ctx context.Context, w *attach.World) error { return w.LoadProcesses(ctx) }
 	loadPanes     = func(ctx context.Context, w *attach.World) error { return w.LoadPanes(ctx) }
 )
@@ -65,17 +65,12 @@ type Input struct {
 	Request string
 }
 
-// Run processes the hook within Deadline. It never writes to stdout: agents
-// inject hook stdout into the model context.
-func Run(in Input) error {
-	return RunContext(context.Background(), in)
-}
-
-// RunContext processes a hook using the earlier of the parent's budget and
-// Deadline, including input. Payload readers must cooperate with cancellation;
+// Run processes a hook using the earlier of the parent's budget and
+// Deadline, including input. It never writes to stdout: agents inject hook
+// stdout into the model context. Payload readers must cooperate with cancellation;
 // the CLI owns its inherited input with contextio.Own. No read worker is left
 // behind if an injected reader does not support cancellation.
-func RunContext(parent context.Context, in Input) (err error) {
+func Run(parent context.Context, in Input) (err error) {
 	ctx, cancel := context.WithTimeout(parent, Deadline)
 	defer cancel()
 	if err := ctx.Err(); err != nil {
@@ -140,7 +135,7 @@ func RunContext(parent context.Context, in Input) (err error) {
 		rec, found, err := env.Store.Get(ctx, in.Agent, p.SessionID)
 		var fault *session.RecordError
 		if errors.As(err, &fault) {
-			RecordErrorContext(ctx, in.Log.Dir, in.Agent, err)
+			RecordError(ctx, in.Log.Dir, in.Agent, err)
 			return session.Record{}, false, nil
 		}
 		return rec, found, err
@@ -401,7 +396,7 @@ func tell(ctx context.Context, rec session.Record, shown []tmux.Pane, kind strin
 	if kind == "" {
 		return nil
 	}
-	servers, err := tmux.ServersContext(ctx)
+	servers, err := tmux.Servers(ctx)
 	if err != nil {
 		return err
 	}
@@ -475,13 +470,9 @@ func present(ctx context.Context, shown []tmux.Pane) bool {
 // maxErrLog bounds hook.log; it is truncated when exceeded.
 const maxErrLog = 256 << 10
 
-// RecordError appends a hook failure to <state dir>/hook.log for `tmag doctor`.
-func RecordError(dir, agent string, err error) {
-	RecordErrorContext(context.Background(), dir, agent, err)
-}
-
-// RecordErrorContext logs only while the invocation has budget remaining.
-func RecordErrorContext(parent context.Context, dir, agent string, err error) {
+// RecordError appends a hook failure to <state dir>/hook.log for `tmag
+// doctor`, only while the invocation has budget remaining.
+func RecordError(parent context.Context, dir, agent string, err error) {
 	if err == nil || parent.Err() != nil {
 		return
 	}
@@ -500,10 +491,10 @@ func RecordErrorContext(parent context.Context, dir, agent string, err error) {
 	recordHookLog(parent, dir, agent, category)
 }
 
-// RecordSlowContext logs a hook that succeeded but took longer than
+// RecordSlow logs a hook that succeeded but took longer than
 // SlowAfter. The caller supplies a budget that survives the hook's setup
 // deadline: the report belongs in the reserve before the hard cutoff.
-func RecordSlowContext(parent context.Context, dir, agent string) {
+func RecordSlow(parent context.Context, dir, agent string) {
 	if parent.Err() != nil {
 		return
 	}

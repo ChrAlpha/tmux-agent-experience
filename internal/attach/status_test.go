@@ -18,7 +18,7 @@ import (
 // interrupt leaves it: reconciliation applies the same idle transition and
 // logs it as its own event.
 func TestReconcileEndsATurnFromClaudesStatusFile(t *testing.T) {
-	tb, err := proc.Snapshot()
+	tb, err := proc.Snapshot(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}

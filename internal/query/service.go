@@ -24,7 +24,7 @@ const serviceTimeout = 5 * time.Second
 // it, since hooks may run in a helper the daemon started.
 func reach(ctx context.Context, s Session, rec session.Record) (*codexsvc.Client, error) {
 	host := rec.Host
-	if host.PID == 0 || !proc.RunningContext(ctx, host.PID, host.Start) {
+	if host.PID == 0 || !proc.Running(ctx, host.PID, host.Start) {
 		return nil, &RefusedError{RefuseChanged, fmt.Sprintf("the service %s ran in has exited", s.ID)}
 	}
 	sock := codexsvc.Socket()
@@ -32,7 +32,7 @@ func reach(ctx context.Context, s Session, rec session.Record) (*codexsvc.Client
 	if err != nil {
 		return nil, fmt.Errorf("cannot reach the Codex daemon at %s: %w", sock, err)
 	}
-	t, err := proc.SnapshotContext(ctx)
+	t, err := proc.Snapshot(ctx)
 	if err != nil {
 		c.Close()
 		return nil, err

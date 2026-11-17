@@ -81,7 +81,7 @@ func (c *Conn) Close() error { return c.conn.Close() }
 // another process was given the path of, or a pid the kernel reused, is no
 // proof.
 func (c *Conn) Serves(ctx context.Context, in session.Inbox) bool {
-	return in.PID > 0 && in.Start != "" && c.PeerPID == in.PID && proc.RunningContext(ctx, in.PID, in.Start)
+	return in.PID > 0 && in.Start != "" && c.PeerPID == in.PID && proc.Running(ctx, in.PID, in.Start)
 }
 
 // ClaudeMessage is one message for Claude Code's cross-session inbox: who

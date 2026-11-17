@@ -14,10 +14,10 @@ import (
 	"github.com/ChrAlpha/tmux-agent-experience/internal/contextio"
 )
 
-// readProcFSContext reads every process through /proc with raw system calls.
+// readProcFS reads every process through /proc with raw system calls.
 // It reads stat for every pid, cmdline only for names that can be an agent or
 // launcher, and walks pids with a small bounded worker pool.
-func readProcFSContext(ctx context.Context) ([]Process, error) {
+func readProcFS(ctx context.Context) ([]Process, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -59,7 +59,7 @@ func readProcFSContext(ctx context.Context) ([]Process, error) {
 					mu.Unlock()
 					return
 				}
-				p, found := readProcEntryContext(ctx, pids[i])
+				p, found := readProcEntry(ctx, pids[i])
 				if !found {
 					if ctx.Err() != nil {
 						mu.Lock()
@@ -94,10 +94,10 @@ func readProcFSContext(ctx context.Context) ([]Process, error) {
 	return out, nil
 }
 
-// readProcLineageContext reads pid and its ancestors up to the nearest agent
+// readProcLineage reads pid and its ancestors up to the nearest agent
 // client or service and that host's parent. The table is incomplete by
 // construction: it proves nothing about processes outside the lineage.
-func readProcLineageContext(ctx context.Context, pid int) (*Table, error) {
+func readProcLineage(ctx context.Context, pid int) (*Table, error) {
 	if pid <= 0 {
 		return nil, os.ErrInvalid
 	}
@@ -108,7 +108,7 @@ func readProcLineageContext(ctx context.Context, pid int) (*Table, error) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		p, ok := readProcEntryContext(ctx, pid)
+		p, ok := readProcEntry(ctx, pid)
 		if !ok {
 			if err := ctx.Err(); err != nil {
 				return nil, err
@@ -131,9 +131,9 @@ func readProcLineageContext(ctx context.Context, pid int) (*Table, error) {
 	return newIncompleteTable(ps), nil
 }
 
-// readProcEntryContext reads one /proc entry: stat always, cmdline only when
+// readProcEntry reads one /proc entry: stat always, cmdline only when
 // the executable name can be an agent or launcher.
-func readProcEntryContext(ctx context.Context, pid int) (Process, bool) {
+func readProcEntry(ctx context.Context, pid int) (Process, bool) {
 	dir := "/proc/" + strconv.Itoa(pid)
 	stat, err := readFileContext(ctx, dir+"/stat", 64<<10)
 	if err != nil {

@@ -43,7 +43,7 @@ const (
 // and for a server that does not say, it is People.
 func Mode(ctx context.Context) string {
 	mode := ""
-	servers, err := tmux.ServersContext(ctx)
+	servers, err := tmux.Servers(ctx)
 	if err != nil {
 		return Off
 	}

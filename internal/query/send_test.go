@@ -196,7 +196,7 @@ func TestInboxAtProvesTheRecordedProcess(t *testing.T) {
 	if _, err := inboxAt(ctx, s, session.Record{}); !isRefused(err, RefuseUnbound) {
 		t.Fatalf("an inbox not recorded: %v", err)
 	}
-	tb, err := proc.Snapshot()
+	tb, err := proc.Snapshot(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -279,7 +279,7 @@ func TestClaudeAttestationUsesTheDeliveryDecision(t *testing.T) {
 	ctx := context.Background()
 	log := eventlog.Open(t.TempDir())
 	store := session.Store{Dir: log.Dir}
-	tb, err := proc.Snapshot()
+	tb, err := proc.Snapshot(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}

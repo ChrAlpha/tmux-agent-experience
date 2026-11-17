@@ -260,7 +260,7 @@ func (env Env) ProjectAttached(ctx context.Context, w *World, rec session.Record
 // liveHost reports whether the recorded host still runs as it did: a session
 // whose host exited gets no state inferred from a file it left behind.
 func liveHost(ctx context.Context, host session.Host) bool {
-	return host.PID > 0 && host.Start != "" && proc.RunningContext(ctx, host.PID, host.Start)
+	return host.PID > 0 && host.Start != "" && proc.Running(ctx, host.PID, host.Start)
 }
 
 // statusProvesIdle reports whether Claude Code's status file at path proves
@@ -337,7 +337,7 @@ func (env Env) attach(ctx context.Context, w *World, c Client, rec session.Recor
 			}
 			return env.storeHint(ctx, fresh, next, w, hintGeneration, ProjectionOf(latest), pub)
 		}
-		pt, err := proc.SnapshotContext(ctx)
+		pt, err := proc.Snapshot(ctx)
 		if err != nil {
 			return err
 		}
@@ -594,7 +594,7 @@ func (env Env) exit(ctx context.Context, r session.Record) error {
 		if cur.Host.PID <= 0 || cur.Host.Start == "" {
 			return nil
 		}
-		pt, err := proc.SnapshotContext(ctx)
+		pt, err := proc.Snapshot(ctx)
 		if err != nil {
 			return err
 		}

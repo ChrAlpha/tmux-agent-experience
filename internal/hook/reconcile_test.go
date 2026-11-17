@@ -59,7 +59,7 @@ func TestReconciliationReadsProcessesAfterPanes(t *testing.T) {
 	}
 
 	payload := `{"session_id":"a-session","hook_event_name":"SessionStart","source":"startup"}`
-	if err := RunContext(ctx, Input{Agent: proc.Claude, Payload: strings.NewReader(payload), Log: log, PID: 0}); err != nil {
+	if err := Run(ctx, Input{Agent: proc.Claude, Payload: strings.NewReader(payload), Log: log, PID: 0}); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok, err := store.Get(ctx, proc.Claude, "b-session"); !ok || err != nil {
@@ -115,7 +115,7 @@ func TestReconciliationSkipsWithoutFreshProcessEvidence(t *testing.T) {
 	}
 
 	payload := `{"session_id":"a-session","hook_event_name":"SessionStart","source":"startup"}`
-	if err := RunContext(ctx, Input{Agent: proc.Claude, Payload: strings.NewReader(payload), Log: log, PID: 0}); err != nil {
+	if err := Run(ctx, Input{Agent: proc.Claude, Payload: strings.NewReader(payload), Log: log, PID: 0}); err != nil {
 		t.Fatal(err)
 	}
 	if data, err := os.ReadFile(filepath.Join(root, "hook.log")); err == nil {
@@ -148,7 +148,7 @@ func TestToolHookDoesNotReconcile(t *testing.T) {
 		return nil
 	}
 	payload := `{"session_id":"a-session","hook_event_name":"UserPromptSubmit","prompt_id":"turn"}`
-	if err := RunContext(ctx, Input{Agent: proc.Claude, Payload: strings.NewReader(payload), Log: log, PID: 0}); err != nil {
+	if err := Run(ctx, Input{Agent: proc.Claude, Payload: strings.NewReader(payload), Log: log, PID: 0}); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok, err := store.Get(ctx, proc.Claude, "gone-session"); !ok || err != nil {

@@ -71,21 +71,19 @@ func newTable(ps []Process, complete bool) *Table {
 // facts in an incomplete table cannot authorize destructive reconciliation.
 func (t *Table) Complete() bool { return t.complete }
 
-// Snapshot reads the current process table from /proc when available, otherwise from ps.
-func Snapshot() (*Table, error) { return SnapshotContext(context.Background()) }
-
-// SnapshotContext never returns a canceled or partially enumerated table.
+// Snapshot reads the current process table from /proc when available,
+// otherwise from ps. It never returns a canceled or partially enumerated table.
 // Unreadable individual PIDs remain uncertain: absence is not death evidence.
-func SnapshotContext(ctx context.Context) (*Table, error) {
+func Snapshot(ctx context.Context) (*Table, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	ps, err := readProcFSContext(ctx)
+	ps, err := readProcFS(ctx)
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		ps, err = readPSContext(ctx)
+		ps, err = readPS(ctx)
 	}
 	if err != nil {
 		return nil, err
@@ -100,18 +98,18 @@ func SnapshotContext(ctx context.Context) (*Table, error) {
 	return table, nil
 }
 
-// LineageContext reads only the processes needed to prove pid's host: its
+// Lineage reads only the processes needed to prove pid's host: its
 // ancestors up to the nearest agent client or service, and that host's
 // parent. On Linux it reads those /proc entries; elsewhere it falls back to
 // the full table. The result never passes for a complete table.
-func LineageContext(ctx context.Context, pid int) (*Table, error) {
+func Lineage(ctx context.Context, pid int) (*Table, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	if _, err := os.Stat("/proc/self/stat"); err == nil {
-		return readProcLineageContext(ctx, pid)
+		return readProcLineage(ctx, pid)
 	}
-	table, err := SnapshotContext(ctx)
+	table, err := Snapshot(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -361,19 +359,17 @@ func (t *Table) claudeWorker(p Process) bool {
 	return ok && ServiceKind(parent) == Claude
 }
 
-// Running reports whether the process with this pid still runs and, when
-// start is set, is the one that started then. It reads one process where
-// the platform allows (Linux) and the whole table otherwise.
-func Running(pid int, start string) bool { return RunningContext(context.Background(), pid, start) }
-
-// RunningContext conservatively preserves liveness on an unreadable process table.
-// It is not proof of a control channel.
-func RunningContext(ctx context.Context, pid int, start string) bool {
+// Running reports whether the process with this pid still runs and,
+// when start is set, is the one that started then. It reads one process where
+// the platform allows (Linux) and the whole table otherwise, and conservatively
+// preserves liveness on an unreadable process table. It is not proof of a
+// control channel.
+func Running(ctx context.Context, pid int, start string) bool {
 	if ctx.Err() != nil {
 		return true
 	}
 	if _, err := os.Stat("/proc/self/stat"); err == nil {
-		p, ok := readProcEntryContext(ctx, pid)
+		p, ok := readProcEntry(ctx, pid)
 		if ctx.Err() != nil {
 			return true
 		}
@@ -383,7 +379,7 @@ func RunningContext(ctx context.Context, pid int, start string) bool {
 		}
 		return start == "" || p.Start == start
 	}
-	t, err := SnapshotContext(ctx)
+	t, err := Snapshot(ctx)
 	return err != nil || t.Alive(pid, start)
 }
 
@@ -590,15 +586,12 @@ func setCommandLine(p *Process, cmdline []byte) {
 	p.Args = strings.TrimSpace(strings.Join(p.Argv, " "))
 }
 
-func readPS() ([]Process, error) { return readPSContext(context.Background()) }
-
-func readPSContext(parent context.Context) ([]Process, error) {
+func readPS(parent context.Context) ([]Process, error) {
 	ctx, cancel := context.WithTimeout(parent, 2*time.Second)
 	defer cancel()
 	// lstart prints five words ("Tue Nov  3 09:12:22 2026"), before args so
 	// that the command line keeps its spaces.
-	cmd, cleanup := helper.Command(ctx, "ps", "-A", "-ww", "-o", "pid=", "-o", "ppid=", "-o", "pgid=", "-o", "tpgid=", "-o", "lstart=", "-o", "args=")
-	defer cleanup()
+	cmd := helper.Command(ctx, "ps", "-A", "-ww", "-o", "pid=", "-o", "ppid=", "-o", "pgid=", "-o", "tpgid=", "-o", "lstart=", "-o", "args=")
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, err

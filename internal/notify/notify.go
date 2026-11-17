@@ -170,8 +170,7 @@ func Run(parent context.Context, root, command string, env []string) ([]byte, er
 		return nil, ErrLimit
 	}
 	defer lease.Close()
-	cmd, cleanup := helper.Command(ctx, "/bin/sh", "-c", command)
-	defer cleanup()
+	cmd := helper.Command(ctx, "/bin/sh", "-c", command)
 	cmd.Env = env
 	cmd.ExtraFiles = []*os.File{lease.File()}
 	out := &capped{}

@@ -55,7 +55,7 @@ func TestWait(t *testing.T) {
 	asked := Asked{Tool: "Bash", Input: json.RawMessage(`{"command":"date"}`)}
 
 	wait := func(id string) (<-chan bool, *strings.Builder) {
-		ln, err := Listen(dir, id)
+		ln, err := Listen(context.Background(), dir, id)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -107,7 +107,7 @@ func TestWaitPrintsNothingOnceItEnds(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer os.RemoveAll(dir)
-	ln, err := Listen(dir, "r1")
+	ln, err := Listen(context.Background(), dir, "r1")
 	if err != nil {
 		t.Fatal(err)
 	}

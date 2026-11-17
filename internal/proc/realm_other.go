@@ -10,14 +10,10 @@ import (
 	"github.com/ChrAlpha/tmux-agent-experience/internal/contextio"
 )
 
-// realmSource is the boot and the PID namespace: Linux shows each namespace
-// its own process table, and every container on a host shares its boot id.
-func realmSource() string {
-	source, _ := realmSourceContext(context.Background())
-	return source
-}
-
-func realmSourceContext(ctx context.Context) (string, error) {
+// realmSource is the boot and the PID namespace: Linux shows each
+// namespace its own process table, and every container on a host shares its
+// boot id.
+func realmSource(ctx context.Context) (string, error) {
 	boot, err := contextio.ReadFile(ctx, "/proc/sys/kernel/random/boot_id", 4096)
 	if err != nil {
 		return "", err

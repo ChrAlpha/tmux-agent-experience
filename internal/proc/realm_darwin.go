@@ -5,13 +5,9 @@ import (
 	"syscall"
 )
 
-// realmSource is the boot session: macOS has one process table per boot.
-func realmSource() string {
-	source, _ := realmSourceContext(context.Background())
-	return source
-}
-
-func realmSourceContext(ctx context.Context) (string, error) {
+// realmSource is the boot session: macOS has one process table per
+// boot.
+func realmSource(ctx context.Context) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}

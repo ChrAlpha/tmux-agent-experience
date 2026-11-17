@@ -72,10 +72,6 @@ func clean(name string) string {
 	return "#{s/[\x01-\x1f\x7f]//:" + name + "}"
 }
 
-// CleanFormat strips control characters from a free-text format value, so
-// that an option or title cannot inject a field separator or a newline.
-func CleanFormat(name string) string { return clean(name) }
-
 var paneFormat = func() string {
 	fields := []string{
 		"#{pane_id}", "#{pane_pid}", clean("pane_current_command"), clean("pane_current_path"),
@@ -102,8 +98,7 @@ func (s Server) RunInput(ctx context.Context, stdin []byte, args ...string) ([]b
 	defer cancel()
 	// -u: without a UTF-8 locale (hooks often run without one) tmux would
 	// replace the field separator and any non-ASCII text with '_'.
-	cmd, cleanup := helper.Command(ctx, "tmux", append([]string{"-u", "-S", s.Socket}, args...)...)
-	defer cleanup()
+	cmd := helper.Command(ctx, "tmux", append([]string{"-u", "-S", s.Socket}, args...)...)
 	if stdin != nil {
 		cmd.Stdin = bytes.NewReader(stdin)
 	}
@@ -496,15 +491,10 @@ func DefaultServer() Server {
 	return ServerByName("default")
 }
 
-// Servers lists every tmux socket of the current user, the caller's server first.
-// Sockets are returned whether or not a server is listening on them.
-func Servers() []Server {
-	servers, _ := ServersContext(context.Background())
-	return servers
-}
-
-// ServersContext enumerates sockets in bounded batches within the caller budget.
-func ServersContext(ctx context.Context) ([]Server, error) {
+// Servers lists every tmux socket of the current user, the caller's
+// server first, in bounded batches within the caller's budget. Sockets are
+// returned whether or not a server is listening on them.
+func Servers(ctx context.Context) ([]Server, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}

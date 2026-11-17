@@ -135,7 +135,7 @@ func (a *app) answerHook() (err error) {
 	enabled := answer.Mode(quick) != answer.Off
 	cancel()
 	if !enabled {
-		return hook.RunContext(setup, in)
+		return hook.Run(setup, in)
 	}
 	var p struct {
 		SessionID string          `json:"session_id"`
@@ -143,16 +143,16 @@ func (a *app) answerHook() (err error) {
 		ToolInput json.RawMessage `json:"tool_input"`
 	}
 	if err := json.Unmarshal(data, &p); err != nil {
-		return hook.RunContext(setup, in)
+		return hook.Run(setup, in)
 	}
 	in.Request = session.NewRequestID()
-	ln, err := answer.ListenContext(setup, a.log.Dir, in.Request)
+	ln, err := answer.Listen(setup, a.log.Dir, in.Request)
 	if err != nil {
 		in.Request = ""
-		return errors.Join(err, hook.RunContext(setup, in))
+		return errors.Join(err, hook.Run(setup, in))
 	}
 	defer ln.Close()
-	if err := hook.RunContext(setup, in); err != nil || ctx.Err() != nil {
+	if err := hook.Run(setup, in); err != nil || ctx.Err() != nil {
 		return err
 	}
 	// Wait only for a prompt the session now names this way.

@@ -6,12 +6,12 @@ import (
 )
 
 func TestRealmNamesThisProcessTable(t *testing.T) {
-	r := Realm()
-	if !regexp.MustCompile(`^[0-9a-f]{12}$`).MatchString(r) {
-		t.Fatalf("Realm() = %q, want 12 hex digits on a supported platform", r)
+	r, err := Realm(t.Context())
+	if err != nil || !regexp.MustCompile(`^[0-9a-f]{12}$`).MatchString(r) {
+		t.Fatalf("Realm = %q, %v, want 12 hex digits on a supported platform", r, err)
 	}
-	if again := Realm(); again != r {
-		t.Errorf("Realm() changed within one process: %q, then %q", r, again)
+	if again, _ := Realm(t.Context()); again != r {
+		t.Errorf("Realm changed within one process: %q, then %q", r, again)
 	}
 }
 

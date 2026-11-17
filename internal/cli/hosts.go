@@ -42,7 +42,8 @@ const peersOption = "@tmag-peers"
 // peersWanted reports whether tmag-peers belongs in the agents: on unless any
 // tmux server tmag finds says off, as for @tmag-answer.
 func peersWanted(ctx context.Context) bool {
-	for _, srv := range tmux.Servers() {
+	servers, _ := tmux.Servers(ctx)
+	for _, srv := range servers {
 		if srv.GlobalOption(ctx, peersOption) == "off" {
 			return false
 		}
@@ -55,8 +56,7 @@ func peersWanted(ctx context.Context) bool {
 func run(parent context.Context, name string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(parent, 20*time.Second)
 	defer cancel()
-	cmd, cleanup := helper.Command(ctx, name, args...)
-	defer cleanup()
+	cmd := helper.Command(ctx, name, args...)
 	out := &hostOutput{}
 	cmd.Stdout, cmd.Stderr = out, io.Discard
 	if err := cmd.Run(); err != nil {
@@ -304,7 +304,7 @@ func codexDaemon() (int, bool) {
 	return pid, found
 }
 func codexDaemonContext(ctx context.Context) (int, bool, error) {
-	pt, err := proc.SnapshotContext(ctx)
+	pt, err := proc.Snapshot(ctx)
 	if err != nil {
 		return 0, false, err
 	}

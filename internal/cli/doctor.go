@@ -287,7 +287,7 @@ func (a *app) checkRecords(ctx context.Context) check {
 var errDoctorSample = errors.New("doctor sample complete")
 
 func doctorServers(ctx context.Context) ([]tmux.Server, error) {
-	servers, err := tmux.ServersContext(ctx)
+	servers, err := tmux.Servers(ctx)
 	if err == nil && len(servers) > 16 {
 		err = errDoctorSample
 	}

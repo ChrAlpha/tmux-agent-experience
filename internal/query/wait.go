@@ -73,7 +73,7 @@ func Wait(ctx context.Context, store session.Store, s Session, o WaitOptions) (s
 			}
 			if now := time.Now(); !now.Before(nextLive) {
 				nextLive = now.Add(livenessInterval)
-				if rec.Host.PID > 0 && !proc.RunningContext(ctx, rec.Host.PID, rec.Host.Start) {
+				if rec.Host.PID > 0 && !proc.Running(ctx, rec.Host.PID, rec.Host.Start) {
 					return session.Record{}, fmt.Errorf("%w: the process of %s exited", ErrEnded, s.ID)
 				}
 			}

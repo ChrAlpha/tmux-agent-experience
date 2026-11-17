@@ -91,16 +91,11 @@ type listener struct {
 	id string
 }
 
-// Listen listens for the request id of state directory root.
-func Listen(root, id string) (net.Listener, error) {
-	return ListenContext(context.Background(), root, id)
-}
-
-// ListenContext listens for the request id of state directory root, within
+// Listen listens for the request id of state directory root, within
 // ctx's budget and setupBudget for setting up. It first removes the sockets
 // of hooks that died without closing theirs. A socket left at its own path
 // that nothing serves is replaced; one something serves is not.
-func ListenContext(ctx context.Context, root, id string) (net.Listener, error) {
+func Listen(ctx context.Context, root, id string) (net.Listener, error) {
 	ctx, cancel := context.WithTimeout(ctx, setupBudget)
 	defer cancel()
 	path, err := socketPath(root, id)

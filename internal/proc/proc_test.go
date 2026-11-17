@@ -210,12 +210,12 @@ func TestAliveComparesStart(t *testing.T) {
 	if !pt.Alive(5, "100") || !pt.Alive(5, "") || pt.Alive(5, "99") || pt.Alive(6, "") {
 		t.Fatal("Alive does not tell a reused pid apart")
 	}
-	self, err := Snapshot()
+	self, err := Snapshot(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
 	me, ok := self.Get(os.Getpid())
-	if !ok || me.Start == "" || !Running(me.PID, me.Start) || Running(me.PID, me.Start+"0") {
+	if !ok || me.Start == "" || !Running(context.Background(), me.PID, me.Start) || Running(context.Background(), me.PID, me.Start+"0") {
 		t.Fatalf("own start %q not read back", me.Start)
 	}
 }
@@ -266,7 +266,7 @@ func TestTreeWalks(t *testing.T) {
 }
 
 func TestLineageIsIncompleteAndCoversTheHook(t *testing.T) {
-	table, err := LineageContext(context.Background(), os.Getpid())
+	table, err := Lineage(context.Background(), os.Getpid())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -329,7 +329,7 @@ func TestSnapshotReadsArgumentsOnlyForCandidates(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	table, err := Snapshot()
+	table, err := Snapshot(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -344,7 +344,7 @@ func TestSnapshotReadsArgumentsOnlyForCandidates(t *testing.T) {
 }
 
 func TestSnapshotFindsSelf(t *testing.T) {
-	tb, err := Snapshot()
+	tb, err := Snapshot(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -354,7 +354,7 @@ func TestSnapshotFindsSelf(t *testing.T) {
 }
 
 func TestPSFallbackReadsProcessGroupsAndStart(t *testing.T) {
-	ps, err := readPS()
+	ps, err := readPS(context.Background())
 	if err != nil {
 		t.Skipf("ps unavailable: %v", err)
 	}

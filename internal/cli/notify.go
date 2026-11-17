@@ -31,7 +31,7 @@ func (a *app) cmdNotify(args []string) int {
 	}
 	if *fromHook {
 		if err := notify.RunAlert(a.log.Dir, os.Environ()); err != nil {
-			hook.RecordError(a.log.Dir, "notify", err)
+			hook.RecordError(a.ctx, a.log.Dir, "notify", err)
 		}
 		return ExitOK
 	}
@@ -83,7 +83,8 @@ func (a *app) cmdNotify(args []string) int {
 // notifyCommands are the distinct @tmag-notify commands the tmux servers
 // set. Clients build any notification links from the exported ids.
 func notifyCommands(ctx context.Context) (commands []string) {
-	for _, srv := range tmux.Servers() {
+	servers, _ := tmux.Servers(ctx)
+	for _, srv := range servers {
 		command := srv.GlobalOption(ctx, notify.Option)
 		if command == "" || slices.Contains(commands, command) {
 			continue

@@ -41,7 +41,7 @@ func (a *app) cmdHook(args []string) (code int) {
 			code = ExitOK
 		}
 	}()
-	err := hook.RunContext(ctx, hook.Input{Agent: args[0], Payload: a.stdin, Log: a.log, PID: os.Getpid()})
+	err := hook.Run(ctx, hook.Input{Agent: args[0], Payload: a.stdin, Log: a.log, PID: os.Getpid()})
 	if err != nil {
 		a.recordHookError(args[0], err)
 	} else {

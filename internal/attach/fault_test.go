@@ -42,7 +42,7 @@ func TestReconcileLeavesUnreadableRecordsAlone(t *testing.T) {
 }
 
 func TestLineageCannotAuthorizeReconciliation(t *testing.T) {
-	table, err := proc.LineageContext(context.Background(), os.Getpid())
+	table, err := proc.Lineage(context.Background(), os.Getpid())
 	if err != nil {
 		t.Fatal(err)
 	}

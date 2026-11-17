@@ -6,18 +6,15 @@ import (
 	"encoding/hex"
 )
 
-// Realm names the process table this process sees. tmag proves what it knows
-// from that table, so what one realm records means nothing in another:
+// Realm names the process table this process sees. tmag proves what it
+// knows from that table, so what one realm records means nothing in another:
 // containers that share a home directory each see their own, and every boot
 // starts a new one. It is "" when the platform does not say.
-func Realm() string { return realmID(realmSource()) }
-
-// RealmContext resolves the realm within the operation's discovery budget.
-func RealmContext(ctx context.Context) (string, error) {
+func Realm(ctx context.Context) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	source, err := realmSourceContext(ctx)
+	source, err := realmSource(ctx)
 	if err != nil {
 		return "", err
 	}

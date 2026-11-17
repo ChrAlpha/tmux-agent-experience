@@ -11,7 +11,7 @@ import (
 func TestCanceledSnapshotReturnsNoTable(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if table, err := SnapshotContext(ctx); table != nil || !errors.Is(err, context.Canceled) {
+	if table, err := Snapshot(ctx); table != nil || !errors.Is(err, context.Canceled) {
 		t.Fatalf("table=%v err=%v", table, err)
 	}
 }
@@ -36,7 +36,7 @@ func TestPartialPSOutputCannotAuthorizeReconciliation(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir)
-	if records, err := readPSContext(context.Background()); records != nil || err == nil {
+	if records, err := readPS(context.Background()); records != nil || err == nil {
 		t.Fatalf("partial process table=%v err=%v", records, err)
 	}
 }
@@ -44,7 +44,7 @@ func TestPartialPSOutputCannotAuthorizeReconciliation(t *testing.T) {
 func TestRealmDiscoveryHonorsCanceledParent(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if realm, err := RealmContext(ctx); realm != "" || !errors.Is(err, context.Canceled) {
+	if realm, err := Realm(ctx); realm != "" || !errors.Is(err, context.Canceled) {
 		t.Fatalf("realm=%q err=%v", realm, err)
 	}
 }

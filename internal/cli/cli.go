@@ -129,7 +129,7 @@ func Main(args []string) int {
 	if a.setup != nil {
 		discovery = a.setup
 	}
-	dir, err := eventlog.DefaultDirContext(discovery)
+	dir, err := eventlog.DefaultDir(discovery)
 	if err != nil {
 		if a.setup != nil {
 			return ExitOK

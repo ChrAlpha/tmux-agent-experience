@@ -41,7 +41,7 @@ func Load(ctx context.Context) (*World, error) {
 // its record; after saving it lists panes and loads the full table here for
 // proof and reconciliation.
 func (w *World) LoadProcesses(ctx context.Context) error {
-	pt, err := proc.SnapshotContext(ctx)
+	pt, err := proc.Snapshot(ctx)
 	if err != nil {
 		return err
 	}
@@ -53,7 +53,7 @@ func (w *World) LoadProcesses(ctx context.Context) error {
 // its process table. Sockets with no live server are skipped. A scan that
 // fails leaves w's panes as they were.
 func (w *World) LoadPanes(ctx context.Context) error {
-	servers, err := tmux.ServersContext(ctx)
+	servers, err := tmux.Servers(ctx)
 	if err != nil {
 		return err
 	}
