@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -14,6 +13,7 @@ import (
 	"github.com/ChrAlpha/tmux-agent-experience/internal/codexsvc/svctest"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/sockettest"
 )
 
 // daemonHolding serves a Codex control socket that replays the given
@@ -21,12 +21,8 @@ import (
 // joins.
 func daemonHolding(t *testing.T, items ...string) *codexsvc.Client {
 	t.Helper()
-	dir, err := os.MkdirTemp("", "tmag-q-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.RemoveAll(dir) })
-	ln, err := net.Listen("unix", filepath.Join(dir, "s"))
+	sock := filepath.Join(sockettest.Dir(t), "s")
+	ln, err := net.Listen("unix", sock)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +52,7 @@ func daemonHolding(t *testing.T, items ...string) *codexsvc.Client {
 	}()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	t.Cleanup(cancel)
-	c, err := codexsvc.Dial(ctx, filepath.Join(dir, "s"))
+	c, err := codexsvc.Dial(ctx, sock)
 	if err != nil {
 		t.Fatal(err)
 	}

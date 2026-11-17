@@ -2,7 +2,6 @@ package hook
 
 import (
 	"context"
-	"os"
 	"os/exec"
 	"strings"
 	"testing"
@@ -10,6 +9,7 @@ import (
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/attach"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/sockettest"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/tmux"
 )
 
@@ -98,11 +98,7 @@ func startTmuxPane(t *testing.T) (tmux.Server, string) {
 	if err != nil {
 		t.Skip("tmux not installed")
 	}
-	dir, err := os.MkdirTemp("/tmp", "tm-guard-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("TMUX_TMPDIR", dir)
+	t.Setenv("TMUX_TMPDIR", sockettest.Dir(t))
 	t.Setenv("TMUX", "")
 	t.Setenv("TMUX_PANE", "")
 	name := "guard"
@@ -117,7 +113,6 @@ func startTmuxPane(t *testing.T) (tmux.Server, string) {
 	run("-f", "/dev/null", "new-session", "-d", "-s", "main", "/bin/sh", "-c", "sleep 60")
 	t.Cleanup(func() {
 		_ = exec.Command(tmuxPath, "-L", name, "kill-server").Run()
-		_ = os.RemoveAll(dir)
 	})
 	socket := run("display-message", "-p", "#{socket_path}")
 	pane := run("list-panes", "-a", "-F", "#{pane_id}")

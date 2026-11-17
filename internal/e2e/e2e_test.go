@@ -28,6 +28,7 @@ import (
 	"github.com/ChrAlpha/tmux-agent-experience/internal/hook"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/query"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/sockettest"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/tmux"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/version"
 )
@@ -85,11 +86,7 @@ type harness struct {
 
 func start(t *testing.T) *harness {
 	t.Helper()
-	// Socket paths are limited to ~104 bytes; keep the tmpdir short.
-	sock, err := os.MkdirTemp("/tmp", "tm")
-	if err != nil {
-		t.Fatal(err)
-	}
+	sock := sockettest.Dir(t)
 	h := &harness{t: t, name: "e2e", dir: t.TempDir(), state: filepath.Join(sock, "state")}
 	t.Setenv("TMUX_TMPDIR", sock)
 	t.Setenv("TMAG_STATE_DIR", h.state)
@@ -106,7 +103,6 @@ func start(t *testing.T) *harness {
 	}
 	t.Cleanup(func() {
 		_ = exec.Command("tmux", "-L", h.name, "kill-server").Run() // may already be gone
-		os.RemoveAll(sock)
 	})
 	return h
 }

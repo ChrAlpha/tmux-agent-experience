@@ -15,18 +15,14 @@ import (
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/sockettest"
 )
 
 // serve listens at a fresh socket and runs handle for every connection, in
 // the order the connections arrive.
 func serve(t *testing.T, handle func(net.Conn)) string {
 	t.Helper()
-	dir, err := os.MkdirTemp("", "inbox") // socket paths are short
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.RemoveAll(dir) })
-	sock := filepath.Join(dir, "s.sock")
+	sock := filepath.Join(sockettest.Dir(t), "s.sock")
 	ln, err := net.Listen("unix", sock)
 	if err != nil {
 		t.Fatal(err)

@@ -5,11 +5,13 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/ChrAlpha/tmux-agent-experience/internal/sockettest"
 )
 
 // The peer of a Unix socket is the process that connected it.
 func TestPeerPID(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "peer.sock")
+	path := filepath.Join(sockettest.Dir(t), "peer.sock")
 	l, err := net.Listen("unix", path)
 	if err != nil {
 		t.Fatal(err)
