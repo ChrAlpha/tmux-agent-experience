@@ -169,7 +169,7 @@ func throughPane(ctx context.Context, log *eventlog.Log, v View, s Session, name
 			// the gate reads the session again.
 			rec, ok, err := store.Get(ctx, s.Agent, s.ID)
 			if err != nil || !ok {
-				return &RefusedError{RefuseChanged, fmt.Sprintf("%s has ended", s.ID)}
+				return sessionEnded(s.ID)
 			}
 			rec, nativeIdle, err = attach.Env{Log: log, Store: store}.IdleLocked(ctx, rec)
 			if err != nil {
@@ -186,7 +186,7 @@ func throughPane(ctx context.Context, log *eventlog.Log, v View, s Session, name
 			}
 			fs, ok := fresh.Session(s.Agent, s.ID)
 			if !ok {
-				return &RefusedError{RefuseChanged, fmt.Sprintf("%s has ended", s.ID)}
+				return sessionEnded(s.ID)
 			}
 			if err := paneGate(fs, fp, fresh); err != nil {
 				return err

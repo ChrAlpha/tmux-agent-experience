@@ -71,7 +71,7 @@ func throughService(outer context.Context, log *eventlog.Log, v View, s Session,
 	store := session.Store{Dir: log.Dir}
 	rec, ok, err := store.Get(outer, s.Agent, s.ID)
 	if err != nil || !ok {
-		return Delivery{}, &RefusedError{RefuseChanged, fmt.Sprintf("%s has ended", s.ID)}
+		return Delivery{}, sessionEnded(s.ID)
 	}
 	ctx, cancel := context.WithTimeout(outer, serviceTimeout)
 	defer cancel()
@@ -85,7 +85,7 @@ func throughService(outer context.Context, log *eventlog.Log, v View, s Session,
 	}
 
 	d, undo, err := recordDelivery(ctx, log, s, verb.gate, driver.Service, nil, func() error {
-		return &RefusedError{RefuseChanged, fmt.Sprintf("%s has ended", s.ID)}
+		return sessionEnded(s.ID)
 	}, verb.mark, nil)
 	if err != nil {
 		return Delivery{}, err

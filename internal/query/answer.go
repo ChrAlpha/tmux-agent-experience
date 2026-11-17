@@ -142,7 +142,7 @@ func answerHook(ctx context.Context, log *eventlog.Log, s Session, id string, d 
 	err := store.Lock(ctx, s.Agent, s.ID, func() error {
 		rec, ok, err := store.Get(ctx, s.Agent, s.ID)
 		if err != nil || !ok {
-			return &RefusedError{RefuseChanged, fmt.Sprintf("%s has ended", s.ID)}
+			return sessionEnded(s.ID)
 		}
 		if _, open := rec.Request(id); !open {
 			return &RefusedError{RefuseChanged, fmt.Sprintf("request %s of %s was answered or withdrawn", id, s.ID)}
@@ -313,7 +313,7 @@ func answerService(ctx context.Context, log *eventlog.Log, v View, s Session, id
 	err = store.Lock(ctx, s.Agent, s.ID, func() error {
 		rec, ok, err := store.Get(ctx, s.Agent, s.ID)
 		if err != nil || !ok {
-			return &RefusedError{RefuseChanged, fmt.Sprintf("%s has ended", s.ID)}
+			return sessionEnded(s.ID)
 		}
 		i := slices.IndexFunc(rec.Requests, func(o session.Request) bool { return o.ID == id })
 		if i < 0 {

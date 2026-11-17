@@ -116,7 +116,7 @@ func throughInboxInterrupt(outer context.Context, log *eventlog.Log, v View, s S
 	store := session.Store{Dir: log.Dir}
 	rec, ok, err := store.Get(outer, s.Agent, s.ID)
 	if err != nil || !ok {
-		return Delivery{}, &RefusedError{RefuseChanged, fmt.Sprintf("%s has ended", s.ID)}
+		return Delivery{}, sessionEnded(s.ID)
 	}
 	ctx, cancel := context.WithTimeout(outer, serviceTimeout)
 	defer cancel()
@@ -127,7 +127,7 @@ func throughInboxInterrupt(outer context.Context, log *eventlog.Log, v View, s S
 	defer c.Close()
 
 	d, undo, err := recordDelivery(ctx, log, s, runningGate, driver.Inbox, rec.Inbox, func() error {
-		return &RefusedError{RefuseChanged, fmt.Sprintf("%s has ended", s.ID)}
+		return sessionEnded(s.ID)
 	}, func(rec *session.Record) eventlog.Event {
 		rec.Halted = time.Now().UTC().Truncate(time.Second)
 		ev := eventlog.Event{Event: eventlog.Halt, Cwd: rec.Cwd}
