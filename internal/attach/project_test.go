@@ -393,6 +393,9 @@ func TestAnyTitleIsStoredAndComparedAsAValue(t *testing.T) {
 		"see " + a + " | proj",
 		"proj | " + b,
 		"",
+		// Too long to read: no tmux command fails on it, and nothing is
+		// written.
+		strings.Repeat("x", 16000) + " | " + a,
 	} {
 		rec := session.Record{Agent: proc.Codex, ID: threadA, Main: adapter.Working, Since: time.Unix(int64(1000+i), 0).UTC(), Shown: []session.Shown{entry}}
 		if err := env.Store.Put(ctx, rec); err != nil {

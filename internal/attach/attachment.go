@@ -177,10 +177,19 @@ const titleIDLen = 29
 // items; one would have to be precisely this to pass for an id.
 var titleIDRE = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{5}\.\.\.$`)
 
+// maxTitle bounds the titles tmag reads ids from: Codex's are under a
+// hundred bytes, and a guarded write carries the title it judged in one
+// tmux command, which tmux bounds.
+const maxTitle = 1 << 10
+
 // TitleIDs returns the thread-id prefixes a Codex title shows. Items are
 // joined by " | "; the activity indicator joins its neighbours by a space,
-// so an item is an id when, without activity glyphs, it is exactly one.
+// so an item is an id when, without activity glyphs, it is exactly one. A
+// title longer than maxTitle shows none.
 func TitleIDs(title string) []string {
+	if len(title) > maxTitle {
+		return nil
+	}
 	var out []string
 	for _, item := range strings.Split(title, " | ") {
 		var words []string

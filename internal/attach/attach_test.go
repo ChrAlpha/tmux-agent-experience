@@ -34,6 +34,8 @@ func TestTitleIDs(t *testing.T) {
 		threadA + " | proj":                 nil, // a full id is a thread-title or a name
 		"GPT-6 | proj":                      nil,
 		"":                                  nil,
+		// What tmag reads is bounded.
+		strings.Repeat("x", maxTitle) + " | " + shown(threadA): nil,
 	} {
 		if got := TitleIDs(title); !reflect.DeepEqual(got, want) {
 			t.Errorf("TitleIDs(%q) = %q, want %q", title, got, want)
