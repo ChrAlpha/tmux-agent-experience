@@ -109,7 +109,8 @@ const guardRefused = "tmag-guard-refused"
 // tmux still shows the attachment s names on a live pane running the program
 // it was attached with, then prints the pane; with ask it also reads the
 // server's options and client activity. A Codex pane is read first, under
-// the same pane lock, so that its title is judged as Check judges it.
+// the same pane lock, so that its title is judged as Check judges it; the
+// guard then asks that the title still shows what it showed.
 func guardedWrite(ctx context.Context, s session.Shown, rec session.Record, pr Projection, ask bool, options []string) (Projected, outcome) {
 	if !s.Valid() || !named(rec.Agent, rec.ID) {
 		return Projected{}, unwritten
@@ -119,25 +120,29 @@ func guardedWrite(ctx context.Context, s session.Shown, rec session.Record, pr P
 		a, ok := FromPane(p)
 		return ok && a.Agent == rec.Agent && a.Session == rec.ID && a.PID == s.PID && a.Start == s.Start
 	}
+	terms := []string{
+		"#{==:#{" + tmux.OptionPrefix + optAgent + "}," + rec.Agent + "}",
+		"#{==:#{" + tmux.OptionPrefix + optSession + "}," + rec.ID + "}",
+		"#{==:#{" + tmux.OptionPrefix + optPID + "}," + strconv.Itoa(s.PID) + "}",
+		"#{==:#{" + tmux.OptionPrefix + optStart + "}," + s.Start + "}",
+		"#{?pane_dead,0,1}",
+		"#{==:#{pane_current_command},#{" + tmux.OptionPrefix + optCmd + "}}",
+	}
 	if rec.Agent == proc.Codex {
 		p, err := srv.Pane(ctx, s.Pane)
-		switch {
-		case err != nil:
+		if err != nil {
 			return Projected{}, absence(ctx, srv, s.Pane)
-		case !holds(p):
+		}
+		if !holds(p) {
 			return Projected{}, gone
-		case !titleShows(p, rec):
+		}
+		term, ok := titleGuard(p, rec)
+		if !ok {
 			return Projected{}, unwritten
 		}
+		terms = append(terms, term)
 	}
-	guard := conjunction(
-		"#{==:#{"+tmux.OptionPrefix+optAgent+"},"+rec.Agent+"}",
-		"#{==:#{"+tmux.OptionPrefix+optSession+"},"+rec.ID+"}",
-		"#{==:#{"+tmux.OptionPrefix+optPID+"},"+strconv.Itoa(s.PID)+"}",
-		"#{==:#{"+tmux.OptionPrefix+optStart+"},"+s.Start+"}",
-		"#{?pane_dead,0,1}",
-		"#{==:#{pane_current_command},#{"+tmux.OptionPrefix+optCmd+"}}",
-	)
+	guard := conjunction(terms...)
 	accepted := projectionCommands(s.Pane, pr) + " ; display-message -p -t " + s.Pane + " ok"
 	refused := "display-message -p -t " + s.Pane + " " + guardRefused
 	args := []string{"if", "-F", "-t", s.Pane, guard, accepted, refused, ";",
@@ -174,15 +179,20 @@ func guardedWrite(ctx context.Context, s session.Shown, rec session.Record, pr P
 	return got, wrote
 }
 
-// titleShows reports whether a Codex pane's title still lets it show rec, as
-// Check decides: it shows one of the session's threads, or, for a process
-// attachment, no thread at all.
-func titleShows(p tmux.Pane, rec session.Record) bool {
-	if _, ok := shows(p.Title, rec); ok {
-		return true
+// titleGuard decides, as Check does, whether a Codex pane's title lets it
+// show rec: it shows one of the session's threads, or, for a process
+// attachment, no thread at all. The term it returns asks tmux, in the write's
+// own invocation, that the title still does: that it still holds the id it
+// showed, or still holds nothing shaped like an id. An id item is hex digits
+// and dashes, so the term carries nothing tmux would expand.
+func titleGuard(p tmux.Pane, rec session.Record) (term string, ok bool) {
+	if id, _, ok := shownID(p.Title, rec); ok {
+		return "#{m:*" + id + "...*,#{pane_title}}", true
 	}
-	a, _ := FromPane(p)
-	return a.Evidence != TitleID && len(TitleIDs(p.Title)) == 0
+	if a, _ := FromPane(p); a.Evidence != TitleID && len(TitleIDs(p.Title)) == 0 {
+		return "#{?#{m:*????????-????-????-????-?????...*,#{pane_title}},0,1}", true
+	}
+	return "", false
 }
 
 // absence is what a failed tmux call proves of a pane: gone when its server

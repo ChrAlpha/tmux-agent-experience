@@ -197,17 +197,24 @@ func isActivity(r rune) bool { return (r >= 0x2800 && r <= 0x28ff) || r == '●'
 // shows reports how a Codex title relates to a session: the view it shows,
 // or ok false when it shows no id of the session's.
 func shows(title string, rec session.Record) (view string, ok bool) {
+	_, view, ok = shownID(title, rec)
+	return view, ok
+}
+
+// shownID is the title's id item that shows rec, as TitleIDs reads it, and
+// the view it shows.
+func shownID(title string, rec session.Record) (id, view string, ok bool) {
 	for _, id := range TitleIDs(title) {
 		if strings.HasPrefix(rec.ID, id) {
-			return ViewMain, true
+			return id, ViewMain, true
 		}
 		for _, sub := range rec.Subagents {
 			if strings.HasPrefix(sub, id) {
-				return ViewSubagent, true
+				return id, ViewSubagent, true
 			}
 		}
 	}
-	return "", false
+	return "", "", false
 }
 
 // Check reports whether an attachment still holds in the world, and which

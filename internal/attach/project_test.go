@@ -2,7 +2,9 @@ package attach
 
 import (
 	"context"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -268,6 +270,48 @@ func TestProjectWritesACodexPaneOnlyWhileItsTitleShowsTheSession(t *testing.T) {
 		}
 		if stored, _, _ := env.Store.Get(ctx, proc.Codex, a); !stored.Lists(entry) {
 			t.Fatalf("title %q unlisted a pane that still holds the attachment", tc.title)
+		}
+	}
+
+	// The title changes between Project's read of it and its write: the
+	// write's own guard refuses, for a title-id attachment and for a process
+	// attachment whose title showed no thread.
+	real, err := exec.LookPath("tmux")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrap := t.TempDir()
+	flip := filepath.Join(wrap, "title")
+	script := "#!/bin/sh\nif [ \"$4\" = if ] && [ -s '" + flip + "' ]; then '" + real + "' -S \"$3\" select-pane -t " + pane +
+		" -T \"$(cat '" + flip + "')\"; fi\nexec '" + real + "' \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(wrap, "tmux"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", wrap+string(os.PathListSeparator)+os.Getenv("PATH"))
+	for _, tc := range []struct {
+		evidence, before, after string
+	}{
+		{TitleID, "repo | " + a[:29] + "...", "repo | " + b[:29] + "..."},
+		{Process, "repo", "repo | " + b[:29] + "..."},
+	} {
+		if err := srv.SetPaneOptions(ctx, pane, map[string]string{"evidence": tc.evidence, "state": "idle"}, nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(flip, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := srv.Run(ctx, "select-pane", "-t", pane, "-T", tc.before); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(flip, []byte(tc.after), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		written, missed, err := env.Project(ctx, rec)
+		if err != nil || len(written) != 0 || len(missed) != 1 {
+			t.Fatalf("%s attachment, title %q then %q: written %+v, missed %+v, %v", tc.evidence, tc.before, tc.after, written, missed, err)
+		}
+		if got := state(); got != "idle" {
+			t.Fatalf("%s attachment: the thread's state landed on a title that moved on: %q", tc.evidence, got)
 		}
 	}
 }
