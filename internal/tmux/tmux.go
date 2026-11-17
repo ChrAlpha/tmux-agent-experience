@@ -15,7 +15,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/ChrAlpha/tmux-agent-experience/internal/contextio"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/helper"
 )
 
@@ -510,18 +509,18 @@ func Servers(ctx context.Context) ([]Server, error) {
 	if env := os.Getenv("TMUX"); env != "" {
 		add(SocketFromEnv(env))
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	dir := SocketDir()
-	err := contextio.Entries(ctx, dir, func(e os.DirEntry) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil && !os.IsNotExist(err) {
+		return nil, err
+	}
+	for _, e := range entries {
 		if e.Type()&os.ModeSocket != 0 {
 			add(filepath.Join(dir, e.Name()))
 		}
-		return nil
-	})
-	if ctx.Err() != nil {
-		return nil, ctx.Err()
-	}
-	if err != nil && !os.IsNotExist(err) {
-		return nil, err
 	}
 	return out, nil
 }

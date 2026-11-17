@@ -126,7 +126,7 @@ func (a *app) answerHook() (err error) {
 	defer stop()
 	setup, finish := a.hookContext()
 	defer finish()
-	data, err := contextio.ReadAll(setup, a.stdin, 64<<20)
+	data, err := contextio.ReadAtMost(a.stdin, 64<<20)
 	if err != nil {
 		return err
 	}

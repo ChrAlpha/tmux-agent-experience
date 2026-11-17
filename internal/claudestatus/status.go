@@ -49,7 +49,7 @@ func Read(ctx context.Context, path string) (Status, error) {
 	if !st.Mode().IsRegular() {
 		return Status{}, fmt.Errorf("%s is not a regular file", path)
 	}
-	data, err := contextio.ReadAll(ctx, f, MaxBytes)
+	data, err := contextio.ReadAtMost(f, MaxBytes)
 	if err != nil {
 		return Status{}, err
 	}

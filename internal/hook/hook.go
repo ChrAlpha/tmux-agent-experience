@@ -67,9 +67,8 @@ type Input struct {
 
 // Run processes a hook using the earlier of the parent's budget and
 // Deadline, including input. It never writes to stdout: agents inject hook
-// stdout into the model context. Payload readers must cooperate with cancellation;
-// the CLI owns its inherited input with contextio.Own. No read worker is left
-// behind if an injected reader does not support cancellation.
+// stdout into the model context. A payload that may block must stop on
+// cancellation: the CLI owns its inherited input with contextio.Own.
 func Run(parent context.Context, in Input) (err error) {
 	ctx, cancel := context.WithTimeout(parent, Deadline)
 	defer cancel()
@@ -79,9 +78,12 @@ func Run(parent context.Context, in Input) (err error) {
 	if !proc.IsAgent(in.Agent) {
 		return fmt.Errorf("unknown agent %q", in.Agent)
 	}
-	data, err := contextio.ReadAll(ctx, in.Payload, maxPayload)
+	data, err := contextio.ReadAtMost(in.Payload, maxPayload)
 	if err != nil {
 		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err // input that outlived the budget changes nothing
 	}
 	p, err := adapter.Decode(data)
 	if err != nil {
@@ -528,6 +530,7 @@ func recordHookLog(parent context.Context, dir, agent, category string) {
 				return err
 			}
 		}
-		return contextio.WriteAll(ctx, f, line)
+		_, err = f.Write(line)
+		return err
 	})
 }

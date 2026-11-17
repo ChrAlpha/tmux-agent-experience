@@ -24,7 +24,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/ChrAlpha/tmux-agent-experience/internal/contextio"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/lockfile"
 )
 
@@ -213,7 +212,8 @@ func (l *Log) Append(ctx context.Context, e *Event) error {
 		} else if end != st.Size() {
 			line = append([]byte{'\n'}, line...)
 		}
-		return contextio.WriteAll(ctx, f, line)
+		_, err = f.Write(line)
+		return err
 	})
 }
 

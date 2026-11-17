@@ -6,23 +6,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"testing"
 	"time"
 )
-
-func TestCanceledReadDoesNotConsumeInput(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	in := strings.NewReader("still here")
-	if _, err := ReadAll(ctx, in, 100); !errors.Is(err, context.Canceled) {
-		t.Fatal(err)
-	}
-	if in.Len() != len("still here") {
-		t.Fatal("canceled read consumed input")
-	}
-}
 
 func TestOwnedPipeCancellation(t *testing.T) {
 	for _, writing := range []bool{false, true} {
@@ -58,7 +45,7 @@ func TestOwnedPipeCancellation(t *testing.T) {
 					_, err := owned.Write(make([]byte, 8<<20))
 					done <- err
 				} else {
-					_, err := ReadAll(ctx, owned, 100)
+					_, err := ReadAtMost(owned, 100)
 					done <- err
 				}
 			}()
@@ -177,20 +164,12 @@ func TestReadFileIsBounded(t *testing.T) {
 	if _, err := ReadFile(context.Background(), path, 4); err == nil {
 		t.Fatal("unbounded metadata read")
 	}
-}
-
-func TestDirectoryCancellationStopsBatch(t *testing.T) {
-	dir := t.TempDir()
-	for _, name := range []string{"a", "b", "c"} {
-		if err := os.WriteFile(filepath.Join(dir, name), nil, 0o600); err != nil {
-			t.Fatal(err)
-		}
+	if got, err := ReadFile(context.Background(), path, 5); err != nil || string(got) != "12345" {
+		t.Fatalf("ReadFile at its limit = %q, %v", got, err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	visited := 0
-	err := Entries(ctx, dir, func(os.DirEntry) error { visited++; cancel(); return nil })
-	if !errors.Is(err, context.Canceled) || visited != 1 {
-		t.Fatalf("visited=%d, err=%v", visited, err)
+	cancel()
+	if _, err := ReadFile(ctx, path, 5); !errors.Is(err, context.Canceled) {
+		t.Fatalf("ReadFile after cancellation: %v", err)
 	}
 }

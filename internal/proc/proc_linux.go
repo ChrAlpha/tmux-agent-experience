@@ -10,8 +10,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
-
-	"github.com/ChrAlpha/tmux-agent-experience/internal/contextio"
 )
 
 // readProcFS reads every process through /proc with raw system calls.
@@ -24,16 +22,15 @@ func readProcFS(ctx context.Context) ([]Process, error) {
 	if _, err := os.Stat("/proc/self/stat"); err != nil {
 		return nil, err
 	}
-	var pids []int
-	err := contextio.Entries(ctx, "/proc", func(e os.DirEntry) error {
-		pid, err := strconv.Atoi(e.Name())
-		if err == nil {
-			pids = append(pids, pid)
-		}
-		return nil
-	})
+	entries, err := os.ReadDir("/proc")
 	if err != nil {
 		return nil, err
+	}
+	var pids []int
+	for _, e := range entries {
+		if pid, err := strconv.Atoi(e.Name()); err == nil {
+			pids = append(pids, pid)
+		}
 	}
 	ps := make([]Process, len(pids))
 	ok := make([]bool, len(pids))

@@ -79,10 +79,17 @@ func (s Store) All(ctx context.Context) ([]Record, []*RecordError, error) {
 	var recs []Record
 	var faults []*RecordError
 	for _, agent := range proc.Agents {
-		err := contextio.Entries(ctx, filepath.Join(s.root(), agent), func(e os.DirEntry) error {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
+		}
+		entries, err := os.ReadDir(filepath.Join(s.root(), agent))
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return nil, nil, fmt.Errorf("read sessions of %s: %w", agent, err)
+		}
+		for _, e := range entries {
 			id, ok := strings.CutSuffix(e.Name(), ".json")
 			if !ok || !ValidID(id) {
-				return nil
+				continue
 			}
 			rec, found, err := s.Get(ctx, agent, id)
 			var fault *RecordError
@@ -90,17 +97,10 @@ func (s Store) All(ctx context.Context) ([]Record, []*RecordError, error) {
 			case errors.As(err, &fault):
 				faults = append(faults, fault)
 			case err != nil:
-				return err
+				return nil, nil, err
 			case found:
 				recs = append(recs, rec)
 			}
-			return nil
-		})
-		if ctx.Err() != nil {
-			return nil, nil, ctx.Err()
-		}
-		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			return nil, nil, fmt.Errorf("read sessions of %s: %w", agent, err)
 		}
 	}
 	return recs, faults, nil
