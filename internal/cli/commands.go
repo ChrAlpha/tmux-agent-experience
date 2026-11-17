@@ -549,6 +549,64 @@ func (a *app) cmdKeys(args []string) int {
 	return ExitOK
 }
 
+// cmdChanges shows what the working tree of an agent's directory changed
+// against HEAD, or one file's patch: read from git, kept nowhere.
+func (a *app) cmdChanges(args []string) int {
+	fs := flag.NewFlagSet("changes", flag.ContinueOnError)
+	fs.BoolVar(&a.json, "json", false, "")
+	file := fs.String("file", "", "")
+	pos, err := parse(fs, args)
+	if err == nil && len(pos) != 1 {
+		err = errors.New("expected one target")
+	}
+	if err != nil {
+		return a.usageError("changes", err)
+	}
+	ctx, cancel := a.signalContext()
+	defer cancel()
+	v, _, err := query.Load(ctx, a.store())
+	if err != nil {
+		return a.failOn("changes", pos[0], err)
+	}
+	if *file != "" {
+		patch, err := query.Diff(ctx, v, pos[0], *file)
+		if err != nil {
+			return a.failOn("changes", pos[0], err)
+		}
+		if a.json {
+			a.emit(map[string]any{"file": *file, "patch": patch})
+		} else {
+			fmt.Fprint(a.stdout, patch)
+		}
+		return ExitOK
+	}
+	c, err := query.ListChanges(ctx, v, pos[0])
+	if err != nil {
+		return a.failOn("changes", pos[0], err)
+	}
+	if a.json {
+		a.emit(map[string]any{"changes": c})
+		return ExitOK
+	}
+	fmt.Fprintln(a.stdout, c.Top)
+	for _, f := range c.Files {
+		lines := ""
+		switch {
+		case f.Added != nil:
+			lines = fmt.Sprintf(" (+%d -%d)", *f.Added, *f.Removed)
+		case f.Binary:
+			lines = " (binary)"
+		case f.Filtered:
+			lines = " (filtered)"
+		}
+		fmt.Fprintf(a.stdout, "%-2s %s%s\n", f.Status, f.Path, lines)
+	}
+	if c.Truncated {
+		fmt.Fprintln(a.stdout, "(and more)")
+	}
+	return ExitOK
+}
+
 func (a *app) cmdInterrupt(args []string) int {
 	fs := flag.NewFlagSet("interrupt", flag.ContinueOnError)
 	fs.BoolVar(&a.json, "json", false, "")

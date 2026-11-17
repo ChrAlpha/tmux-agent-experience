@@ -75,8 +75,8 @@ promise is documented in the package, and changes with it.
   no prompt, message or tool-input field, and tmag's extensions send none;
   records, events and alerts hold ids, states, paths and times. A prompt
   sent through an inbox is written to the agent's channel and kept nowhere.
-  `answer-hook` keeps a tool input in memory only, and `read --last` and
-  `read --turns` print what they read and keep nothing.
+  `answer-hook` keeps a tool input in memory only, and `read --last`,
+  `read --turns` and `changes` print what they read and keep nothing.
 - **What tmag accepts is bounded where it is read.** `adapter.Decode` bounds
   every field it keeps and records cap their lists, so state stays small
   whatever an agent sends. A new field comes with its bound.
