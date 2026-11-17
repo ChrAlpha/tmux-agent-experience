@@ -40,3 +40,15 @@ func TestReconcileLeavesUnreadableRecordsAlone(t *testing.T) {
 		t.Fatalf("events = %+v, %v", events, err)
 	}
 }
+
+func TestLineageCannotAuthorizeReconciliation(t *testing.T) {
+	table, err := proc.LineageContext(context.Background(), os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := eventlog.Open(t.TempDir())
+	store := session.Store{Dir: log.Dir}
+	if err := Reconcile(context.Background(), Env{Log: log, Store: store}, &World{Proc: table}); err == nil {
+		t.Fatal("lineage authorized reconciliation")
+	}
+}

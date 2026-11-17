@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/contextio"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
@@ -23,12 +22,25 @@ type Store struct {
 	Dir string // the state directory
 }
 
-// idRE bounds what an agent may use as a session id, which becomes a file
-// name: every agent tmag knows uses UUIDs.
-var idRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
-
-// ValidID reports whether id can name a session.
-func ValidID(id string) bool { return idRE.MatchString(id) }
+// ValidID reports whether id can name a session: it bounds what an agent may
+// use as a session id, which becomes a file name. Every agent tmag knows uses
+// UUIDs.
+func ValidID(id string) bool {
+	if len(id) == 0 || len(id) > 128 {
+		return false
+	}
+	for i := 0; i < len(id); i++ {
+		c := id[i]
+		if c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' {
+			continue
+		}
+		if i > 0 && (c == '.' || c == '_' || c == '-') {
+			continue
+		}
+		return false
+	}
+	return true
+}
 
 func (s Store) root() string { return filepath.Join(s.Dir, "sessions") }
 

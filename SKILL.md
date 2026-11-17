@@ -162,7 +162,7 @@ their state.
 Report the final `tmag doctor` lines, and tell the user about the keys:
 `prefix + A` jumps to the agent waiting longest, `prefix + a` lists agents,
 `prefix + M-a` re-runs setup and doctor, and `#{tmag_status}` can go in their
-status line. Tell them too that agents can now work with each other through
+status line to count panes by state. Tell them too that agents can now work with each other through
 tmag when asked to, and that `set -g @tmag-peers off` followed by
 `prefix + M-a` turns that off.
 

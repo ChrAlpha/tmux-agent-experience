@@ -26,9 +26,13 @@
 // notification hook Claude Code sends after a while idle. The prompt "block" raises a
 // permission prompt; in Pi (an extension's dialog) and oh-my-pi (a tool
 // approval) it starts a turn the next line ends, answering it in the
-// terminal ("yes" or anything else). A prompt "tmag ARGS" is a
-// turn whose Bash tool runs tmag ARGS, with the variable the agent sets for
-// its tools naming the session; FAKE_OUT gets "tool CODE OUTPUT".
+// terminal ("yes" or anything else). The prompt "sleep" starts a turn that
+// lasts a minute unless "/end" or an interrupt ends it first.
+// A line "/end" typed while a turn runs ends it at once, as its time running
+// out would; outside a turn it is a slash command like the others. A prompt
+// "tmag ARGS" is a turn whose Bash tool runs tmag ARGS, with the variable the
+// agent sets for its tools naming the session; FAKE_OUT gets "tool CODE
+// OUTPUT".
 // Every prompt, and how each dialog was answered, goes to FAKE_OUT.
 //
 // Each turn ends with the reply "answered: LINE", LINE being the prompt's
@@ -284,6 +288,10 @@ func main() {
 			// The notification Claude Code sends once it has been idle a
 			// while: a hook that changes nothing.
 			hook("Notification", map[string]any{turnKey: turn, "notification_type": "idle_prompt"})
+		case line == "/pretool":
+			// A tool call outside a turn, for tests that need one hook alone.
+			n++
+			hook(ev.toolStart, map[string]any{turnKey: turn, "tool_name": "Bash", "tool_use_id": fmt.Sprintf("u%d", n)})
 		case strings.HasPrefix(line, "/"):
 			// slash commands start no turn
 		case line == "block" && answering:
@@ -302,6 +310,10 @@ func main() {
 			hook(ev.ask, call)
 		case line == "block":
 			hook("PermissionRequest", map[string]any{turnKey: fmt.Sprintf("t%d", n), "tool_name": "Bash"})
+		case line == "sleep":
+			// Lasts a minute unless "/end" or an interrupt ends it.
+			begin(line)
+			ends = time.After(time.Minute)
 		case strings.HasPrefix(line, "tmag "):
 			begin(line)
 			call := map[string]any{turnKey: turn, "tool_name": "Bash", "tool_use_id": fmt.Sprintf("u%d", n)}
@@ -336,6 +348,11 @@ loop:
 				}
 			case in.escape:
 				record("escape")
+			case ends != nil && in.line == "/end":
+				// The turn ends as its time running out would.
+				record(in.line)
+				ends = nil
+				end()
 			case ends != nil:
 				waiting = append(waiting, in.line)
 			default:

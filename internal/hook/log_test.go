@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/adapter"
-	"github.com/ChrAlpha/tmux-agent-experience/internal/attach"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
@@ -73,9 +72,9 @@ func TestHookRecordsStateWithoutAProcessTable(t *testing.T) {
 	if err := store.Put(context.Background(), rec); err != nil {
 		t.Fatal(err)
 	}
-	previous := loadProcesses
-	loadProcesses = func(context.Context, *attach.World) error { return errors.New("process table unreadable") }
-	t.Cleanup(func() { loadProcesses = previous })
+	previous := loadLineage
+	loadLineage = func(context.Context, int) (*proc.Table, error) { return nil, errors.New("process table unreadable") }
+	t.Cleanup(func() { loadLineage = previous })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

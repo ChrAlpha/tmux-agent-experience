@@ -88,8 +88,17 @@ promise is documented in the package, and changes with it.
   wherever it runs, in daemons and background supervisors too.
 - **A pane shows a session only on proof.** Process ancestry or the Codex
   `thread-id` title item, never `$TMUX_PANE`, names or directories;
-  ambiguity is no attachment. Bells, borders, the picker, the status line and
-  `jump` show only proven attachments; anything else is `unknown`.
+  ambiguity is no attachment. A record may carry a pane hint, {server, pane
+  id}, with the client it was proven for, for a pane in which its host was
+  proven by process ancestry. Only a hook that proved its own host's pane sets
+  it, and only while no Attach has published since the hook read the record and
+  no attachment of the session is on another server; every Attach publishes a
+  generation and any Attach of another pane clears the hint. A later hook
+  updates that pane only through a guard inside tmux; the same invocation lists
+  other panes on that server naming the session, and if there are any the hook
+  takes the full path for them. A failed guard clears the hint and takes the
+  full proof path. Bells, borders, the picker, the status line and `jump` show
+  only proven attachments; anything else is `unknown`.
 - **Control is gated.** `send`, `interrupt` and `answer` act only through a
   channel proven to reach the session, after checking the state they need
   again under the locks they need; an inbox is proven when its listener is
@@ -231,9 +240,11 @@ claude plugin validate .      # marketplace and plugin manifests
   the reply `answered: LINE` written to the transcript its hooks name, in the
   agent's format. A line `tmag ARGS` typed into it,
   or a `{"tool":[…]}` line given to the daemon, runs tmag as the agent's
-  tool, so tmag sees an agent calling. The same binary answers `--version` and `plugin …` as
-  a fake host CLI. Plugin tests lay out a TPM directory and serve a local
-  release over `file://`.
+  tool, so tmag sees an agent calling; `/pretool` runs one PreToolUse event,
+  for hook-cost tests, and `sleep` starts a turn that only `/end` or an
+  interrupt ends before a minute is up. The same binary answers `--version`
+  and `plugin …` as a fake host CLI. Plugin tests lay out a TPM directory
+  and serve a local release over `file://`.
 - `TestExtensionsReport` runs Pi's and oh-my-pi's extensions on Node.js 22.6
   or later, which strips TypeScript types (skipped without it), through each
   host's events against a fake host, and reads what they ran `tmag hook`

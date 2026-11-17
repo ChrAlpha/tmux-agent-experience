@@ -532,3 +532,25 @@ func TestAnsweringARequestClosesItsPromptOnce(t *testing.T) {
 		t.Fatal("answering a closed request changed the session")
 	}
 }
+
+func TestPaneHintBounds(t *testing.T) {
+	valid := PaneHint{Server: "/tmp/tmux-1000/default", ID: "%12", PID: 42, Start: "Mon Nov  3 09:12:22 2026"}
+	if !valid.Valid() {
+		t.Fatal("a proven hint is invalid")
+	}
+	for _, h := range []PaneHint{
+		{Server: "", ID: "%1", PID: 1, Start: "1"},
+		{Server: "/tmp/a\nb", ID: "%1", PID: 1, Start: "1"},
+		{Server: "/tmp/a", ID: "1", PID: 1, Start: "1"},
+		{Server: "/tmp/a", ID: "%x", PID: 1, Start: "1"},
+		{Server: "/tmp/a", ID: "%1", PID: 0, Start: "1"},
+		{Server: "/tmp/a", ID: "%1", PID: 1, Start: ""},
+		{Server: "/tmp/a", ID: "%1", PID: 1, Start: "x}#{run-shell}"},
+		{Server: "/tmp/a", ID: "%1", PID: 1, Start: "%H"},
+		{Server: "/tmp/a", ID: "%1", PID: 1, Start: strings.Repeat("1", maxPaneStart+1)},
+	} {
+		if h.Valid() {
+			t.Errorf("invalid hint accepted: %+v", h)
+		}
+	}
+}

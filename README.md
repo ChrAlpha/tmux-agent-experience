@@ -16,8 +16,9 @@ between them.
 - **Jump straight to the next agent.** `prefix + A` takes you to the agent
   waiting longest, with blocked agents first. `prefix + a` opens the agent tree.
 - **See progress where you work.** Add `#{tmag_status}` to your status line
-  for `2 blocked · 1 working`, or `#{E:@tmag-pane-status}` to pane borders
-  for labels such as `codex blocked permission`.
+  for pane counts by state such as `2 blocked · 1 working`, or
+  `#{E:@tmag-pane-status}` to pane borders for labels such as
+  `codex blocked permission`.
 - **Let agents work together.** Agents can discover peers, check their state,
   send prompts and read replies. Ask one to bring another into the task.
 - **Reach agents beyond the terminal.** Answer permission requests, send prompts
