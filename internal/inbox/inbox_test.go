@@ -271,7 +271,9 @@ func TestCleanName(t *testing.T) {
 }
 
 func TestServesTheRecordedProcess(t *testing.T) {
-	sock := serve(t, func(net.Conn) {})
+	// The listener holds the connection until the test closes it: on macOS,
+	// a peer that has closed has no pid to read.
+	sock := serve(t, func(conn net.Conn) { _, _ = io.Copy(io.Discard, conn) })
 	c := dial(t, sock)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
