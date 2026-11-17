@@ -16,8 +16,13 @@ import (
 	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
 )
 
-// answerTimeout bounds handing a decision to an answer hook.
+// answerTimeout bounds reading what an answer hook asks.
 const answerTimeout = 5 * time.Second
+
+// decideTimeout bounds handing a decision to an answer hook, under the
+// session's lock: well within hook.Deadline, so the session's own hooks,
+// which wait for that lock, still finish in theirs.
+const decideTimeout = 2 * time.Second
 
 // Asked is an open request and what it asks.
 type Asked struct {
@@ -60,7 +65,7 @@ func Show(ctx context.Context, log *eventlog.Log, target, id string) (Asked, err
 	if err != nil {
 		return Asked{}, err
 	}
-	switch driver.Channel(s.Agent, s.Runtime, driver.Answer) {
+	switch driver.AnswerChannel(s.Agent, s.Runtime) {
 	case driver.Hook:
 		if answer.Probe(ctx, log.Dir, id) == answer.Dead {
 			return Asked{}, noHook(s, id)
@@ -106,7 +111,7 @@ func Answer(ctx context.Context, log *eventlog.Log, target, id string, d answer.
 	if err := answerGate(ctx, s, caller); err != nil {
 		return Delivery{}, err
 	}
-	switch driver.Channel(s.Agent, s.Runtime, driver.Answer) {
+	switch driver.AnswerChannel(s.Agent, s.Runtime) {
 	case driver.Hook:
 		return answerHook(ctx, log, s, id, d, caller)
 	case driver.Service:
@@ -142,12 +147,12 @@ func answerHook(ctx context.Context, log *eventlog.Log, s Session, id string, d 
 	err := store.Lock(ctx, s.Agent, s.ID, func() error {
 		rec, ok, err := store.Get(ctx, s.Agent, s.ID)
 		if err != nil || !ok {
-			return &RefusedError{RefuseChanged, fmt.Sprintf("%s has ended", s.ID)}
+			return sessionEnded(s.ID)
 		}
 		if _, open := rec.Request(id); !open {
 			return &RefusedError{RefuseChanged, fmt.Sprintf("request %s of %s was answered or withdrawn", id, s.ID)}
 		}
-		decideCtx, cancel := context.WithTimeout(ctx, answerTimeout)
+		decideCtx, cancel := context.WithTimeout(ctx, decideTimeout)
 		defer cancel()
 		if err := answer.Decide(decideCtx, log.Dir, id, d); err != nil {
 			return hookError(s, id, err)
@@ -309,10 +314,11 @@ func answerService(ctx context.Context, log *eventlog.Log, v View, s Session, id
 	// taker has given up: deliveries end within serviceTimeout.
 	store := session.Store{Dir: log.Dir}
 	var dl Delivery
+	var answered time.Time
 	err = store.Lock(ctx, s.Agent, s.ID, func() error {
 		rec, ok, err := store.Get(ctx, s.Agent, s.ID)
 		if err != nil || !ok {
-			return &RefusedError{RefuseChanged, fmt.Sprintf("%s has ended", s.ID)}
+			return sessionEnded(s.ID)
 		}
 		i := slices.IndexFunc(rec.Requests, func(o session.Request) bool { return o.ID == id })
 		if i < 0 {
@@ -322,8 +328,9 @@ func answerService(ctx context.Context, log *eventlog.Log, v View, s Session, id
 		if at := rec.Requests[i].Answered; now.Before(at.Add(serviceTimeout)) {
 			return &RefusedError{RefuseChanged, fmt.Sprintf("request %s of %s is being answered", id, s.ID)}
 		}
+		answered = now.UTC()
 		rec.Requests = slices.Clone(rec.Requests)
-		rec.Requests[i].Answered = now.UTC()
+		rec.Requests[i].Answered = answered
 		ev := eventlog.Event{Event: eventlog.Answer, Via: driver.Service, Request: id, Decision: d.Behavior}
 		caller.stamp(&ev)
 		if err := store.Report(ctx, log, rec, &ev); err != nil {
@@ -336,7 +343,22 @@ func answerService(ctx context.Context, log *eventlog.Log, v View, s Session, id
 		return Delivery{}, err
 	}
 	if err := c.Respond(ctx, m.ID, map[string]string{"decision": decision}); err != nil {
-		return dl, fmt.Errorf("logged at seq %d, but the Codex daemon did not take it: %w", dl.Seq, err)
+		// A refusal from the daemon frees the request at once; another
+		// failure leaves it taken for as long as a delivery may run.
+		return undone(ctx, dl, deliveryFailure(dl, err), func(ctx context.Context) error {
+			return store.Lock(ctx, s.Agent, s.ID, func() error {
+				rec, ok, err := store.Get(ctx, s.Agent, s.ID)
+				if err != nil || !ok {
+					return err
+				}
+				i := slices.IndexFunc(rec.Requests, func(o session.Request) bool { return o.ID == id })
+				if i < 0 || !rec.Requests[i].Answered.Equal(answered) {
+					return nil
+				}
+				rec.Requests[i].Answered = time.Time{}
+				return store.Put(ctx, rec)
+			})
+		})
 	}
 	if err := c.AwaitResolved(ctx, m.ID); err != nil {
 		return dl, fmt.Errorf("logged at seq %d and sent, but the Codex daemon did not report it resolved: %w", dl.Seq, err)

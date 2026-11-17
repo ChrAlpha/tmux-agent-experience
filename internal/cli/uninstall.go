@@ -1,17 +1,39 @@
 package cli
 
 import (
-	"context"
 	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/ChrAlpha/tmux-agent-experience/internal/attach"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/auth"
-	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/lockfile"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/tmux"
 )
+
+// removeState removes everything in a state directory but its lock files,
+// which are never removed: a process that holds one keeps excluding the
+// others.
+func removeState(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	for _, e := range entries {
+		if lockfile.Named(e.Name()) {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(dir, e.Name())); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 func (a *app) cmdUninstall(args []string) int {
 	fs := flag.NewFlagSet("uninstall", flag.ContinueOnError)
@@ -19,35 +41,29 @@ func (a *app) cmdUninstall(args []string) int {
 	if _, err := parse(fs, args); err != nil {
 		return a.usageError("uninstall", err)
 	}
+	ctx, cancel := a.signalContext()
+	defer cancel()
 	if *purge {
-		if err := (auth.Store{Dir: auth.DefaultDir()}).Revoke(context.Background(), "", true); err != nil {
+		if err := (auth.Store{Dir: auth.DefaultDir()}).Revoke(ctx, "", true); err != nil {
 			return a.fail("uninstall", err)
 		}
-		cleared := 0
-		ctx := context.Background()
-		for _, s := range tmux.Servers() {
-			panes, err := s.Panes(ctx)
-			if err != nil {
-				continue
-			}
-			for _, p := range panes {
-				if len(p.Options) > 0 && s.ClearPaneOptions(ctx, p.ID) == nil {
-					cleared++
-				}
-			}
+		// Agents keep running, and their hooks with them: the panes are
+		// cleared and the state removed under every pane's lock, the state
+		// but for its lock files, which keep a hook that runs meanwhile
+		// excluded.
+		cleared, err := attach.Purge(ctx, attach.Env{Log: a.log, Store: a.store()}, func() error { return removeState(a.log.Dir) })
+		if err != nil {
+			return a.fail("uninstall", err)
+		}
+		servers, _ := tmux.Servers(ctx)
+		for _, s := range servers {
 			// Left behind only by a tmag serve that was killed.
 			_, _ = s.Run(ctx, "set-option", "-gu", serveAddressOption)
 		}
-		if err := os.RemoveAll(a.log.Dir); err != nil {
+		if err := removeState(auth.DefaultDir()); err != nil {
 			return a.fail("uninstall", err)
 		}
-		if err := os.RemoveAll(auth.DefaultDir()); err != nil {
-			return a.fail("uninstall", err)
-		}
-		if filepath.Dir(filepath.Clean(a.log.Dir)) == filepath.Clean(eventlog.Base()) {
-			_ = os.Remove(eventlog.Base()) // once no other realm keeps state there
-		}
-		fmt.Fprintf(a.stdout, "cleared tmag options from %d pane(s) and removed %s\n", cleared, a.log.Dir)
+		fmt.Fprintf(a.stdout, "cleared tmag options from %d pane(s) and removed tmag's state from %s, keeping its lock files for hooks that run meanwhile\n", cleared, a.log.Dir)
 		return ExitOK
 	}
 	self, _ := os.Executable()
@@ -57,7 +73,7 @@ func (a *app) cmdUninstall(args []string) int {
 	}
 	// pi remove takes a package's path: those Pi's settings list, else the
 	// tmux plugin's.
-	paths := tmagPiPackages(context.Background())
+	paths := tmagPiPackages(ctx)
 	if root := pluginRoot(os.Getenv); len(paths) == 0 && root != "" {
 		dir := filepath.Join(root, "plugins", "pi")
 		paths = []string{filepath.Join(dir, peersName), filepath.Join(dir, pluginName)}

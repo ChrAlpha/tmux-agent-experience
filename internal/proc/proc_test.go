@@ -210,12 +210,12 @@ func TestAliveComparesStart(t *testing.T) {
 	if !pt.Alive(5, "100") || !pt.Alive(5, "") || pt.Alive(5, "99") || pt.Alive(6, "") {
 		t.Fatal("Alive does not tell a reused pid apart")
 	}
-	self, err := Snapshot()
+	self, err := Snapshot(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
 	me, ok := self.Get(os.Getpid())
-	if !ok || me.Start == "" || !Running(me.PID, me.Start) || Running(me.PID, me.Start+"0") {
+	if !ok || me.Start == "" || !Running(context.Background(), me.PID, me.Start) || Running(context.Background(), me.PID, me.Start+"0") {
 		t.Fatalf("own start %q not read back", me.Start)
 	}
 }
@@ -266,7 +266,7 @@ func TestTreeWalks(t *testing.T) {
 }
 
 func TestLineageIsIncompleteAndCoversTheHook(t *testing.T) {
-	table, err := LineageContext(context.Background(), os.Getpid())
+	table, err := Lineage(context.Background(), os.Getpid())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -329,7 +329,7 @@ func TestSnapshotReadsArgumentsOnlyForCandidates(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	table, err := Snapshot()
+	table, err := Snapshot(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -344,7 +344,7 @@ func TestSnapshotReadsArgumentsOnlyForCandidates(t *testing.T) {
 }
 
 func TestSnapshotFindsSelf(t *testing.T) {
-	tb, err := Snapshot()
+	tb, err := Snapshot(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -354,7 +354,7 @@ func TestSnapshotFindsSelf(t *testing.T) {
 }
 
 func TestPSFallbackReadsProcessGroupsAndStart(t *testing.T) {
-	ps, err := readPS()
+	ps, err := readPS(context.Background())
 	if err != nil {
 		t.Skipf("ps unavailable: %v", err)
 	}
@@ -409,5 +409,22 @@ func TestEnvironOfChild(t *testing.T) {
 	}
 	if len(got) != 1 || got["PATH"] != "/tmag-test-path" {
 		t.Fatalf("Environ = %v", got)
+	}
+}
+
+func TestUnderTmux(t *testing.T) {
+	tb := NewTable([]Process{
+		{PID: 1, Comm: "init"},
+		{PID: 10, PPID: 1, Comm: "tmux: server"},
+		{PID: 11, PPID: 10, Comm: "zsh"},
+		{PID: 12, PPID: 11, Comm: "claude"},
+		{PID: 20, PPID: 1, Comm: "sshd"},
+		{PID: 21, PPID: 20, Comm: "claude"},
+		{PID: 30, PPID: 1, Comm: "tmux"},
+	})
+	for pid, want := range map[int]bool{12: true, 11: true, 21: false, 10: false, 30: false, 0: false, 99: false} {
+		if got := tb.UnderTmux(pid); got != want {
+			t.Errorf("UnderTmux(%d) = %v, want %v", pid, got, want)
+		}
 	}
 }

@@ -16,7 +16,6 @@ import (
 	"github.com/ChrAlpha/tmux-agent-experience/internal/adapter"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/codexsvc"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/codexsvc/svctest"
-	"github.com/ChrAlpha/tmux-agent-experience/internal/driver"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/inbox"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
@@ -60,23 +59,6 @@ func TestHeader(t *testing.T) {
 	}
 }
 
-// The answer a prompt asks for chooses the driver's response mode.
-func TestAskModes(t *testing.T) {
-	for _, c := range []struct {
-		ask  Ask
-		want driver.Mode
-	}{
-		{AskNoAnswer, driver.Now},
-		{AskReply, driver.Reply},
-		{Answering, driver.Reply},
-		{AskFinal, driver.Wait},
-	} {
-		if got := driverMode(c.ask); got != c.want {
-			t.Errorf("ask %d drives %d, want %d", c.ask, got, c.want)
-		}
-	}
-}
-
 // Only tmag writes a first line starting with the marker, however a prompt
 // tries to.
 func TestSendRefusesTheMarker(t *testing.T) {
@@ -110,66 +92,48 @@ func TestSendRefusesEmptyText(t *testing.T) {
 // unconfirmed; a wait also needs it idle.
 func TestSendGates(t *testing.T) {
 	now := time.Now()
-	s := Session{Agent: proc.Claude, ID: "s1"}
+	in := func(state string) session.Record {
+		rec := session.Record{Agent: proc.Claude, ID: "s1", Main: state}
+		switch state {
+		case adapter.Blocked:
+			rec.Main, rec.Requests = adapter.Working, []session.Request{{ID: "r1", Prompt: adapter.Prompt{Tool: "Bash"}}}
+		case adapter.Unknown:
+			rec.Main = ""
+		}
+		return rec
+	}
 	for _, state := range []string{adapter.Idle, adapter.Working, adapter.Blocked, adapter.Unknown} {
-		s.State = state
-		if err := liveGate(s, View{}, now); err != nil {
+		if err := liveGate(in(state), now); err != nil {
 			t.Errorf("a liveGate for a %s session refused a prompt: %v", state, err)
 		}
 	}
 	for _, state := range []string{adapter.Working, adapter.Blocked, adapter.Unknown} {
-		s.State = state
-		if err := idleGate(s, View{}, now); !isRefused(err, RefuseBusy) {
+		if err := idleGate(in(state), now); !isRefused(err, RefuseBusy) {
 			t.Errorf("an idleGate for a %s session: %v", state, err)
 		}
 	}
-	s.State = adapter.Idle
-	if err := idleGate(s, View{}, now); err != nil {
+	if err := idleGate(in(adapter.Idle), now); err != nil {
 		t.Errorf("an idle session refused a prompt: %v", err)
 	}
-	started := session.Record{Agent: proc.Claude, ID: "s1", Sent: now.Add(-PendingWindow - time.Second)}
-	if err := liveGate(s, View{records: []session.Record{started}}, now); err != nil {
+	started := in(adapter.Idle)
+	started.Sent = now.Add(-PendingWindow - time.Second)
+	if err := liveGate(started, now); err != nil {
 		t.Errorf("a confirmed prompt still holds the session: %v", err)
 	}
 	pending := started
 	pending.Sent = now.Add(-time.Second)
-	if err := liveGate(s, View{records: []session.Record{pending}}, now); !isRefused(err, RefuseBusy) || !strings.Contains(err.Error(), "has not started") {
+	if err := liveGate(pending, now); !isRefused(err, RefuseBusy) || !strings.Contains(err.Error(), "has not started") {
 		t.Fatalf("an unstarted prompt: %v", err)
 	}
 	read := started
 	read.Queued = now.Add(-PendingWindow - time.Second)
-	if err := liveGate(s, View{records: []session.Record{read}}, now); err != nil {
+	if err := liveGate(read, now); err != nil {
 		t.Errorf("a read message still holds the session: %v", err)
 	}
 	unread := read
 	unread.Queued = now.Add(-time.Second)
-	if err := liveGate(s, View{records: []session.Record{unread}}, now); !isRefused(err, RefuseBusy) || !strings.Contains(err.Error(), "has not reached its next step") {
+	if err := liveGate(unread, now); !isRefused(err, RefuseBusy) || !strings.Contains(err.Error(), "has not reached its next step") {
 		t.Fatalf("an unread message: %v", err)
-	}
-	other := unread
-	other.ID = "s2"
-	if err := liveGate(s, View{records: []session.Record{other}}, now); err != nil {
-		t.Errorf("another session's message held s1 off: %v", err)
-	}
-}
-
-// An unproven inbox is busy while a terminal session works, which leaves the
-// idle pane as the next try; a background session has no pane to fall back to.
-func TestNoMessageChannel(t *testing.T) {
-	working := Session{Agent: proc.Claude, ID: "s1", State: adapter.Working}
-	if err := noMessageChannel(working, driver.Person, false); !isRefused(err, RefuseBusy) {
-		t.Errorf("a person's working Claude prompt: %v", err)
-	}
-	if err := noMessageChannel(working, driver.Agent, false); !isRefused(err, RefuseBusy) {
-		t.Errorf("an agent's working Claude prompt: %v", err)
-	}
-	background := Session{Agent: proc.Claude, Runtime: "service", ID: "s1", State: adapter.Working}
-	if err := noMessageChannel(background, driver.Agent, false); err != nil {
-		t.Errorf("an agent's working background prompt: %v", err)
-	}
-	idle := Session{Agent: proc.Claude, ID: "s1", State: adapter.Idle}
-	if err := noMessageChannel(idle, driver.Person, true); err != nil {
-		t.Errorf("an idle session: %v", err)
 	}
 }
 
@@ -187,7 +151,12 @@ func TestInboxAtProvesTheRecordedProcess(t *testing.T) {
 			if err != nil {
 				return
 			}
-			conn.Close()
+			// macOS has no peer for a connection its peer closed: read to
+			// EOF first.
+			go func() {
+				_, _ = io.Copy(io.Discard, conn)
+				conn.Close()
+			}()
 		}
 	}()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -196,7 +165,7 @@ func TestInboxAtProvesTheRecordedProcess(t *testing.T) {
 	if _, err := inboxAt(ctx, s, session.Record{}); !isRefused(err, RefuseUnbound) {
 		t.Fatalf("an inbox not recorded: %v", err)
 	}
-	tb, err := proc.Snapshot()
+	tb, err := proc.Snapshot(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -245,7 +214,12 @@ func TestSenderName(t *testing.T) {
 func TestClaudeModeAttestsOnlyAProvenClass(t *testing.T) {
 	receiver := session.Record{Agent: proc.Claude, ID: "r1", Permission: adapter.PermissionBypass}
 	asked := session.Record{Agent: proc.Claude, ID: "a1", Permission: adapter.PermissionPrompting}
-	v := View{records: []session.Record{receiver, asked}}
+	store := session.Store{Dir: t.TempDir()}
+	for _, rec := range []session.Record{receiver, asked} {
+		if err := store.Put(t.Context(), rec); err != nil {
+			t.Fatal(err)
+		}
+	}
 	agent := Caller{By: &eventlog.Actor{Agent: proc.Claude, Session: "a1"}}
 	named := Caller{By: &eventlog.Actor{Agent: proc.Claude, Session: "a2"}}
 	unproven := Caller{By: &eventlog.Actor{Agent: proc.Claude}}
@@ -263,7 +237,7 @@ func TestClaudeModeAttestsOnlyAProvenClass(t *testing.T) {
 		{"an agent of an unknown session", named, receiver, ""},
 		{"an agent of no proven session", unproven, receiver, ""},
 	} {
-		if got := claudeMode(v, c.rec, c.caller); got != c.want {
+		if got := claudeMode(t.Context(), store, c.rec, c.caller); got != c.want {
 			t.Errorf("%s: %q, want %q", c.name, got, c.want)
 		}
 	}
@@ -279,7 +253,7 @@ func TestClaudeAttestationUsesTheDeliveryDecision(t *testing.T) {
 	ctx := context.Background()
 	log := eventlog.Open(t.TempDir())
 	store := session.Store{Dir: log.Dir}
-	tb, err := proc.Snapshot()
+	tb, err := proc.Snapshot(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -328,7 +302,7 @@ func TestClaudeAttestationUsesTheDeliveryDecision(t *testing.T) {
 	caller := Caller{By: &eventlog.Actor{Agent: proc.Claude, Session: sender.ID}}
 	v := View{records: []session.Record{stale, receiver}}
 	d, err := throughInbox(ctx, log, v, Session{Agent: proc.Claude, ID: receiver.ID, State: adapter.Idle},
-		"hello", caller, liveGate, driver.Now)
+		"hello", caller, liveGate, false)
 	if err != nil {
 		t.Fatal(err)
 	}

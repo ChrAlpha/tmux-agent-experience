@@ -19,7 +19,7 @@ import (
 func TestMain(m *testing.M) {
 	if len(os.Args) == 5 && os.Args[1] == "--test-answer-owner" {
 		socketBase = os.Args[2]
-		ln, err := Listen(os.Args[3], os.Args[4])
+		ln, err := Listen(context.Background(), os.Args[3], os.Args[4])
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
@@ -97,7 +97,7 @@ func TestLiveHookIsNotReplaced(t *testing.T) {
 	defer cancel()
 	root := t.TempDir()
 	owner(t, root, "r1")
-	if ln, err := ListenContext(ctx, root, "r1"); err == nil {
+	if ln, err := Listen(ctx, root, "r1"); err == nil {
 		ln.Close()
 		t.Fatal("a second hook took over a live one's request")
 	}
@@ -133,7 +133,7 @@ func TestListenSweepsOldDeadSockets(t *testing.T) {
 	if err := os.Chtimes(live, past, past); err != nil {
 		t.Fatal(err)
 	}
-	other, err := ListenContext(ctx, root, "r2")
+	other, err := Listen(ctx, root, "r2")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -203,7 +203,7 @@ func TestSocketDirectoryMustBePrivate(t *testing.T) {
 	if err := os.Chmod(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if ln, err := Listen(t.TempDir(), "r1"); err == nil {
+	if ln, err := Listen(context.Background(), t.TempDir(), "r1"); err == nil {
 		ln.Close()
 		t.Fatal("listened in a directory others may enter")
 	}
@@ -213,7 +213,7 @@ func TestSocketDirectoryMustBePrivate(t *testing.T) {
 	if err := os.Symlink(t.TempDir(), dir); err != nil {
 		t.Fatal(err)
 	}
-	if ln, err := Listen(t.TempDir(), "r1"); err == nil {
+	if ln, err := Listen(context.Background(), t.TempDir(), "r1"); err == nil {
 		ln.Close()
 		t.Fatal("listened through a symlinked directory")
 	}
@@ -222,7 +222,7 @@ func TestSocketDirectoryMustBePrivate(t *testing.T) {
 // runListener starts a hook waiting on request r1 of root.
 func runListener(t *testing.T, root string, a Asked) (net.Listener, <-chan bool) {
 	t.Helper()
-	ln, err := Listen(root, "r1")
+	ln, err := Listen(context.Background(), root, "r1")
 	if err != nil {
 		t.Fatal(err)
 	}

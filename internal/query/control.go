@@ -42,6 +42,9 @@ type Delivery struct {
 	// Held says the receiver's Claude Code holds the message for its person
 	// to approve: it is delivered to the inbox, not yet to the agent.
 	Held bool
+	// Turn is the turn the delivery started, when its channel names it: the
+	// Codex daemon's turn/start does.
+	Turn string
 }
 
 // prepare stores what the world proves, so that an attachment checked
@@ -117,7 +120,16 @@ func paneOf(s Session, named *Pane, v View) (Pane, error) {
 }
 
 // stateGate checks that a session is in a state a verb acts on.
-type stateGate func(s Session, v View, now time.Time) error
+type stateGate func(rec session.Record, now time.Time) error
+
+// gateOf runs gate on the session s as the view read it.
+func gateOf(v View, s Session, gate stateGate) error {
+	rec, ok := v.record(s.Agent, s.ID)
+	if !ok {
+		return sessionEnded(s.ID)
+	}
+	return gate(rec, time.Now())
+}
 
 // BeforePaneLock, when a test sets it, runs after preparation and before a
 // pane verb takes its locks. It stages a state change between the first and
@@ -139,10 +151,11 @@ type paneVerb struct {
 // throughPane delivers a verb through the one pane that shows s. The gate:
 // the pane proves it shows the session (process or title-id), shows its main
 // agent, the agent holds the terminal's foreground, and the session passes
-// the verb's own gate. All of it is checked again under the pane's lock and
-// then the session's, right before typing, and the event is logged before
-// the locks are released: the session's hooks wait for the same session lock,
-// so what the verb causes is logged after it.
+// the verb's own gate. The pane is proven again under its lock, then the
+// session's record gated again under the session's, right before typing,
+// and the event is logged before the locks are released: the session's hooks
+// wait for the same session lock, so what the verb causes is logged after it.
+// The session's lock covers its record and the keys, not the world's proof.
 func throughPane(ctx context.Context, log *eventlog.Log, v View, s Session, named *Pane, gate stateGate, verb paneVerb) (Delivery, error) {
 	p, err := paneOf(s, named, v)
 	if err != nil {
@@ -151,49 +164,49 @@ func throughPane(ctx context.Context, log *eventlog.Log, v View, s Session, name
 	if err := paneGate(s, p, v); err != nil {
 		return Delivery{}, err
 	}
-	if err := gate(s, v, time.Now()); err != nil {
+	if err := gateOf(v, s, gate); err != nil {
 		return Delivery{}, err
 	}
 	store := session.Store{Dir: log.Dir}
 	var d Delivery
-	var freshWorld *attach.World
+	var idled session.Record
 	nativeIdle := false
 	if BeforePaneLock != nil {
 		BeforePaneLock()
 	}
 	err = attach.Lock(ctx, log.Dir, p.Server, p.ID, func() error {
+		// Again, against a fresh world: the agent may have exited or switched
+		// threads since. The pane's attachment changes only under its lock.
+		fresh, _, err := Load(ctx, store)
+		if err != nil {
+			return err
+		}
+		fp, ok := findPane(fresh, p.Server, p.ID)
+		if !ok || fp.Session != s.ID || fp.Agent != s.Agent || !stored(fresh, fp) {
+			return &RefusedError{RefuseChanged, fmt.Sprintf("%s no longer shows %s", p.ID, s.ID)}
+		}
+		if err := paneGate(s, fp, fresh); err != nil {
+			return err
+		}
 		return store.Lock(ctx, s.Agent, s.ID, func() error {
-			// Again, against fresh state: the agent may have started a turn,
-			// exited, switched threads or received another prompt since. A
-			// native idle proved meanwhile is applied and logged here, before
-			// the gate reads the session again.
+			// Again, against fresh state: the agent may have started a turn or
+			// received another prompt since. A native idle proved meanwhile is
+			// applied and logged here, before the gate reads the session again.
 			rec, ok, err := store.Get(ctx, s.Agent, s.ID)
 			if err != nil || !ok {
-				return &RefusedError{RefuseChanged, fmt.Sprintf("%s has ended", s.ID)}
+				return sessionEnded(s.ID)
 			}
 			rec, nativeIdle, err = attach.Env{Log: log, Store: store}.IdleLocked(ctx, rec)
 			if err != nil {
 				return err
 			}
-			fresh, w, err := Load(ctx, store)
-			if err != nil {
+			if nativeIdle {
+				idled = rec
+			}
+			if err := gate(rec, time.Now()); err != nil {
 				return err
 			}
-			freshWorld = w
-			fp, ok := findPane(fresh, p.Server, p.ID)
-			if !ok || fp.Session != s.ID || fp.Agent != s.Agent || !stored(fresh, fp) {
-				return &RefusedError{RefuseChanged, fmt.Sprintf("%s no longer shows %s", p.ID, s.ID)}
-			}
-			fs, ok := fresh.Session(s.Agent, s.ID)
-			if !ok {
-				return &RefusedError{RefuseChanged, fmt.Sprintf("%s has ended", s.ID)}
-			}
-			if err := paneGate(fs, fp, fresh); err != nil {
-				return err
-			}
-			if err := gate(fs, fresh, time.Now()); err != nil {
-				return err
-			}
+			fs := sessionOf(rec, s.Panes)
 			mark, ev, after := verb.plan(fs, fp, rec)
 			ev.Agent, ev.Session, ev.Via = fs.Agent, fs.ID, driver.Pane
 			ev.Pane = &eventlog.PaneRef{Server: fp.Server, ID: fp.ID}
@@ -216,21 +229,16 @@ func throughPane(ctx context.Context, log *eventlog.Log, v View, s Session, name
 		})
 	})
 	if nativeIdle {
-		if perr := projectNativeIdle(ctx, log, store, freshWorld, s.Agent, s.ID); perr != nil {
-			err = errors.Join(err, perr)
-		}
+		err = errors.Join(err, projectNativeIdle(ctx, log, store, idled))
 	}
 	return d, err
 }
 
-// projectNativeIdle projects the latest record after a control lock is
-// released, so a native idle saved under the lock reaches its proven panes.
-func projectNativeIdle(ctx context.Context, log *eventlog.Log, store session.Store, w *attach.World, agent, id string) error {
-	rec, ok, err := store.Get(ctx, agent, id)
-	if err != nil || !ok {
-		return err
-	}
-	return attach.Env{Log: log, Store: store}.ProjectAttached(ctx, w, rec)
+// projectNativeIdle projects a native idle saved under a control lock onto
+// the panes the record lists, once the lock is released.
+func projectNativeIdle(ctx context.Context, log *eventlog.Log, store session.Store, rec session.Record) error {
+	_, _, err := attach.Env{Log: log, Store: store}.Project(ctx, rec)
+	return err
 }
 
 // paneGate applies the pane's checks: it shows the session's main agent,

@@ -14,7 +14,6 @@ package eventlog
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -181,14 +180,9 @@ func (l *Log) Append(ctx context.Context, e *Event) error {
 		if err != nil {
 			return err
 		}
-		last, end, err := lastLine(ctx, f, st.Size())
+		last, end, err := l.lastOf(ctx, f, st.Size())
 		if err != nil {
 			return err
-		}
-		if last == 0 {
-			if last, err = l.lastRotated(ctx); err != nil {
-				return err
-			}
 		}
 		if last == 0 {
 			last = time.Now().UnixMicro()
@@ -213,7 +207,11 @@ func (l *Log) Append(ctx context.Context, e *Event) error {
 		} else if end != st.Size() {
 			line = append([]byte{'\n'}, line...)
 		}
-		return contextio.WriteAll(ctx, f, line)
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		_, err = f.Write(line)
+		return err
 	})
 }
 
@@ -242,64 +240,20 @@ func (l *Log) lastRotated(ctx context.Context) (int64, error) {
 	return last, err
 }
 
-// scanBack reads the first size bytes of f from their end, in windows that
-// double until fn, given a window and where it starts, is satisfied, or the
-// window reaches the start of the file: a line may be as long as readers
-// accept, so no fixed window is enough. The first window holds the last
-// line of a healthy log.
-func scanBack(ctx context.Context, f *os.File, size int64, fn func(buf []byte, base int64) bool) error {
-	for window := int64(4 << 10); ; window *= 2 {
-		n := min(size, window)
-		buf := make([]byte, n)
-		if _, err := f.ReadAt(buf, size-n); err != nil && !errors.Is(err, io.EOF) {
-			return err
-		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if fn(buf, size-n) || n == size {
-			return nil
-		}
-	}
-}
-
 // lastLine returns the sequence number of the last line of f that decodes,
 // 0 when none does, and the offset after its last complete line, 0 when it
 // has none: a reader that has read every complete line stands there, and f
-// ends a line when that offset is its size. Both come from one read of f's
-// end, which holds them in a healthy log.
+// ends a line when that offset is its size.
 func lastLine(ctx context.Context, f *os.File, size int64) (seq, end int64, err error) {
-	if size == 0 {
-		return 0, 0, nil
-	}
-	err = scanBack(ctx, f, size, func(buf []byte, base int64) bool {
-		seq, end = lastSeqIn(buf), 0
-		if i := bytes.LastIndexByte(buf, '\n'); i >= 0 {
-			end = base + int64(i) + 1
+	first := true
+	err = contextio.Backward(ctx, f, size, maxLine, func(line []byte, start int64) bool {
+		if first {
+			end, first = start, false
 		}
-		return seq > 0 && end > 0
+		seq = seqOf(line)
+		return seq > 0
 	})
 	return seq, end, err
-}
-
-// lastSeqIn returns the sequence number of the last line in buf that
-// decodes, or 0.
-func lastSeqIn(buf []byte) int64 {
-	end := len(buf)
-	for end > 0 {
-		start := end - 1
-		for start > 0 && buf[start-1] != '\n' {
-			start--
-		}
-		if seq := seqOf(buf[start:end]); seq > 0 {
-			return seq
-		}
-		end = start
-		for end > 0 && buf[end-1] == '\n' {
-			end--
-		}
-	}
-	return 0
 }
 
 func seqOf(line []byte) int64 {
@@ -326,33 +280,36 @@ func (l *Log) Head(ctx context.Context) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	last, _, err := lastLine(ctx, f, st.Size())
-	if err == nil && last == 0 {
-		return l.lastRotated(ctx)
-	}
+	last, _, err := l.lastOf(ctx, f, st.Size())
 	return last, err
 }
 
-// Since returns the retained events after seq after, oldest first, and
-// whether they are all of them: false when some rotated away, the log was
-// recreated or damaged since, or after is ahead of it. After 0 asks for
-// everything retained, which is complete by definition.
-func (l *Log) Since(ctx context.Context, after int64) ([]Event, bool, error) {
+// lastOf returns the sequence number of the last event f, the current file,
+// holds, or else the rotated file's, and the offset after f's last complete
+// line, of its first size bytes.
+func (l *Log) lastOf(ctx context.Context, f *os.File, size int64) (seq, end int64, err error) {
+	if seq, end, err = lastLine(ctx, f, size); err != nil || seq != 0 {
+		return seq, end, err
+	}
+	seq, err = l.lastRotated(ctx)
+	return seq, end, err
+}
+
+// Since returns the retained events after seq after, oldest first. A
+// follower that must know whether it missed some reads a Tail instead.
+func (l *Log) Since(ctx context.Context, after int64) ([]Event, error) {
 	ctx, cancel := context.WithTimeout(ctx, ReadTimeout)
 	defer cancel()
 	var all []Event
 	for _, name := range []string{rotatedName, currentName} {
 		events, err := l.read(ctx, name)
 		if err != nil {
-			return nil, false, err
+			return nil, err
 		}
 		all = append(all, events...)
 	}
-	out, last := after1(after, all)
-	if after == 0 {
-		return out, true, nil
-	}
-	return out, continues(after, out) && (len(out) > 0 || last == after), nil
+	out, _ := after1(after, all)
+	return out, nil
 }
 
 // after1 keeps the events after seq after, and returns the last sequence
@@ -520,10 +477,7 @@ func (t *Tail) start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if t.seq, t.at, err = lastLine(ctx, t.file, st.Size()); err != nil || t.seq != 0 {
-		return err
-	}
-	t.seq, err = t.log.lastRotated(ctx)
+	t.seq, t.at, err = t.log.lastOf(ctx, t.file, st.Size())
 	return err
 }
 

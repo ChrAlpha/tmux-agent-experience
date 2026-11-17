@@ -140,7 +140,7 @@ func TestEndDeletesThenLogs(t *testing.T) {
 	if _, ok, _ := s.Get(ctx, rec.Agent, rec.ID); ok {
 		t.Fatal("an ended session's record remains")
 	}
-	events, _, err := log.Since(ctx, 0)
+	events, err := log.Since(ctx, 0)
 	if err != nil || len(events) != 1 || events[0].Event != eventlog.Exit || events[0].Session != rec.ID || events[0].Cwd != "/w" {
 		t.Fatalf("events = %+v, %v", events, err)
 	}
@@ -195,15 +195,15 @@ func TestSessionsOfOneStripeWriteInTurn(t *testing.T) {
 // leave the decision to the agent's dialog.
 func TestPromptsBeyondTheBoundCloseTheirRequests(t *testing.T) {
 	rec := play(t)
-	for i := range maxPending + 1 {
+	for i := range maxRequests + 1 {
 		tr := askFor("", "tool"+strconv.Itoa(i))
 		tr.Request, tr.Waits = "r"+strconv.Itoa(i), true
 		rec, _ = Apply(rec, tr, t0)
 	}
-	if len(rec.Pending) != maxPending || rec.Pending[0].Tool != "tool1" {
-		t.Fatalf("%d prompts kept, the oldest %+v", len(rec.Pending), rec.Pending[0])
+	if pending := rec.Pending(); len(pending) != maxRequests || pending[0].Tool != "tool1" {
+		t.Fatalf("%d prompts kept, the oldest %+v", len(pending), pending[0])
 	}
-	if _, open := rec.Request("r0"); open || len(rec.Requests) != maxPending {
+	if _, open := rec.Request("r0"); open || len(rec.Requests) != maxRequests {
 		t.Fatalf("requests %d, the dropped prompt's still open: %v", len(rec.Requests), open)
 	}
 	if rec.State() != "blocked" {

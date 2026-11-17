@@ -2,7 +2,8 @@
 // context.
 //
 // Lock files are never removed, so a lock held through an open file always
-// guards the name others open.
+// guards the name others open. Each is named so that Named tells it from
+// what it guards.
 package lockfile
 
 import (
@@ -11,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -40,6 +42,15 @@ func With(ctx context.Context, path string, fn func() error) error {
 	return fn()
 }
 
+// Dir is the subdirectory of a state directory that holds its lock pool.
+const Dir = "locks"
+
+// Named reports whether a directory entry is lock files: the pool's
+// directory, a file named lock, or one whose name ends in .lock.
+func Named(name string) bool {
+	return name == Dir || name == "lock" || strings.HasSuffix(name, ".lock")
+}
+
 // Stripes is how many locks a pool of Stripe holds per class.
 const Stripes = 256
 
@@ -47,9 +58,28 @@ const Stripes = 256
 // one file per class and first byte of key, so that the number of lock files
 // stays bounded however many resources come and go. Resources that share a
 // stripe wait for each other. Whoever takes stripes of two classes takes
-// them in a fixed order, and nobody takes two stripes of one class.
+// them in a fixed order, and nobody but All takes two stripes of one class.
 func Stripe(ctx context.Context, dir, class string, key [32]byte, fn func() error) error {
-	return With(ctx, filepath.Join(dir, "locks", fmt.Sprintf("%s-%02x", class, key[0])), fn)
+	return With(ctx, stripe(dir, class, key[0]), fn)
+}
+
+// All runs fn holding every stripe of class, taken in order, so that nothing
+// that takes one of them runs meanwhile. It takes them as Stripe does one,
+// before any stripe of a class taken after this one; two of it, taking
+// stripes in one order, never wait on each other.
+func All(ctx context.Context, dir, class string, fn func() error) error {
+	var take func(i int) error
+	take = func(i int) error {
+		if i == Stripes {
+			return fn()
+		}
+		return With(ctx, stripe(dir, class, byte(i)), func() error { return take(i + 1) })
+	}
+	return take(0)
+}
+
+func stripe(dir, class string, b byte) string {
+	return filepath.Join(dir, Dir, fmt.Sprintf("%s-%02x", class, b))
 }
 
 // Held is a lock held until Close, for a holder whose lifetime is not one

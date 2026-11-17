@@ -20,12 +20,10 @@ func TestHelperOwnsDescendantsAndRetainedPipes(t *testing.T) {
 			if earlyExit {
 				script = `(sleep 0.5; printf late > "$TMAG_HELPER_MARKER") & exit 0`
 			}
-			cmd, cleanup := Command(ctx, "/bin/sh", "-c", script)
-			defer cleanup()
+			cmd := Command(ctx, "/bin/sh", "-c", script)
 			cmd.Env = append(os.Environ(), "TMAG_HELPER_MARKER="+marker)
 			started := time.Now()
 			_, err := cmd.Output()
-			cleanup()
 			if earlyExit {
 				if !errors.Is(err, exec.ErrWaitDelay) {
 					t.Fatalf("retained pipe = %v", err)
@@ -55,8 +53,7 @@ func TestAlreadyCanceledHelperDoesNotStart(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	marker := filepath.Join(t.TempDir(), "started")
-	cmd, cleanup := Command(ctx, "/bin/sh", "-c", `printf started > "$TMAG_HELPER_MARKER"`)
-	defer cleanup()
+	cmd := Command(ctx, "/bin/sh", "-c", `printf started > "$TMAG_HELPER_MARKER"`)
 	cmd.Env = append(os.Environ(), "TMAG_HELPER_MARKER="+marker)
 	if err := cmd.Run(); !errors.Is(err, context.Canceled) {
 		t.Fatal(err)

@@ -29,7 +29,7 @@ func TestCancellationDuringInputCannotMutate(t *testing.T) {
 	defer cancel()
 	in := &cancelReader{cancel: cancel}
 	dir := t.TempDir()
-	err := RunContext(ctx, Input{Agent: proc.Claude, Payload: in, Log: eventlog.Open(dir), PID: os.Getpid()})
+	err := Run(ctx, Input{Agent: proc.Claude, Payload: in, Log: eventlog.Open(dir), PID: os.Getpid()})
 	if !errors.Is(err, context.Canceled) || in.reads != 1 {
 		t.Fatalf("reads=%d err=%v", in.reads, err)
 	}
@@ -45,7 +45,7 @@ func TestCancellationDuringInputCannotMutate(t *testing.T) {
 func TestFirstDiagnosticAllowsNormalStateInitialization(t *testing.T) {
 	dir := t.TempDir()
 	ctx := context.Background()
-	RecordErrorContext(ctx, dir, "claude", errors.New("synthetic malformed hook"))
+	RecordError(ctx, dir, "claude", errors.New("synthetic malformed hook"))
 	if _, err := os.Stat(filepath.Join(dir, "hook.log")); err != nil {
 		t.Fatal(err)
 	}

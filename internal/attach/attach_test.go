@@ -82,52 +82,6 @@ func linkOf(t *testing.T, links []Link, pane string) Link {
 	return Link{}
 }
 
-func TestPublishHintGeneration(t *testing.T) {
-	p := tmux.Pane{Server: "/tmp/a.sock", ID: "%1"}
-	a := Attachment{Agent: proc.Claude, Session: "c1", PID: 11, Start: "s1", Evidence: Process}
-	seed := session.Record{}
-	first := nextAttachGeneration(&seed)
-	if first == 0 || nextAttachGeneration(&seed) != first+1 {
-		t.Fatalf("generation seed/increment = %d", first)
-	}
-	rec := session.Record{Agent: proc.Claude, ID: "c1", AttachGeneration: 6}
-	gen := uint64(5)
-	if !publishHint(&rec, p, a, nil, &gen, publication{before: 5, after: 6, found: true}) || rec.Pane == nil {
-		t.Fatalf("a matching generation did not set the hint: %+v", rec.Pane)
-	}
-	rec = session.Record{Agent: proc.Claude, ID: "c1", AttachGeneration: 6}
-	gen = 4
-	if publishHint(&rec, p, a, nil, &gen, publication{before: 5, after: 6, found: true}) || rec.Pane != nil {
-		t.Fatalf("a stale generation set the hint: %+v", rec.Pane)
-	}
-	other := &session.PaneHint{Server: p.Server, ID: "%2", PID: 12, Start: "s2"}
-	rec = session.Record{Agent: proc.Claude, ID: "c1", Pane: other, AttachGeneration: 2}
-	gen = 1
-	if !publishHint(&rec, p, a, nil, &gen, publication{before: 1, after: 2, found: true}) || rec.Pane != nil {
-		t.Fatalf("another pane's Attach kept the hint: %+v", rec.Pane)
-	}
-	rec = session.Record{Agent: proc.Claude, ID: "c1", AttachGeneration: 2}
-	if publishHint(&rec, p, a, nil, nil, publication{before: 1, after: 2, found: true}) || rec.Pane != nil {
-		t.Fatalf("Attach without a hook generation set a hint: %+v", rec.Pane)
-	}
-}
-
-func TestHintAllowedOnlyWithoutAnotherServer(t *testing.T) {
-	rec := session.Record{Agent: proc.Claude, ID: "c1", Main: "idle"}
-	a := Attachment{Agent: proc.Claude, Session: "c1", PID: 101, Start: "s%1", Evidence: Process}
-	var f fixture
-	f.pane("%1", 100, proc.Claude, 101, "", stored(a))
-	if !hintAllowed(f.world(), sock, rec) {
-		t.Fatal("one server was refused a hint")
-	}
-	other := Attachment{Agent: proc.Claude, Session: "c1", PID: 200, Start: "s%2", Evidence: Process}
-	f.panes = append(f.panes, tmux.Pane{Server: "/tmp/other.sock", ID: "%2", PID: 200, Command: proc.Claude, Options: stored(other)})
-	f.procs = append(f.procs, proc.Process{PID: 200, PPID: 1, Comm: proc.Claude, Args: "claude", Start: "s%2"})
-	if hintAllowed(f.world(), sock, rec) {
-		t.Fatal("a pane on another server did not clear the hint")
-	}
-}
-
 func TestNameLikeTitleItemsProveNothing(t *testing.T) {
 	// The third review's P1: a custom terminal_title shows the model, and a
 	// thread is named like it. Names are no evidence, whatever they match.

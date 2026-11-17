@@ -71,22 +71,14 @@ func newTable(ps []Process, complete bool) *Table {
 // facts in an incomplete table cannot authorize destructive reconciliation.
 func (t *Table) Complete() bool { return t.complete }
 
-// Snapshot reads the current process table from /proc when available, otherwise from ps.
-func Snapshot() (*Table, error) { return SnapshotContext(context.Background()) }
-
-// SnapshotContext never returns a canceled or partially enumerated table.
+// Snapshot reads the current process table from /proc when available,
+// otherwise from ps. It never returns a canceled or partially enumerated table.
 // Unreadable individual PIDs remain uncertain: absence is not death evidence.
-func SnapshotContext(ctx context.Context) (*Table, error) {
+func Snapshot(ctx context.Context) (*Table, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	ps, err := readProcFSContext(ctx)
-	if err != nil {
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
-		ps, err = readPSContext(ctx)
-	}
+	ps, err := snapshot(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -100,23 +92,15 @@ func SnapshotContext(ctx context.Context) (*Table, error) {
 	return table, nil
 }
 
-// LineageContext reads only the processes needed to prove pid's host: its
-// ancestors up to the nearest agent client or service, and that host's
-// parent. On Linux it reads those /proc entries; elsewhere it falls back to
-// the full table. The result never passes for a complete table.
-func LineageContext(ctx context.Context, pid int) (*Table, error) {
+// Lineage reads only the processes needed to prove pid's host and whether it
+// runs under tmux: its ancestors. On Linux it reads those /proc entries;
+// elsewhere it falls back to the full table. The result never passes for a
+// complete table.
+func Lineage(ctx context.Context, pid int) (*Table, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if _, err := os.Stat("/proc/self/stat"); err == nil {
-		return readProcLineageContext(ctx, pid)
-	}
-	table, err := SnapshotContext(ctx)
-	if err != nil {
-		return nil, err
-	}
-	table.complete = false
-	return table, nil
+	return lineage(ctx, pid)
 }
 
 // Get returns the process with the given pid.
@@ -353,6 +337,18 @@ func (t *Table) HostOf(pid int) (Host, bool) {
 	return Host{}, false
 }
 
+// UnderTmux reports whether a tmux server is among pid's ancestors in t: a
+// process that descends from none runs in no pane. tmux names its server
+// process "tmux: server" on Linux and runs it as tmux elsewhere.
+func (t *Table) UnderTmux(pid int) bool {
+	for i, a := range t.Ancestors(pid) {
+		if p, ok := t.Get(a); ok && i > 0 && strings.HasPrefix(p.Comm, "tmux") {
+			return true
+		}
+	}
+	return false
+}
+
 // claudeWorker reports whether p is a background session's Claude Code
 // worker: a client whose parent is a Claude service. Its own argv cannot tell
 // it from an interactive client; only its parent can.
@@ -361,30 +357,16 @@ func (t *Table) claudeWorker(p Process) bool {
 	return ok && ServiceKind(parent) == Claude
 }
 
-// Running reports whether the process with this pid still runs and, when
-// start is set, is the one that started then. It reads one process where
-// the platform allows (Linux) and the whole table otherwise.
-func Running(pid int, start string) bool { return RunningContext(context.Background(), pid, start) }
-
-// RunningContext conservatively preserves liveness on an unreadable process table.
-// It is not proof of a control channel.
-func RunningContext(ctx context.Context, pid int, start string) bool {
+// Running reports whether the process with this pid still runs and,
+// when start is set, is the one that started then. It reads one process where
+// the platform allows (Linux) and the whole table otherwise, and conservatively
+// preserves liveness on an unreadable process table. It is not proof of a
+// control channel.
+func Running(ctx context.Context, pid int, start string) bool {
 	if ctx.Err() != nil {
 		return true
 	}
-	if _, err := os.Stat("/proc/self/stat"); err == nil {
-		p, ok := readProcEntryContext(ctx, pid)
-		if ctx.Err() != nil {
-			return true
-		}
-		if !ok {
-			_, err := os.Stat("/proc/" + strconv.Itoa(pid))
-			return !os.IsNotExist(err)
-		}
-		return start == "" || p.Start == start
-	}
-	t, err := SnapshotContext(ctx)
-	return err != nil || t.Alive(pid, start)
+	return running(ctx, pid, start)
 }
 
 // Alive reports whether the process with p's pid is still p.
@@ -590,15 +572,12 @@ func setCommandLine(p *Process, cmdline []byte) {
 	p.Args = strings.TrimSpace(strings.Join(p.Argv, " "))
 }
 
-func readPS() ([]Process, error) { return readPSContext(context.Background()) }
-
-func readPSContext(parent context.Context) ([]Process, error) {
+func readPS(parent context.Context) ([]Process, error) {
 	ctx, cancel := context.WithTimeout(parent, 2*time.Second)
 	defer cancel()
 	// lstart prints five words ("Tue Nov  3 09:12:22 2026"), before args so
 	// that the command line keeps its spaces.
-	cmd, cleanup := helper.Command(ctx, "ps", "-A", "-ww", "-o", "pid=", "-o", "ppid=", "-o", "pgid=", "-o", "tpgid=", "-o", "lstart=", "-o", "args=")
-	defer cleanup()
+	cmd := helper.Command(ctx, "ps", "-A", "-ww", "-o", "pid=", "-o", "ppid=", "-o", "pgid=", "-o", "tpgid=", "-o", "lstart=", "-o", "args=")
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, err

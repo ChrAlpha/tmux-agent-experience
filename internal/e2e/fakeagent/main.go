@@ -65,6 +65,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -676,7 +677,7 @@ func claudeStatus() (path, start string, ok bool) {
 	if !filepath.IsAbs(dir) {
 		return "", "", false
 	}
-	tb, err := proc.Snapshot()
+	tb, err := proc.Snapshot(context.Background())
 	if err != nil {
 		return "", "", false
 	}

@@ -286,7 +286,7 @@ func (h *harness) loggedState(session string) string {
 
 func (h *harness) events(session string) []eventlog.Event {
 	h.t.Helper()
-	all, _, err := eventlog.Open(h.state).Since(context.Background(), 0)
+	all, err := eventlog.Open(h.state).Since(context.Background(), 0)
 	if err != nil {
 		h.t.Fatal(err)
 	}
@@ -2271,30 +2271,34 @@ func TestGlobalOptionPreservesShellCommands(t *testing.T) {
 		"~", "", "on",
 	} {
 		h.tmux("set-option", "-g", "@tmag-test-option", value)
-		if got, err := srv.GlobalOptionContext(context.Background(), "@tmag-test-option"); err != nil || got != value {
-			t.Fatalf("error-aware global option = %q, %v; want %q", got, err, value)
-		}
-		if got := srv.GlobalOption(context.Background(), "@tmag-test-option"); got != value {
-			t.Fatalf("global option = %q, want %q", got, value)
+		if got, err := srv.Option(context.Background(), "@tmag-test-option"); err != nil || got != value {
+			t.Fatalf("global option = %q, %v; want %q", got, err, value)
 		}
 	}
-	if got, err := srv.GlobalOptionContext(context.Background(), "@tmag-option-unset"); err != nil || got != "" {
+	if got, err := srv.Option(context.Background(), "@tmag-option-unset"); err != nil || got != "" {
 		t.Fatalf("unset option became unavailable: %q, %v", got, err)
-	}
-	if got := srv.GlobalOption(context.Background(), "@tmag-option-unset"); got != "" {
-		t.Fatalf("unset option = %q", got)
 	}
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
-	if got, err := srv.GlobalOptionContext(canceled, "@tmag-test-option"); got != "" || !errors.Is(err, context.Canceled) {
+	if got, err := srv.Option(canceled, "@tmag-test-option"); got != "" || !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancellation became an unset option: %q, %v", got, err)
 	}
 	unavailable := tmux.Server{Socket: filepath.Join(h.dir, "missing.sock")}
-	if got, err := unavailable.GlobalOptionContext(context.Background(), "@tmag-option-unset"); got != "" || err == nil {
+	if got, err := unavailable.Option(context.Background(), "@tmag-option-unset"); got != "" || err == nil {
 		t.Fatalf("unavailable server became an unset option: %q, %v", got, err)
 	}
-	if got := unavailable.GlobalOption(context.Background(), "@tmag-option-unset"); got != "" {
-		t.Fatalf("convenience wrapper changed on unavailable server: %q", got)
+}
+
+// A prompt the paste did not take stays nowhere: no buffer holding it is
+// left in the person's server.
+func TestSubmitLeavesNoBufferBehind(t *testing.T) {
+	h := start(t)
+	srv := tmux.ServerByName(h.name)
+	if err := srv.Submit(context.Background(), "%999", "a prompt"); err == nil {
+		t.Fatal("pasted into a pane that does not exist")
+	}
+	if out := h.tmux("list-buffers", "-F", "#{buffer_name}"); strings.Contains(out, "tmag-") {
+		t.Fatalf("a prompt stayed in the server's buffers: %q", out)
 	}
 }
 
@@ -2308,8 +2312,9 @@ func TestUnchangedHookRestoresItsPanesAttachment(t *testing.T) {
 	h.eventually("the turn ends", func() bool { return strings.HasSuffix(h.eventNames(sidA), "Stop:idle") })
 	before := h.eventNames(sidA)
 	s, _ := h.sessionOf(sidA)
-	// Lose the attachment and its hint, as a hook that died before attaching
-	// leaves them: the hint is what lets a later hook skip looking at the pane.
+	// Lose the attachment and its listing, as a hook that died before
+	// attaching leaves them: the listing is what lets a later hook skip
+	// looking at the pane.
 	h.tmux("set-option", "-p", "-u", "-t", pane, "@tmag_session")
 	store := session.Store{Dir: h.state}
 	if err := store.Lock(context.Background(), "claude", sidA, func() error {
@@ -2317,7 +2322,7 @@ func TestUnchangedHookRestoresItsPanesAttachment(t *testing.T) {
 		if err != nil || !ok {
 			return err
 		}
-		rec.Pane = nil
+		rec.Shown = nil
 		return store.Put(context.Background(), rec)
 	}); err != nil {
 		t.Fatal(err)

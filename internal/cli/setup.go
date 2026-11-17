@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -134,8 +135,10 @@ func (a *app) cmdSetup(args []string) int {
 		return a.usageError("setup", err)
 	}
 
-	peers := peersWanted(context.Background())
-	hosts := probeHosts(context.Background(), *only)
+	ctx, cancel := a.signalContext()
+	defer cancel()
+	peers := peersWanted(ctx)
+	hosts := probeHosts(ctx, *only)
 	type step struct {
 		host host
 		cmds [][]string
@@ -163,7 +166,7 @@ func (a *app) cmdSetup(args []string) int {
 		}
 	}
 	if len(steps) == 0 || *dry {
-		a.setupNotes(hosts)
+		a.setupNotes(ctx, hosts)
 		return ExitOK
 	}
 	if !*yes {
@@ -172,7 +175,11 @@ func (a *app) cmdSetup(args []string) int {
 			return ExitOK
 		}
 		fmt.Fprint(a.stdout, "\nProceed? [Y/n] ")
-		answer, _ := bufio.NewReader(a.stdin).ReadString('\n')
+		answer, err := readAnswer(ctx, a.stdin)
+		if err != nil {
+			fmt.Fprintln(a.stdout, "\nNothing changed.")
+			return ExitError
+		}
 		if reply := strings.ToLower(strings.TrimSpace(answer)); reply != "" && reply != "y" && reply != "yes" {
 			fmt.Fprintln(a.stdout, "Nothing changed.")
 			return ExitOK
@@ -181,18 +188,35 @@ func (a *app) cmdSetup(args []string) int {
 	for _, s := range steps {
 		for _, c := range s.cmds {
 			fmt.Fprintf(a.stdout, "\n$ %s\n", strings.Join(c, " "))
-			if err := a.runStep(c); err != nil {
+			if err := a.runStep(ctx, c); err != nil {
 				return a.fail("setup", fmt.Errorf("%s: %w", s.host.Name, err))
 			}
 		}
 	}
 	fmt.Fprintln(a.stdout)
-	a.setupNotes(hosts)
+	a.setupNotes(ctx, hosts)
 	return ExitOK
 }
 
-func (a *app) runStep(argv []string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+// readAnswer reads the person's answer to a question, or gives up when ctx
+// ends: a terminal's read cannot be interrupted, so it is left to the
+// process's exit, which follows.
+func readAnswer(ctx context.Context, r io.Reader) (string, error) {
+	got := make(chan string, 1)
+	go func() {
+		line, _ := bufio.NewReader(r).ReadString('\n')
+		got <- line
+	}()
+	select {
+	case line := <-got:
+		return line, nil
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+}
+
+func (a *app) runStep(ctx context.Context, argv []string) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Stdout, cmd.Stderr = a.stdout, a.stderr
@@ -207,7 +231,7 @@ func (a *app) runStep(argv []string) error {
 }
 
 // setupNotes tells the user what is left after the plugins are in place.
-func (a *app) setupNotes(hosts []host) {
+func (a *app) setupNotes(ctx context.Context, hosts []host) {
 	for _, h := range hosts {
 		if !h.Present {
 			continue
@@ -217,7 +241,7 @@ func (a *app) setupNotes(hosts []host) {
 			fmt.Fprintln(a.stdout, "Claude Code: start a new session in a tmux pane to load the plugin.")
 		case "codex":
 			fmt.Fprintln(a.stdout, "Codex: start a new session in a tmux pane and approve tmag's hooks with /hooks.")
-			if pid, ok := codexDaemon(); ok {
+			if pid, ok, _ := codexDaemon(ctx); ok {
 				if problem := daemonBinaryProblem(pid); problem != "" {
 					fmt.Fprintln(a.stdout, "Codex: "+problem)
 				}

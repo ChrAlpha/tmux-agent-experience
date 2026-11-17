@@ -96,20 +96,7 @@ func Build(w *attach.World, recs []session.Record) View {
 		v.Panes = append(v.Panes, pane)
 	}
 	for _, r := range live {
-		s := Session{
-			LastHookAt: r.LastHookAt,
-			ID:         r.ID, Agent: r.Agent, State: r.State(), Kind: r.Kind(), Reason: r.Reason, Turn: r.Turn,
-			Cwd: r.Cwd, Runtime: string(r.Host.Role), Transcript: r.TranscriptRef(), Subagents: r.RunningSubagents(),
-			Capabilities: r.Capabilities(), Requests: r.RequestRefs(), Panes: shown[[2]string{r.Agent, r.ID}],
-		}
-		if s.Panes == nil {
-			s.Panes = []Shown{}
-		}
-		if !r.Since.IsZero() {
-			since := r.Since
-			s.Since = &since
-		}
-		v.Sessions = append(v.Sessions, s)
+		v.Sessions = append(v.Sessions, sessionOf(r, shown[[2]string{r.Agent, r.ID}]))
 	}
 	sort.SliceStable(v.Panes, func(i, j int) bool {
 		a, b := v.Panes[i], v.Panes[j]
@@ -126,6 +113,34 @@ func Build(w *attach.World, recs []session.Record) View {
 		return a.ID < b.ID
 	})
 	return v
+}
+
+// sessionOf is the view of the session r stores, shown in panes.
+func sessionOf(r session.Record, panes []Shown) Session {
+	s := Session{
+		LastHookAt: r.LastHookAt,
+		ID:         r.ID, Agent: r.Agent, State: r.State(), Kind: r.Kind(), Reason: r.Reason, Turn: r.Turn,
+		Cwd: r.Cwd, Runtime: string(r.Host.Role), Transcript: r.TranscriptRef(), Subagents: r.RunningSubagents(),
+		Capabilities: r.Capabilities(), Requests: r.RequestRefs(), Panes: panes,
+	}
+	if s.Panes == nil {
+		s.Panes = []Shown{}
+	}
+	if !r.Since.IsZero() {
+		since := r.Since
+		s.Since = &since
+	}
+	return s
+}
+
+// record returns the stored record of a session the view shows.
+func (v View) record(agent, id string) (session.Record, bool) {
+	for _, r := range v.records {
+		if r.Agent == agent && r.ID == id {
+			return r, true
+		}
+	}
+	return session.Record{}, false
 }
 
 // Session returns the session with the given agent and id.
@@ -311,7 +326,7 @@ func paneTarget(v View, ref eventlog.PaneRef, typed string) (Target, error) {
 
 // SessionEvents returns the most recent events of one session, oldest first.
 func SessionEvents(ctx context.Context, log *eventlog.Log, id string, limit int) ([]eventlog.Event, error) {
-	all, _, err := log.Since(ctx, 0)
+	all, err := log.Since(ctx, 0)
 	if err != nil {
 		return nil, err
 	}

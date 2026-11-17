@@ -130,7 +130,8 @@ func (a *app) openServe(server string) int {
 			return ExitOK
 		}
 	}
-	args, err := splitArgs(srv.GlobalOption(ctx, serveOption))
+	value, _ := srv.Option(ctx, serveOption)
+	args, err := splitArgs(value)
 	if err != nil {
 		return a.usageError("serve", err)
 	}
@@ -239,7 +240,7 @@ func checkServe(ctx context.Context) check {
 		return check{"serve", "warn", "server discovery incomplete"}
 	}
 	for _, srv := range servers {
-		addr, err := srv.GlobalOptionContext(ctx, serveAddressOption)
+		addr, err := srv.Option(ctx, serveAddressOption)
 		if err != nil {
 			return check{"serve", "warn", "serve option unavailable"}
 		}

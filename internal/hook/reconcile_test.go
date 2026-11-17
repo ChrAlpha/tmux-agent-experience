@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/adapter"
-	"github.com/ChrAlpha/tmux-agent-experience/internal/attach"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
@@ -30,42 +29,40 @@ func TestReconciliationReadsProcessesAfterPanes(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	b := session.Record{Agent: proc.Claude, ID: "b-session", Main: adapter.Idle,
-		Host: session.Host{PID: 200, Start: "s-b"}}
+		Host: session.Host{PID: 200, Start: "s-b"}, Shown: []session.Shown{{Server: "/r1", Pane: "%1", PID: 200, Start: "s-b"}}}
 	if err := store.Put(ctx, b); err != nil {
 		t.Fatal(err)
 	}
-	panes := []tmux.Pane{{Server: "r1", ID: "%1", PID: 100, Command: "claude", Options: map[string]string{
+	panes := []tmux.Pane{{Server: "/r1", ID: "%1", PID: 100, Command: "claude", Options: map[string]string{
 		"agent": "claude", "session": "b-session", "pid": "200", "start": "s-b",
 		"evidence": "process", "state": "idle",
 	}}}
-	previousLineage, previousProcesses, previousPanes := loadLineage, loadProcesses, loadPanes
-	t.Cleanup(func() { loadLineage, loadProcesses, loadPanes = previousLineage, previousProcesses, previousPanes })
-	loadLineage = func(context.Context, int) (*proc.Table, error) { return proc.NewTable(nil), nil }
 	listed := false
-	loadPanes = func(_ context.Context, w *attach.World) error {
-		listed = true
-		w.Panes = panes
-		return nil
-	}
-	loadProcesses = func(_ context.Context, w *attach.World) error {
-		if !listed {
-			t.Fatal("process table read before the panes")
-		}
-		w.Proc = proc.NewTable([]proc.Process{
-			{PID: 100, PPID: 1, Comm: "sh", Args: "sh"},
-			{PID: 200, PPID: 100, Comm: "claude", Args: "claude", Start: "s-b"},
-		})
-		return nil
+	sources := Sources{
+		Lineage: func(context.Context, int) (*proc.Table, error) { return proc.NewTable(nil), nil },
+		Panes: func(context.Context) ([]tmux.Pane, error) {
+			listed = true
+			return panes, nil
+		},
+		Processes: func(context.Context) (*proc.Table, error) {
+			if !listed {
+				t.Fatal("process table read before the panes")
+			}
+			return proc.NewTable([]proc.Process{
+				{PID: 100, PPID: 1, Comm: "sh", Args: "sh"},
+				{PID: 200, PPID: 100, Comm: "claude", Args: "claude", Start: "s-b"},
+			}), nil
+		},
 	}
 
 	payload := `{"session_id":"a-session","hook_event_name":"SessionStart","source":"startup"}`
-	if err := RunContext(ctx, Input{Agent: proc.Claude, Payload: strings.NewReader(payload), Log: log, PID: 0}); err != nil {
+	if err := Run(ctx, Input{Agent: proc.Claude, Payload: strings.NewReader(payload), Log: log, PID: 0, Sources: sources}); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok, err := store.Get(ctx, proc.Claude, "b-session"); !ok || err != nil {
 		t.Fatalf("attached session B lost: ok=%v err=%v", ok, err)
 	}
-	events, _, err := log.Since(ctx, 0)
+	events, err := log.Since(ctx, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,27 +92,26 @@ func TestReconciliationSkipsWithoutFreshProcessEvidence(t *testing.T) {
 	if err := store.Put(ctx, b); err != nil {
 		t.Fatal(err)
 	}
-	previousLineage, previousProcesses, previousPanes := loadLineage, loadProcesses, loadPanes
-	t.Cleanup(func() { loadLineage, loadProcesses, loadPanes = previousLineage, previousProcesses, previousPanes })
-	loadLineage = func(context.Context, int) (*proc.Table, error) { return proc.NewTable(nil), nil }
 	listed := false
-	loadPanes = func(_ context.Context, w *attach.World) error {
-		listed = true
-		w.Panes = []tmux.Pane{{Server: "r1", ID: "%1", PID: 100, Command: "claude", Options: map[string]string{
-			"agent": "claude", "session": "b-session", "pid": "200", "start": "s-b",
-			"evidence": "process", "state": "idle",
-		}}}
-		return nil
-	}
-	loadProcesses = func(context.Context, *attach.World) error {
-		if !listed {
-			t.Fatal("process table read before the panes")
-		}
-		return errors.New("process table unreadable")
+	sources := Sources{
+		Lineage: func(context.Context, int) (*proc.Table, error) { return proc.NewTable(nil), nil },
+		Panes: func(context.Context) ([]tmux.Pane, error) {
+			listed = true
+			return []tmux.Pane{{Server: "r1", ID: "%1", PID: 100, Command: "claude", Options: map[string]string{
+				"agent": "claude", "session": "b-session", "pid": "200", "start": "s-b",
+				"evidence": "process", "state": "idle",
+			}}}, nil
+		},
+		Processes: func(context.Context) (*proc.Table, error) {
+			if !listed {
+				t.Fatal("process table read before the panes")
+			}
+			return nil, errors.New("process table unreadable")
+		},
 	}
 
 	payload := `{"session_id":"a-session","hook_event_name":"SessionStart","source":"startup"}`
-	if err := RunContext(ctx, Input{Agent: proc.Claude, Payload: strings.NewReader(payload), Log: log, PID: 0}); err != nil {
+	if err := Run(ctx, Input{Agent: proc.Claude, Payload: strings.NewReader(payload), Log: log, PID: 0, Sources: sources}); err != nil {
 		t.Fatal(err)
 	}
 	if data, err := os.ReadFile(filepath.Join(root, "hook.log")); err == nil {
@@ -139,16 +135,13 @@ func TestToolHookDoesNotReconcile(t *testing.T) {
 	if err := store.Put(ctx, gone); err != nil {
 		t.Fatal(err)
 	}
-	previousLineage, previousProcesses, previousPanes := loadLineage, loadProcesses, loadPanes
-	t.Cleanup(func() { loadLineage, loadProcesses, loadPanes = previousLineage, previousProcesses, previousPanes })
-	loadLineage = func(context.Context, int) (*proc.Table, error) { return proc.NewTable(nil), nil }
-	loadPanes = func(context.Context, *attach.World) error { return nil }
-	loadProcesses = func(_ context.Context, w *attach.World) error {
-		w.Proc = proc.NewTable(nil)
-		return nil
+	sources := Sources{
+		Lineage:   func(context.Context, int) (*proc.Table, error) { return proc.NewTable(nil), nil },
+		Panes:     func(context.Context) ([]tmux.Pane, error) { return nil, nil },
+		Processes: func(context.Context) (*proc.Table, error) { return proc.NewTable(nil), nil },
 	}
 	payload := `{"session_id":"a-session","hook_event_name":"UserPromptSubmit","prompt_id":"turn"}`
-	if err := RunContext(ctx, Input{Agent: proc.Claude, Payload: strings.NewReader(payload), Log: log, PID: 0}); err != nil {
+	if err := Run(ctx, Input{Agent: proc.Claude, Payload: strings.NewReader(payload), Log: log, PID: 0, Sources: sources}); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok, err := store.Get(ctx, proc.Claude, "gone-session"); !ok || err != nil {

@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/ChrAlpha/tmux-agent-experience/internal/contextio"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/lockfile"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
@@ -88,7 +87,9 @@ func (s Store) Put(ctx context.Context, rec Record) error {
 	if err != nil {
 		return err
 	}
-	err = contextio.WriteAll(ctx, f, data)
+	if err = ctx.Err(); err == nil {
+		_, err = f.Write(data)
+	}
 	if closed := f.Close(); err == nil {
 		err = closed
 	}

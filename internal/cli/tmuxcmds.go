@@ -75,7 +75,9 @@ func (a *app) cmdStatus(args []string) int {
 	if _, err := parse(fs, args); err != nil {
 		return a.usageError("status", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	base, stop := a.signalContext()
+	defer stop()
+	ctx, cancel := context.WithTimeout(base, 2*time.Second)
 	defer cancel()
 	v, err := a.reconciled(ctx, *server)
 	if err != nil {
@@ -116,7 +118,7 @@ func (a *app) cmdJump(args []string) int {
 	if _, err := parse(fs, args); err != nil {
 		return a.usageError("jump", err)
 	}
-	ctx, cancel := signalContext()
+	ctx, cancel := a.signalContext()
 	defer cancel()
 	v, err := a.reconciled(ctx, *server)
 	if err != nil {

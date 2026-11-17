@@ -11,12 +11,22 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"slices"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/ChrAlpha/tmux-agent-experience/internal/contextio"
 )
+
+// maxLine bounds a transcript line tmag decodes. A longer one is not held,
+// and fails the read: it may be a turn's prompt, whose turn tmag could then
+// not tell from the one before.
+const maxLine = 64 << 20
+
+// ErrLineTooLong is a read that met a transcript line longer than tmag
+// decodes before it had the turns asked for.
+var ErrLineTooLong = fmt.Errorf("a transcript line exceeds %d MiB", maxLine>>20)
 
 // Formats, as eventlog.Transcript names them.
 const (
@@ -64,7 +74,7 @@ func Turns(ctx context.Context, path, format string, n int) ([]Turn, error) {
 	if n < 1 || n > MaxTurns {
 		return nil, fmt.Errorf("read 1 to %d turns", MaxTurns)
 	}
-	turns, err := read(ctx, path, format, n)
+	turns, err := read(ctx, path, format, n, maxLine)
 	for i := range turns {
 		turns[i] = bound(turns[i])
 	}
@@ -74,7 +84,7 @@ func Turns(ctx context.Context, path, format string, n int) ([]Turn, error) {
 // Last returns the last turn the transcript at path holds, as far as it is
 // written, its reply whole: what read --last prints once the turn ends.
 func Last(ctx context.Context, path, format string) (Turn, error) {
-	turns, err := read(ctx, path, format, 1)
+	turns, err := read(ctx, path, format, 1, maxLine)
 	switch {
 	case err != nil:
 		return Turn{}, err
@@ -92,8 +102,9 @@ type turnReader interface {
 	end() (Turn, bool)
 }
 
-// read returns the last n turns the transcript at path holds, oldest first.
-func read(ctx context.Context, path, format string, n int) ([]Turn, error) {
+// read returns the last n turns the transcript at path holds, oldest first,
+// reading lines of at most max bytes.
+func read(ctx context.Context, path, format string, n int, max int64) ([]Turn, error) {
 	var r turnReader
 	switch format {
 	case ClaudeJSONL:
@@ -110,13 +121,30 @@ func read(ctx context.Context, path, format string, n int) ([]Turn, error) {
 		return nil, err
 	}
 	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	// The file is read as it was when this started; a line being written
+	// then comes incomplete, so it does not decode.
 	var turns []Turn
-	err = backward(ctx, f, func(b []byte) bool {
+	long := false
+	err = contextio.Backward(ctx, f, info.Size(), max, func(b []byte, _ int64) bool {
+		if b == nil {
+			long = true
+			return true
+		}
+		if b = bytes.TrimSpace(b); len(b) == 0 {
+			return false
+		}
 		if t, ok := r.line(b); ok {
 			turns = append(turns, t)
 		}
 		return len(turns) == n
 	})
+	if err == nil && long {
+		err = ErrLineTooLong
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -184,46 +212,4 @@ func cut(s string) string {
 		end--
 	}
 	return s[:end] + more
-}
-
-// chunk is how much of the file backward reads at a time.
-const chunk = 64 << 10
-
-// backward calls fn with each line of f, last first, until fn returns true.
-// It reads the file as it was when it started; a line being written then
-// comes incomplete, so it does not decode.
-func backward(ctx context.Context, f *os.File, fn func([]byte) bool) error {
-	info, err := f.Stat()
-	if err != nil {
-		return err
-	}
-	end := info.Size()
-	var tail []byte // the start of the line the last chunk ended in
-	for end > 0 {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		n := min(int64(chunk), end)
-		buf := make([]byte, n, int(n)+len(tail))
-		if _, err := f.ReadAt(buf, end-n); err != nil && !errors.Is(err, io.EOF) {
-			return err
-		}
-		end -= n
-		buf = append(buf, tail...)
-		for {
-			i := bytes.LastIndexByte(buf, '\n')
-			if i < 0 {
-				break
-			}
-			if line := bytes.TrimSpace(buf[i+1:]); len(line) > 0 && fn(line) {
-				return nil
-			}
-			buf = buf[:i]
-		}
-		tail = buf
-	}
-	if line := bytes.TrimSpace(tail); len(line) > 0 {
-		fn(line)
-	}
-	return nil
 }

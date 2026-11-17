@@ -180,3 +180,41 @@ func TestJoinLeavesOutWhatResolvesDuringTheReplay(t *testing.T) {
 		t.Fatalf("AwaitResolved(4) = %v", err)
 	}
 }
+
+// A thread that streams notifications without a pause still ends Join's
+// replay, with the requests replayed first.
+func TestJoinEndsOnAStreamingThread(t *testing.T) {
+	sock := serve(t, func(c *svctest.Conn, m svctest.Message) {
+		if m.Method != "thread/resume" {
+			return
+		}
+		_ = c.Reply(m.ID, map[string]any{})
+		_ = c.Send(map[string]any{"id": 7, "method": codexsvc.CommandApproval, "params": map[string]string{"threadId": "t1"}})
+		go func() {
+			for range 400 {
+				if c.Send(map[string]any{"method": "item/agentMessage/delta", "params": map[string]any{"threadId": "t1", "delta": "x"}}) != nil {
+					return
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+		}()
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	c, err := codexsvc.Dial(ctx, sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	started := time.Now()
+	pending, err := c.Join(ctx, "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if took := time.Since(started); took > 2*time.Second {
+		t.Fatalf("Join took %s on a streaming thread", took)
+	}
+	if len(pending) != 1 || string(pending[0].ID) != "7" {
+		t.Fatalf("Join = %+v, want request 7", pending)
+	}
+}

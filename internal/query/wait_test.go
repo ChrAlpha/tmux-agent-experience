@@ -125,8 +125,7 @@ func TestWaitForInboxPromptIgnoresThePreviousTurnsIdleNotification(t *testing.T)
 		t.Fatal("the previous turn's idle notification cleared the prompt's Sent mark")
 	}
 	put(t, store, late)
-	idle := Session{Agent: "claude", ID: "s1", State: adapter.Idle}
-	if err := liveGate(idle, View{records: []session.Record{late}}, now); !isRefused(err, RefuseBusy) {
+	if err := liveGate(late, now); !isRefused(err, RefuseBusy) {
 		t.Fatalf("the previous turn's idle notification released the send gate: %v", err)
 	}
 	got := make(chan session.Record, 1)
@@ -150,6 +149,39 @@ func TestWaitForInboxPromptIgnoresThePreviousTurnsIdleNotification(t *testing.T)
 	idleTurn, _ := session.Apply(working, adapter.Transition{Action: adapter.Set, State: adapter.Idle, Turn: "new-turn"}, time.Now())
 	put(t, store, idleTurn)
 	if rec := <-got; rec.State() != adapter.Idle || rec.Turn != "new-turn" {
+		t.Fatalf("Wait = %+v", rec)
+	}
+}
+
+// A prompt whose channel named the turn it started waits for that turn: one
+// another prompt started meanwhile is no answer.
+func TestWaitForTheNamedTurn(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	store := session.Store{Dir: t.TempDir()}
+	put(t, store, session.Record{Main: "idle", Turn: "t0", Sent: time.Now()})
+	before := "t0"
+	got := make(chan session.Record, 1)
+	go func() {
+		rec, err := Wait(ctx, store, s1, WaitOptions{States: []string{"idle", "blocked"}, Prompted: &before, Turn: "t2", Grace: 5 * time.Second})
+		if err != nil {
+			t.Error(err)
+		}
+		got <- rec
+	}()
+	put(t, store, session.Record{Main: "working", Turn: "t1"})
+	time.Sleep(3 * waitPoll)
+	put(t, store, session.Record{Main: "idle", Turn: "t1"})
+	time.Sleep(3 * waitPoll)
+	select {
+	case rec := <-got:
+		t.Fatalf("another prompt's turn ended the wait: %+v", rec)
+	default:
+	}
+	put(t, store, session.Record{Main: "working", Turn: "t2"})
+	time.Sleep(3 * waitPoll)
+	put(t, store, session.Record{Main: "idle", Turn: "t2"})
+	if rec := <-got; rec.State() != "idle" || rec.Turn != "t2" {
 		t.Fatalf("Wait = %+v", rec)
 	}
 }

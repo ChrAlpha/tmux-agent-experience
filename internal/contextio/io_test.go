@@ -1,6 +1,7 @@
 package contextio
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -11,18 +12,6 @@ import (
 	"testing"
 	"time"
 )
-
-func TestCanceledReadDoesNotConsumeInput(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	in := strings.NewReader("still here")
-	if _, err := ReadAll(ctx, in, 100); !errors.Is(err, context.Canceled) {
-		t.Fatal(err)
-	}
-	if in.Len() != len("still here") {
-		t.Fatal("canceled read consumed input")
-	}
-}
 
 func TestOwnedPipeCancellation(t *testing.T) {
 	for _, writing := range []bool{false, true} {
@@ -58,7 +47,7 @@ func TestOwnedPipeCancellation(t *testing.T) {
 					_, err := owned.Write(make([]byte, 8<<20))
 					done <- err
 				} else {
-					_, err := ReadAll(ctx, owned, 100)
+					_, err := ReadAtMost(owned, 100)
 					done <- err
 				}
 			}()
@@ -177,20 +166,102 @@ func TestReadFileIsBounded(t *testing.T) {
 	if _, err := ReadFile(context.Background(), path, 4); err == nil {
 		t.Fatal("unbounded metadata read")
 	}
-}
-
-func TestDirectoryCancellationStopsBatch(t *testing.T) {
-	dir := t.TempDir()
-	for _, name := range []string{"a", "b", "c"} {
-		if err := os.WriteFile(filepath.Join(dir, name), nil, 0o600); err != nil {
-			t.Fatal(err)
-		}
+	if got, err := ReadFile(context.Background(), path, 5); err != nil || string(got) != "12345" {
+		t.Fatalf("ReadFile at its limit = %q, %v", got, err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	visited := 0
-	err := Entries(ctx, dir, func(os.DirEntry) error { visited++; cancel(); return nil })
-	if !errors.Is(err, context.Canceled) || visited != 1 {
-		t.Fatalf("visited=%d, err=%v", visited, err)
+	cancel()
+	if _, err := ReadFile(ctx, path, 5); !errors.Is(err, context.Canceled) {
+		t.Fatalf("ReadFile after cancellation: %v", err)
+	}
+}
+
+// Lines cross chunk boundaries and outgrow a chunk; a line still being
+// written (the last, without a newline) comes as it is, and one longer
+// than the bound comes as nil.
+func TestBackward(t *testing.T) {
+	long := strings.Repeat("x", 3*backwardChunk)
+	over := strings.Repeat("z", 5*backwardChunk)
+	lines := []string{"a", long, "", "b", over, strings.Repeat("y", backwardChunk-1), "c", "{partial"}
+	data := []byte(strings.Join(lines, "\n"))
+	type line struct {
+		text  string
+		nil   bool
+		start int
+	}
+	var got []line
+	err := Backward(context.Background(), bytes.NewReader(data), int64(len(data)), int64(4*backwardChunk), func(b []byte, start int64) bool {
+		got = append(got, line{string(b), b == nil, int(start)})
+		return false
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var want []line
+	at := len(data)
+	for i := len(lines) - 1; i >= 0; i-- {
+		at -= len(lines[i])
+		if lines[i] == over {
+			want = append(want, line{"", true, at})
+		} else {
+			want = append(want, line{lines[i], false, at})
+		}
+		at-- // the newline before it
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d lines, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("line %d: got %q nil=%v at %d, want %.10q nil=%v at %d", i, trim(got[i].text), got[i].nil, got[i].start, want[i].text, want[i].nil, want[i].start)
+		}
+	}
+	got = nil
+	if err := Backward(context.Background(), bytes.NewReader([]byte("a\nb\n")), 4, 16, func(b []byte, start int64) bool {
+		got = append(got, line{string(b), b == nil, int(start)})
+		return string(b) == "b"
+	}); err != nil || len(got) != 2 || got[0] != (line{"", false, 4}) || got[1] != (line{"b", false, 2}) {
+		t.Fatalf("stopping early: %+v, %v", got, err)
+	}
+}
+
+func trim(s string) string {
+	if len(s) > 10 {
+		return s[:10] + "…"
+	}
+	return s
+}
+
+// cancelingReader cancels its context while it reads.
+type cancelingReader struct {
+	data   []byte
+	cancel func()
+}
+
+func (r cancelingReader) ReadAt(p []byte, off int64) (int, error) {
+	r.cancel()
+	return copy(p, r.data[off:]), nil
+}
+
+// A read or a line that outlives the budget is the last Backward looks at.
+func TestBackwardStopsOnCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	called := false
+	err := Backward(ctx, cancelingReader{[]byte("a\n"), cancel}, 2, 16, func([]byte, int64) bool { called = true; return false })
+	if !errors.Is(err, context.Canceled) || called {
+		t.Fatalf("a read canceled meanwhile: callback=%v, %v", called, err)
+	}
+	ctx, cancel = context.WithCancel(context.Background())
+	var lines []string
+	err = Backward(ctx, bytes.NewReader([]byte("a\nb\nc\n")), 6, 16, func(b []byte, _ int64) bool {
+		lines = append(lines, string(b))
+		cancel()
+		return false
+	})
+	if !errors.Is(err, context.Canceled) || len(lines) != 1 {
+		t.Fatalf("a callback that canceled: %q, %v", lines, err)
+	}
+	if err := Backward(ctx, bytes.NewReader(nil), 0, 16, func([]byte, int64) bool { return false }); !errors.Is(err, context.Canceled) {
+		t.Fatalf("an empty input after cancellation: %v", err)
 	}
 }

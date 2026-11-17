@@ -9,7 +9,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/contextio"
@@ -122,6 +124,11 @@ func Main(args []string) int {
 		}
 		defer input.Close()
 		a.stdin = input
+	} else {
+		defer endOnSecondSignal()()
+	}
+	if len(args) == 0 || stateless[args[0]] {
+		return a.run(args)
 	}
 	// In hook invocations the budget and final cutoff already cover realm
 	// discovery, including its filesystem accesses.
@@ -129,7 +136,7 @@ func Main(args []string) int {
 	if a.setup != nil {
 		discovery = a.setup
 	}
-	dir, err := eventlog.DefaultDirContext(discovery)
+	dir, err := eventlog.DefaultDir(discovery)
 	if err != nil {
 		if a.setup != nil {
 			return ExitOK
@@ -139,6 +146,38 @@ func Main(args []string) int {
 	}
 	a.log = eventlog.Open(dir)
 	return a.run(args)
+}
+
+// stateless are the commands that read no state, and need no state
+// directory found.
+var stateless = map[string]bool{"version": true, "--version": true, "-V": true, "help": true, "--help": true, "-h": true}
+
+// endOnSecondSignal ends the process as a second signal ends any program.
+// The first cancels the command's context, which a command blocked in a
+// system call, on a terminal's input say, cannot heed.
+func endOnSecondSignal() (stop func()) {
+	signals := []os.Signal{os.Interrupt, syscall.SIGTERM, syscall.SIGHUP}
+	ch := make(chan os.Signal, 2)
+	signal.Notify(ch, signals...)
+	done := make(chan struct{})
+	go func() {
+		for first := true; ; first = false {
+			select {
+			case sig := <-ch:
+				if first {
+					continue
+				}
+				signal.Reset(signals...)
+				if s, ok := sig.(syscall.Signal); ok {
+					_ = syscall.Kill(os.Getpid(), s)
+				}
+				return
+			case <-done:
+				return
+			}
+		}
+	}()
+	return func() { signal.Stop(ch); close(done) }
 }
 
 func (a *app) run(args []string) int {

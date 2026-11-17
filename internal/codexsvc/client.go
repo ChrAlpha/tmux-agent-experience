@@ -307,10 +307,13 @@ func (c *Client) Join(ctx context.Context, thread string) ([]Message, error) {
 	if err := c.Call(ctx, "thread/resume", map[string]any{"threadId": thread, "excludeTurns": true}, nil); err != nil {
 		return nil, err
 	}
-	// The replay follows the response at once; a short quiet ends it.
+	// The replay follows the response at once; a short quiet ends it, and so
+	// does its window, for a thread that streams on without one.
 	var out []Message
+	window, cancelWindow := context.WithTimeout(ctx, replayWindow)
+	defer cancelWindow()
 	for {
-		quiet, cancel := context.WithTimeout(ctx, replayQuiet)
+		quiet, cancel := context.WithTimeout(window, replayQuiet)
 		m, err := c.Next(quiet)
 		cancel()
 		if err != nil {
@@ -325,8 +328,12 @@ func (c *Client) Join(ctx context.Context, thread string) ([]Message, error) {
 	}
 }
 
-// replayQuiet is how long Join waits for more replayed requests.
-const replayQuiet = 300 * time.Millisecond
+// replayQuiet is how long Join waits for more replayed requests, and
+// replayWindow how long it waits for them at most.
+const (
+	replayQuiet  = 300 * time.Millisecond
+	replayWindow = time.Second
+)
 
 // Leave unsubscribes from a thread.
 func (c *Client) Leave(ctx context.Context, thread string) error {

@@ -41,7 +41,7 @@ func (a *app) cmdHook(args []string) (code int) {
 			code = ExitOK
 		}
 	}()
-	err := hook.RunContext(ctx, hook.Input{Agent: args[0], Payload: a.stdin, Log: a.log, PID: os.Getpid()})
+	err := hook.Run(ctx, hook.Input{Agent: args[0], Payload: a.stdin, Log: a.log, PID: os.Getpid()})
 	if err != nil {
 		a.recordHookError(args[0], err)
 	} else {
@@ -433,7 +433,7 @@ func (a *app) cmdSend(args []string) int {
 	a.reportHeld(d)
 	prompted := d.Session.Turn
 	return a.awaitAndReport("send", pos[0], d.Session, d.Seq, query.WaitOptions{
-		States: []string{adapter.Idle, adapter.Blocked}, Prompted: &prompted,
+		States: []string{adapter.Idle, adapter.Blocked}, Prompted: &prompted, Turn: d.Turn,
 	}, *timeout)
 }
 
@@ -620,7 +620,11 @@ func (a *app) reportWait(s query.Session, state, kind, turn string, started bool
 // reportDelivery prints where a verb went.
 func (a *app) reportDelivery(what string, d query.Delivery) {
 	if a.json {
-		a.emit(map[string]any{"session": d.Session, "pane": d.Pane, "via": d.Via, "seq": d.Seq})
+		doc := map[string]any{"session": d.Session, "pane": d.Pane, "via": d.Via, "seq": d.Seq}
+		if d.Held {
+			doc["held"] = true // the receiver's person approves it first
+		}
+		a.emit(doc)
 	} else {
 		where := d.Via
 		if d.Pane != nil {

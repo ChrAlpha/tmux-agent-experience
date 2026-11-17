@@ -43,12 +43,13 @@ const (
 // and for a server that does not say, it is People.
 func Mode(ctx context.Context) string {
 	mode := ""
-	servers, err := tmux.ServersContext(ctx)
+	servers, err := tmux.Servers(ctx)
 	if err != nil {
 		return Off
 	}
 	for _, srv := range servers {
-		switch srv.GlobalOption(ctx, Option) {
+		value, _ := srv.Option(ctx, Option)
+		switch value {
 		case Off:
 			return Off
 		case Agents:

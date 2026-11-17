@@ -31,12 +31,13 @@ func (a *app) cmdNotify(args []string) int {
 	}
 	if *fromHook {
 		if err := notify.RunAlert(a.log.Dir, os.Environ()); err != nil {
-			hook.RecordError(a.log.Dir, "notify", err)
+			hook.RecordError(a.ctx, a.log.Dir, "notify", err)
 		}
 		return ExitOK
 	}
 
-	ctx := context.Background()
+	ctx, cancel := a.signalContext()
+	defer cancel()
 	commands := notifyCommands(ctx)
 	if len(commands) == 0 {
 		return a.fail("notify", errors.New(notify.Option+" is not set on any tmux server: set it to a command that sends a notification"))
@@ -83,8 +84,9 @@ func (a *app) cmdNotify(args []string) int {
 // notifyCommands are the distinct @tmag-notify commands the tmux servers
 // set. Clients build any notification links from the exported ids.
 func notifyCommands(ctx context.Context) (commands []string) {
-	for _, srv := range tmux.Servers() {
-		command := srv.GlobalOption(ctx, notify.Option)
+	servers, _ := tmux.Servers(ctx)
+	for _, srv := range servers {
+		command, _ := srv.Option(ctx, notify.Option)
 		if command == "" || slices.Contains(commands, command) {
 			continue
 		}
@@ -101,7 +103,7 @@ func (a *app) checkNotify(ctx context.Context) check {
 	}
 	configured := false
 	for _, s := range servers {
-		v, err := s.GlobalOptionContext(ctx, notify.Option)
+		v, err := s.Option(ctx, notify.Option)
 		if err != nil {
 			return check{"notify", "warn", "notification option unavailable"}
 		}

@@ -2,6 +2,8 @@ package session
 
 import (
 	"context"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -149,7 +151,7 @@ func TestUnnamedPermissionRequestBlocksAnywhere(t *testing.T) {
 func TestTurnEventsCloseEveryPrompt(t *testing.T) {
 	rec := play(t, askFor("A", "Bash"), askFor("B", "Bash"), stopWith())
 	is(t, rec, adapter.Idle, "")
-	if rec.Pending != nil {
+	if rec.Pending() != nil {
 		t.Fatalf("Stop left prompts: %+v", rec)
 	}
 }
@@ -172,11 +174,11 @@ func TestParallelCallsOfOneToolKeepItsPromptOpen(t *testing.T) {
 		"both started first":              {startOf("", "Read", "r1"), startOf("", "Read", "r2"), askFor("", "Read"), finishOf("", "Read", "r1")},
 		"asked before the second started": {startOf("", "Read", "r1"), askFor("", "Read"), startOf("", "Read", "r2"), finishOf("", "Read", "r2")},
 	} {
-		if rec := play(t, order...); rec.State() != adapter.Blocked || len(rec.Pending) != 1 {
+		if rec := play(t, order...); rec.State() != adapter.Blocked || len(rec.Pending()) != 1 {
 			t.Errorf("%s: the allowed call released the prompt: %+v", name, rec)
 		}
 		rec := play(t, append(order, finishOf("", "Read", "r2"), finishOf("", "Read", "r1"))...)
-		if rec.State() != adapter.Working || rec.Pending != nil || rec.Calls != nil {
+		if rec.State() != adapter.Working || rec.Pending() != nil || rec.Calls != nil {
 			t.Errorf("%s: both calls over, still %+v", name, rec)
 		}
 	}
@@ -209,7 +211,7 @@ func TestClaudeBackgroundWorkerOutlivesTheTurn(t *testing.T) {
 	asked := []adapter.Transition{spawnOf("w"), startOf("w", "Bash", "b1"), askFor("w", "Bash"), askFor("", "Read"), stopWith("w")}
 	rec := play(t, asked...)
 	is(t, rec, adapter.Blocked, adapter.KindPermission)
-	if len(rec.Pending) != 1 || rec.Pending[0].Agent != "w" {
+	if len(rec.Pending()) != 1 || rec.Pending()[0].Agent != "w" {
 		t.Fatalf("Stop kept the wrong prompts: %+v", rec)
 	}
 	// Answered: back to background work, not to a turn.
@@ -223,7 +225,7 @@ func TestClaudeBackgroundWorkerOutlivesTheTurn(t *testing.T) {
 	// A Stop that no longer lists the worker ends it.
 	rec = play(t, append(asked, stopWith())...)
 	is(t, rec, adapter.Idle, "")
-	if rec.Pending != nil || rec.Calls != nil || rec.Background != nil {
+	if rec.Pending() != nil || rec.Calls != nil || rec.Background != nil {
 		t.Fatalf("final Stop left %+v", rec)
 	}
 }
@@ -315,7 +317,7 @@ func TestStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, ok, err := s.Get(ctx, proc.Claude, "s1")
-	if err != nil || !ok || !got.equal(rec) {
+	if err != nil || !ok || !got.Same(rec) {
 		t.Fatalf("Get = %+v, %v, %v", got, ok, err)
 	}
 	all, faults, err := s.All(ctx)
@@ -343,7 +345,7 @@ func TestEventsReportTheWholeSession(t *testing.T) {
 	s, log := Store{Dir: dir}, eventlog.Open(dir)
 	ctx := context.Background()
 	last := func() eventlog.Event {
-		all, _, err := log.Since(ctx, 0)
+		all, err := log.Since(ctx, 0)
 		if err != nil || len(all) == 0 {
 			t.Fatalf("events: %v %v", all, err)
 		}
@@ -423,7 +425,6 @@ func TestSyntheticAnswerKeepsQueued(t *testing.T) {
 	sub := adapter.Prompt{Agent: "a1", Tool: "Bash"}
 	rec := Record{
 		Agent: proc.Claude, ID: "s1", Main: adapter.Working, Turn: "t1", Since: t0, Queued: t0,
-		Pending:  []adapter.Prompt{main, sub},
 		Requests: []Request{{ID: "r1", Prompt: main, Since: t0}, {ID: "r2", Prompt: sub, Since: t0}},
 	}
 	for _, id := range []string{"r1", "r2"} {
@@ -441,12 +442,12 @@ func TestRecordComparesTheInbox(t *testing.T) {
 	rec := play(t)
 	with := rec
 	with.Inbox = &Inbox{Path: "/tmp/claude.sock", PID: 10, Start: "s10"}
-	if with.equal(rec) {
+	if with.Same(rec) {
 		t.Fatal("an inbox does not make a record different")
 	}
 	same := with
 	same.Inbox = &Inbox{Path: "/tmp/claude.sock", PID: 10, Start: "s10"}
-	if !same.equal(with) {
+	if !same.Same(with) {
 		t.Fatal("equal inboxes make records different")
 	}
 }
@@ -478,8 +479,8 @@ func TestRequestsNameOpenPrompts(t *testing.T) {
 	}
 	// They close with their prompt.
 	rec, _ = Apply(rec, finishOf("", "Bash", "b1"), t0)
-	if len(rec.Requests) != 0 || len(rec.Pending) != 0 {
-		t.Fatalf("after the call: %+v %+v", rec.Pending, rec.Requests)
+	if len(rec.Requests) != 0 || len(rec.Pending()) != 0 {
+		t.Fatalf("after the call: %+v", rec.Requests)
 	}
 
 	plan := play(t, ask("ExitPlanMode", "p1", true), ask("AskUserQuestion", "q1", true))
@@ -556,33 +557,116 @@ func TestAnsweringARequestClosesItsPromptOnce(t *testing.T) {
 	}
 	is(t, rec, adapter.Blocked, adapter.KindPermission)
 	rec, _ = Apply(rec, answered("h2"), t0)
-	if len(rec.Requests) != 0 || len(rec.Pending) != 0 {
-		t.Fatalf("after both answers: %+v %+v", rec.Pending, rec.Requests)
+	if len(rec.Requests) != 0 || len(rec.Pending()) != 0 {
+		t.Fatalf("after both answers: %+v", rec.Requests)
 	}
 	is(t, rec, adapter.Working, "")
 	if _, changed := Apply(rec, answered("h2"), t0); changed {
 		t.Fatal("answering a closed request changed the session")
 	}
+
+	// A prompt another request still waits on keeps its place: answering
+	// the first of its requests leaves the session blocked on it, as before.
+	question := func(id string) adapter.Transition {
+		tr := askFor("", "AskUserQuestion")
+		tr.Request, tr.Waits = id, true
+		return tr
+	}
+	rec = play(t, question("q1"), ask("q2"), question("q3"))
+	is(t, rec, adapter.Blocked, adapter.KindQuestion)
+	rec, _ = Apply(rec, answered("q1"), t0)
+	is(t, rec, adapter.Blocked, adapter.KindQuestion)
+	if p := rec.Pending(); len(p) != 2 || p[0].Tool != "AskUserQuestion" || len(rec.Requests) != 2 || rec.Requests[0].ID != "q3" {
+		t.Fatalf("after answering the question's first request: %+v", rec.Requests)
+	}
 }
 
-func TestPaneHintBounds(t *testing.T) {
-	valid := PaneHint{Server: "/tmp/tmux-1000/default", ID: "%12", PID: 42, Start: "Mon Nov  3 09:12:22 2026"}
-	if !valid.Valid() {
-		t.Fatal("a proven hint is invalid")
-	}
-	for _, h := range []PaneHint{
-		{Server: "", ID: "%1", PID: 1, Start: "1"},
-		{Server: "/tmp/a\nb", ID: "%1", PID: 1, Start: "1"},
-		{Server: "/tmp/a", ID: "1", PID: 1, Start: "1"},
-		{Server: "/tmp/a", ID: "%x", PID: 1, Start: "1"},
-		{Server: "/tmp/a", ID: "%1", PID: 0, Start: "1"},
-		{Server: "/tmp/a", ID: "%1", PID: 1, Start: ""},
-		{Server: "/tmp/a", ID: "%1", PID: 1, Start: "x}#{run-shell}"},
-		{Server: "/tmp/a", ID: "%1", PID: 1, Start: "%H"},
-		{Server: "/tmp/a", ID: "%1", PID: 1, Start: strings.Repeat("1", maxPaneStart+1)},
+func TestShownBounds(t *testing.T) {
+	for _, valid := range []Shown{
+		{Server: "/tmp/tmux-1000/default", Pane: "%12", PID: 42, Start: "Mon Nov  3 09:12:22 2026"},
+		{Server: "/tmp/tmux-1000/default", Pane: "%12", PID: 42},
 	} {
-		if h.Valid() {
-			t.Errorf("invalid hint accepted: %+v", h)
+		if !valid.Valid() {
+			t.Errorf("a pane a hook could prove is invalid: %+v", valid)
+		}
+	}
+	for _, s := range []Shown{
+		{Server: "", Pane: "%1", PID: 1, Start: "1"},
+		{Server: "/tmp/a\nb", Pane: "%1", PID: 1, Start: "1"},
+		{Server: "/tmp/a", Pane: "1", PID: 1, Start: "1"},
+		{Server: "/tmp/a", Pane: "%x", PID: 1, Start: "1"},
+		{Server: "/tmp/a", Pane: "%1", PID: 0, Start: "1"},
+		{Server: "/tmp/a", Pane: "%1", PID: 1, Start: "x}#{run-shell}"},
+		{Server: "/tmp/a", Pane: "%1", PID: 1, Start: "%H"},
+		{Server: "/tmp/a", Pane: "%1", PID: 1, Start: strings.Repeat("1", maxShownStart+1)},
+	} {
+		if s.Valid() {
+			t.Errorf("invalid pane listed: %+v", s)
+		}
+	}
+}
+
+// A record lists one attachment per pane, the newest last, and a bounded
+// number of them: a full record takes no other pane, and drops none.
+func TestRecordListsPanes(t *testing.T) {
+	var rec Record
+	a := Shown{Server: "/tmp/s", Pane: "%1", PID: 10, Start: "1"}
+	if !rec.List(a) || rec.List(a) || !rec.Lists(a) {
+		t.Fatalf("listing a pane twice: %+v", rec.Shown)
+	}
+	b := Shown{Server: "/tmp/s", Pane: "%1", PID: 11, Start: "2"}
+	if !rec.List(b) || rec.Lists(a) || len(rec.Shown) != 1 {
+		t.Fatalf("a pane's new client did not replace its old: %+v", rec.Shown)
+	}
+	if got, ok := rec.ShownFor(11, "2"); !ok || got != b {
+		t.Fatalf("ShownFor = %+v, %v", got, ok)
+	}
+	for i := range maxShown - 1 {
+		if !rec.List(Shown{Server: "/tmp/s", Pane: "%" + strconv.Itoa(100+i), PID: 20 + i, Start: "3"}) {
+			t.Fatalf("a record with room refused pane %d", i)
+		}
+	}
+	full := slices.Clone(rec.Shown)
+	if rec.List(Shown{Server: "/tmp/s", Pane: "%999", PID: 99, Start: "3"}) || !slices.Equal(rec.Shown, full) {
+		t.Fatalf("a full record changed to list another pane: %+v", rec.Shown)
+	}
+	c := Shown{Server: "/tmp/s", Pane: "%1", PID: 12, Start: "4"}
+	if !rec.List(c) || !rec.Lists(c) || rec.Lists(b) || len(rec.Shown) != maxShown {
+		t.Fatalf("a full record did not take a listed pane's new client: %+v", rec.Shown)
+	}
+	rec, _ = Apply(rec, adapter.Transition{Action: adapter.Set, State: adapter.Idle}, t0)
+	if len(rec.Shown) != maxShown {
+		t.Fatalf("listed %d panes: %+v", len(rec.Shown), rec.Shown)
+	}
+	if !rec.Unlist("/tmp/s", "%100") || rec.Unlist("/tmp/s", "%999") {
+		t.Fatal("unlisting a listed pane, or one never listed")
+	}
+}
+
+// A hook saves whatever it records of a session beside its state.
+func TestSameTellsEveryRecordedFactApart(t *testing.T) {
+	base := Record{Agent: proc.Claude, ID: "s1", Cwd: "/w", Host: Host{PID: 10, Start: "s10"}, Transcript: "/t.jsonl",
+		Inbox: &Inbox{Path: "/tmp/claude.sock", PID: 10, Start: "s10"}}
+	again := base
+	again.Inbox = &Inbox{Path: "/tmp/claude.sock", PID: 10, Start: "s10"}
+	again.LastHookAt = t0
+	if !base.Same(again) {
+		t.Fatal("an equal record, contact aside, is not the same")
+	}
+	for name, change := range map[string]func(*Record){
+		"cwd":        func(r *Record) { r.Cwd = "/elsewhere" },
+		"host":       func(r *Record) { r.Host.Start = "s11" },
+		"transcript": func(r *Record) { r.Transcript = "/u.jsonl" },
+		"inbox":      func(r *Record) { r.Inbox = &Inbox{Path: "/tmp/other.sock", PID: 10, Start: "s10"} },
+		"no inbox":   func(r *Record) { r.Inbox = nil },
+		"permission": func(r *Record) { r.Permission = adapter.PermissionBypass },
+		"status":     func(r *Record) { r.StatusFile = "/home/me/.claude/sessions/10.json" },
+		"pane":       func(r *Record) { r.List(Shown{Server: "/tmp/s", Pane: "%1", PID: 10, Start: "s10"}) },
+	} {
+		next := base
+		change(&next)
+		if base.Same(next) {
+			t.Errorf("a changed %s is the same record", name)
 		}
 	}
 }

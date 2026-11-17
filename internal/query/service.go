@@ -24,7 +24,7 @@ const serviceTimeout = 5 * time.Second
 // it, since hooks may run in a helper the daemon started.
 func reach(ctx context.Context, s Session, rec session.Record) (*codexsvc.Client, error) {
 	host := rec.Host
-	if host.PID == 0 || !proc.RunningContext(ctx, host.PID, host.Start) {
+	if host.PID == 0 || !proc.Running(ctx, host.PID, host.Start) {
 		return nil, &RefusedError{RefuseChanged, fmt.Sprintf("the service %s ran in has exited", s.ID)}
 	}
 	sock := codexsvc.Socket()
@@ -32,7 +32,7 @@ func reach(ctx context.Context, s Session, rec session.Record) (*codexsvc.Client
 	if err != nil {
 		return nil, fmt.Errorf("cannot reach the Codex daemon at %s: %w", sock, err)
 	}
-	t, err := proc.SnapshotContext(ctx)
+	t, err := proc.Snapshot(ctx)
 	if err != nil {
 		c.Close()
 		return nil, err
@@ -65,13 +65,13 @@ type serviceVerb struct {
 // released: the service may run the session's hooks, which wait for that
 // lock, before it answers.
 func throughService(outer context.Context, log *eventlog.Log, v View, s Session, verb serviceVerb) (Delivery, error) {
-	if err := verb.gate(s, v, time.Now()); err != nil {
+	if err := gateOf(v, s, verb.gate); err != nil {
 		return Delivery{}, err
 	}
 	store := session.Store{Dir: log.Dir}
 	rec, ok, err := store.Get(outer, s.Agent, s.ID)
 	if err != nil || !ok {
-		return Delivery{}, &RefusedError{RefuseChanged, fmt.Sprintf("%s has ended", s.ID)}
+		return Delivery{}, sessionEnded(s.ID)
 	}
 	ctx, cancel := context.WithTimeout(outer, serviceTimeout)
 	defer cancel()
@@ -84,9 +84,8 @@ func throughService(outer context.Context, log *eventlog.Log, v View, s Session,
 		return Delivery{}, err
 	}
 
-	var d Delivery
-	d, err = recordDelivery(ctx, log, s, verb.gate, driver.Service, nil, func() error {
-		return &RefusedError{RefuseChanged, fmt.Sprintf("%s has ended", s.ID)}
+	d, undo, err := recordDelivery(ctx, log, s, verb.gate, driver.Service, nil, func() error {
+		return sessionEnded(s.ID)
 	}, verb.mark, nil)
 	if err != nil {
 		return Delivery{}, err
@@ -94,14 +93,27 @@ func throughService(outer context.Context, log *eventlog.Log, v View, s Session,
 	ctx, cancelDelivery := context.WithTimeout(outer, serviceTimeout)
 	defer cancelDelivery()
 	if err := verb.deliver(ctx, c); err != nil {
-		failure := deliveryFailure(d, err)
-		var refused *RefusedError
-		if errors.As(failure, &refused) {
-			return Delivery{}, failure // a refusal proves nothing was delivered
-		}
-		return d, failure
+		return undone(outer, d, deliveryFailure(d, err), undo)
 	}
 	return d, nil
+}
+
+// undone reports a delivery that failed after it was marked and logged. A
+// failure that proves nothing was delivered takes the delivery's marks back,
+// so the next delivery the failure's next: line advises is not held off by
+// this one; a refusal returns no delivery.
+func undone(outer context.Context, d Delivery, failure error, undo func(context.Context) error) (Delivery, error) {
+	var refused *RefusedError
+	var notTaken *NotTakenError
+	if errors.As(failure, &refused) || errors.As(failure, &notTaken) {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(outer), time.Second)
+		defer cancel()
+		failure = errors.Join(failure, undo(ctx))
+	}
+	if refused != nil {
+		return Delivery{}, failure
+	}
+	return d, failure
 }
 
 // deliveryFailure reports a failed write after its event was logged. A
@@ -124,17 +136,19 @@ func unknownDelivery(d Delivery, err error) error {
 }
 
 // recordDelivery marks a delivery on the session under its lock, against
-// fresh state, and logs the event before releasing it: the session's hooks
-// wait for the same lock, so what the delivery causes is logged after it.
-// The channel is reached and checked already, so only the session's own gate
-// runs again; proven, when not nil, is the inbox that channel was proven on.
-// gone says what a session that ended meanwhile is. decide, when not nil,
-// fixes what the delivery depends on before it is marked and logged: it runs
-// under the session's lock, after the fresh gate and record read.
-func recordDelivery(ctx context.Context, log *eventlog.Log, s Session, gate stateGate, via string, proven *session.Inbox, gone func() error, mark func(*session.Record) eventlog.Event, decide func(View, session.Record)) (Delivery, error) {
+// its fresh record, and logs the event before releasing it: the session's
+// hooks wait for the same lock, so what the delivery causes is logged after
+// it. The channel is reached and checked already, so only the session's own
+// gate runs again; proven, when not nil, is the inbox that channel was
+// proven on. gone says what a session that ended meanwhile is. decide, when
+// not nil, fixes what the delivery depends on before it is marked and
+// logged: it runs under the session's lock, after the fresh gate.
+//
+// undo takes back what mark set, for a delivery that proved it took nothing.
+func recordDelivery(ctx context.Context, log *eventlog.Log, s Session, gate stateGate, via string, proven *session.Inbox, gone func() error, mark func(*session.Record) eventlog.Event, decide func(session.Record)) (Delivery, func(context.Context) error, error) {
 	store := session.Store{Dir: log.Dir}
 	var d Delivery
-	var freshWorld *attach.World
+	var prior, marked, idled session.Record
 	nativeIdle := false
 	err := store.Lock(ctx, s.Agent, s.ID, func() error {
 		rec, ok, err := store.Get(ctx, s.Agent, s.ID)
@@ -145,25 +159,22 @@ func recordDelivery(ctx context.Context, log *eventlog.Log, s Session, gate stat
 		if err != nil {
 			return err
 		}
-		fresh, w, err := Load(ctx, store)
-		if err != nil {
-			return err
+		if nativeIdle {
+			idled = rec
 		}
-		freshWorld = w
-		fs, ok := fresh.Session(s.Agent, s.ID)
-		if !ok {
-			return gone()
-		}
-		if err := gate(fs, fresh, time.Now()); err != nil {
+		if err := gate(rec, time.Now()); err != nil {
 			return err
 		}
 		if err := inboxChanged(s, rec, proven); err != nil {
 			return err
 		}
 		if decide != nil {
-			decide(fresh, rec)
+			decide(rec)
 		}
+		fs := sessionOf(rec, s.Panes)
+		prior = rec
 		ev := mark(&rec)
+		marked = rec
 		ev.Agent, ev.Session, ev.Via = fs.Agent, fs.ID, via
 		if err := store.Put(ctx, rec); err != nil {
 			return err
@@ -175,11 +186,39 @@ func recordDelivery(ctx context.Context, log *eventlog.Log, s Session, gate stat
 		return nil
 	})
 	if nativeIdle {
-		if perr := projectNativeIdle(ctx, log, store, freshWorld, s.Agent, s.ID); perr != nil {
-			err = errors.Join(err, perr)
-		}
+		err = errors.Join(err, projectNativeIdle(ctx, log, store, idled))
 	}
-	return d, err
+	return d, unmark(store, s, prior, marked), err
+}
+
+// unmark returns what takes back the marks a delivery set on its session
+// (Sent, Queued, Halted): each one the record still holds goes back to what
+// it was, under the session's lock. A mark is the time it was set, to the
+// nanosecond, so one a later delivery set is never taken for this one's.
+// Nothing is logged: the marks are tmag's own, not part of what an event
+// reports.
+func unmark(store session.Store, s Session, prior, marked session.Record) func(context.Context) error {
+	return func(ctx context.Context) error {
+		return store.Lock(ctx, s.Agent, s.ID, func() error {
+			cur, ok, err := store.Get(ctx, s.Agent, s.ID)
+			if err != nil || !ok {
+				return err
+			}
+			changed := false
+			back := func(field *time.Time, was, set time.Time) {
+				if !set.Equal(was) && field.Equal(set) {
+					*field, changed = was, true
+				}
+			}
+			back(&cur.Sent, prior.Sent, marked.Sent)
+			back(&cur.Queued, prior.Queued, marked.Queued)
+			back(&cur.Halted, prior.Halted, marked.Halted)
+			if !changed {
+				return nil
+			}
+			return store.Put(ctx, cur)
+		})
+	}
 }
 
 // inboxChanged reports a fresh record that no longer names the inbox the

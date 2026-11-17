@@ -43,6 +43,11 @@ type Attachment struct {
 	Evidence string
 }
 
+// entry is how a session's record lists a, stored on pane p.
+func (a Attachment) entry(p tmux.Pane) session.Shown {
+	return session.Shown{Server: p.Server, Pane: p.ID, PID: a.PID, Start: a.Start}
+}
+
 // keeps reports whether a stands against b: it is the same attachment, or
 // a process proof of the client and session b names, which a title
 // inference never replaces: a process proof lasts as long as its client.
@@ -64,6 +69,9 @@ const (
 	optKind     = "kind"
 	optSince    = "since"
 	optCmd      = "cmd"
+	// optTitle is the Codex title a guarded write judged, kept by tmux, which
+	// its guard asks the pane's title still to be.
+	optTitle = "title"
 )
 
 // FromPane reads the attachment stored on a pane: only one tmag could have
@@ -148,13 +156,16 @@ func writeProjection(ctx context.Context, srv tmux.Server, pane string, pr Proje
 	return srv.SetPaneOptions(ctx, pane, set, unset)
 }
 
+// paneLocks is the class of the lock pool panes share.
+const paneLocks = "p"
+
 // Lock runs fn holding the pane's lock, a stripe of the state directory's
 // lock pool shared by every tmag process. A pane's attachment and projection
 // change only under it, and whoever also takes a session's lock takes the
 // pane's first.
 func Lock(ctx context.Context, stateDir, server, pane string, fn func() error) error {
 	sum := sha256.Sum256([]byte(server + "\x00" + pane))
-	return lockfile.Stripe(ctx, stateDir, "p", sum, fn)
+	return lockfile.Stripe(ctx, stateDir, paneLocks, sum, fn)
 }
 
 // titleIDLen is how many leading characters of a thread id the Codex 0.166

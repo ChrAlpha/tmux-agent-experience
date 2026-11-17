@@ -147,26 +147,16 @@ func TestPiLast(t *testing.T) {
 	}
 }
 
-// Lines cross chunk boundaries and outgrow a chunk; a line still being
-// written comes as it is.
-func TestBackwardAcrossChunks(t *testing.T) {
-	long := strings.Repeat("x", 3*chunk)
-	lines := []string{"a", long, "", "b", strings.Repeat("y", chunk-1), "c"}
-	path := filepath.Join(t.TempDir(), "t")
-	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n{partial"), 0o600); err != nil {
-		t.Fatal(err)
+// A line too long to decode may be a turn's prompt: the read fails rather
+// than give the turn before it the reply after it.
+func TestLineTooLongFailsTheRead(t *testing.T) {
+	big := strings.Replace(piPrompt2, `"content":"second"`, `"content":"`+strings.Repeat("x", 4096)+`"`, 1)
+	path := write(t, piHeader, piPrompt1, piReply1, big, piFinal)
+	if _, err := read(context.Background(), path, PiJSONL, 1, 1024); !errors.Is(err, ErrLineTooLong) {
+		t.Fatalf("read past a line over its bound: %v", err)
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
-	var got []string
-	if err := backward(context.Background(), f, func(b []byte) bool { got = append(got, string(b)); return false }); err != nil {
-		t.Fatal(err)
-	}
-	want := []string{"{partial", "c", lines[4], "b", long, "a"}
-	if strings.Join(got, "|") != strings.Join(want, "|") {
-		t.Fatalf("got %d lines, want %d", len(got), len(want))
+	turns, err := read(context.Background(), path, PiJSONL, 1, maxLine)
+	if err != nil || len(turns) != 1 || turns[0].ID != "8525eceb" {
+		t.Fatalf("read within the bound: %+v, %v", turns, err)
 	}
 }

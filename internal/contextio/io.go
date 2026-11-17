@@ -1,7 +1,8 @@
-// Package contextio owns cancellable CLI streams and bounded metadata reads.
+// Package contextio owns cancellable CLI streams and bounded reads.
 package contextio
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -133,34 +134,18 @@ func (s *Stream) restore() error {
 	return errors.Join(err, operation)
 }
 
-type reader struct {
-	ctx context.Context
-	r   io.Reader
-}
-
-func (r reader) Read(p []byte) (int, error) {
-	if err := r.ctx.Err(); err != nil {
-		return 0, err
-	}
-	n, err := r.r.Read(p)
-	if r.ctx.Err() != nil {
-		return 0, r.ctx.Err()
-	}
-	return n, err
-}
-
-// ReadAll checks cancellation between reads. Arbitrary readers must themselves
-// cooperate with cancellation; use Own for inherited CLI pipes and sockets.
-// There is deliberately no abandoned goroutine around an unknown Reader.
-func ReadAll(ctx context.Context, r io.Reader, limit int64) ([]byte, error) {
-	b, err := io.ReadAll(io.LimitReader(reader{ctx, r}, limit+1))
+// ReadAtMost reads r to its end, failing when it holds more than limit bytes.
+// It bounds allocation and work, not time: a reader that may block is an
+// owned stream (Own), which cancellation closes.
+func ReadAtMost(r io.Reader, limit int64) ([]byte, error) {
+	b, err := io.ReadAll(io.LimitReader(r, limit+1))
 	if err == nil && int64(len(b)) > limit {
 		err = fmt.Errorf("input exceeds %d bytes", limit)
 	}
 	return b, err
 }
 
-// ReadFile reads a file with bounded allocation and work.
+// ReadFile reads a file of at most limit bytes, if ctx is still live.
 func ReadFile(ctx context.Context, path string, limit int64) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -170,56 +155,66 @@ func ReadFile(ctx context.Context, path string, limit int64) ([]byte, error) {
 		return nil, err
 	}
 	defer f.Close()
-	return ReadAll(ctx, f, limit)
+	return ReadAtMost(f, limit)
 }
 
-// WriteAll checks cancellation between bounded writes. An arbitrary injected
-// writer must cooperate, like the reader accepted by ReadAll.
-func WriteAll(ctx context.Context, w io.Writer, data []byte) error {
-	for len(data) > 0 {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		n, err := w.Write(data[:min(len(data), 64<<10)])
-		if err != nil {
-			return err
-		}
-		if n == 0 {
-			return io.ErrShortWrite
-		}
-		data = data[n:]
-	}
-	return ctx.Err()
-}
+// backwardChunk is how much of a file Backward reads at a time.
+const backwardChunk = 64 << 10
 
-// Entries visits directory entries in bounded batches and stops on cancellation.
-func Entries(ctx context.Context, path string, visit func(os.DirEntry) error) error {
+// Backward calls fn with every line of the first size bytes of r, last
+// first, each without its newline and with the offset it starts at, until fn
+// returns true. The first call is the text after the last newline, empty when
+// the bytes end one, so its offset is where the last complete line ends. A
+// line longer than max is passed as nil, without being held: work and memory
+// stay linear in what is read, whatever the lines' lengths.
+func Backward(ctx context.Context, r io.ReaderAt, size, max int64, fn func(line []byte, start int64) bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		return err
+	var pieces [][]byte // the end of the line being read, nearest the file's end first
+	held, long := int64(0), false
+	emit := func(head []byte, start int64) bool {
+		var line []byte
+		if !long && held+int64(len(head)) <= max {
+			line = append(make([]byte, 0, held+int64(len(head))), head...)
+			for i := len(pieces) - 1; i >= 0; i-- {
+				line = append(line, pieces[i]...)
+			}
+		}
+		pieces, held, long = nil, 0, false
+		return fn(line, start)
 	}
-	defer f.Close()
-	for {
-		if err := ctx.Err(); err != nil {
+	for end := size; end > 0; {
+		n := min(backwardChunk, end)
+		buf := make([]byte, n)
+		if _, err := r.ReadAt(buf, end-n); err != nil && !errors.Is(err, io.EOF) {
 			return err
 		}
-		batch, err := f.ReadDir(64)
-		for _, entry := range batch {
+		if err := ctx.Err(); err != nil {
+			return err // a read that outlived the budget is not looked at
+		}
+		end -= n
+		for {
+			i := bytes.LastIndexByte(buf, '\n')
+			if i < 0 {
+				break
+			}
+			if emit(buf[i+1:], end+int64(i)+1) {
+				return nil
+			}
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			if err := visit(entry); err != nil {
-				return err
-			}
+			buf = buf[:i]
 		}
-		if errors.Is(err, io.EOF) {
-			return nil
-		}
-		if err != nil {
-			return err
+		if long || held+int64(len(buf)) > max {
+			pieces, held, long = nil, 0, true
+		} else {
+			pieces, held = append(pieces, buf), held+int64(len(buf))
 		}
 	}
+	if size > 0 {
+		emit(nil, 0)
+	}
+	return nil
 }

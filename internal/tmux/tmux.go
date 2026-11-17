@@ -6,6 +6,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
+	"net"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -15,7 +17,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/ChrAlpha/tmux-agent-experience/internal/contextio"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/helper"
 )
 
@@ -56,7 +57,7 @@ const OptionPrefix = "@tmag_"
 // OptionKeys lists every pane option tmag reads or writes, without the
 // prefix: the attachment (agent, session, pid, start, evidence) and the
 // display projection (state, kind, since, cmd).
-var OptionKeys = []string{"agent", "session", "pid", "start", "evidence", "state", "kind", "since", "cmd"}
+var OptionKeys = []string{"agent", "session", "pid", "start", "evidence", "state", "kind", "since", "cmd", "title"}
 
 // sep separates the fields of a pane line. It must be a byte every tmux
 // prints as is: tmux 3.4 writes other control characters in -F output as
@@ -72,11 +73,9 @@ func clean(name string) string {
 	return "#{s/[\x01-\x1f\x7f]//:" + name + "}"
 }
 
-// CleanFormat strips control characters from a free-text format value, so
-// that an option or title cannot inject a field separator or a newline.
-func CleanFormat(name string) string { return clean(name) }
-
-var paneFormat = func() string {
+// PaneFormat prints a pane as a line ParsePane reads: its identity, its
+// display, every tmag pane option and its title, free text cleaned.
+var PaneFormat = func() string {
 	fields := []string{
 		"#{pane_id}", "#{pane_pid}", clean("pane_current_command"), clean("pane_current_path"),
 		clean("session_name"), "#{window_index}", "#{pane_index}", "#{pane_tty}",
@@ -102,8 +101,7 @@ func (s Server) RunInput(ctx context.Context, stdin []byte, args ...string) ([]b
 	defer cancel()
 	// -u: without a UTF-8 locale (hooks often run without one) tmux would
 	// replace the field separator and any non-ASCII text with '_'.
-	cmd, cleanup := helper.Command(ctx, "tmux", append([]string{"-u", "-S", s.Socket}, args...)...)
-	defer cleanup()
+	cmd := helper.Command(ctx, "tmux", append([]string{"-u", "-S", s.Socket}, args...)...)
 	if stdin != nil {
 		cmd.Stdin = bytes.NewReader(stdin)
 	}
@@ -126,15 +124,27 @@ func (s Server) RunInput(ctx context.Context, stdin []byte, args ...string) ([]b
 	return out, nil
 }
 
+// Listening reports whether a server may still listen on the socket: false
+// only when connecting is refused or the socket is gone, as after its server
+// exited.
+func (s Server) Listening(ctx context.Context) bool {
+	c, err := (&net.Dialer{}).DialContext(ctx, "unix", s.Socket)
+	if err == nil {
+		_ = c.Close()
+		return true
+	}
+	return !errors.Is(err, syscall.ECONNREFUSED) && !errors.Is(err, fs.ErrNotExist)
+}
+
 // Panes lists every pane on the server.
 func (s Server) Panes(ctx context.Context) ([]Pane, error) {
-	out, err := s.Run(ctx, "list-panes", "-a", "-F", paneFormat)
+	out, err := s.Run(ctx, "list-panes", "-a", "-F", PaneFormat)
 	if err != nil {
 		return nil, err
 	}
 	var panes []Pane
 	for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
-		if p, ok := s.parsePane(line); ok {
+		if p, ok := s.ParsePane(line); ok {
 			panes = append(panes, p)
 		}
 	}
@@ -162,18 +172,19 @@ func (s Server) PaneID(ctx context.Context, target string) (string, error) {
 
 // Pane reads one pane afresh.
 func (s Server) Pane(ctx context.Context, id string) (Pane, error) {
-	out, err := s.Run(ctx, "display-message", "-p", "-t", id, paneFormat)
+	out, err := s.Run(ctx, "display-message", "-p", "-t", id, PaneFormat)
 	if err != nil {
 		return Pane{}, err
 	}
-	p, ok := s.parsePane(strings.TrimRight(string(out), "\n"))
+	p, ok := s.ParsePane(strings.TrimRight(string(out), "\n"))
 	if !ok || p.ID != id {
 		return Pane{}, fmt.Errorf("pane %s: unexpected tmux output", id)
 	}
 	return p, nil
 }
 
-func (s Server) parsePane(line string) (Pane, bool) {
+// ParsePane reads a line PaneFormat printed for a pane of s.
+func (s Server) ParsePane(line string) (Pane, bool) {
 	const fixed = 9
 	f := strings.Split(line, sep)
 	if len(f) != fixed+len(OptionKeys)+1 || !paneIDRE.MatchString(f[0]) {
@@ -241,10 +252,17 @@ func (s Server) Capture(ctx context.Context, pane string, lines int) (string, er
 // neither end the paste early nor press keys of its own.
 func (s Server) Submit(ctx context.Context, pane, text string) error {
 	buf := fmt.Sprintf("tmag-%d-%d", os.Getpid(), time.Now().UnixNano())
-	if _, err := s.RunInput(ctx, []byte(SanitizePrompt(text)), "load-buffer", "-b", buf, "-"); err != nil {
-		return err
+	_, err := s.RunInput(ctx, []byte(SanitizePrompt(text)), "load-buffer", "-b", buf, "-")
+	if err == nil {
+		_, err = s.Run(ctx, "paste-buffer", "-p", "-d", "-b", buf, "-t", pane, ";", "send-keys", "-t", pane, "Enter")
 	}
-	_, err := s.Run(ctx, "paste-buffer", "-p", "-d", "-b", buf, "-t", pane, ";", "send-keys", "-t", pane, "Enter")
+	if err != nil {
+		// A buffer the paste did not take would keep the prompt in the
+		// person's server; it goes within a budget of its own.
+		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
+		defer cancel()
+		_, _ = s.Run(cleanup, "delete-buffer", "-b", buf)
+	}
 	return err
 }
 
@@ -272,53 +290,64 @@ func SanitizePrompt(text string) string {
 	}, text)
 }
 
-// GlobalOption returns a global option's value, or "" when unset or unreadable.
-// Call GlobalOptionContext when an unavailable server must remain distinguishable.
-func (s Server) GlobalOption(ctx context.Context, name string) string {
-	value, _ := s.GlobalOptionContext(ctx, name)
-	return value
-}
-
-// GlobalOptionContext returns an unset option as "", nil while preserving
-// command, cancellation and decoding errors. It performs no value expansion.
-func (s Server) GlobalOptionContext(ctx context.Context, name string) (string, error) {
-	values, err := s.GlobalOptionsContext(ctx, name)
+// Option returns a global option's value, "" when it is unset, and the
+// command's, cancellation's or decoding's error. It performs no value
+// expansion.
+func (s Server) Option(ctx context.Context, name string) (string, error) {
+	values, err := s.Options(ctx, name)
 	if err != nil {
 		return "", err
 	}
 	return values[name], nil
 }
 
-// GlobalOptionsContext reads several global options in one tmux invocation.
+// Options reads several global options in one tmux invocation.
 // An unset option is absent, and values are not expanded. It performs no
 // command or environment expansion, and preserves cancellation and decoding
 // errors.
-func (s Server) GlobalOptionsContext(ctx context.Context, names ...string) (map[string]string, error) {
-	// Read tmux's quoted representation so literal backslashes and control
-	// characters remain distinguishable. tmux 3.4 additionally escapes dollar
-	// variables when printing; probe that layer in the same command invocation.
-	const probe = "$TMAG_OPTION_PRINT"
-	args := make([]string, 0, 3*len(names)+3)
-	for _, name := range names {
-		args = append(args, "show-option", "-gq", name, ";")
-	}
-	args = append(args, "display-message", "-p", probe)
-	out, err := s.Run(ctx, args...)
+func (s Server) Options(ctx context.Context, names ...string) (map[string]string, error) {
+	out, err := s.Run(ctx, OptionCommands(names...)...)
 	if err != nil {
 		return nil, err
 	}
-	return ParseGlobalOptions(out, names...)
+	return ParseOptions(out, names...)
 }
 
-// ParseGlobalOptions decodes the show-option output of GlobalOptionsContext,
-// including its $TMAG_OPTION_PRINT probe, from a tmux invocation that also
-// carried other output.
-func ParseGlobalOptions(out []byte, names ...string) (map[string]string, error) {
-	const probe = "$TMAG_OPTION_PRINT"
+// optionProbe follows the options an invocation reads. tmux's quoted
+// representation keeps literal backslashes and control characters apart;
+// tmux 3.4 additionally escapes dollar variables when printing, and the
+// probe shows whether it did.
+const optionProbe = "$TMAG_OPTION_PRINT"
+
+// OptionCommands are the commands that read the named global options, for
+// an invocation that runs them among others; ParseOptions decodes what they
+// print, and AfterOptions returns what the invocation printed after them.
+func OptionCommands(names ...string) []string {
+	args := make([]string, 0, 4*len(names)+3)
+	for _, name := range names {
+		args = append(args, "show-option", "-gq", name, ";")
+	}
+	return append(args, "display-message", "-p", optionProbe)
+}
+
+// AfterOptions returns what an invocation printed after its OptionCommands.
+func AfterOptions(out []byte) []byte {
+	lines := strings.Split(string(out), "\n")
+	for i, line := range lines {
+		if strings.TrimSpace(strings.TrimPrefix(line, `\`)) == optionProbe {
+			return []byte(strings.Join(lines[i+1:], "\n"))
+		}
+	}
+	return nil
+}
+
+// ParseOptions decodes what OptionCommands printed, from a tmux invocation
+// that may also have printed other output.
+func ParseOptions(out []byte, names ...string) (map[string]string, error) {
 	lines := strings.Split(string(out), "\n")
 	printed := false
 	for _, line := range lines {
-		if strings.TrimSpace(line) == `\`+probe {
+		if strings.TrimSpace(line) == `\`+optionProbe {
 			printed = true
 		}
 	}
@@ -496,15 +525,10 @@ func DefaultServer() Server {
 	return ServerByName("default")
 }
 
-// Servers lists every tmux socket of the current user, the caller's server first.
-// Sockets are returned whether or not a server is listening on them.
-func Servers() []Server {
-	servers, _ := ServersContext(context.Background())
-	return servers
-}
-
-// ServersContext enumerates sockets in bounded batches within the caller budget.
-func ServersContext(ctx context.Context) ([]Server, error) {
+// Servers lists every tmux socket of the current user, the caller's
+// server first, in bounded batches within the caller's budget. Sockets are
+// returned whether or not a server is listening on them.
+func Servers(ctx context.Context) ([]Server, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -520,18 +544,18 @@ func ServersContext(ctx context.Context) ([]Server, error) {
 	if env := os.Getenv("TMUX"); env != "" {
 		add(SocketFromEnv(env))
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	dir := SocketDir()
-	err := contextio.Entries(ctx, dir, func(e os.DirEntry) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil && !os.IsNotExist(err) {
+		return nil, err
+	}
+	for _, e := range entries {
 		if e.Type()&os.ModeSocket != 0 {
 			add(filepath.Join(dir, e.Name()))
 		}
-		return nil
-	})
-	if ctx.Err() != nil {
-		return nil, ctx.Err()
-	}
-	if err != nil && !os.IsNotExist(err) {
-		return nil, err
 	}
 	return out, nil
 }

@@ -35,14 +35,14 @@ func TestReconcileLeavesUnreadableRecordsAlone(t *testing.T) {
 	if _, ok, _ := store.Get(ctx, proc.Claude, "gone"); ok {
 		t.Fatal("a session whose host exited was not ended")
 	}
-	events, _, err := log.Since(ctx, 0)
+	events, err := log.Since(ctx, 0)
 	if err != nil || len(events) != 1 || events[0].Event != eventlog.Exit || events[0].Session != "gone" {
 		t.Fatalf("events = %+v, %v", events, err)
 	}
 }
 
 func TestLineageCannotAuthorizeReconciliation(t *testing.T) {
-	table, err := proc.LineageContext(context.Background(), os.Getpid())
+	table, err := proc.Lineage(context.Background(), os.Getpid())
 	if err != nil {
 		t.Fatal(err)
 	}

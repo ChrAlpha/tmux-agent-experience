@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -54,6 +55,18 @@ func TestDeliverySaysWhenClaudeHoldsAMessage(t *testing.T) {
 	if got, want := stderr.String(), heldLine+"\n"; got != want {
 		t.Errorf("stderr = %q, want %q", got, want)
 	}
+	for _, held := range []bool{true, false} {
+		var doc bytes.Buffer
+		a := app{ctx: context.Background(), stdout: &doc, stderr: &bytes.Buffer{}, json: true}
+		a.reportDelivery("sent to", query.Delivery{Session: query.Session{ID: "s1"}, Via: "inbox", Seq: 7, Held: held})
+		var got map[string]any
+		if err := json.Unmarshal(doc.Bytes(), &got); err != nil {
+			t.Fatal(err)
+		}
+		if v, ok := got["held"]; ok != held || (held && v != true) {
+			t.Errorf("--json with held %v: %s", held, doc.String())
+		}
+	}
 }
 
 // A blocked session's open requests are listed by inspect without --json,
@@ -71,7 +84,6 @@ func TestInspectListsOpenRequests(t *testing.T) {
 	elicit := adapter.Prompt{Tool: "@elicitation"}
 	rec := session.Record{
 		Agent: "claude", ID: "1787a44e-5b0c-4c39-9a6e-0d6c3c2f7b10", Main: adapter.Working,
-		Pending:  []adapter.Prompt{bash, write, elicit},
 		Requests: []session.Request{{ID: "3fdce4c70dfa", Prompt: bash}, {ID: "9b41e07a2c55", Prompt: write}, {ID: "c0d2a8f61e93", Prompt: elicit}},
 	}
 	if err := (session.Store{Dir: log.Dir}).Put(context.Background(), rec); err != nil {

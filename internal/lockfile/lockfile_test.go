@@ -140,3 +140,50 @@ func TestAcquire(t *testing.T) {
 	}
 	again.Close()
 }
+
+// All holds every stripe of its class, so a Stripe of that class waits for
+// it, and two of it, taking stripes in one order, never wait on each other.
+func TestAllHoldsEveryStripe(t *testing.T) {
+	dir := t.TempDir()
+	held, release := make(chan struct{}), make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- All(context.Background(), dir, "p", func() error {
+			close(held)
+			<-release
+			return nil
+		})
+	}()
+	<-held
+	for _, b := range []byte{0x00, 0x7f, 0xff} {
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		err := Stripe(ctx, dir, "p", [32]byte{b}, func() error { return nil })
+		cancel()
+		if err == nil {
+			t.Fatalf("stripe %02x was taken while All held it", b)
+		}
+	}
+	if err := Stripe(context.Background(), dir, "s", [32]byte{}, func() error { return nil }); err != nil {
+		t.Fatalf("another class waited for All: %v", err)
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+	for range 2 {
+		wg.Go(func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			errs <- All(ctx, dir, "p", func() error { return nil })
+		})
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("two Alls at once: %v", err)
+		}
+	}
+}

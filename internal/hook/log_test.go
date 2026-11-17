@@ -36,7 +36,7 @@ func TestHookContactIsRecordedWithoutChangingStateAge(t *testing.T) {
 	}
 	hook := func(at time.Time) {
 		t.Helper()
-		err := RunContext(ctx, Input{Agent: "claude", PID: 0, Log: log, Now: func() time.Time { return at },
+		err := Run(ctx, Input{Agent: "claude", PID: 0, Log: log, Now: func() time.Time { return at },
 			Payload: strings.NewReader(`{"session_id":"thread","hook_event_name":"PreToolUse","prompt_id":"turn","tool_name":"Bash","tool_use_id":"call"}`)})
 		if err != nil {
 			t.Fatal(err)
@@ -52,7 +52,7 @@ func TestHookContactIsRecordedWithoutChangingStateAge(t *testing.T) {
 	if err != nil || !ok || !got.LastHookAt.Equal(later) || !got.Since.Equal(since) || got.State() != "working" {
 		t.Fatalf("contact changed state/age or was not saved: %+v %v", got, err)
 	}
-	if events, _, err := log.Since(ctx, 0); err != nil || len(events) != 0 {
+	if events, err := log.Since(ctx, 0); err != nil || len(events) != 0 {
 		t.Fatalf("contact alone was logged: %+v %v", events, err)
 	}
 }
@@ -72,14 +72,12 @@ func TestHookRecordsStateWithoutAProcessTable(t *testing.T) {
 	if err := store.Put(context.Background(), rec); err != nil {
 		t.Fatal(err)
 	}
-	previous := loadLineage
-	loadLineage = func(context.Context, int) (*proc.Table, error) { return nil, errors.New("process table unreadable") }
-	t.Cleanup(func() { loadLineage = previous })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	payload := `{"session_id":"state-first","hook_event_name":"UserPromptSubmit","prompt_id":"turn"}`
-	if err := RunContext(ctx, Input{Agent: proc.Claude, Payload: strings.NewReader(payload), Log: log, PID: os.Getpid()}); err != nil {
+	unreadable := Sources{Lineage: func(context.Context, int) (*proc.Table, error) { return nil, errors.New("process table unreadable") }}
+	if err := Run(ctx, Input{Agent: proc.Claude, Payload: strings.NewReader(payload), Log: log, PID: os.Getpid(), Sources: unreadable}); err != nil {
 		t.Fatal(err)
 	}
 	got, ok, err := store.Get(context.Background(), proc.Claude, "state-first")
@@ -89,7 +87,7 @@ func TestHookRecordsStateWithoutAProcessTable(t *testing.T) {
 	if got.State() != adapter.Working || got.Host != host || !session.SameInbox(got.Inbox, inbox) {
 		t.Fatalf("state=%s host=%+v inbox=%+v, want working, %+v, %+v", got.State(), got.Host, got.Inbox, host, inbox)
 	}
-	events, _, err := log.Since(context.Background(), 0)
+	events, err := log.Since(context.Background(), 0)
 	if err != nil || len(events) != 1 || events[0].Session != "state-first" || events[0].State != adapter.Working {
 		t.Fatalf("events = %+v, %v", events, err)
 	}
@@ -101,14 +99,14 @@ func TestHookFailureLogIsBoundedMetadataAndHonorsCancellation(t *testing.T) {
 	if err := os.WriteFile(path, bytes.Repeat([]byte("x"), maxErrLog), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	RecordErrorContext(context.Background(), root, "notify", errors.New("private command output/payload sentinel"))
+	RecordError(context.Background(), root, "notify", errors.New("private command output/payload sentinel"))
 	data, err := os.ReadFile(path)
 	if err != nil || len(data) > maxErrLog || !bytes.Contains(data, []byte("notify failed")) || bytes.Contains(data, []byte("sentinel")) {
 		t.Fatalf("not bounded metadata: bytes=%d err=%v", len(data), err)
 	}
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
-	RecordErrorContext(canceled, root, "claude", errors.New("ignored"))
+	RecordError(canceled, root, "claude", errors.New("ignored"))
 	after, err := os.ReadFile(path)
 	if err != nil || !bytes.Equal(data, after) {
 		t.Fatal("canceled logger wrote after its budget", err)

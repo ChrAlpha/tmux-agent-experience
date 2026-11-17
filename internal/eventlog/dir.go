@@ -11,29 +11,22 @@ import (
 // Layout names how this tmag lays out its state directory. The default
 // directory is the layout's own, so tmags of different layouts never share
 // one; a directory TMAG_STATE_DIR names serves one layout only.
-const Layout = "v2"
+const Layout = "v3"
 
-// DefaultDir resolves the state directory: $TMAG_STATE_DIR as it is, or
-// else the directory of this process's realm (proc.Realm) under Base and
-// Layout. Each realm has its own because tmag proves sessions from the
-// process table it sees: two containers sharing a home would otherwise end
-// each other's sessions, whose processes neither can see.
-func DefaultDir() string {
-	if d := os.Getenv("TMAG_STATE_DIR"); d != "" {
-		return d
-	}
-	return filepath.Join(Base(), Layout, proc.Realm())
-}
-
-// DefaultDirContext includes realm discovery in the caller's operation budget.
-func DefaultDirContext(ctx context.Context) (string, error) {
+// DefaultDir resolves the state directory: $TMAG_STATE_DIR as it is,
+// or else the directory of this process's realm (proc.Realm) under Base and
+// Layout, discovered within the caller's budget. Each realm has its own
+// because tmag proves sessions from the process table it sees: two containers
+// sharing a home would otherwise end each other's sessions, whose processes
+// neither can see.
+func DefaultDir(ctx context.Context) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
 	if d := os.Getenv("TMAG_STATE_DIR"); d != "" {
 		return d, nil
 	}
-	realm, err := proc.RealmContext(ctx)
+	realm, err := proc.Realm(ctx)
 	if err != nil {
 		return "", err
 	}

@@ -40,9 +40,11 @@ func (c *Cmd) Output() ([]byte, error) {
 	return out, err
 }
 
-// Command creates an isolated process group. The caller must defer cleanup,
-// including after successful exit: a descendant may retain an output pipe.
-func Command(ctx context.Context, name string, args ...string) (*Cmd, func()) {
+// Command creates an isolated process group. The caller runs it with Run or
+// Output, each of which kills the group when it returns, after a successful
+// exit too (a descendant may retain an output pipe), and releases the
+// command's shortened deadline.
+func Command(ctx context.Context, name string, args ...string) *Cmd {
 	child := ctx
 	cancel := func() {}
 	if deadline, ok := ctx.Deadline(); ok {
@@ -64,5 +66,5 @@ func Command(ctx context.Context, name string, args ...string) (*Cmd, func()) {
 	cmd.WaitDelay = Drain
 	var once sync.Once
 	cleanup := func() { once.Do(func() { _ = kill(); cancel() }) }
-	return &Cmd{Cmd: cmd, ctx: child, cleanup: cleanup}, cleanup
+	return &Cmd{Cmd: cmd, ctx: child, cleanup: cleanup}
 }
