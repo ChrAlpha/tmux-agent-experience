@@ -16,8 +16,13 @@ import (
 	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
 )
 
-// answerTimeout bounds handing a decision to an answer hook.
+// answerTimeout bounds reading what an answer hook asks.
 const answerTimeout = 5 * time.Second
+
+// decideTimeout bounds handing a decision to an answer hook, under the
+// session's lock: well within hook.Deadline, so the session's own hooks,
+// which wait for that lock, still finish in theirs.
+const decideTimeout = 2 * time.Second
 
 // Asked is an open request and what it asks.
 type Asked struct {
@@ -147,7 +152,7 @@ func answerHook(ctx context.Context, log *eventlog.Log, s Session, id string, d 
 		if _, open := rec.Request(id); !open {
 			return &RefusedError{RefuseChanged, fmt.Sprintf("request %s of %s was answered or withdrawn", id, s.ID)}
 		}
-		decideCtx, cancel := context.WithTimeout(ctx, answerTimeout)
+		decideCtx, cancel := context.WithTimeout(ctx, decideTimeout)
 		defer cancel()
 		if err := answer.Decide(decideCtx, log.Dir, id, d); err != nil {
 			return hookError(s, id, err)
