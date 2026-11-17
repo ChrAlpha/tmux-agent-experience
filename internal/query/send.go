@@ -154,7 +154,9 @@ func deliver(ctx context.Context, log *eventlog.Log, target, text string, ask As
 		case driver.Pane:
 			d, tried = throughPane(ctx, log, v, s, named, idleGate, panePrompt(text, caller))
 		case driver.Service:
-			d, tried = throughService(ctx, log, v, s, servicePrompt(s, text, caller, gate, wait))
+			verb, started := servicePrompt(s, text, caller, gate, wait)
+			d, tried = throughService(ctx, log, v, s, verb)
+			d.Turn = *started
 		}
 		if !unbound(tried) {
 			return d, tried
@@ -181,8 +183,10 @@ func unbound(err error) bool {
 // servicePrompt is the Codex daemon's delivery of a prompt: a turn of its
 // own starts on an idle thread; any other prompt starts an idle thread's
 // turn or steers the active one, bound to the turn the fresh record names.
-func servicePrompt(s Session, text string, caller Caller, gate stateGate, wait bool) serviceVerb {
+// started is the turn a delivery started, once it has.
+func servicePrompt(s Session, text string, caller Caller, gate stateGate, wait bool) (verb serviceVerb, started *string) {
 	active, turn := false, ""
+	started = new(string)
 	return serviceVerb{
 		gate: gate,
 		check: func(ctx context.Context, c *codexsvc.Client) error {
@@ -220,10 +224,11 @@ func servicePrompt(s Session, text string, caller Caller, gate stateGate, wait b
 			if active {
 				return c.SteerTurn(ctx, s.ID, turn, text)
 			}
-			_, err := c.StartTurn(ctx, s.ID, text)
+			var err error
+			*started, err = c.StartTurn(ctx, s.ID, text)
 			return err
 		},
-	}
+	}, started
 }
 
 // panePrompt is the pane delivery of a prompt: it marks the prompt sent

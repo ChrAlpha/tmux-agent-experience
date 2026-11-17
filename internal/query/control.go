@@ -42,6 +42,9 @@ type Delivery struct {
 	// Held says the receiver's Claude Code holds the message for its person
 	// to approve: it is delivered to the inbox, not yet to the agent.
 	Held bool
+	// Turn is the turn the delivery started, when its channel names it: the
+	// Codex daemon's turn/start does.
+	Turn string
 }
 
 // prepare stores what the world proves, so that an attachment checked

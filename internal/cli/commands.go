@@ -433,7 +433,7 @@ func (a *app) cmdSend(args []string) int {
 	a.reportHeld(d)
 	prompted := d.Session.Turn
 	return a.awaitAndReport("send", pos[0], d.Session, d.Seq, query.WaitOptions{
-		States: []string{adapter.Idle, adapter.Blocked}, Prompted: &prompted,
+		States: []string{adapter.Idle, adapter.Blocked}, Prompted: &prompted, Turn: d.Turn,
 	}, *timeout)
 }
 

@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -201,6 +202,17 @@ func TestSendCodexDaemon(t *testing.T) {
 	h.waitSession(sidC, "idle")
 	if r := h.tmag("", "read", sidC[:8], "--last"); r.code != 0 || r.out != "answered: long work\n" {
 		t.Fatalf("read --last after an active send: %d %q", r.code, r.out)
+	}
+	f.agrees(h)
+
+	// A wait follows the turn the daemon says it started.
+	r := h.tmag("", "send", sidC[:8], "--wait", "--json", "a turn of its own")
+	var waited struct{ State, Turn string }
+	if err := json.Unmarshal([]byte(r.out), &waited); r.code != 0 || err != nil || waited.State != "idle" || waited.Turn == active.Turn {
+		t.Fatalf("send --wait through the daemon: %d %s", r.code, r.out)
+	}
+	if r := h.tmag("", "read", sidC[:8], "--last"); r.code != 0 || r.out != "answered: a turn of its own\n" {
+		t.Fatalf("read --last after a wait: %d %q", r.code, r.out)
 	}
 	f.agrees(h)
 }

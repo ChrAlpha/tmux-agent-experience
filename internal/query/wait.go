@@ -31,6 +31,9 @@ type WaitOptions struct {
 	// prompt started counts, and Wait fails with ErrNoTurn if none starts
 	// within Grace.
 	Prompted *string
+	// Turn, when the prompt's channel named the turn it started, is that
+	// turn: only it counts, whatever other turn starts meanwhile.
+	Turn string
 	// Grace is how long a prompt may take to start a turn; PendingWindow
 	// when 0.
 	Grace time.Duration
@@ -62,8 +65,12 @@ func Wait(ctx context.Context, store session.Store, s Session, o WaitOptions) (s
 			return session.Record{}, fmt.Errorf("%w: %s", ErrEnded, s.ID)
 		}
 		if err == nil {
-			if !started && (rec.Sent.IsZero() || rec.Turn != *o.Prompted) {
-				started = true
+			switch {
+			case started:
+			case o.Turn != "":
+				started = rec.Turn == o.Turn
+			default:
+				started = rec.Sent.IsZero() || rec.Turn != *o.Prompted
 			}
 			if started && slices.Contains(o.States, rec.State()) {
 				return rec, nil
