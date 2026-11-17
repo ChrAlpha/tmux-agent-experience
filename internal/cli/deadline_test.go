@@ -432,10 +432,11 @@ func TestAnswerWaitOutlivesSetupBudgetAndCancelsSilently(t *testing.T) {
 func TestASecondSignalEndsACommand(t *testing.T) {
 	if os.Getenv("TMAG_SIGNAL_TEST") != "" {
 		_, stop := signalContext()
-		defer stop()
-		defer endOnSecondSignal()()
+		end := endOnSecondSignal()
 		fmt.Println("ready")
 		_, _ = os.Stdin.Read(make([]byte, 1))
+		end()
+		stop()
 		os.Exit(0)
 	}
 	exe, err := os.Executable()
@@ -475,7 +476,10 @@ func TestASecondSignalEndsACommand(t *testing.T) {
 		t.Fatal(err)
 	}
 	select {
-	case <-exited:
+	case err := <-exited:
+		if err == nil {
+			t.Fatal("the command exited of itself, not by the second signal")
+		}
 	case <-time.After(5 * time.Second):
 		_ = cmd.Process.Kill()
 		t.Fatal("a second signal did not end the command")
