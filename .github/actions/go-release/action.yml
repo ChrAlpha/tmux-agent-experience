@@ -1,0 +1,17 @@
+name: Resolve the Go release
+description: Name the latest stable Go release, which every job of a run then installs.
+
+outputs:
+  version:
+    description: The release, such as 1.27.3.
+    value: ${{ steps.go.outputs.version }}
+
+runs:
+  using: composite
+  steps:
+    - id: go
+      shell: bash
+      run: |
+        version=$(curl -fsSL --retry 3 'https://go.dev/VERSION?m=text' | sed -n '1s/^go//p')
+        [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::no Go release in go.dev's answer: '$version'"; exit 1; }
+        echo "version=$version" >> "$GITHUB_OUTPUT"

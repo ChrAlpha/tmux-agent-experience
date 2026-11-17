@@ -1,0 +1,197 @@
+name: test
+
+# The unit and end-to-end tests on every platform tmag supports. ci runs them
+# once for each change; stress runs each test many times on fewer CPUs.
+on:
+  workflow_call:
+    inputs:
+      go:
+        description: The Go release to test with; empty takes the latest.
+        type: string
+        default: ''
+      count:
+        description: Runs of each test; 0 runs each once and reuses the results of unchanged unit packages.
+        type: number
+        default: 0
+      cpus:
+        description: How many CPUs the tests may use on Linux; 0 lets them use all.
+        type: number
+        default: 0
+      run:
+        description: Only the tests, in any package, that this go test -run pattern names; empty runs them all.
+        type: string
+        default: ''
+      record:
+        description: Record the end-to-end tests' durations, which later splits work from.
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  split:
+    runs-on: ubuntu-26.04
+    outputs:
+      go: ${{ inputs.go || steps.go.outputs.version }}
+      matrix: ${{ steps.split.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: go
+        if: inputs.go == ''
+        uses: ./.github/actions/go-release
+      - uses: actions/cache/restore@v6
+        with:
+          path: e2e-durations
+          key: e2e-durations-${{ github.run_id }}
+          restore-keys: e2e-durations-
+      # The end-to-end tests run one after another, so they are split across
+      # machines: longest first, each onto the least loaded shard, by the
+      # durations main last recorded on that image (the average for a test
+      # without one). The last shard runs every test the others do not, so a
+      # test always runs somewhere. Selected tests run in one job a platform.
+      - id: split
+        name: Split the tests
+        env:
+          SHARDS: 3
+          RUN: ${{ inputs.run }}
+          # The images tmag's tests run on, pinned so that an image changes
+          # only with this list. A platform may name a tmux release to build
+          # in place of the image's: 3.2a is the oldest tmag supports.
+          PLATFORMS: >-
+            [{"os": "ubuntu-26.04"}, {"os": "macos-26"}, {"os": "ubuntu-26.04", "tmux": "3.2a"}]
+        run: |
+          touch e2e-durations
+          sed -n 's/^func \(Test[A-Za-z0-9_]*\)(.*/\1/p' internal/e2e/*_test.go | grep -vx TestMain | sort -u > tests
+          awk 'FILENAME == ARGV[1] { t[$1]; next } $2 in t' tests e2e-durations > known
+          # One line a job: its image, tmux, kind of suite, suite, and the
+          # pattern of the tests it runs or skips.
+          jq -r '.[] | [.os, .tmux // ""] | @tsv' <<< "$PLATFORMS" | while IFS=$'\t' read -r os tmux; do
+            if [ -n "$RUN" ]; then
+              printf '%s\t%s\tselected\tselected\t%s\t\n' "$os" "$tmux" "$RUN"
+              continue
+            fi
+            printf '%s\t%s\tunit\tunit\t\t\n' "$os" "$tmux"
+            avg=$(awk -v os="$os" '$1 == os { s += $3; n++ } END { print n ? s / n : 1 }' known)
+            awk -v os="$os" -v avg="$avg" 'FILENAME == ARGV[1] { if ($1 == os) w[$2] = $3; next } { print ($1 in w ? w[$1] : avg), $1 }' known tests |
+              sort -k1,1gr -k2,2 |
+              awk -v os="$os" -v tmux="$tmux" -v n="$SHARDS" '
+                {
+                  k = 1
+                  for (i = 2; i <= n; i++) if (load[i] < load[k]) k = i
+                  load[k] += $1
+                  names[k] = names[k] (names[k] == "" ? "" : "|") $2
+                }
+                END {
+                  for (i = 1; i < n; i++) {
+                    printf "%s\t%s\te2e\te2e-%d/%d\t^(%s)$\t\n", os, tmux, i, n, names[i]
+                    others = others (others == "" ? "" : "|") names[i]
+                  }
+                  printf "%s\t%s\te2e\te2e-%d/%d\t\t^(%s)$\n", os, tmux, n, n, others
+                }'
+          done > suites
+          matrix=$(jq -Rsc '
+            split("\n") | map(select(. != "") | split("\t")
+              | {os: .[0], tmux: .[1], kind: .[2], suite: .[3], run: .[4], skip: .[5]}
+              | .name = ([.os, (.tmux | select(. != "") | "tmux " + .), .suite] | join(", "))
+              | .id = (.name | gsub("[^A-Za-z0-9.]+"; "-")))' suites)
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          jq . <<< "$matrix"
+
+  test:
+    needs: split
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.split.outputs.matrix) }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-go
+        with:
+          go-version: ${{ needs.split.outputs.go }}
+          build-cache: race-${{ matrix.kind == 'unit' && 'unit' || 'e2e' }}
+      - uses: ./.github/actions/setup-tmux
+        with:
+          version: ${{ matrix.tmux }}
+      # The unit suite runs tmag's extensions for Pi and oh-my-pi, on a
+      # Node.js that runs TypeScript as it is.
+      - if: matrix.kind != 'e2e'
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - id: suite
+        name: Choose the packages
+        env:
+          KIND: ${{ matrix.kind }}
+          COUNT: ${{ inputs.count }}
+        run: |
+          case $KIND in
+            unit)
+              packages=$(go list ./... | grep -v '/internal/e2e$' | paste -sd ' ' -)
+              # Some packages mostly wait, such as the installer's on its
+              # transfer deadline: twice as many test binaries as CPUs keep
+              # the CPUs busy meanwhile.
+              flags="-race -p $((2 * $(getconf _NPROCESSORS_ONLN)))" ;;
+            e2e) packages=./internal/e2e flags=-race ;;
+            *) packages=./... flags=-race ;;
+          esac
+          if [ "$COUNT" -gt 0 ]; then
+            flags="$flags -count=$COUNT -timeout=$((10 * COUNT))m"
+          elif [ "$KIND" != unit ]; then
+            # TestMain builds tmag and the fake agent apart from the test
+            # binary, where Go's test cache cannot see them: never reuse a
+            # result.
+            flags="$flags -count=1"
+          fi
+          echo "packages=$packages" >> "$GITHUB_OUTPUT"
+          echo "flags=$flags" >> "$GITHUB_OUTPUT"
+      - uses: ./.github/actions/go-test
+        env:
+          TMAG_E2E_EVIDENCE: ${{ runner.temp }}/evidence
+        with:
+          packages: ${{ steps.suite.outputs.packages }}
+          flags: ${{ steps.suite.outputs.flags }}
+          run: ${{ matrix.run }}
+          skip: ${{ matrix.skip }}
+          cpus: ${{ inputs.cpus }}
+          verbose: ${{ matrix.kind != 'unit' }}
+          events: ${{ runner.temp }}/events.json
+      # What the failed end-to-end tests left: their state, panes and the
+      # process table.
+      - if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: evidence-${{ matrix.id }}
+          path: ${{ runner.temp }}/evidence
+          if-no-files-found: ignore
+          retention-days: 7
+          overwrite: true
+      # Main's shards keep the durations the next split works from: each adds
+      # its own to the latest record, which shards finishing earlier saved.
+      - if: inputs.record && matrix.kind == 'e2e' && matrix.tmux == ''
+        uses: actions/cache/restore@v6
+        with:
+          path: e2e-durations
+          key: e2e-durations-${{ github.run_id }}-${{ github.run_attempt }}-${{ strategy.job-index }}
+          restore-keys: e2e-durations-
+      - name: Record end-to-end durations
+        if: inputs.record && matrix.kind == 'e2e' && matrix.tmux == ''
+        env:
+          OS: ${{ matrix.os }}
+          EVENTS: ${{ runner.temp }}/events.json
+        run: |
+          touch e2e-durations
+          jq -Rr --arg os "$OS" 'fromjson? | select(.Test and (.Test | contains("/") | not) and (.Action == "pass" or .Action == "fail")) | "\($os) \(.Test) \(.Elapsed)"' "$EVENTS" > measured
+          awk '{ w[$1 " " $2] = $3 } END { for (k in w) print k, w[k] }' e2e-durations measured | sort > merged
+          mv merged e2e-durations
+      - if: inputs.record && matrix.kind == 'e2e' && matrix.tmux == ''
+        uses: actions/cache/save@v6
+        with:
+          path: e2e-durations
+          key: e2e-durations-${{ github.run_id }}-${{ github.run_attempt }}-${{ strategy.job-index }}

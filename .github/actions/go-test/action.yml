@@ -1,0 +1,77 @@
+name: Go test
+description: Run go test as CI runs this repository's tests, print what it prints, and report each failure as an annotation and in the job summary.
+
+inputs:
+  packages:
+    description: The packages to test, separated by spaces.
+    required: true
+  flags:
+    description: Flags for go test, separated by spaces.
+    required: false
+    default: ''
+  run:
+    description: Only the tests this -run pattern names; empty runs every test.
+    required: false
+    default: ''
+  skip:
+    description: Not the tests this -skip pattern names; empty skips none.
+    required: false
+    default: ''
+  cpus:
+    description: How many CPUs the tests may use on Linux; 0 lets them use all.
+    required: false
+    default: '0'
+  verbose:
+    description: Print every test's output as it runs, not only each package's result.
+    required: false
+    default: 'false'
+  events:
+    description: The file that keeps go test's JSON events.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        PACKAGES: ${{ inputs.packages }}
+        FLAGS: ${{ inputs.flags }}
+        RUN: ${{ inputs.run }}
+        SKIP: ${{ inputs.skip }}
+        CPUS: ${{ inputs.cpus }}
+        VERBOSE: ${{ inputs.verbose }}
+        EVENTS: ${{ inputs.events }}
+        REPORT: ${{ github.action_path }}/report.jq
+      run: |
+        # A Unix socket's path holds 107 bytes on Linux and 103 on macOS,
+        # whose $TMPDIR takes 48 of them: with a $TMPDIR of 52 bytes, a test
+        # whose sockets would not fit on macOS fails here as well.
+        if [ "$RUNNER_OS" = Linux ]; then
+          TMPDIR=$RUNNER_TEMP/tmpdir
+          TMPDIR=$TMPDIR$(printf '%*s' $((52 - ${#TMPDIR})) '' | tr ' ' x)
+          mkdir -p "$TMPDIR"
+          export TMPDIR
+        fi
+        # Fewer CPUs than the runner has make a test's races likelier to show.
+        command=()
+        if [ "$CPUS" -gt 0 ] && [ "$RUNNER_OS" = Linux ]; then
+          command=(taskset -c "0-$((CPUS - 1))")
+        fi
+        read -ra flag_list <<< "$FLAGS"
+        read -ra package_list <<< "$PACKAGES"
+        command+=(go test -json "${flag_list[@]}")
+        [ -z "$RUN" ] || command+=("-run=$RUN")
+        [ -z "$SKIP" ] || command+=("-skip=$SKIP")
+        command+=("${package_list[@]}")
+        # The report follows a failure, before the step fails.
+        set +e
+        "${command[@]}" 2>&1 | tee "$EVENTS" |
+          jq --unbuffered -Rrj --argjson verbose "$VERBOSE" \
+            '(fromjson? // {Output: (. + "\n")}) | select($verbose or (.Test == null and .Output != "PASS\n")) | .Output // empty'
+        status=${PIPESTATUS[0]}
+        if [ "$status" != 0 ]; then
+          root=$(go list -m)
+          jq -Rnr --arg root "$root" --arg format annotations -f "$REPORT" "$EVENTS"
+          jq -Rnr --arg root "$root" --arg format summary -f "$REPORT" "$EVENTS" >> "$GITHUB_STEP_SUMMARY"
+        fi
+        exit "$status"
