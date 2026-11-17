@@ -620,7 +620,11 @@ func (a *app) reportWait(s query.Session, state, kind, turn string, started bool
 // reportDelivery prints where a verb went.
 func (a *app) reportDelivery(what string, d query.Delivery) {
 	if a.json {
-		a.emit(map[string]any{"session": d.Session, "pane": d.Pane, "via": d.Via, "seq": d.Seq})
+		doc := map[string]any{"session": d.Session, "pane": d.Pane, "via": d.Via, "seq": d.Seq}
+		if d.Held {
+			doc["held"] = true // the receiver's person approves it first
+		}
+		a.emit(doc)
 	} else {
 		where := d.Via
 		if d.Pane != nil {

@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -53,6 +54,18 @@ func TestDeliverySaysWhenClaudeHoldsAMessage(t *testing.T) {
 	}
 	if got, want := stderr.String(), heldLine+"\n"; got != want {
 		t.Errorf("stderr = %q, want %q", got, want)
+	}
+	for _, held := range []bool{true, false} {
+		var doc bytes.Buffer
+		a := app{ctx: context.Background(), stdout: &doc, stderr: &bytes.Buffer{}, json: true}
+		a.reportDelivery("sent to", query.Delivery{Session: query.Session{ID: "s1"}, Via: "inbox", Seq: 7, Held: held})
+		var got map[string]any
+		if err := json.Unmarshal(doc.Bytes(), &got); err != nil {
+			t.Fatal(err)
+		}
+		if v, ok := got["held"]; ok != held || (held && v != true) {
+			t.Errorf("--json with held %v: %s", held, doc.String())
+		}
 	}
 }
 
