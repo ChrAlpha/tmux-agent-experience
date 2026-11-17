@@ -84,10 +84,9 @@ for name in status-left status-right; do
 	esac
 done
 
-live='#{&&:#{@tmag_state},#{==:#{pane_current_command},#{@tmag_cmd}}}'
-
-# The picker filters on records alone, so it first clears those of agents that
-# left their pane without a word; run-shell finishes before choose-tree runs.
+# The picker shows live panes, like the status line, by their options alone,
+# so it first clears those of agents that left their pane without a word;
+# run-shell finishes before choose-tree runs.
 key="$(option @tmag-key-picker a)"
 if [ "$key" != off ]; then
 	tmux bind-key -N "Choose an agent" "$key" run-shell "'$tmag' prune --server '#{socket_path}'" '\;' \
