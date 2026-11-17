@@ -411,3 +411,20 @@ func TestEnvironOfChild(t *testing.T) {
 		t.Fatalf("Environ = %v", got)
 	}
 }
+
+func TestUnderTmux(t *testing.T) {
+	tb := NewTable([]Process{
+		{PID: 1, Comm: "init"},
+		{PID: 10, PPID: 1, Comm: "tmux: server"},
+		{PID: 11, PPID: 10, Comm: "zsh"},
+		{PID: 12, PPID: 11, Comm: "claude"},
+		{PID: 20, PPID: 1, Comm: "sshd"},
+		{PID: 21, PPID: 20, Comm: "claude"},
+		{PID: 30, PPID: 1, Comm: "tmux"},
+	})
+	for pid, want := range map[int]bool{12: true, 11: true, 21: false, 10: false, 30: false, 0: false, 99: false} {
+		if got := tb.UnderTmux(pid); got != want {
+			t.Errorf("UnderTmux(%d) = %v, want %v", pid, got, want)
+		}
+	}
+}

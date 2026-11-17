@@ -92,10 +92,10 @@ func Snapshot(ctx context.Context) (*Table, error) {
 	return table, nil
 }
 
-// Lineage reads only the processes needed to prove pid's host: its
-// ancestors up to the nearest agent client or service, and that host's
-// parent. On Linux it reads those /proc entries; elsewhere it falls back to
-// the full table. The result never passes for a complete table.
+// Lineage reads only the processes needed to prove pid's host and whether it
+// runs under tmux: its ancestors. On Linux it reads those /proc entries;
+// elsewhere it falls back to the full table. The result never passes for a
+// complete table.
 func Lineage(ctx context.Context, pid int) (*Table, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -335,6 +335,18 @@ func (t *Table) HostOf(pid int) (Host, bool) {
 		}
 	}
 	return Host{}, false
+}
+
+// UnderTmux reports whether a tmux server is among pid's ancestors in t: a
+// process that descends from none runs in no pane. tmux names its server
+// process "tmux: server" on Linux and runs it as tmux elsewhere.
+func (t *Table) UnderTmux(pid int) bool {
+	for i, a := range t.Ancestors(pid) {
+		if p, ok := t.Get(a); ok && i > 0 && strings.HasPrefix(p.Comm, "tmux") {
+			return true
+		}
+	}
+	return false
 }
 
 // claudeWorker reports whether p is a background session's Claude Code

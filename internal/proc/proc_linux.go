@@ -91,16 +91,14 @@ func snapshot(ctx context.Context) ([]Process, error) {
 	return out, nil
 }
 
-// lineage reads pid and its ancestors up to the nearest agent client or
-// service and that host's parent. The table is incomplete by construction: it
-// proves nothing about processes outside the lineage.
+// lineage reads pid and all its ancestors. The table is incomplete by
+// construction: it proves nothing about processes outside the lineage.
 func lineage(ctx context.Context, pid int) (*Table, error) {
 	if pid <= 0 {
 		return nil, os.ErrInvalid
 	}
 	var ps []Process
 	seen := map[int]bool{}
-	hostAt := -1
 	for pid > 0 && !seen[pid] {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -117,12 +115,6 @@ func lineage(ctx context.Context, pid int) (*Table, error) {
 		}
 		ps = append(ps, p)
 		seen[pid] = true
-		if hostAt >= 0 {
-			break // the host's parent, enough to tell a Claude worker apart
-		}
-		if ServiceKind(p) != "" || AgentKind(p) != "" {
-			hostAt = p.PID
-		}
 		pid = p.PPID
 	}
 	return newIncompleteTable(ps), nil
