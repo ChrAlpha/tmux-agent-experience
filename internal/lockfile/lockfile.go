@@ -2,7 +2,8 @@
 // context.
 //
 // Lock files are never removed, so a lock held through an open file always
-// guards the name others open.
+// guards the name others open. Each is named so that Named tells it from
+// what it guards.
 package lockfile
 
 import (
@@ -11,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -40,6 +42,15 @@ func With(ctx context.Context, path string, fn func() error) error {
 	return fn()
 }
 
+// Dir is the subdirectory of a state directory that holds its lock pool.
+const Dir = "locks"
+
+// Named reports whether a directory entry is lock files: the pool's
+// directory, a file named lock, or one whose name ends in .lock.
+func Named(name string) bool {
+	return name == Dir || name == "lock" || strings.HasSuffix(name, ".lock")
+}
+
 // Stripes is how many locks a pool of Stripe holds per class.
 const Stripes = 256
 
@@ -49,7 +60,7 @@ const Stripes = 256
 // stripe wait for each other. Whoever takes stripes of two classes takes
 // them in a fixed order, and nobody takes two stripes of one class.
 func Stripe(ctx context.Context, dir, class string, key [32]byte, fn func() error) error {
-	return With(ctx, filepath.Join(dir, "locks", fmt.Sprintf("%s-%02x", class, key[0])), fn)
+	return With(ctx, filepath.Join(dir, Dir, fmt.Sprintf("%s-%02x", class, key[0])), fn)
 }
 
 // Held is a lock held until Close, for a holder whose lifetime is not one

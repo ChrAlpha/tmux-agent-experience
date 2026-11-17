@@ -14,6 +14,7 @@ import (
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/attach"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/lockfile"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/tmux"
@@ -661,4 +662,91 @@ func TestARecordListsEightPanesAndAFullPassRelistsThem(t *testing.T) {
 	if again, rec := attached(); len(again) != 8 || len(rec.Shown) != 8 {
 		t.Fatalf("after the closed pane left: attached %v, listed %+v", again, rec.Shown)
 	}
+}
+
+// Purging tmag's state while an Attach writes a pane leaves no pane showing a
+// session its record does not list: the state goes first, its lock files
+// stay, and each pane is cleared under its lock, after the Attach. The PATH
+// wrapper holds the Attach at its pane write while the purge runs.
+func TestPurgeUnderAnAttachLeavesNoPaneUnlisted(t *testing.T) {
+	h := start(t)
+	a := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_HOOKS": "1"}, filepath.Join(bin, "claude"))
+	h.waitPane(a, "idle", "process")
+	ctx := context.Background()
+	store := session.Store{Dir: h.state}
+	rec, ok, err := store.Get(ctx, proc.Claude, sidA)
+	if err != nil || !ok {
+		t.Fatalf("record: %v, %v", ok, err)
+	}
+	w, err := attach.Load(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var c attach.Client
+	for _, p := range w.Panes {
+		if p.ID == a {
+			c, _ = w.ClientIn(p)
+		}
+	}
+	if c.Process.PID == 0 {
+		t.Fatal("no client in the pane")
+	}
+	// The pane shows nothing yet, so the Attach below writes it afresh.
+	h.tmux("set-option", "-p", "-u", "-t", a, "@tmag_agent")
+	real, err := exec.LookPath("tmux")
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	blocked, release := filepath.Join(root, "blocked"), filepath.Join(root, "release")
+	t.Cleanup(func() { _ = os.WriteFile(release, nil, 0o600) })
+	wrap := filepath.Join(root, "bin")
+	if err := os.MkdirAll(wrap, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	script := "#!/bin/sh\n" +
+		"if [ \"$4\" = set-option ] && [ ! -e '" + blocked + "' ]; then\n" +
+		"  : > '" + blocked + "'\n" +
+		"  while [ ! -e '" + release + "' ]; do sleep 0.01; done\n" +
+		"fi\n" +
+		"exec '" + strings.ReplaceAll(real, "'", "'\\''") + "' \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(wrap, "tmux"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", wrap+string(os.PathListSeparator)+os.Getenv("PATH"))
+	env := attach.Env{Store: store, Log: eventlog.Open(h.state)}
+	attached := make(chan error, 1)
+	go func() { attached <- env.Attach(ctx, w, c, rec, attach.Process) }()
+	h.eventually("the Attach reached its pane write", func() bool {
+		_, err := os.Stat(blocked)
+		return err == nil
+	})
+	purged := make(chan result, 1)
+	go func() { purged <- h.tmag("", "uninstall", "--purge") }()
+	h.eventually("the purge removed the state", func() bool {
+		_, err := os.Stat(filepath.Join(h.state, "sessions"))
+		return os.IsNotExist(err)
+	})
+	if err := os.WriteFile(release, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-attached; err != nil {
+		t.Fatalf("attach: %v", err)
+	}
+	if r := <-purged; r.code != 0 {
+		t.Fatalf("purge: %d %s", r.code, r.out)
+	}
+	current, listed, err := store.Get(ctx, proc.Claude, sidA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.tmux("display-message", "-p", "-t", a, "#{@tmag_session}") == sidA && (!listed || !listsPane(current, a)) {
+		t.Fatalf("after the purge the pane shows the session its record does not list: %v %+v", listed, current.Shown)
+	}
+	if _, err := os.Stat(filepath.Join(h.state, lockfile.Dir)); err != nil {
+		t.Fatalf("the purge removed the lock files a hook may hold: %v", err)
+	}
+	// The agent's next hook starts its state anew and proves its pane.
+	h.tmux("send-keys", "-t", a, "/pretool", "Enter")
+	h.waitPane(a, "working", "process")
 }

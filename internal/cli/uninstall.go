@@ -7,10 +7,33 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/ChrAlpha/tmux-agent-experience/internal/attach"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/auth"
-	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/lockfile"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/tmux"
 )
+
+// removeState removes everything in a state directory but its lock files,
+// which are never removed: a process that holds one keeps excluding the
+// others.
+func removeState(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	for _, e := range entries {
+		if lockfile.Named(e.Name()) {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(dir, e.Name())); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 func (a *app) cmdUninstall(args []string) int {
 	fs := flag.NewFlagSet("uninstall", flag.ContinueOnError)
@@ -24,6 +47,14 @@ func (a *app) cmdUninstall(args []string) int {
 		if err := (auth.Store{Dir: auth.DefaultDir()}).Revoke(ctx, "", true); err != nil {
 			return a.fail("uninstall", err)
 		}
+		// Agents keep running, and their hooks with them. The state goes
+		// first, but for its lock files, which keep a hook that runs
+		// meanwhile excluded; then each pane is cleared under its lock, so
+		// what a hook attached before is gone, and what it attaches after
+		// is in a record written after the state went.
+		if err := removeState(a.log.Dir); err != nil {
+			return a.fail("uninstall", err)
+		}
 		cleared := 0
 		servers, _ := tmux.Servers(ctx)
 		for _, s := range servers {
@@ -32,23 +63,20 @@ func (a *app) cmdUninstall(args []string) int {
 				continue
 			}
 			for _, p := range panes {
-				if len(p.Options) > 0 && s.ClearPaneOptions(ctx, p.ID) == nil {
+				if len(p.Options) == 0 {
+					continue
+				}
+				if had, err := attach.Clear(ctx, a.log.Dir, s, p.ID); err == nil && had {
 					cleared++
 				}
 			}
 			// Left behind only by a tmag serve that was killed.
 			_, _ = s.Run(ctx, "set-option", "-gu", serveAddressOption)
 		}
-		if err := os.RemoveAll(a.log.Dir); err != nil {
+		if err := removeState(auth.DefaultDir()); err != nil {
 			return a.fail("uninstall", err)
 		}
-		if err := os.RemoveAll(auth.DefaultDir()); err != nil {
-			return a.fail("uninstall", err)
-		}
-		if filepath.Dir(filepath.Clean(a.log.Dir)) == filepath.Clean(eventlog.Base()) {
-			_ = os.Remove(eventlog.Base()) // once no other realm keeps state there
-		}
-		fmt.Fprintf(a.stdout, "cleared tmag options from %d pane(s) and removed %s\n", cleared, a.log.Dir)
+		fmt.Fprintf(a.stdout, "cleared tmag options from %d pane(s) and removed tmag's state from %s, keeping its lock files for hooks that run meanwhile\n", cleared, a.log.Dir)
 		return ExitOK
 	}
 	self, _ := os.Executable()

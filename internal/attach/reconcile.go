@@ -282,6 +282,23 @@ func statusProvesIdle(ctx context.Context, path, sessionID, procStart string, la
 	return err == nil && status.IdleAfter(sessionID, procStart, lastHookAt)
 }
 
+// Clear removes every tmag option from a pane, under the pane's lock, as
+// tmag's state goes: an Attach that ran before it is undone, and one that
+// runs after it lists the pane in a record written after the state went.
+// It reports whether the pane had options to clear.
+func Clear(ctx context.Context, stateDir string, srv tmux.Server, pane string) (bool, error) {
+	had := false
+	err := Lock(ctx, stateDir, srv.Socket, pane, func() error {
+		fresh, err := srv.Pane(ctx, pane)
+		if err != nil || len(fresh.Options) == 0 {
+			return err
+		}
+		had = true
+		return srv.ClearPaneOptions(ctx, fresh.ID)
+	})
+	return had && err == nil, err
+}
+
 // clearBroken removes tmag options that hold no attachment, if they still
 // hold none.
 func (env Env) clearBroken(ctx context.Context, p tmux.Pane) error {
