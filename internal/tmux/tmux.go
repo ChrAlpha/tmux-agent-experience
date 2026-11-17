@@ -235,10 +235,17 @@ func (s Server) Capture(ctx context.Context, pane string, lines int) (string, er
 // neither end the paste early nor press keys of its own.
 func (s Server) Submit(ctx context.Context, pane, text string) error {
 	buf := fmt.Sprintf("tmag-%d-%d", os.Getpid(), time.Now().UnixNano())
-	if _, err := s.RunInput(ctx, []byte(SanitizePrompt(text)), "load-buffer", "-b", buf, "-"); err != nil {
-		return err
+	_, err := s.RunInput(ctx, []byte(SanitizePrompt(text)), "load-buffer", "-b", buf, "-")
+	if err == nil {
+		_, err = s.Run(ctx, "paste-buffer", "-p", "-d", "-b", buf, "-t", pane, ";", "send-keys", "-t", pane, "Enter")
 	}
-	_, err := s.Run(ctx, "paste-buffer", "-p", "-d", "-b", buf, "-t", pane, ";", "send-keys", "-t", pane, "Enter")
+	if err != nil {
+		// A buffer the paste did not take would keep the prompt in the
+		// person's server; it goes within a budget of its own.
+		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
+		defer cancel()
+		_, _ = s.Run(cleanup, "delete-buffer", "-b", buf)
+	}
 	return err
 }
 

@@ -2289,6 +2289,19 @@ func TestGlobalOptionPreservesShellCommands(t *testing.T) {
 	}
 }
 
+// A prompt the paste did not take stays nowhere: no buffer holding it is
+// left in the person's server.
+func TestSubmitLeavesNoBufferBehind(t *testing.T) {
+	h := start(t)
+	srv := tmux.ServerByName(h.name)
+	if err := srv.Submit(context.Background(), "%999", "a prompt"); err == nil {
+		t.Fatal("pasted into a pane that does not exist")
+	}
+	if out := h.tmux("list-buffers", "-F", "#{buffer_name}"); strings.Contains(out, "tmag-") {
+		t.Fatalf("a prompt stayed in the server's buffers: %q", out)
+	}
+}
+
 // A hook that changes nothing writes nothing, but still attaches its pane
 // when an earlier hook died before doing so.
 func TestUnchangedHookRestoresItsPanesAttachment(t *testing.T) {
