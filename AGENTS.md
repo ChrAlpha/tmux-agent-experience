@@ -169,6 +169,10 @@ golangci-lint run             # v2, config in .golangci.yml
 shellcheck tmag.tmux scripts/install.sh scripts/tmag plugins/claude/tmag-peers/bin/tmag plugins/*/tmag-peers/skills/peers/scripts/tmag
 govulncheck ./...
 claude plugin validate .      # marketplace and plugin manifests
+# The tests a change touches as the stress run meets them: two CPUs, and a
+# $TMPDIR as long for a socket's path as macOS's, as on CI's Linux runners
+TMPDIR=$(mktemp -d /tmp/tmag-tmpdir-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX) taskset -c 0,1 go test -race -count=3 -run 'TestA|TestB' ./...
+gh workflow run stress.yml --ref BRANCH -f run='^TestA$' -f count=20   # the same on every platform
 ```
 
 ## Conventions
@@ -218,8 +222,9 @@ claude plugin validate .      # marketplace and plugin manifests
 
 ## Testing
 
-- Unit tests build worlds from `proc.NewTable` and literal `tmux.Pane`s; no
-  tmux needed.
+- Unit tests build worlds from `proc.NewTable` and literal `tmux.Pane`s;
+  only `internal/hook`'s tests of the guarded pane update start a tmux server,
+  and skip without one.
 - Tests run tmag as a person from outside the test's process tree
   (`harness.tmag`), and as an agent from a fake agent's tool.
 - E2E tests start private servers (`tmux -L e2e` under a temporary
@@ -267,6 +272,23 @@ claude plugin validate .      # marketplace and plugin manifests
   Address panes as `e2e:%N`: a bare `%N` means the caller's own server.
 - Never let a test or experiment touch the developer's tmux server: unset
   `TMUX`/`TMUX_PANE` and point `TMUX_TMPDIR` at a temporary directory.
+- Platforms differ beneath a test. A socket's path holds 103 bytes on macOS,
+  whose `$TMPDIR` takes 48 of them: put a test's sockets in
+  `sockettest.Dir(t)`, never in `t.TempDir()`. On macOS a connection whose
+  peer has closed has no peer pid and fails `shutdown` with `ENOTCONN`: a fake
+  listener reads to EOF before it closes. A system program may choose what it
+  does by the name it runs as, as Ubuntu's uutils coreutils do: a test that
+  needs a process of a given name runs its own binary under that name.
+- CI (`.github/workflows/test.yml`) runs the tests on Ubuntu 26.04 and macOS
+  26, and on Ubuntu again with tmux 3.2a, which it builds.
+  Its Linux tests get a `$TMPDIR` as long as macOS's for a socket's path. A
+  failure is annotated at the line that raised it and summarized for its job,
+  and a failed end-to-end test leaves its state directory, panes and process
+  table in the job's `evidence-` artifact (`TMAG_E2E_EVIDENCE`). Each night
+  `stress` runs every test five times, on Linux on two CPUs.
+- A workstation's many CPUs hide races that a runner's four show. Before
+  pushing, run the tests a change touches as the stress run meets them, with
+  the commands above.
 
 ## Checking against real agents
 
