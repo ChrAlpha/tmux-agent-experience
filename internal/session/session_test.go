@@ -343,7 +343,7 @@ func TestEventsReportTheWholeSession(t *testing.T) {
 	s, log := Store{Dir: dir}, eventlog.Open(dir)
 	ctx := context.Background()
 	last := func() eventlog.Event {
-		all, _, err := log.Since(ctx, 0)
+		all, err := log.Since(ctx, 0)
 		if err != nil || len(all) == 0 {
 			t.Fatalf("events: %v %v", all, err)
 		}

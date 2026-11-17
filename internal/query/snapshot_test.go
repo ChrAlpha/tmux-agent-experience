@@ -46,7 +46,7 @@ func TestDeadHostDoesNotGetNativeIdle(t *testing.T) {
 	if len(snap.Sessions) != 0 {
 		t.Fatalf("snapshot holds a dead host: %+v", snap.Sessions)
 	}
-	events, _, err := log.Since(ctx, snap.Seq)
+	events, err := log.Since(ctx, snap.Seq)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -140,7 +140,7 @@ func TestEndDeletesThenLogs(t *testing.T) {
 	if _, ok, _ := s.Get(ctx, rec.Agent, rec.ID); ok {
 		t.Fatal("an ended session's record remains")
 	}
-	events, _, err := log.Since(ctx, 0)
+	events, err := log.Since(ctx, 0)
 	if err != nil || len(events) != 1 || events[0].Event != eventlog.Exit || events[0].Session != rec.ID || events[0].Cwd != "/w" {
 		t.Fatalf("events = %+v, %v", events, err)
 	}

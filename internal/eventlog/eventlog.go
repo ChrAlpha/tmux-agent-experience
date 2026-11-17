@@ -180,14 +180,9 @@ func (l *Log) Append(ctx context.Context, e *Event) error {
 		if err != nil {
 			return err
 		}
-		last, end, err := lastLine(ctx, f, st.Size())
+		last, end, err := l.lastOf(ctx, f, st.Size())
 		if err != nil {
 			return err
-		}
-		if last == 0 {
-			if last, err = l.lastRotated(ctx); err != nil {
-				return err
-			}
 		}
 		if last == 0 {
 			last = time.Now().UnixMicro()
@@ -282,33 +277,36 @@ func (l *Log) Head(ctx context.Context) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	last, _, err := lastLine(ctx, f, st.Size())
-	if err == nil && last == 0 {
-		return l.lastRotated(ctx)
-	}
+	last, _, err := l.lastOf(ctx, f, st.Size())
 	return last, err
 }
 
-// Since returns the retained events after seq after, oldest first, and
-// whether they are all of them: false when some rotated away, the log was
-// recreated or damaged since, or after is ahead of it. After 0 asks for
-// everything retained, which is complete by definition.
-func (l *Log) Since(ctx context.Context, after int64) ([]Event, bool, error) {
+// lastOf returns the sequence number of the last event f, the current file,
+// holds, or else the rotated file's, and the offset after f's last complete
+// line, of its first size bytes.
+func (l *Log) lastOf(ctx context.Context, f *os.File, size int64) (seq, end int64, err error) {
+	if seq, end, err = lastLine(ctx, f, size); err != nil || seq != 0 {
+		return seq, end, err
+	}
+	seq, err = l.lastRotated(ctx)
+	return seq, end, err
+}
+
+// Since returns the retained events after seq after, oldest first. A
+// follower that must know whether it missed some reads a Tail instead.
+func (l *Log) Since(ctx context.Context, after int64) ([]Event, error) {
 	ctx, cancel := context.WithTimeout(ctx, ReadTimeout)
 	defer cancel()
 	var all []Event
 	for _, name := range []string{rotatedName, currentName} {
 		events, err := l.read(ctx, name)
 		if err != nil {
-			return nil, false, err
+			return nil, err
 		}
 		all = append(all, events...)
 	}
-	out, last := after1(after, all)
-	if after == 0 {
-		return out, true, nil
-	}
-	return out, continues(after, out) && (len(out) > 0 || last == after), nil
+	out, _ := after1(after, all)
+	return out, nil
 }
 
 // after1 keeps the events after seq after, and returns the last sequence
@@ -476,10 +474,7 @@ func (t *Tail) start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if t.seq, t.at, err = lastLine(ctx, t.file, st.Size()); err != nil || t.seq != 0 {
-		return err
-	}
-	t.seq, err = t.log.lastRotated(ctx)
+	t.seq, t.at, err = t.log.lastOf(ctx, t.file, st.Size())
 	return err
 }
 

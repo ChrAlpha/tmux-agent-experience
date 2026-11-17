@@ -69,7 +69,7 @@ func TestReconcileEndsATurnFromClaudesStatusFile(t *testing.T) {
 			if got.State() != c.want {
 				t.Fatalf("state = %s (%s), want %s", got.State(), got.Kind(), c.want)
 			}
-			events, _, err := log.Since(context.Background(), 0)
+			events, err := log.Since(context.Background(), 0)
 			if err != nil {
 				t.Fatal(err)
 			}

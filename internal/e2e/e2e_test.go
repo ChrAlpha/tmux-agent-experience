@@ -286,7 +286,7 @@ func (h *harness) loggedState(session string) string {
 
 func (h *harness) events(session string) []eventlog.Event {
 	h.t.Helper()
-	all, _, err := eventlog.Open(h.state).Since(context.Background(), 0)
+	all, err := eventlog.Open(h.state).Since(context.Background(), 0)
 	if err != nil {
 		h.t.Fatal(err)
 	}

@@ -190,7 +190,7 @@ func (a *app) checkState(ctx context.Context) check {
 	if seq == 0 {
 		return check{"state", "warn", fmt.Sprintf("%s: no events yet; are the agent plugins installed and trusted?", dir)}
 	}
-	events, _, err := a.log.Since(ctx, seq-1)
+	events, err := a.log.Since(ctx, seq-1)
 	if err != nil {
 		return check{"state", "fail", fmt.Sprintf("%s: event log unreadable: %v", dir, err)}
 	}

@@ -52,7 +52,7 @@ func TestHookContactIsRecordedWithoutChangingStateAge(t *testing.T) {
 	if err != nil || !ok || !got.LastHookAt.Equal(later) || !got.Since.Equal(since) || got.State() != "working" {
 		t.Fatalf("contact changed state/age or was not saved: %+v %v", got, err)
 	}
-	if events, _, err := log.Since(ctx, 0); err != nil || len(events) != 0 {
+	if events, err := log.Since(ctx, 0); err != nil || len(events) != 0 {
 		t.Fatalf("contact alone was logged: %+v %v", events, err)
 	}
 }
@@ -89,7 +89,7 @@ func TestHookRecordsStateWithoutAProcessTable(t *testing.T) {
 	if got.State() != adapter.Working || got.Host != host || !session.SameInbox(got.Inbox, inbox) {
 		t.Fatalf("state=%s host=%+v inbox=%+v, want working, %+v, %+v", got.State(), got.Host, got.Inbox, host, inbox)
 	}
-	events, _, err := log.Since(context.Background(), 0)
+	events, err := log.Since(context.Background(), 0)
 	if err != nil || len(events) != 1 || events[0].Session != "state-first" || events[0].State != adapter.Working {
 		t.Fatalf("events = %+v, %v", events, err)
 	}

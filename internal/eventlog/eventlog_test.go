@@ -38,11 +38,11 @@ func TestAppendAssignsSequence(t *testing.T) {
 	if seq := head(t, l); seq != 0 {
 		t.Fatalf("empty log head = %d", seq)
 	}
-	if evs, complete, _ := l.Since(bg, 0); len(evs) != 0 || !complete {
-		t.Fatalf("empty log Since(0) = %v, %v", evs, complete)
+	if evs, err := l.Since(bg, 0); err != nil || len(evs) != 0 {
+		t.Fatalf("empty log Since(0) = %v, %v", evs, err)
 	}
 	appendN(t, l, 3)
-	evs, _, err := l.Since(bg, 0)
+	evs, err := l.Since(bg, 0)
 	if err != nil || len(evs) != 3 {
 		t.Fatalf("Since(0) = %d events, err=%v", len(evs), err)
 	}
@@ -58,14 +58,11 @@ func TestAppendAssignsSequence(t *testing.T) {
 	if got := head(t, l); got != base+3 {
 		t.Fatalf("head = %d, want %d", got, base+3)
 	}
-	if evs, complete, _ := l.Since(bg, base); len(evs) != 3 || !complete {
-		t.Fatalf("Since(base) = %d events, complete=%v", len(evs), complete)
+	if evs, err := l.Since(bg, base+1); err != nil || len(evs) != 2 || evs[0].Seq != base+2 {
+		t.Fatalf("Since(base+1) = %v, %v", evs, err)
 	}
-	if evs, complete, _ := l.Since(bg, base+3); len(evs) != 0 || !complete {
-		t.Fatalf("Since(last) = %v, %v", evs, complete)
-	}
-	if _, complete, _ := l.Since(bg, base+4); complete {
-		t.Fatal("a cursor ahead of the log is complete")
+	if evs, err := l.Since(bg, base+3); err != nil || len(evs) != 0 {
+		t.Fatalf("Since(last) = %v, %v", evs, err)
 	}
 }
 
@@ -77,7 +74,7 @@ func TestConcurrentAppendsAreContiguous(t *testing.T) {
 		go func() { defer wg.Done(); appendN(t, l, 25) }()
 	}
 	wg.Wait()
-	evs, _, err := l.Since(bg, 0)
+	evs, err := l.Since(bg, 0)
 	if err != nil || len(evs) != 200 {
 		t.Fatalf("Since(0) = %d events, err=%v", len(evs), err)
 	}
@@ -88,25 +85,22 @@ func TestConcurrentAppendsAreContiguous(t *testing.T) {
 	}
 }
 
-// Rotation keeps numbering; a cursor older than the retained history is
-// reported incomplete rather than answered with a suffix.
-func TestRotationKeepsSequenceAndDetectsLoss(t *testing.T) {
+// Rotation keeps numbering; a tail tells a loss (TestTail).
+func TestRotationKeepsSequence(t *testing.T) {
 	l := Open(t.TempDir())
 	l.MaxBytes = 600
 	appendN(t, l, 40)
-	evs, _, err := l.Since(bg, 0)
+	evs, err := l.Since(bg, 0)
 	if err != nil || len(evs) == 0 || len(evs) >= 40 {
 		t.Fatalf("retained %d of 40 events, err=%v", len(evs), err)
 	}
-	first, last := evs[0].Seq, evs[len(evs)-1].Seq
-	if last != head(t, l) {
+	for i := 1; i < len(evs); i++ {
+		if evs[i].Seq != evs[i-1].Seq+1 {
+			t.Fatalf("retained seq %d follows %d", evs[i].Seq, evs[i-1].Seq)
+		}
+	}
+	if last := evs[len(evs)-1].Seq; last != head(t, l) {
 		t.Fatalf("head %d, last retained %d", head(t, l), last)
-	}
-	if _, complete, _ := l.Since(bg, first-1); !complete {
-		t.Fatal("a cursor just before the retained history is incomplete")
-	}
-	if got, complete, _ := l.Since(bg, first-2); complete || len(got) != len(evs) {
-		t.Fatalf("a cursor older than the retained history: %d events, complete=%v", len(got), complete)
 	}
 }
 
@@ -128,9 +122,9 @@ func TestUnfinishedLineIsEndedAndSkipped(t *testing.T) {
 		t.Fatalf("head with an unfinished line = %d, want %d", got, before)
 	}
 	appendN(t, l, 1)
-	evs, complete, err := l.Since(bg, before-2)
-	if err != nil || !complete || len(evs) != 3 || evs[2].Seq != before+1 {
-		t.Fatalf("after an unfinished line: %v complete=%v err=%v", evs, complete, err)
+	evs, err := l.Since(bg, before-2)
+	if err != nil || len(evs) != 3 || evs[2].Seq != before+1 {
+		t.Fatalf("after an unfinished line: %v err=%v", evs, err)
 	}
 }
 
@@ -149,30 +143,31 @@ func TestEventWithoutNewlineCounts(t *testing.T) {
 	}
 	f.Close()
 	appendN(t, l, 1)
-	evs, complete, err := l.Since(bg, seq)
-	if err != nil || !complete || len(evs) != 2 || evs[0].Seq != seq+1 || evs[1].Seq != seq+2 {
-		t.Fatalf("after an event without newline: %v complete=%v err=%v", evs, complete, err)
+	evs, err := l.Since(bg, seq)
+	if err != nil || len(evs) != 2 || evs[0].Seq != seq+1 || evs[1].Seq != seq+2 {
+		t.Fatalf("after an event without newline: %v err=%v", evs, err)
 	}
 }
 
 func itoa(n int64) string { return strconv.FormatInt(n, 10) }
 
-// A log recreated since a cursor is never a continuation of it, even when
-// its numbers run on.
+// A log recreated under a tail is never a continuation of it, even when its
+// numbers run on.
 func TestRecreatedLogIsIncomplete(t *testing.T) {
 	l := Open(t.TempDir())
 	appendN(t, l, 3)
-	seq := head(t, l)
+	tail, err := l.Follow(bg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tail.Close()
 	for _, name := range []string{currentName, rotatedName} {
 		_ = os.Remove(filepath.Join(l.Dir, name))
 	}
-	if _, complete, _ := l.Since(bg, seq); complete {
-		t.Fatal("an emptied log continues a cursor into it")
-	}
 	time.Sleep(time.Millisecond)
 	appendN(t, l, 1)
-	if _, complete, _ := l.Since(bg, seq); complete {
-		t.Fatal("a recreated log continues a cursor into the old one")
+	if _, complete, err := tail.Next(bg); err != nil || complete {
+		t.Fatalf("a recreated log continues a tail of the old one: complete=%v err=%v", complete, err)
 	}
 }
 

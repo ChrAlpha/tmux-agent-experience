@@ -65,7 +65,7 @@ func TestReconciliationReadsProcessesAfterPanes(t *testing.T) {
 	if _, ok, err := store.Get(ctx, proc.Claude, "b-session"); !ok || err != nil {
 		t.Fatalf("attached session B lost: ok=%v err=%v", ok, err)
 	}
-	events, _, err := log.Since(ctx, 0)
+	events, err := log.Since(ctx, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

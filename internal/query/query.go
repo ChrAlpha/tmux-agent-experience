@@ -311,7 +311,7 @@ func paneTarget(v View, ref eventlog.PaneRef, typed string) (Target, error) {
 
 // SessionEvents returns the most recent events of one session, oldest first.
 func SessionEvents(ctx context.Context, log *eventlog.Log, id string, limit int) ([]eventlog.Event, error) {
-	all, _, err := log.Since(ctx, 0)
+	all, err := log.Since(ctx, 0)
 	if err != nil {
 		return nil, err
 	}

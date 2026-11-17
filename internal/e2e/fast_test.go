@@ -767,7 +767,7 @@ func TestFailedReplacementDoesNotLogDetach(t *testing.T) {
 		t.Fatal("client missing")
 	}
 	log := eventlog.Open(h.state)
-	before, _, err := log.Since(ctx, 0)
+	before, err := log.Since(ctx, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -791,7 +791,7 @@ func TestFailedReplacementDoesNotLogDetach(t *testing.T) {
 	if got := h.tmux("display-message", "-p", "-t", pane, "#{@tmag_session}"); got != sidA {
 		t.Fatalf("old pane changed: %q", got)
 	}
-	events, _, err := log.Since(ctx, seq)
+	events, err := log.Since(ctx, seq)
 	if err != nil {
 		t.Fatal(err)
 	}

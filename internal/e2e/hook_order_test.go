@@ -82,7 +82,7 @@ func TestHangingTmuxCannotKeepAHookFromRecording(t *testing.T) {
 	if err != nil || !ok || rec.State() != adapter.Working {
 		t.Fatalf("record = %+v, %v, %v", rec, ok, err)
 	}
-	events, _, err := eventlog.Open(state).Since(context.Background(), 0)
+	events, err := eventlog.Open(state).Since(context.Background(), 0)
 	if err != nil {
 		t.Fatal(err)
 	}
