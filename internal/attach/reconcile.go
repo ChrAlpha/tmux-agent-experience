@@ -283,15 +283,16 @@ func statusProvesIdle(ctx context.Context, path, sessionID, procStart string, la
 	return err == nil && status.IdleAfter(sessionID, procStart, lastHookAt)
 }
 
-// Purge clears tmag's options from every pane of every server, then runs
-// remove, holding every pane's lock throughout: no Attach and no hook writes
-// a pane meanwhile, so none shows a session once remove has taken its
-// record. A pane it cannot clear, or a server that listens but does not
-// list its panes, ends it before remove, with every record still in place.
-// It reports how many panes it cleared.
-func Purge(ctx context.Context, stateDir string, remove func() error) (int, error) {
+// Purge clears tmag's options from every pane of every server, logging the
+// Detach of each attachment it clears, then runs remove, holding every
+// pane's lock throughout: no Attach and no hook writes a pane meanwhile, so
+// none shows a session once remove has taken its record. A pane it cannot
+// clear, or a server that listens but does not list its panes, ends it
+// before remove, with every record still in place and every pane cleared so
+// far logged. It reports how many panes it cleared.
+func Purge(ctx context.Context, env Env, remove func() error) (int, error) {
 	cleared := 0
-	err := lockfile.All(ctx, stateDir, paneLocks, func() error {
+	err := lockfile.All(ctx, env.Log.Dir, paneLocks, func() error {
 		servers, err := tmux.Servers(ctx)
 		if err != nil {
 			return err
@@ -312,6 +313,11 @@ func Purge(ctx context.Context, stateDir string, remove func() error) (int, erro
 					return err
 				}
 				cleared++
+				if a, ok := FromPane(p); ok {
+					if err := env.append(ctx, eventlog.Event{Agent: a.Agent, Session: a.Session, Event: eventlog.Detach, Pane: ref(p)}); err != nil {
+						return err
+					}
+				}
 			}
 		}
 		return remove()

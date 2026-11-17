@@ -2,6 +2,7 @@ package attach
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -440,5 +441,38 @@ func setTitle(t *testing.T, srv tmux.Server, pane, title string) {
 		if time.Now().After(deadline) {
 			t.Fatalf("title %q not set: %q", title, out)
 		}
+	}
+}
+
+// A purge that fails after clearing panes has logged the Detach of each
+// attachment it cleared, and kept the records that list them.
+func TestFailedPurgeLogsWhatItCleared(t *testing.T) {
+	srv, pane, cmd := startTmuxPane(t)
+	ctx := context.Background()
+	if err := srv.SetPaneOptions(ctx, pane, map[string]string{
+		"agent": proc.Claude, "session": "s1", "pid": "123", "start": "12345", "evidence": Process, "cmd": cmd, "state": "idle",
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	env := Env{Log: eventlog.Open(dir), Store: session.Store{Dir: dir}}
+	rec := session.Record{Agent: proc.Claude, ID: "s1", Main: adapter.Idle, Shown: []session.Shown{{Server: srv.Socket, Pane: pane, PID: 123, Start: "12345"}}}
+	if err := env.Store.Put(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+	failed := errors.New("removal failed")
+	cleared, err := Purge(ctx, env, func() error { return failed })
+	if !errors.Is(err, failed) || cleared != 1 {
+		t.Fatalf("purge: cleared %d, %v", cleared, err)
+	}
+	if p, err := srv.Pane(ctx, pane); err != nil || len(p.Options) != 0 {
+		t.Fatalf("pane after purge: %+v, %v", p.Options, err)
+	}
+	events, err := env.Log.Since(ctx, 0)
+	if err != nil || len(events) != 1 || events[0].Event != eventlog.Detach || events[0].Session != "s1" || events[0].Pane == nil || events[0].Pane.ID != pane {
+		t.Fatalf("logged %+v, %v", events, err)
+	}
+	if kept, ok, err := env.Store.Get(ctx, proc.Claude, "s1"); err != nil || !ok || len(kept.Shown) != 1 {
+		t.Fatalf("record after a failed purge: %+v, %v, %v", kept.Shown, ok, err)
 	}
 }

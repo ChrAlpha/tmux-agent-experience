@@ -51,7 +51,7 @@ func (a *app) cmdUninstall(args []string) int {
 		// cleared and the state removed under every pane's lock, the state
 		// but for its lock files, which keep a hook that runs meanwhile
 		// excluded.
-		cleared, err := attach.Purge(ctx, a.log.Dir, func() error { return removeState(a.log.Dir) })
+		cleared, err := attach.Purge(ctx, attach.Env{Log: a.log, Store: a.store()}, func() error { return removeState(a.log.Dir) })
 		if err != nil {
 			return a.fail("uninstall", err)
 		}
