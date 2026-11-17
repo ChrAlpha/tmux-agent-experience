@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -357,6 +358,9 @@ func TestDeliveryFailure(t *testing.T) {
 	if err := deliveryFailure(d, &codexsvc.RPCError{Code: -32600, Message: "no active turn to steer"}); !errors.As(err, &notTaken) {
 		t.Fatalf("an RPC error: %v", err)
 	}
+	if err := deliveryFailure(d, fmt.Errorf("%w: expected active turn id a but found b", codexsvc.ErrTurnChanged)); !isRefused(err, RefuseChanged) {
+		t.Fatalf("a changed active turn: %v", err)
+	}
 	err := deliveryFailure(d, errors.New("i/o timeout"))
 	if errors.As(err, &notTaken) || !strings.Contains(err.Error(), "logged at seq 9; whether s1 took it is unknown") || strings.Contains(err.Error(), "did not take it") {
 		t.Fatalf("a transport failure: %v", err)
@@ -391,6 +395,12 @@ func TestInboxFailure(t *testing.T) {
 	var refused *RefusedError
 	if err := inboxFailure(d, &inbox.Refusal{Reason: "changed", Detail: "this agent now serves s2"}); !errors.As(err, &refused) || refused.Reason != RefuseChanged {
 		t.Fatalf("a session switch: %v", err)
+	}
+	if err := inboxFailure(d, &inbox.Refusal{Reason: "idle", Detail: "this agent runs no turn to interrupt"}); !errors.As(err, &refused) || refused.Reason != RefuseIdle {
+		t.Fatalf("an idle session: %v", err)
+	}
+	if err := inboxFailure(d, &inbox.Refusal{Reason: "unsupported", Detail: "oh-my-pi does not serve interrupts"}); !errors.As(err, &refused) || refused.Reason != RefuseUnsupported {
+		t.Fatalf("an agent without interrupts: %v", err)
 	}
 	err := inboxFailure(d, errors.New("EOF"))
 	if errors.As(err, &notTaken) || !strings.Contains(err.Error(), "whether s1 took it is unknown") {

@@ -3,7 +3,7 @@
 // pi` for each event that changes the state (see report.ts), under Pi's names
 // for the events; tmag maps them in internal/adapter.
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { inbox, lastStop, lastTurn, quietly, reporter, session, SessionChanged, turnOf } from "./report.ts";
+import { inbox, lastStop, lastTurn, NoTurn, quietly, reporter, session, SessionChanged, turnOf } from "./report.ts";
 
 // binpath.HookCommand("pi"): the tmux plugin's tmag, else tmag on PATH.
 const hook = "for r in \"${TMUX_PLUGIN_MANAGER_PATH%/}\" \"$HOME/.tmux/plugins\" \"${XDG_CONFIG_HOME:-$HOME/.config}/tmux/plugins\"; do case $r in /*) t=\"$r/tmux-agent-experience/bin/tmag\"; [ -x \"$t\" ] && exec \"$t\" hook pi 2>/dev/null;; esac; done; t=$(command -v tmag) && exec \"$t\" hook pi 2>/dev/null; exit 0";
@@ -20,10 +20,19 @@ export default function (pi: ExtensionAPI) {
 		if (!ctx || now !== session) throw new SessionChanged(now ? `this agent now serves ${now}` : "this agent serves no session");
 		return pi.sendUserMessage(text, { deliverAs: "steer" });
 	};
+	// An interrupt stops the live session's turn, as Escape does, without a
+	// key reaching a dialog the agent may have open.
+	const abort = (session: string) => {
+		const ctx = latest;
+		const now = ctx?.sessionManager.getSessionId();
+		if (!ctx || now !== session) throw new SessionChanged(now ? `this agent now serves ${now}` : "this agent serves no session");
+		if (ctx.isIdle()) throw new NoTurn("this agent runs no turn to interrupt");
+		ctx.abort();
+	};
 	// The inbox serves from load; tmag learns its path only from a report,
-	// and by then the latest ctx names the session a send may reach. A
-	// failure to listen leaves its path undefined.
-	const box = inbox("pi", deliver);
+	// and by then the latest ctx names the session a send or interrupt may
+	// reach. A failure to listen leaves its path undefined.
+	const box = inbox("pi", deliver, abort);
 	const payload = (ctx: Parameters<typeof session>[0]) => session(ctx, box.path);
 	// A run a prompt of the user's starts is reported with the prompt's
 	// message, which names its turn; any other run when it starts, and one

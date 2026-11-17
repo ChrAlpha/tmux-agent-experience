@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
@@ -264,6 +265,32 @@ func (c *Client) StartTurn(ctx context.Context, thread, text string) (string, er
 		return "", err
 	}
 	return out.Turn.ID, nil
+}
+
+// ErrTurnChanged reports that the active turn is no longer the one a steer
+// expected. The daemon took nothing.
+var ErrTurnChanged = errors.New("the active turn changed")
+
+// SteerTurn adds text to the thread's active turn, but only while it is still
+// the turn tmag checked: the daemon compares expectedTurnId with its active
+// turn and takes nothing when they differ. A mismatch is ErrTurnChanged; the
+// daemon's other errors are returned as they are.
+func (c *Client) SteerTurn(ctx context.Context, thread, turn, text string) error {
+	params := map[string]any{
+		"threadId":       thread,
+		"expectedTurnId": turn,
+		"input":          []map[string]any{{"type": "text", "text": text, "text_elements": []any{}}},
+	}
+	err := c.Call(ctx, "turn/steer", params, nil)
+	if err == nil {
+		return nil
+	}
+	var rpc *RPCError
+	if errors.As(err, &rpc) && rpc.Code == -32600 &&
+		strings.Contains(rpc.Message, "expected active turn id") && strings.Contains(rpc.Message, "but found") {
+		return fmt.Errorf("%w: %s", ErrTurnChanged, rpc.Message)
+	}
+	return err
 }
 
 // InterruptTurn interrupts a thread's active turn. The daemon answers once

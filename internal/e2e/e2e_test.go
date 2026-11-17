@@ -437,7 +437,7 @@ func TestPiAndOhMyPi(t *testing.T) {
 			h := start(t)
 			f := h.follow()
 			out := filepath.Join(h.dir, "received")
-			pane := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_OUT": out, "FAKE_HOOKS": "1", "FAKE_KEYS": "1", "FAKE_TURN_MS": "300"}, filepath.Join(bin, agent))
+			pane := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_OUT": out, "FAKE_HOOKS": "1", "FAKE_KEYS": "1", "FAKE_INBOX": "1", "FAKE_TURN_MS": "300"}, filepath.Join(bin, agent))
 			p, s := h.waitPane(pane, "idle", "process")
 			if s.Agent != agent || s.Runtime != "terminal" || p.Command != agent || !slices.Equal(s.Capabilities, []string{"send", "interrupt"}) {
 				t.Fatalf("pane %+v shows %+v", p, s)
@@ -480,8 +480,9 @@ func TestPiAndOhMyPi(t *testing.T) {
 				t.Fatalf("send: %d %s", r.code, r.out)
 			}
 			h.waitSession(sidA, "working")
-			if r := h.tmag("", "interrupt", sidA[:8]); r.code != 0 {
-				t.Fatalf("interrupt: %d %s", r.code, r.out)
+			via := map[string]string{"pi": "inbox", "omp": "pane"}[agent]
+			if r := h.tmag("", "interrupt", sidA[:8], "--json"); r.code != 0 || !strings.Contains(r.out, `"via":"`+via+`"`) {
+				t.Fatalf("interrupt via %s: %d %s", via, r.code, r.out)
 			}
 			h.waitSession(sidA, "idle")
 			if got := h.eventNames(sidA); !strings.HasSuffix(got, "Send: message_end:working Halt: "+stop+":idle") {
@@ -494,6 +495,27 @@ func TestPiAndOhMyPi(t *testing.T) {
 			f.agrees(h)
 		})
 	}
+}
+
+// Pi without a proved inbox still takes an interrupt through its pane.
+func TestPiInterruptFallsBackToThePane(t *testing.T) {
+	h := start(t)
+	out := filepath.Join(h.dir, "received")
+	pane := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_OUT": out, "FAKE_HOOKS": "1", "FAKE_KEYS": "1", "FAKE_TURN_MS": "20000"}, filepath.Join(bin, "pi"))
+	h.waitPane(pane, "idle", "process")
+	if r := h.tmag("", "send", sidA[:8], "long work"); r.code != 0 {
+		t.Fatalf("send: %d %s", r.code, r.out)
+	}
+	h.waitSession(sidA, "working")
+	if r := h.tmag("", "interrupt", sidA[:8], "--json"); r.code != 0 || !strings.Contains(r.out, `"via":"pane"`) {
+		t.Fatalf("interrupt without an inbox: %d %s", r.code, r.out)
+	}
+	h.eventually("the agent sees Escape", func() bool {
+		got, _ := os.ReadFile(out)
+		return string(got) == "long work\ninterrupted\n"
+	})
+	h.waitSession(sidA, "idle")
+	h.tmux("send-keys", "-t", pane, "C-d")
 }
 
 // Pi run by another program in a pane, an editor's say, reports its mode:
@@ -982,10 +1004,34 @@ func TestCodexDaemonCarriesSendAndInterrupt(t *testing.T) {
 	if r := h.tmag("", "send", sidC[:8], "more"); r.code != 0 || !strings.Contains(r.out, "(service)") {
 		t.Fatalf("send to a busy thread: %d %s", r.code, r.out)
 	}
+	if out, _ := os.ReadFile(d.out); !strings.Contains(string(out), sidC+" more") {
+		t.Fatalf("the daemon did not take the steer: %s", out)
+	}
 	// A joined turn reports no prompt of its own; its next main report, the
 	// interrupt, clears the queued mark.
-	if rec, ok, err := (session.Store{Dir: h.state}).Get(context.Background(), "codex", sidC); err != nil || !ok || rec.Queued.IsZero() {
+	store := session.Store{Dir: h.state}
+	rec, ok, err := store.Get(context.Background(), "codex", sidC)
+	if err != nil || !ok || rec.Queued.IsZero() {
 		t.Fatalf("the second send left no queued prompt: %+v %v", rec, err)
+	}
+	// A steer whose expected turn is no longer active is refused as changed
+	// before the daemon takes anything. The test makes the record stale on
+	// purpose; the queued mark would otherwise hold the send off first.
+	turn := rec.Turn
+	stale := rec
+	stale.Turn, stale.Queued = "stale-turn", time.Time{}
+	if err := store.Put(context.Background(), stale); err != nil {
+		t.Fatal(err)
+	}
+	if r := h.tmag("", "send", sidC[:8], "stale"); r.code != 3 || !strings.Contains(r.out, "refused (changed)") || !strings.Contains(r.out, "next: run tmag list and decide again") {
+		t.Fatalf("send with a stale turn: %d %s", r.code, r.out)
+	}
+	if out, _ := os.ReadFile(d.out); strings.Contains(string(out), sidC+" stale") {
+		t.Fatalf("the daemon took a stale steer: %s", out)
+	}
+	stale.Turn = turn
+	if err := store.Put(context.Background(), stale); err != nil {
+		t.Fatal(err)
 	}
 	if r := h.tmag("", "interrupt", sidC[:8], "--json"); r.code != 0 || !strings.Contains(r.out, `"via":"service"`) {
 		t.Fatalf("interrupt: %d %s", r.code, r.out)

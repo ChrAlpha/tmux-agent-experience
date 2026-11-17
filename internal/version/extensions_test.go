@@ -35,9 +35,11 @@ func node(t *testing.T) string {
 // events Pi and oh-my-pi send them: they run, in order and once each, the
 // hooks of the state changes, naming the turn by the entry id the agent
 // records for its prompt, and nothing of the prompt, the reply or a tool's
-// input. Pi records a user message after the extensions have it,
-// oh-my-pi before; oh-my-pi runs the extension for subagents too, and moves
-// its process to other sessions with or without a word.
+// input. They also serve an interrupt: Pi aborts a working turn and refuses
+// an idle one; oh-my-pi serves no abort. Pi records a user message after the
+// extensions have it, oh-my-pi before; oh-my-pi runs the extension for
+// subagents too, and moves its process to other sessions with or without a
+// word.
 func TestExtensionsReport(t *testing.T) {
 	node := node(t)
 	for host, want := range map[string][]string{

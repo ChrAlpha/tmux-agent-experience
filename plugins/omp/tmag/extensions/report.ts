@@ -4,8 +4,9 @@
 // nothing in the agent. What goes to tmag are ids, paths and states, never a
 // prompt, a message or a tool's input.
 //
-// The inbox below serves what `tmag send` hands an agent: its text reaches
-// the agent, and tmag's reports carry only where the socket is.
+// The inbox below serves what tmag hands an agent: a prompt for `tmag send`,
+// or an interrupt for `tmag interrupt`. tmag's reports carry only where the
+// socket is.
 //
 // Both extensions ship this file as it is: edit plugins/pi/tmag/extensions/
 // report.ts and copy it to plugins/omp/tmag/extensions/.
@@ -33,6 +34,8 @@ interface Context {
 	mode?: string;
 	/** Whether the agent is idle (not streaming). */
 	isIdle(): boolean;
+	/** Stops the running turn, as the agent's own interrupt does. */
+	abort(): void;
 	sessionManager: {
 		getSessionId(): string;
 		getSessionFile(): string | undefined;
@@ -73,7 +76,7 @@ export function reporter(command: string) {
 /** How long one send may take to deliver its line. */
 const inboxLimit = 5_000;
 
-/** The largest send line an inbox reads. */
+/** The largest request line an inbox reads. */
 const inboxMax = 1 << 20;
 
 /** How old a refusing socket must be before a sweep removes it. */
@@ -84,21 +87,31 @@ export class SessionChanged extends Error {
 	readonly refused = "changed";
 }
 
+/** NoTurn reports a session with no running turn to interrupt. */
+export class NoTurn extends Error {
+	readonly refused = "idle";
+}
+
 /**
  * Serves the session's inbox on a Unix socket, for prompts `tmag send`
  * hands the agent: /tmp/tmag-<uid>/inbox/<agent>-<pid>.sock. The socket is
  * the agent's own, as answer hooks keep theirs under /tmp; both directories
  * must be this user's alone, or no inbox is served and payloads carry none.
  *
- * A connection sends one JSON line, {"send":TEXT,"session":ID}; deliver
- * checks the session the agent serves now and hands the text over in one
- * step. A mismatch throws SessionChanged, which is answered as a `changed`
- * refusal and delivers nothing. Nothing here throws into the agent, and
- * close destroys open connections, clears their timers and unlinks the
- * socket. Stale sockets of this agent that died are removed when a
- * connection to them is refused.
+ * A connection sends one JSON line, {"send":TEXT,"session":ID} or
+ * {"interrupt":true,"session":ID}. deliver checks the session the agent
+ * serves now and hands the text over in one step; abort does the same before
+ * it stops the turn. A mismatch throws SessionChanged, answered as a
+ * `changed` refusal; an agent that passes no abort refuses an interrupt as
+ * `unsupported`. Nothing here throws into the agent, and close destroys open
+ * connections, clears their timers and unlinks the socket. Stale sockets of
+ * this agent that died are removed when a connection to them is refused.
  */
-export function inbox(agent: string, deliver: (text: string, session: string) => Promise<void> | void): { path: string | undefined; close(): void } {
+export function inbox(
+	agent: string,
+	deliver: (text: string, session: string) => Promise<void> | void,
+	abort?: (session: string) => Promise<void> | void,
+): { path: string | undefined; close(): void } {
 	const uid = process.getuid?.();
 	if (uid === undefined) return { path: undefined, close: () => {} };
 	const base = join("/tmp", `tmag-${uid}`);
@@ -121,7 +134,7 @@ export function inbox(agent: string, deliver: (text: string, session: string) =>
 		conn.unref?.();
 		const client: InboxClient = { conn };
 		clients.add(client);
-		serveInbox(client, deliver, () => clients.delete(client));
+		serveInbox(client, deliver, abort, () => clients.delete(client));
 	});
 	server.on("error", () => {});
 	let listening = false;
@@ -236,10 +249,11 @@ function removeIfSame(path: string, st: Stats): void {
 	} catch {}
 }
 
-/** Serves one send connection: one line in, one answer line out. */
+/** Serves one inbox connection: one request line in, one answer line out. */
 function serveInbox(
 	client: InboxClient,
 	deliver: (text: string, session: string) => Promise<void> | void,
+	abort: ((session: string) => Promise<void> | void) | undefined,
 	done: () => void,
 ): void {
 	const conn = client.conn;
@@ -281,28 +295,32 @@ function serveInbox(
 			return;
 		}
 		conn.pause();
-		let request: { send?: unknown; session?: unknown } | null;
+		let request: { send?: unknown; interrupt?: unknown; session?: unknown } | null;
 		try {
 			request = JSON.parse(buffer.slice(0, at));
 		} catch {
 			finish(JSON.stringify({ ok: false, error: "invalid request" }) + "\n");
 			return;
 		}
-		if (!request || typeof request.send !== "string") {
+		if (!request || (typeof request.send !== "string" && request.interrupt !== true)) {
 			finish(JSON.stringify({ ok: false, error: "invalid request" }) + "\n");
 			return;
 		}
 		const session = typeof request.session === "string" ? request.session : "";
 		const finishDelivery = (err: unknown) => {
-			if (err instanceof SessionChanged) {
-				finish(JSON.stringify({ ok: false, refused: "changed", error: err.message }) + "\n");
-				return;
-			}
-			finish(JSON.stringify({ ok: false, error: String(err) }) + "\n");
+			const refused =
+				err && typeof err === "object" && "refused" in err && typeof (err as { refused?: unknown }).refused === "string"
+					? (err as { refused: string }).refused
+					: "";
+			finish(JSON.stringify({ ok: false, ...(refused ? { refused } : {}), error: String(err) }) + "\n");
 		};
+		if (request.interrupt === true && !abort) {
+			finish(JSON.stringify({ ok: false, refused: "unsupported", error: "this agent does not serve interrupts" }) + "\n");
+			return;
+		}
 		let result: Promise<void> | void;
 		try {
-			result = deliver(request.send as string, session);
+			result = request.interrupt === true ? abort!(session) : deliver(request.send as string, session);
 		} catch (err) {
 			finishDelivery(err);
 			return;

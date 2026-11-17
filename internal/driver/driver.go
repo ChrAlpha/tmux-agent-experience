@@ -129,41 +129,65 @@ func paneIf(idle bool) string {
 // did not say), or "" when nothing can. Send has no single channel: SendRoute
 // chooses it from the caller, the response mode and the session's state.
 func Channel(agent, runtime, verb string) string {
+	return route(agent, runtime, verb).Channel
+}
+
+// InterruptRoute returns how an interrupt reaches a session: Pi's proven
+// inbox first, with its pane as the fallback; the pane for the other terminal
+// agents; and the agent service for a Codex daemon. A fallback is tried only
+// when no inbox is proven, never after the inbox refused.
+func InterruptRoute(agent, runtime string) Route {
+	return route(agent, runtime, Interrupt)
+}
+
+// route is the one table of non-send channels. A route's fallback is the
+// second channel to try when the first has nothing proven to reach.
+func route(agent, runtime, verb string) Route {
 	service := runtime == "service"
 	switch agent {
 	case "claude":
 		switch {
 		case verb == Answer:
 			// The hook runs wherever the session does, terminal or not.
-			return Hook
+			return Route{Channel: Hook}
 		case service:
 			// A background session has no terminal to prompt or interrupt.
-			return ""
+			return Route{}
 		case verb == Interrupt:
-			return Pane
+			return Route{Channel: Pane}
 		}
-		return ""
+		return Route{}
 	case "codex":
 		switch {
 		case service:
-			return Service
+			return Route{Channel: Service}
 		case verb == Interrupt:
-			return Pane
+			return Route{Channel: Pane}
 		}
 		// An embedded app-server listens nowhere, and a dialog's keys cannot
 		// be bound to a particular request.
-		return ""
-	case "pi", "omp":
+		return Route{}
+	case "pi":
 		switch {
 		case service:
 			// A session serving a program takes input from it alone.
-			return ""
+			return Route{}
 		case verb == Interrupt:
-			return Pane
+			return Route{Channel: Inbox, Fallback: Pane}
 		}
-		return ""
+		return Route{}
+	case "omp":
+		switch {
+		case service:
+			// A session serving a program takes input from it alone.
+			return Route{}
+		case verb == Interrupt:
+			// oh-my-pi's extension API was not observed to abort a turn.
+			return Route{Channel: Pane}
+		}
+		return Route{}
 	}
-	return ""
+	return Route{}
 }
 
 // ReportsInterrupt says whether the agent reports an interrupted turn to its

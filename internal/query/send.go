@@ -175,28 +175,46 @@ func deliver(ctx context.Context, log *eventlog.Log, target, text string, ask As
 	case driver.Pane:
 		return throughPane(ctx, log, v, s, named, idleGate, panePrompt(text, caller))
 	case driver.Service:
+		active, turn := false, ""
 		return throughService(ctx, log, v, s, serviceVerb{
 			gate: gate,
 			check: func(ctx context.Context, c *codexsvc.Client) error {
 				if mode == driver.Wait {
 					return threadIn(ctx, c, s, RefuseBusy, codexsvc.StatusIdle)
 				}
-				return threadIn(ctx, c, s, RefuseChanged, codexsvc.StatusIdle, codexsvc.StatusActive)
+				st, err := threadStatus(ctx, c, s)
+				if err != nil {
+					return err
+				}
+				switch st {
+				case codexsvc.StatusIdle:
+					return nil
+				case codexsvc.StatusActive:
+					active = true
+					return nil
+				}
+				return &RefusedError{RefuseChanged, fmt.Sprintf("the Codex daemon has %s %s", s.ID, st)}
 			},
 			mark: func(rec *session.Record) eventlog.Event {
-				// turn/start takes a prompt into the thread's turn when the
-				// daemon answers; until a main-agent report confirms it, it
-				// is queued like a prompt on the session's own channel. A
-				// wait leaves the prompt it started unconfirmed instead.
+				// A prompt into a turn is queued until a main-agent report
+				// confirms it, like one on the session's own channel. A wait
+				// leaves the prompt it started unconfirmed instead. A steer
+				// is bound to the turn the fresh record names.
 				if mode == driver.Wait {
 					rec.Sent = time.Now().UTC().Truncate(time.Second)
 				} else {
 					rec.Queued = time.Now().UTC().Truncate(time.Second)
 				}
+				if active {
+					turn = rec.Turn
+				}
 				return sentEvent(*rec, text, caller)
 			},
 			deliver: func(ctx context.Context, c *codexsvc.Client) error {
-				// turn/start joins an active turn and starts an idle one.
+				if active {
+					return c.SteerTurn(ctx, s.ID, turn, text)
+				}
+				// turn/start starts an idle thread's turn.
 				_, err := c.StartTurn(ctx, s.ID, text)
 				return err
 			},
@@ -331,7 +349,12 @@ func inboxFailure(d Delivery, err error) error {
 	}
 	var refused *inbox.Refusal
 	if errors.As(err, &refused) {
-		return &RefusedError{RefuseChanged, refused.Error()}
+		reason := RefuseChanged
+		switch refused.Reason {
+		case RefuseIdle, RefuseUnsupported:
+			reason = refused.Reason
+		}
+		return &RefusedError{reason, refused.Error()}
 	}
 	return unknownDelivery(d, err)
 }
