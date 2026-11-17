@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"regexp"
 	"sort"
 	"strings"
@@ -343,4 +344,20 @@ func SessionEvents(ctx context.Context, log *eventlog.Log, id string, limit int)
 		out = out[len(out)-limit:]
 	}
 	return out, nil
+}
+
+// Title is the title an agent set for its pane, the task it works on as it
+// says, read from tmux when asked and kept nowhere; "" when it set none,
+// tmux's own being the host's name.
+func Title(ctx context.Context, server, pane string) string {
+	p, err := tmux.Server{Socket: server}.Pane(ctx, pane)
+	if err != nil {
+		return ""
+	}
+	host, _ := os.Hostname()
+	short, _, _ := strings.Cut(host, ".")
+	if t := strings.TrimSpace(p.Title); t != host && t != short {
+		return t
+	}
+	return ""
 }

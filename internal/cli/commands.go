@@ -222,8 +222,20 @@ func (a *app) cmdInspect(args []string) int {
 			events = []eventlog.Event{}
 		}
 	}
+	// The title the agent set for its pane says what it works on.
+	title := ""
+	switch {
+	case t.Pane != nil:
+		title = query.Title(ctx, t.Pane.Server, t.Pane.ID)
+	case t.Session != nil && len(t.Session.Panes) > 0:
+		title = query.Title(ctx, t.Session.Panes[0].Server, t.Session.Panes[0].ID)
+	}
 	if a.json {
-		a.emit(map[string]any{"session": t.Session, "pane": t.Pane, "events": events})
+		doc := map[string]any{"session": t.Session, "pane": t.Pane, "events": events}
+		if title != "" {
+			doc["title"] = title
+		}
+		a.emit(doc)
 		return ExitOK
 	}
 	v := query.View{}
@@ -237,6 +249,9 @@ func (a *app) cmdInspect(args []string) int {
 		}
 	}
 	a.printView(v, query.Caller{})
+	if title != "" {
+		fmt.Fprintf(a.stdout, "\ntitle: %s\n", title)
+	}
 	if s := t.Session; s != nil {
 		fmt.Fprintf(a.stdout, "\nid: %s\nruntime: %s\n", s.ID, s.Runtime)
 		if !s.LastHookAt.IsZero() {
@@ -249,6 +264,7 @@ func (a *app) cmdInspect(args []string) int {
 		for _, p := range s.Panes {
 			fmt.Fprintf(a.stdout, "shown in: %s (%s, %s)\n", paneName(here, p.Server, p.ID), p.Evidence, p.View)
 		}
+
 		// Open requests, by the ids request and answer take.
 		for _, r := range s.Requests {
 			what := r.Kind

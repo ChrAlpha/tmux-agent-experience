@@ -78,3 +78,28 @@ func TestKeysReachAPaneWithoutASession(t *testing.T) {
 	ok(t, h.tmag("", "keys", pane, "--screen", screenOf(t, h, pane), "--text", "trust", "Enter"))
 	readEventually(t, out, "trust")
 }
+
+// inspect says what an agent works on, by the title it set for its pane, and
+// says nothing for a pane with tmux's own title.
+func TestInspectShowsTheTitleAnAgentSet(t *testing.T) {
+	h := start(t)
+	a := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_HOOKS": "1", "FAKE_TITLE": "✳ Review the parser"}, filepath.Join(bin, "claude"))
+	b := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidB, "FAKE_HOOKS": "1"}, filepath.Join(bin, "claude"))
+	h.waitPane(a, "idle", "process")
+	h.waitPane(b, "idle", "process")
+	if r := h.tmag("", "inspect", sidA[:8]); r.code != 0 || !strings.Contains(r.out, "\ntitle: ✳ Review the parser\n") {
+		t.Fatalf("inspect A: %d %s", r.code, r.out)
+	}
+	if r := h.tmag("", "inspect", sidA[:8], "--json"); r.code != 0 || !strings.Contains(r.out, `"title":"✳ Review the parser"`) {
+		t.Fatalf("inspect A --json: %d %s", r.code, r.out)
+	}
+	if r := h.tmag("", "inspect", sidB[:8]); r.code != 0 || strings.Contains(r.out, "title:") {
+		t.Fatalf("inspect B: %d %s", r.code, r.out)
+	}
+	// A pane whose agent shows no session yet has the title it set.
+	c := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidC, "FAKE_TITLE": "✳ Starting"}, filepath.Join(bin, "claude"))
+	h.waitPane(c, "", "")
+	if r := h.tmag("", "inspect", h.target(c)); r.code != 0 || !strings.Contains(r.out, "\ntitle: ✳ Starting\n") {
+		t.Fatalf("inspect a pane without a session: %d %s", r.code, r.out)
+	}
+}
