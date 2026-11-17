@@ -146,27 +146,3 @@ func TestPiLast(t *testing.T) {
 		t.Errorf("no turn: %v", err)
 	}
 }
-
-// Lines cross chunk boundaries and outgrow a chunk; a line still being
-// written comes as it is.
-func TestBackwardAcrossChunks(t *testing.T) {
-	long := strings.Repeat("x", 3*chunk)
-	lines := []string{"a", long, "", "b", strings.Repeat("y", chunk-1), "c"}
-	path := filepath.Join(t.TempDir(), "t")
-	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n{partial"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
-	var got []string
-	if err := backward(context.Background(), f, func(b []byte) bool { got = append(got, string(b)); return false }); err != nil {
-		t.Fatal(err)
-	}
-	want := []string{"{partial", "c", lines[4], "b", long, "a"}
-	if strings.Join(got, "|") != strings.Join(want, "|") {
-		t.Fatalf("got %d lines, want %d", len(got), len(want))
-	}
-}

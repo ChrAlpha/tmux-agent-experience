@@ -14,7 +14,6 @@ package eventlog
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -24,6 +23,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ChrAlpha/tmux-agent-experience/internal/contextio"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/lockfile"
 )
 
@@ -242,64 +242,20 @@ func (l *Log) lastRotated(ctx context.Context) (int64, error) {
 	return last, err
 }
 
-// scanBack reads the first size bytes of f from their end, in windows that
-// double until fn, given a window and where it starts, is satisfied, or the
-// window reaches the start of the file: a line may be as long as readers
-// accept, so no fixed window is enough. The first window holds the last
-// line of a healthy log.
-func scanBack(ctx context.Context, f *os.File, size int64, fn func(buf []byte, base int64) bool) error {
-	for window := int64(4 << 10); ; window *= 2 {
-		n := min(size, window)
-		buf := make([]byte, n)
-		if _, err := f.ReadAt(buf, size-n); err != nil && !errors.Is(err, io.EOF) {
-			return err
-		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if fn(buf, size-n) || n == size {
-			return nil
-		}
-	}
-}
-
 // lastLine returns the sequence number of the last line of f that decodes,
 // 0 when none does, and the offset after its last complete line, 0 when it
 // has none: a reader that has read every complete line stands there, and f
-// ends a line when that offset is its size. Both come from one read of f's
-// end, which holds them in a healthy log.
+// ends a line when that offset is its size.
 func lastLine(ctx context.Context, f *os.File, size int64) (seq, end int64, err error) {
-	if size == 0 {
-		return 0, 0, nil
-	}
-	err = scanBack(ctx, f, size, func(buf []byte, base int64) bool {
-		seq, end = lastSeqIn(buf), 0
-		if i := bytes.LastIndexByte(buf, '\n'); i >= 0 {
-			end = base + int64(i) + 1
+	first := true
+	err = contextio.Backward(ctx, f, size, maxLine, func(line []byte, start int64) bool {
+		if first {
+			end, first = start, false
 		}
-		return seq > 0 && end > 0
+		seq = seqOf(line)
+		return seq > 0
 	})
 	return seq, end, err
-}
-
-// lastSeqIn returns the sequence number of the last line in buf that
-// decodes, or 0.
-func lastSeqIn(buf []byte) int64 {
-	end := len(buf)
-	for end > 0 {
-		start := end - 1
-		for start > 0 && buf[start-1] != '\n' {
-			start--
-		}
-		if seq := seqOf(buf[start:end]); seq > 0 {
-			return seq
-		}
-		end = start
-		for end > 0 && buf[end-1] == '\n' {
-			end--
-		}
-	}
-	return 0
 }
 
 func seqOf(line []byte) int64 {

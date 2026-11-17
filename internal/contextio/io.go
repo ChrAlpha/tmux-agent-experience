@@ -2,6 +2,7 @@
 package contextio
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -155,4 +156,59 @@ func ReadFile(ctx context.Context, path string, limit int64) ([]byte, error) {
 	}
 	defer f.Close()
 	return ReadAtMost(f, limit)
+}
+
+// backwardChunk is how much of a file Backward reads at a time.
+const backwardChunk = 64 << 10
+
+// Backward calls fn with every line of the first size bytes of r, last
+// first, each without its newline and with the offset it starts at, until fn
+// returns true. The first call is the text after the last newline, empty when
+// the bytes end one, so its offset is where the last complete line ends. A
+// line longer than max is passed as nil, without being held: work and memory
+// stay linear in what is read, whatever the lines' lengths.
+func Backward(ctx context.Context, r io.ReaderAt, size, max int64, fn func(line []byte, start int64) bool) error {
+	var pieces [][]byte // the end of the line being read, nearest the file's end first
+	held, long := int64(0), false
+	emit := func(head []byte, start int64) bool {
+		var line []byte
+		if !long && held+int64(len(head)) <= max {
+			line = append(make([]byte, 0, held+int64(len(head))), head...)
+			for i := len(pieces) - 1; i >= 0; i-- {
+				line = append(line, pieces[i]...)
+			}
+		}
+		pieces, held, long = nil, 0, false
+		return fn(line, start)
+	}
+	for end := size; end > 0; {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		n := min(backwardChunk, end)
+		buf := make([]byte, n)
+		if _, err := r.ReadAt(buf, end-n); err != nil && !errors.Is(err, io.EOF) {
+			return err
+		}
+		end -= n
+		for {
+			i := bytes.LastIndexByte(buf, '\n')
+			if i < 0 {
+				break
+			}
+			if emit(buf[i+1:], end+int64(i)+1) {
+				return nil
+			}
+			buf = buf[:i]
+		}
+		if long || held+int64(len(buf)) > max {
+			pieces, held, long = nil, 0, true
+		} else {
+			pieces, held = append(pieces, buf), held+int64(len(buf))
+		}
+	}
+	if size > 0 {
+		emit(nil, 0)
+	}
+	return nil
 }

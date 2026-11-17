@@ -11,12 +11,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"slices"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/ChrAlpha/tmux-agent-experience/internal/contextio"
 )
+
+// maxLine bounds a transcript line tmag decodes; a longer one, which only a
+// tool's output reaches, is skipped without being held.
+const maxLine = 16 << 20
 
 // Formats, as eventlog.Transcript names them.
 const (
@@ -110,8 +115,17 @@ func read(ctx context.Context, path, format string, n int) ([]Turn, error) {
 		return nil, err
 	}
 	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	// The file is read as it was when this started; a line being written
+	// then comes incomplete, so it does not decode.
 	var turns []Turn
-	err = backward(ctx, f, func(b []byte) bool {
+	err = contextio.Backward(ctx, f, info.Size(), maxLine, func(b []byte, _ int64) bool {
+		if b = bytes.TrimSpace(b); len(b) == 0 {
+			return false
+		}
 		if t, ok := r.line(b); ok {
 			turns = append(turns, t)
 		}
@@ -184,46 +198,4 @@ func cut(s string) string {
 		end--
 	}
 	return s[:end] + more
-}
-
-// chunk is how much of the file backward reads at a time.
-const chunk = 64 << 10
-
-// backward calls fn with each line of f, last first, until fn returns true.
-// It reads the file as it was when it started; a line being written then
-// comes incomplete, so it does not decode.
-func backward(ctx context.Context, f *os.File, fn func([]byte) bool) error {
-	info, err := f.Stat()
-	if err != nil {
-		return err
-	}
-	end := info.Size()
-	var tail []byte // the start of the line the last chunk ended in
-	for end > 0 {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		n := min(int64(chunk), end)
-		buf := make([]byte, n, int(n)+len(tail))
-		if _, err := f.ReadAt(buf, end-n); err != nil && !errors.Is(err, io.EOF) {
-			return err
-		}
-		end -= n
-		buf = append(buf, tail...)
-		for {
-			i := bytes.LastIndexByte(buf, '\n')
-			if i < 0 {
-				break
-			}
-			if line := bytes.TrimSpace(buf[i+1:]); len(line) > 0 && fn(line) {
-				return nil
-			}
-			buf = buf[:i]
-		}
-		tail = buf
-	}
-	if line := bytes.TrimSpace(tail); len(line) > 0 {
-		fn(line)
-	}
-	return nil
 }

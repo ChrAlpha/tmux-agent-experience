@@ -1,11 +1,13 @@
 package contextio
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -172,4 +174,60 @@ func TestReadFileIsBounded(t *testing.T) {
 	if _, err := ReadFile(ctx, path, 5); !errors.Is(err, context.Canceled) {
 		t.Fatalf("ReadFile after cancellation: %v", err)
 	}
+}
+
+// Lines cross chunk boundaries and outgrow a chunk; a line still being
+// written comes as it is, and one longer than the bound comes as nil.
+func TestBackward(t *testing.T) {
+	long := strings.Repeat("x", 3*backwardChunk)
+	over := strings.Repeat("z", 5*backwardChunk)
+	lines := []string{"a", long, "", "b", over, strings.Repeat("y", backwardChunk-1), "c"}
+	data := []byte(strings.Join(lines, "\n") + "\n{partial")
+	type line struct {
+		text  string
+		nil   bool
+		start int
+	}
+	var got []line
+	err := Backward(context.Background(), bytes.NewReader(data), int64(len(data)), int64(4*backwardChunk), func(b []byte, start int64) bool {
+		got = append(got, line{string(b), b == nil, int(start)})
+		return false
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	all := append(lines, "{partial")
+	var want []line
+	at := len(data)
+	for i := len(all) - 1; i >= 0; i-- {
+		at -= len(all[i])
+		if all[i] == over {
+			want = append(want, line{"", true, at})
+		} else {
+			want = append(want, line{all[i], false, at})
+		}
+		at-- // the newline before it
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d lines, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("line %d: got %q nil=%v at %d, want %.10q nil=%v at %d", i, trim(got[i].text), got[i].nil, got[i].start, want[i].text, want[i].nil, want[i].start)
+		}
+	}
+	got = nil
+	if err := Backward(context.Background(), bytes.NewReader([]byte("a\nb\n")), 4, 16, func(b []byte, start int64) bool {
+		got = append(got, line{string(b), b == nil, int(start)})
+		return string(b) == "b"
+	}); err != nil || len(got) != 2 || got[0] != (line{"", false, 4}) || got[1] != (line{"b", false, 2}) {
+		t.Fatalf("stopping early: %+v, %v", got, err)
+	}
+}
+
+func trim(s string) string {
+	if len(s) > 10 {
+		return s[:10] + "…"
+	}
+	return s
 }
