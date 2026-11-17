@@ -196,3 +196,21 @@ func TestReplyTimeoutClaimsNothingUnproven(t *testing.T) {
 		}
 	}
 }
+
+// A start whose agent started and whose prompt then failed never says to
+// start again: that would start another agent.
+func TestAFailedStartNeverSaysToStartAgain(t *testing.T) {
+	s := query.Session{Agent: "claude", ID: "0c000000-0000-7000-8000-00000000000c"}
+	for _, err := range []error{
+		&query.NotTakenError{Seq: 1, Target: s.ID, Err: errors.New("not taken")},
+		&query.RefusedError{Reason: query.RefuseBusy, Detail: "busy"},
+		errors.Join(query.ErrNotGiven, context.DeadlineExceeded),
+		fmt.Errorf("%w: disk full", query.ErrUnlogged),
+		errors.New("connection reset"),
+	} {
+		got := next("start", "claude", &query.StartedError{Session: s, Err: err})
+		if !strings.Contains(got, "it runs as 0c000000") || strings.Contains(got, "tmag start") {
+			t.Errorf("after %v: %q", err, got)
+		}
+	}
+}

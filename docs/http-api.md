@@ -43,7 +43,7 @@ Successful commands and command failures preserve their `tmag/v2` documents.
 | GET /v2/request | target, request | `request --json` |
 | GET /v2/read | target and one of last=1, lines=1..2000 or turns=1..20 | `read --json` |
 | GET /v2/watch | optional since cursor, otherwise Last-Event-ID | event stream |
-| POST /v2/act | JSON action | send, interrupt, or answer result |
+| POST /v2/act | JSON action | send, interrupt, answer or start result |
 | POST /v2/pair | JSON `{code}`; no bearer needed | `{schema,credential:{id,label,created,expires?,token}}` |
 
 Actions contain `verb` and `target`. A send carries `text`; an answer carries
@@ -53,6 +53,11 @@ session starts a turn, a working one reads the prompt at its next step, and
 the Codex daemon joins an active turn. A person's or an owner's prompt carries
 no sender line.
 Unknown body fields are rejected.
+A start carries no target but `agent` (claude, codex, pi or omp) or
+`template` (a name the person set as `@tmag-start-NAME`), an absolute `dir`,
+and optionally `worktree` (a branch) and `text`: it opens the agent's window
+beside serve's, waits until it shows its session, and delivers `text` as a
+send does.
 There is no machine selector, command string, sender identity or arbitrary shell.
 Bodies are limited to 1 MiB and ten seconds to read. Control authority is
 revalidated after the complete body and verb are checked; a stalled upload

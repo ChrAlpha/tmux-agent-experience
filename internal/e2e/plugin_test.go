@@ -143,6 +143,9 @@ func TestPluginInstallsBinaryAndSetsUp(t *testing.T) {
 	if got := h.tmux("show-option", "-gqv", "@tmag-peer-depth"); got != "3" {
 		t.Errorf("@tmag-peer-depth = %q", got)
 	}
+	if got := h.tmux("show-option", "-gqv", "@tmag-worktrees"); got != ".worktrees" {
+		t.Errorf("@tmag-worktrees = %q", got)
+	}
 	if got := h.tmux("show-option", "-gqv", "@tmag-plugin-version"); got != version.Version {
 		t.Errorf("@tmag-plugin-version = %q", got)
 	}

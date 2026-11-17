@@ -154,15 +154,15 @@ func (a *app) openServe(server string) int {
 	if err != nil {
 		return a.fail("serve", err)
 	}
-	command := shellQuote(bin) + " serve --server " + shellQuote(srv.Socket)
+	command := tmux.Quote(bin) + " serve --server " + tmux.Quote(srv.Socket)
 	for _, arg := range args {
-		command += " " + shellQuote(arg)
+		command += " " + tmux.Quote(arg)
 	}
 	// Pass scratch/instance directories explicitly: a running tmux server can
 	// predate the environment from which the owner opens this endpoint.
 	for _, key := range []string{"TMAG_STATE_DIR", "TMAG_AUTH_DIR"} {
 		if value := os.Getenv(key); value != "" {
-			command = key + "=" + shellQuote(value) + " " + command
+			command = key + "=" + tmux.Quote(value) + " " + command
 		}
 	}
 	window, err := srv.Run(ctx, "new-window", "-d", "-P", "-F", "#{window_id}", "-n", "tmag-api", command)
@@ -176,10 +176,6 @@ func (a *app) openServe(server string) int {
 	}
 	fmt.Fprintf(a.stdout, "tmag serve started in window %s\n", id)
 	return ExitOK
-}
-
-func shellQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // splitArgs splits an option's value into arguments the way sh would, with

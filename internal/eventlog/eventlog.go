@@ -137,6 +137,8 @@ type Event struct {
 	// Notice is the end, by its seq, that a Send of tmag's own notice tells
 	// an asker of.
 	Notice int64 `json:"notice,omitempty"`
+	// Template is the @tmag-start- template a Start ran, if one.
+	Template string `json:"template,omitempty"`
 }
 
 // Events tmag itself records, beside those named after agent hooks.
@@ -149,6 +151,7 @@ const (
 	Exit   = "Exit"   // the session's process ended without SessionEnd
 	Idle   = "Idle"   // a native status file ended a turn no hook reported
 	Owes   = "Owes"   // what the session owes changed outside its hooks and a prompt to it
+	Start  = "Start"  // tmag started the session's agent in a window
 	End    = "SessionEnd"
 )
 

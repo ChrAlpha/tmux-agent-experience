@@ -10,6 +10,8 @@
 //	FAKE_TITLE    terminal title to set on start (OSC 0)
 //	FAKE_HOOKS    "1" to run `tmag hook` itself, as in-process agents do
 //	FAKE_TURN_MS  how long a turn lasts (default 200)
+//	FAKE_FIRST_MS how long after its session starts it takes a first prompt
+//	              given with its command, as an agent that loads a while
 //	FAKE_MODE     the mode its hooks report, as Pi's and oh-my-pi's do
 //	FAKE_KEYS     "1" to read keys as a TUI does: Escape interrupts a turn
 //	FAKE_INBOX    "1" to serve the session's inbox: Claude Code's envelope,
@@ -378,6 +380,8 @@ func main() {
 	}
 	input := readInput(os.Getenv("FAKE_KEYS") == "1")
 	if prompt := argvPrompt(os.Args[1:]); prompt != "" {
+		ms, _ := strconv.Atoi(os.Getenv("FAKE_FIRST_MS"))
+		time.Sleep(time.Duration(ms) * time.Millisecond)
 		handle(prompt)
 	}
 loop:

@@ -76,6 +76,24 @@ func actorOf(s Session) eventlog.Actor { return eventlog.Actor{Agent: s.Agent, S
 // the obligation it opens on s, or nil for a prompt that opens none: a
 // person's, or one from an agent tmag cannot answer back to.
 func asking(ctx context.Context, v View, c Caller, s Session, ask Ask) (*eventlog.Obligation, error) {
+	o, err := deepened(ctx, v, c)
+	if o == nil || err != nil {
+		return nil, err
+	}
+	if ask == AskFinal {
+		o.Kind = eventlog.OweFinal
+		if waitsFor(v, actorOf(s), o.To, time.Now()) {
+			return nil, &RefusedError{RefuseCycle, fmt.Sprintf("%s waits for your answer, itself or through others; waiting for its answer in turn would hold you both until a timeout", s.ID)}
+		}
+	}
+	return o, nil
+}
+
+// deepened is the reply obligation an agent's ask opens, one deeper than
+// the deepest it owes, unless that passes the work on further than
+// @tmag-peer-depth allows; nil for a caller that is owed nothing: a person,
+// or an agent tmag cannot answer back to.
+func deepened(ctx context.Context, v View, c Caller) (*eventlog.Obligation, error) {
 	if c.By == nil || c.By.Session == "" {
 		return nil, nil
 	}
@@ -90,16 +108,9 @@ func asking(ctx context.Context, v View, c Caller, s Session, ask Ask) (*eventlo
 	}
 	depth = min(depth, maxPeerDepth+1)
 	if limit := peerDepth(ctx); depth > limit {
-		return nil, &RefusedError{RefuseDepth, fmt.Sprintf("you were asked for work an agent was asked for in turn; asking %s would pass it on %d times, and %s allows %d", s.ID, depth, PeerDepthOption, limit)}
+		return nil, &RefusedError{RefuseDepth, fmt.Sprintf("you were asked for work an agent was asked for in turn; your ask would pass it on %d times, and %s allows %d", depth, PeerDepthOption, limit)}
 	}
-	kind := eventlog.OweReply
-	if ask == AskFinal {
-		kind = eventlog.OweFinal
-		if waitsFor(v, actorOf(s), from, time.Now()) {
-			return nil, &RefusedError{RefuseCycle, fmt.Sprintf("%s waits for your answer, itself or through others; waiting for its answer in turn would hold you both until a timeout", s.ID)}
-		}
-	}
-	return &eventlog.Obligation{To: from, Kind: kind, Depth: depth}, nil
+	return &eventlog.Obligation{To: from, Kind: eventlog.OweReply, Depth: depth}, nil
 }
 
 // waitsFor reports whether from waits for to's answer, itself or through

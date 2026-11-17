@@ -15,11 +15,14 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/auth"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/query"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/transcript"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/version"
@@ -211,7 +214,7 @@ func (s *Server) info(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"schema": Schema, "state_schema": version.Schema, "version": s.cfg.Version, "instance": instance,
-		"operations": []string{"list", "inspect", "watch", "read", "request", "send", "interrupt", "answer"}})
+		"operations": []string{"list", "inspect", "watch", "read", "request", "send", "interrupt", "answer", "start"}})
 }
 func (s *Server) relay(w http.ResponseWriter, r *http.Request, args []string, input io.Reader) int {
 	ctx, cancel := context.WithTimeout(r.Context(), actTimeout)
@@ -292,6 +295,10 @@ func count(s string, most int) int {
 type action struct {
 	Verb     string            `json:"verb"`
 	Target   string            `json:"target"`
+	Agent    string            `json:"agent,omitempty"`
+	Template string            `json:"template,omitempty"`
+	Dir      string            `json:"dir,omitempty"`
+	Worktree string            `json:"worktree,omitempty"`
 	Text     string            `json:"text,omitempty"`
 	Request  string            `json:"request,omitempty"`
 	Decision string            `json:"decision,omitempty"`
@@ -304,13 +311,28 @@ func (s *Server) act(w http.ResponseWriter, r *http.Request) {
 	if !body(w, r, &a) {
 		return
 	}
-	if a.Target == "" {
+	if a.Target == "" && a.Verb != "start" {
 		fail(w, 400, "usage", "target is required")
 		return
 	}
 	args := []string{a.Verb, "--json"}
 	var input io.Reader
 	switch a.Verb {
+	case "start":
+		name, ok := startName(a)
+		if !ok || a.Target != "" || !filepath.IsAbs(a.Dir) {
+			fail(w, 400, "usage", "start needs an agent or a template, and an absolute dir")
+			return
+		}
+		args = append(args, "--dir="+a.Dir)
+		if a.Worktree != "" {
+			args = append(args, "--worktree="+a.Worktree)
+		}
+		args = append(args, "--", name)
+		if a.Text != "" {
+			args = append(args, "-")
+			input = strings.NewReader(a.Text)
+		}
 	case "send":
 		args = append(args, "--", a.Target, "-")
 		input = strings.NewReader(a.Text)
@@ -352,6 +374,19 @@ func (s *Server) act(w http.ResponseWriter, r *http.Request) {
 	code := s.relay(w, r, args, input)
 	s.cfg.Log.Printf("credential %s: %s %q: exit %d", query.OwnerGrant(r.Context()).ID(), a.Verb, a.Target, code)
 }
+
+// startName is what a start action starts: one of the agents, or a
+// template the person set, by name; never a command.
+func startName(a action) (string, bool) {
+	switch {
+	case a.Agent != "" && a.Template == "":
+		return a.Agent, slices.Contains(proc.Agents, a.Agent)
+	case a.Template != "" && a.Agent == "":
+		return a.Template, !slices.Contains(proc.Agents, a.Template) && !strings.HasPrefix(a.Template, "-")
+	}
+	return "", false
+}
+
 func (s *Server) watch(w http.ResponseWriter, r *http.Request) {
 	cursor := r.URL.Query().Get("since")
 	if cursor == "" {
