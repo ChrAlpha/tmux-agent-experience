@@ -299,11 +299,7 @@ func codexHome() string {
 	return filepath.Join(home, ".codex")
 }
 
-func codexDaemon() (int, bool) {
-	pid, found, _ := codexDaemonContext(context.Background())
-	return pid, found
-}
-func codexDaemonContext(ctx context.Context) (int, bool, error) {
+func codexDaemon(ctx context.Context) (int, bool, error) {
 	pt, err := proc.Snapshot(ctx)
 	if err != nil {
 		return 0, false, err

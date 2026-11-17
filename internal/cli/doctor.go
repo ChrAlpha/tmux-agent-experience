@@ -389,7 +389,7 @@ func codexCheck(ctx context.Context, h host, peers bool) check {
 		// does not say whether the current ones match.
 		notes = append(notes, "hook approval found, not verifiable for the current hooks; if states stop updating, approve again with /hooks")
 	}
-	if _, ok, err := codexDaemonContext(ctx); err != nil {
+	if _, ok, err := codexDaemon(ctx); err != nil {
 		status = "warn"
 		notes = append(notes, "daemon probe incomplete")
 	} else if ok {

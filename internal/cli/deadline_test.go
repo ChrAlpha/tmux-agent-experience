@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -422,5 +423,64 @@ func TestAnswerWaitOutlivesSetupBudgetAndCancelsSilently(t *testing.T) {
 	}
 	if err := answer.Decide(probe, log.Dir, rec.Requests[0].ID, answer.Decision{Behavior: answer.Allow}); err == nil {
 		t.Fatal("late decision accepted")
+	}
+}
+
+// A command that cannot heed its context's cancellation, blocked on its
+// input here, outlives a first signal and ends by the second, as any
+// program would.
+func TestASecondSignalEndsACommand(t *testing.T) {
+	if os.Getenv("TMAG_SIGNAL_TEST") != "" {
+		_, stop := signalContext()
+		defer stop()
+		defer endOnSecondSignal()()
+		fmt.Println("ready")
+		_, _ = os.Stdin.Read(make([]byte, 1))
+		os.Exit(0)
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	defer w.Close()
+	cmd := exec.Command(exe, "-test.run=^TestASecondSignalEndsACommand$")
+	cmd.Env = append(os.Environ(), "TMAG_SIGNAL_TEST=1")
+	cmd.Stdin = r
+	out, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if line, err := bufio.NewReader(out).ReadString('\n'); err != nil || line != "ready\n" {
+		t.Fatalf("child: %q, %v", line, err)
+	}
+	exited := make(chan error, 1)
+	go func() { exited <- cmd.Wait() }()
+	if err := cmd.Process.Signal(syscall.SIGINT); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-exited:
+		t.Fatalf("a first signal ended a command that cannot heed it: %v", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-exited:
+	case <-time.After(5 * time.Second):
+		_ = cmd.Process.Kill()
+		t.Fatal("a second signal did not end the command")
+	}
+	if ws, ok := cmd.ProcessState.Sys().(syscall.WaitStatus); !ok || !ws.Signaled() || ws.Signal() != syscall.SIGTERM {
+		t.Fatalf("the command ended %v, not by the second signal", cmd.ProcessState)
 	}
 }

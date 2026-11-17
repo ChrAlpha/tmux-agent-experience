@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"context"
 	"flag"
 	"fmt"
 	"os"
@@ -19,12 +18,13 @@ func (a *app) cmdUninstall(args []string) int {
 	if _, err := parse(fs, args); err != nil {
 		return a.usageError("uninstall", err)
 	}
+	ctx, cancel := a.signalContext()
+	defer cancel()
 	if *purge {
-		if err := (auth.Store{Dir: auth.DefaultDir()}).Revoke(context.Background(), "", true); err != nil {
+		if err := (auth.Store{Dir: auth.DefaultDir()}).Revoke(ctx, "", true); err != nil {
 			return a.fail("uninstall", err)
 		}
 		cleared := 0
-		ctx := context.Background()
 		servers, _ := tmux.Servers(ctx)
 		for _, s := range servers {
 			panes, err := s.Panes(ctx)
@@ -58,7 +58,7 @@ func (a *app) cmdUninstall(args []string) int {
 	}
 	// pi remove takes a package's path: those Pi's settings list, else the
 	// tmux plugin's.
-	paths := tmagPiPackages(context.Background())
+	paths := tmagPiPackages(ctx)
 	if root := pluginRoot(os.Getenv); len(paths) == 0 && root != "" {
 		dir := filepath.Join(root, "plugins", "pi")
 		paths = []string{filepath.Join(dir, peersName), filepath.Join(dir, pluginName)}

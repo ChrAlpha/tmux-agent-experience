@@ -36,7 +36,8 @@ func (a *app) cmdNotify(args []string) int {
 		return ExitOK
 	}
 
-	ctx := context.Background()
+	ctx, cancel := a.signalContext()
+	defer cancel()
 	commands := notifyCommands(ctx)
 	if len(commands) == 0 {
 		return a.fail("notify", errors.New(notify.Option+" is not set on any tmux server: set it to a command that sends a notification"))
