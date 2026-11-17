@@ -112,21 +112,22 @@ const guardRefused = "tmag-guard-refused"
 //
 // A Codex pane is written only while its title shows the session, as Check
 // judges it. Its title is read and judged first, under the same pane lock,
-// and the write's invocation stores the title it judged on the pane, as a
-// value tmux never expands, for its guard to ask that the title is still
-// that one. A title that changed in between, as a spinner's does, is read
-// and judged again, titleReads times at most.
+// by an invocation that also has tmux keep that title on the pane; the
+// write's guard asks that the title is still the one kept. tmux keeps and
+// compares the title itself, so no title passes through a command line. A
+// title that changed in between, as a spinner's does, is read and judged
+// again, titleReads times at most.
 func guardedWrite(ctx context.Context, s session.Shown, rec session.Record, pr Projection, ask bool, options []string) (Projected, outcome) {
 	if !s.Valid() || !named(rec.Agent, rec.ID) {
 		return Projected{}, unwritten
 	}
 	srv := tmux.Server{Socket: s.Server}
 	if rec.Agent != proc.Codex {
-		got, out, _ := guardedCall(ctx, srv, s, rec, pr, ask, options, nil)
+		got, out, _ := guardedCall(ctx, srv, s, rec, pr, ask, options, false)
 		return got, out
 	}
 	for range titleReads {
-		p, err := srv.Pane(ctx, s.Pane)
+		p, err := keepTitle(ctx, srv, s.Pane)
 		if err != nil {
 			return Projected{}, absence(ctx, srv, s.Pane)
 		}
@@ -136,12 +137,27 @@ func guardedWrite(ctx context.Context, s session.Shown, rec session.Record, pr P
 		if !titleShows(p, rec) {
 			return Projected{}, unwritten
 		}
-		got, out, after := guardedCall(ctx, srv, s, rec, pr, ask, options, &p.Title)
+		got, out, after := guardedCall(ctx, srv, s, rec, pr, ask, options, true)
 		if out != unwritten || after == nil || after.Title == p.Title {
 			return got, out
 		}
 	}
 	return Projected{}, unwritten
+}
+
+// keepTitle reads the pane, and has tmux keep the title it reads on it, in
+// one invocation.
+func keepTitle(ctx context.Context, srv tmux.Server, pane string) (tmux.Pane, error) {
+	out, err := srv.Run(ctx, "set-option", "-p", "-F", "-t", pane, tmux.OptionPrefix+optTitle, "#{pane_title}", ";",
+		"display-message", "-p", "-t", pane, tmux.PaneFormat)
+	if err != nil {
+		return tmux.Pane{}, err
+	}
+	p, ok := srv.ParsePane(strings.TrimRight(string(out), "\n"))
+	if !ok || p.ID != pane {
+		return tmux.Pane{}, fmt.Errorf("pane %s: unexpected tmux output", pane)
+	}
+	return p, nil
 }
 
 // titleReads bounds how often a Codex pane's title is read and judged again
@@ -154,10 +170,10 @@ func holds(p tmux.Pane, s session.Shown, rec session.Record) bool {
 	return ok && a.Agent == rec.Agent && a.Session == rec.ID && a.PID == s.PID && a.Start == s.Start
 }
 
-// guardedCall is one guarded write. With title, the invocation first stores
-// title on the pane and the guard asks that the pane's title still is it.
-// It returns the pane as printed after the guard, when tmux printed it.
-func guardedCall(ctx context.Context, srv tmux.Server, s session.Shown, rec session.Record, pr Projection, ask bool, options []string, title *string) (Projected, outcome, *tmux.Pane) {
+// guardedCall is one guarded write. With title, the guard also asks that the
+// pane's title is still the one keepTitle kept. It returns the pane as
+// printed after the guard, when tmux printed it.
+func guardedCall(ctx context.Context, srv tmux.Server, s session.Shown, rec session.Record, pr Projection, ask bool, options []string, title bool) (Projected, outcome, *tmux.Pane) {
 	terms := []string{
 		"#{==:#{" + tmux.OptionPrefix + optAgent + "}," + rec.Agent + "}",
 		"#{==:#{" + tmux.OptionPrefix + optSession + "}," + rec.ID + "}",
@@ -166,17 +182,13 @@ func guardedCall(ctx context.Context, srv tmux.Server, s session.Shown, rec sess
 		"#{?pane_dead,0,1}",
 		"#{==:#{pane_current_command},#{" + tmux.OptionPrefix + optCmd + "}}",
 	}
-	var args []string
-	if title != nil {
-		// The stored value ends in a dot, as the compared title does, so
-		// that no title ends the argument as tmux's command separator.
-		args = []string{"set-option", "-p", "-t", s.Pane, tmux.OptionPrefix + optTitle, *title + ".", ";"}
-		terms = append(terms, "#{==:"+tmux.TitleFormat+".,#{"+tmux.OptionPrefix+optTitle+"}}")
+	if title {
+		terms = append(terms, "#{==:#{pane_title},#{"+tmux.OptionPrefix+optTitle+"}}")
 	}
 	accepted := projectionCommands(s.Pane, pr) + " ; display-message -p -t " + s.Pane + " ok"
 	refused := "display-message -p -t " + s.Pane + " " + guardRefused
-	args = append(args, "if", "-F", "-t", s.Pane, conjunction(terms...), accepted, refused, ";",
-		"display-message", "-p", "-t", s.Pane, tmux.PaneFormat)
+	args := []string{"if", "-F", "-t", s.Pane, conjunction(terms...), accepted, refused, ";",
+		"display-message", "-p", "-t", s.Pane, tmux.PaneFormat}
 	if ask {
 		args = append(append(args, ";"), tmux.OptionCommands(options...)...)
 		args = append(args, ";", "list-clients", "-F", "#{client_activity}")

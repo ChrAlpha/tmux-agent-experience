@@ -283,7 +283,7 @@ func TestProjectWritesACodexPaneOnlyWhileItsTitleShowsTheSession(t *testing.T) {
 	}
 	wrap := t.TempDir()
 	flip := filepath.Join(wrap, "title")
-	script := "#!/bin/sh\nif [ \"$4 $8\" = 'set-option @tmag_title' ] && [ -s '" + flip + "' ]; then '" + real + "' -S \"$3\" select-pane -t " + pane +
+	script := "#!/bin/sh\nif [ \"$4\" = if ] && [ -s '" + flip + "' ]; then '" + real + "' -S \"$3\" select-pane -t " + pane +
 		" -T \"$(cat '" + flip + "')\"; fi\nexec '" + real + "' \"$@\"\n"
 	if err := os.WriteFile(filepath.Join(wrap, "tmux"), []byte(script), 0o700); err != nil {
 		t.Fatal(err)
@@ -364,9 +364,9 @@ func TestProjectReadsTheRecordUnderThePaneLock(t *testing.T) {
 	}
 }
 
-// Whatever a title holds, the write stores it as a value and compares it as
-// one: tmux expands and runs nothing of it, and the pane is written exactly
-// when TitleIDs reads the session's thread in it.
+// Whatever a title holds, tmux keeps and compares it as a value: nothing of
+// it is expanded or run, none passes through a command line, and the pane
+// is written exactly when TitleIDs reads the session's thread in it.
 func TestAnyTitleIsStoredAndComparedAsAValue(t *testing.T) {
 	srv, pane, cmd := startTmuxPane(t)
 	ctx := context.Background()
@@ -393,8 +393,6 @@ func TestAnyTitleIsStoredAndComparedAsAValue(t *testing.T) {
 		"see " + a + " | proj",
 		"proj | " + b,
 		"",
-		// Too long to read: no tmux command fails on it, and nothing is
-		// written.
 		strings.Repeat("x", 16000) + " | " + a,
 	} {
 		rec := session.Record{Agent: proc.Codex, ID: threadA, Main: adapter.Working, Since: time.Unix(int64(1000+i), 0).UTC(), Shown: []session.Shown{entry}}
@@ -410,13 +408,12 @@ func TestAnyTitleIsStoredAndComparedAsAValue(t *testing.T) {
 		if (len(written) == 1) != want {
 			t.Errorf("title %q: written %v, TitleIDs reads the thread %v", title, len(written) == 1, want)
 		}
-		out, err := srv.Run(ctx, "display-message", "-p", "-t", pane, "#{@tmag_title}\t#{@tmag_pwned}")
+		out, err := srv.Run(ctx, "display-message", "-p", "-t", pane, "#{==:#{pane_title},#{@tmag_title}}|#{@tmag_pwned}")
 		if err != nil {
 			t.Fatal(err)
 		}
-		stored, pwned, _ := strings.Cut(strings.TrimRight(string(out), "\n"), "\t")
-		if pwned != "" || (want && stored != title+".") {
-			t.Errorf("title %q: stored %q, ran %q", title, stored, pwned)
+		if got := strings.TrimRight(string(out), "\n"); got != "1|" {
+			t.Errorf("title %q: kept as the pane's title, then what ran: %q", title, got)
 		}
 	}
 }
@@ -438,7 +435,8 @@ func setTitle(t *testing.T, srv tmux.Server, pane, title string) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if strings.TrimRight(string(out), "\n") == title {
+		// tmux 3.6 prints a title's backslashes doubled.
+		if got := strings.TrimRight(string(out), "\n"); got == title || strings.ReplaceAll(got, `\\`, `\`) == title {
 			return
 		}
 		if time.Now().After(deadline) {

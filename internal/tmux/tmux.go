@@ -73,9 +73,6 @@ func clean(name string) string {
 	return "#{s/[\x01-\x1f\x7f]//:" + name + "}"
 }
 
-// TitleFormat is a pane's title as PaneFormat prints it.
-var TitleFormat = clean("pane_title")
-
 // PaneFormat prints a pane as a line ParsePane reads: its identity, its
 // display, every tmag pane option and its title, free text cleaned.
 var PaneFormat = func() string {
