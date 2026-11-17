@@ -193,8 +193,10 @@ func recordDelivery(ctx context.Context, log *eventlog.Log, s Session, gate stat
 
 // unmark returns what takes back the marks a delivery set on its session
 // (Sent, Queued, Halted): each one the record still holds goes back to what
-// it was, under the session's lock. Nothing is logged: the marks are tmag's
-// own, not part of what an event reports.
+// it was, under the session's lock. A mark is the time it was set, to the
+// nanosecond, so one a later delivery set is never taken for this one's.
+// Nothing is logged: the marks are tmag's own, not part of what an event
+// reports.
 func unmark(store session.Store, s Session, prior, marked session.Record) func(context.Context) error {
 	return func(ctx context.Context) error {
 		return store.Lock(ctx, s.Agent, s.ID, func() error {

@@ -78,7 +78,7 @@ func serviceInterrupt(s Session, caller Caller) serviceVerb {
 			return threadIn(ctx, c, s, RefuseIdle, codexsvc.StatusActive)
 		},
 		mark: func(rec *session.Record) eventlog.Event {
-			rec.Halted, turn = time.Now().UTC().Truncate(time.Second), rec.Turn
+			rec.Halted, turn = time.Now().UTC(), rec.Turn
 			ev := eventlog.Event{Event: eventlog.Halt, Cwd: rec.Cwd}
 			caller.stamp(&ev)
 			return ev
@@ -95,7 +95,7 @@ func paneInterrupt(caller Caller) paneVerb {
 	return paneVerb{
 		plan: func(s Session, p Pane, rec session.Record) (session.Record, eventlog.Event, *session.Record) {
 			now := time.Now()
-			rec.Halted = now.UTC().Truncate(time.Second)
+			rec.Halted = now.UTC()
 			ev := eventlog.Event{Event: eventlog.Halt, Cwd: p.Cwd}
 			caller.stamp(&ev)
 			if driver.ReportsInterrupt(s.Agent) {
@@ -138,7 +138,7 @@ func throughInboxInterrupt(outer context.Context, log *eventlog.Log, v View, s S
 	d, undo, err := recordDelivery(ctx, log, s, runningGate, driver.Inbox, rec.Inbox, func() error {
 		return sessionEnded(s.ID)
 	}, func(rec *session.Record) eventlog.Event {
-		rec.Halted = time.Now().UTC().Truncate(time.Second)
+		rec.Halted = time.Now().UTC()
 		ev := eventlog.Event{Event: eventlog.Halt, Cwd: rec.Cwd}
 		caller.stamp(&ev)
 		return ev

@@ -211,9 +211,9 @@ func servicePrompt(s Session, text string, caller Caller, gate stateGate, wait b
 			// confirms it, like one on the session's own channel. A wait
 			// leaves the prompt it started unconfirmed instead.
 			if wait {
-				rec.Sent = time.Now().UTC().Truncate(time.Second)
+				rec.Sent = time.Now().UTC()
 			} else {
-				rec.Queued = time.Now().UTC().Truncate(time.Second)
+				rec.Queued = time.Now().UTC()
 			}
 			if active {
 				turn = rec.Turn
@@ -237,7 +237,7 @@ func servicePrompt(s Session, text string, caller Caller, gate stateGate, wait b
 func panePrompt(text string, caller Caller) paneVerb {
 	return paneVerb{
 		plan: func(_ Session, p Pane, rec session.Record) (session.Record, eventlog.Event, *session.Record) {
-			rec.Sent = time.Now().UTC().Truncate(time.Second)
+			rec.Sent = time.Now().UTC()
 			return rec, sentEvent(rec, text, caller), nil
 		},
 		press: func(ctx context.Context, s Session, p Pane) error {
@@ -277,7 +277,6 @@ func throughInbox(outer context.Context, log *eventlog.Log, v View, s Session, t
 	}
 	defer c.Close()
 
-	sent := time.Now().UTC().Truncate(time.Second)
 	// The envelope's class and the hold warning are what tmag proves at the
 	// delivery decision, after recordDelivery re-checks the receiver under
 	// its lock and reads the sender's record afresh. A later hook may change
@@ -292,9 +291,9 @@ func throughInbox(outer context.Context, log *eventlog.Log, v View, s Session, t
 		// the wait. The asynchronous modes are queued until the main agent's
 		// next report.
 		if wait {
-			rec.Sent = sent
+			rec.Sent = time.Now().UTC()
 		} else {
-			rec.Queued = sent
+			rec.Queued = time.Now().UTC()
 		}
 		return sentEvent(*rec, text, caller)
 	}, func(receiver session.Record) {
@@ -318,9 +317,9 @@ func throughInbox(outer context.Context, log *eventlog.Log, v View, s Session, t
 }
 
 // claudeDelivery decides a Claude delivery's permission class and whether the
-// receiver will hold it. v is the fresh view read under the receiver's lock:
-// a person or owner client speaks with the receiver's class from receiver,
-// and an agent with its own class as its freshly read record says.
+// receiver will hold it, from the receiver's record read under its lock: a
+// person or owner client speaks with the receiver's class, and an agent with
+// its own class as its record, read afresh, says.
 func claudeDelivery(ctx context.Context, store session.Store, receiver session.Record, caller Caller) (mode string, held bool) {
 	mode = claudeMode(ctx, store, receiver, caller)
 	held = receiver.Permission == adapter.PermissionBypass && mode != adapter.PermissionBypass

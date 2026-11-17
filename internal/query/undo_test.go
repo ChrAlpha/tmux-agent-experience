@@ -94,3 +94,100 @@ func TestUnmarkKeepsALaterMark(t *testing.T) {
 		t.Fatalf("after unmark: sent %v halted %v, %v; want the later sent kept and this halt taken back", got.Sent, got.Halted, err)
 	}
 }
+
+// A delivery that proved it took nothing takes back only its own mark: a
+// later delivery's mark, set in the same second after a hook cleared the
+// first, stays, so a third delivery is still held off by it.
+func TestUndoKeepsALaterMarkOfTheSameSecond(t *testing.T) {
+	sock := filepath.Join(sockettest.Dir(t), "s.sock")
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	release := make(chan struct{})
+	go func() {
+		for n := 0; ; n++ {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(first bool) {
+				defer c.Close()
+				buf := make([]byte, 4096)
+				_, _ = c.Read(buf)
+				if first {
+					<-release
+					_, _ = c.Write([]byte("{\"ok\":false}\n"))
+					return
+				}
+				_, _ = c.Write([]byte("{\"ok\":true}\n"))
+			}(n == 0)
+		}
+	}()
+	tb, err := proc.Snapshot(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	self, _ := tb.Get(os.Getpid())
+	state := t.TempDir()
+	log := eventlog.Open(state)
+	store := session.Store{Dir: state}
+	rec := session.Record{Agent: proc.Pi, ID: "s1", Main: adapter.Working,
+		Host:  session.Host{PID: os.Getpid(), Start: self.Start, Role: proc.Terminal},
+		Inbox: &session.Inbox{Path: sock, PID: os.Getpid(), Start: self.Start}}
+	ctx := t.Context()
+	if err := store.Put(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+	send := func() error {
+		v, _, err := Load(ctx, store)
+		if err != nil {
+			return err
+		}
+		s, ok := v.Session(rec.Agent, rec.ID)
+		if !ok {
+			return errors.New("no session")
+		}
+		_, err = throughInbox(ctx, log, v, s, "hello", Caller{}, liveGate, false)
+		return err
+	}
+	queued := func() time.Time {
+		t.Helper()
+		got, _, err := store.Get(ctx, rec.Agent, rec.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got.Queued
+	}
+	first := make(chan error, 1)
+	go func() { first <- send() }()
+	for deadline := time.Now().Add(5 * time.Second); queued().IsZero(); time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the first delivery set no mark")
+		}
+	}
+	// The main agent reports, which confirms the first prompt.
+	if err := store.Lock(ctx, rec.Agent, rec.ID, func() error {
+		cur, _, err := store.Get(ctx, rec.Agent, rec.ID)
+		if err != nil {
+			return err
+		}
+		cur.Queued = time.Time{}
+		return store.Put(ctx, cur)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := send(); err != nil {
+		t.Fatalf("the second delivery: %v", err)
+	}
+	second := queued()
+	close(release)
+	var notTaken *NotTakenError
+	if err := <-first; !errors.As(err, &notTaken) {
+		t.Fatalf("the first delivery: %v, want the inbox's refusal to take it", err)
+	}
+	if got := queued(); got.IsZero() || !got.Equal(second) {
+		t.Fatalf("queued %v after the first delivery's undo, want the second's %v", got, second)
+	}
+}
