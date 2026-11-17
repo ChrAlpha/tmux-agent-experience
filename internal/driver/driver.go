@@ -6,6 +6,8 @@
 // in each agent (see the agents' hook and protocol behaviour in README.md).
 package driver
 
+import "github.com/ChrAlpha/tmux-agent-experience/internal/proc"
+
 // Verbs tmag can carry to a session.
 const (
 	Send      = "send"      // deliver a prompt now, or as a turn of its own
@@ -43,151 +45,94 @@ const (
 	Agent
 )
 
-// Mode is how a send asks to be answered.
-type Mode int
+// service is the runtime of a session in a background service, which no
+// pane shows.
+const service = string(proc.Service)
 
-const (
-	// Now delivers at once: an idle session starts a turn, a working one
-	// reads the prompt at its next step. No answer is asked for.
-	Now Mode = iota
-	// Reply delivers at once and asks the receiver to answer with tmag reply.
-	Reply
-	// Wait starts a turn of its own, whose final message the sender reads
-	// with tmag read --last.
-	Wait
-)
-
-// Route is how a send reaches a session. Channel is tried first; Fallback is
-// the pane to try while the session is idle when Channel is an inbox no
-// process proves. Either field may be empty.
-type Route struct {
-	Channel  string
-	Fallback string
+// Plan is how a verb reaches a session: the channels to try, in order, each
+// next one when the previous cannot be proven to reach the session. When
+// none can, Busy says the session has a pane that takes the verb once it is
+// idle; otherwise the last channel's refusal stands, or, with none to try,
+// the verb is unsupported.
+type Plan struct {
+	Try  []string
+	Busy bool
 }
 
-// SendRoute returns how a send from caller reaches a session of agent with
-// runtime, idle or not, with the response mode it asks for.
+// SendPlan is how a prompt from caller reaches a session of agent with
+// runtime, idle or not, as a turn of its own (wait) or not.
 //
 // An agent's prompt goes through the session's own message channel in any
-// state; only where none exists does it fall back to the pane, and only while
-// the session is idle. A person's or owner's prompt keeps the person's
-// authority: typed through the pane while idle, and through the session's
-// channel while it works. A person's wait keeps the pane path.
-func SendRoute(agent, runtime string, caller Caller, mode Mode, idle bool) Route {
-	service := runtime == "service"
-	switch agent {
-	case "claude":
-		if service {
-			if caller == Person && mode == Wait {
-				// A background session has no pane, and a person's wait takes
-				// the pane path.
-				return Route{}
-			}
-			// Every background session binds an inbox.
-			return Route{Channel: Inbox}
+// state, and through the pane while the session is idle. A person's or
+// owner's prompt keeps the person's authority: typed through the pane while
+// idle or for a turn of its own, and through the session's channel while it
+// works. A session in a service has no pane: a Codex daemon takes prompts
+// itself, Claude Code's supervisor through the session's inbox, and Pi or
+// oh-my-pi serving a program none.
+func SendPlan(agent, runtime string, caller Caller, wait, idle bool) Plan {
+	if runtime == service {
+		switch {
+		case agent == proc.Codex:
+			return Plan{Try: []string{Service}}
+		case agent == proc.Claude && !(caller == Person && wait):
+			return Plan{Try: []string{Inbox}}
 		}
-		if caller == Person {
-			if mode == Wait || idle {
-				return Route{Channel: Pane}
-			}
-			return Route{Channel: Inbox}
-		}
-		return Route{Channel: Inbox, Fallback: paneIf(idle)}
-	case "codex":
-		if service {
-			return Route{Channel: Service}
-		}
-		if idle {
-			return Route{Channel: Pane}
-		}
-		return Route{}
-	case "pi", "omp":
-		if service {
-			// A session serving a program takes input from it alone.
-			return Route{}
-		}
-		if caller == Person {
-			if mode == Wait || idle {
-				return Route{Channel: Pane}
-			}
-			return Route{Channel: Inbox}
-		}
-		return Route{Channel: Inbox, Fallback: paneIf(idle)}
+		return Plan{}
 	}
-	return Route{}
+	var try []string
+	switch agent {
+	case proc.Codex:
+		if idle {
+			try = []string{Pane}
+		}
+	case proc.Claude, proc.Pi, proc.OMP:
+		switch {
+		case caller == Person && (wait || idle):
+			try = []string{Pane}
+		case caller == Person:
+			try = []string{Inbox}
+		case idle:
+			try = []string{Inbox, Pane}
+		default:
+			try = []string{Inbox}
+		}
+	default:
+		return Plan{}
+	}
+	return Plan{Try: try, Busy: !idle}
 }
 
-func paneIf(idle bool) string {
-	if idle {
-		return Pane
+// InterruptPlan is how an interrupt reaches a session of agent with
+// runtime: the Codex daemon interrupts its own turns, Pi's extension aborts
+// a turn and the pane takes Escape where it cannot, and every other
+// interactive agent takes Escape in its pane.
+func InterruptPlan(agent, runtime string) Plan {
+	if runtime == service {
+		if agent == proc.Codex {
+			return Plan{Try: []string{Service}}
+		}
+		return Plan{}
+	}
+	switch agent {
+	case proc.Pi:
+		return Plan{Try: []string{Inbox, Pane}}
+	case proc.Claude, proc.Codex, proc.OMP:
+		return Plan{Try: []string{Pane}}
+	}
+	return Plan{}
+}
+
+// AnswerChannel carries an answer to a session of agent with runtime, or is
+// "": Claude Code's answer hook, wherever the session runs, and the Codex
+// daemon for its approvals.
+func AnswerChannel(agent, runtime string) string {
+	switch {
+	case agent == proc.Claude:
+		return Hook
+	case agent == proc.Codex && runtime == service:
+		return Service
 	}
 	return ""
-}
-
-// Channel returns the channel that carries a verb with one channel to a
-// session of agent with runtime ("terminal", "service", or "" when its hooks
-// did not say), or "" when nothing can. Send has no single channel: SendRoute
-// chooses it from the caller, the response mode and the session's state.
-func Channel(agent, runtime, verb string) string {
-	return route(agent, runtime, verb).Channel
-}
-
-// InterruptRoute returns how an interrupt reaches a session: Pi's proven
-// inbox first, with its pane as the fallback; the pane for the other terminal
-// agents; and the agent service for a Codex daemon. A fallback is tried only
-// when no inbox is proven, never after the inbox refused.
-func InterruptRoute(agent, runtime string) Route {
-	return route(agent, runtime, Interrupt)
-}
-
-// route is the one table of non-send channels. A route's fallback is the
-// second channel to try when the first has nothing proven to reach.
-func route(agent, runtime, verb string) Route {
-	service := runtime == "service"
-	switch agent {
-	case "claude":
-		switch {
-		case verb == Answer:
-			// The hook runs wherever the session does, terminal or not.
-			return Route{Channel: Hook}
-		case service:
-			// A background session has no terminal to prompt or interrupt.
-			return Route{}
-		case verb == Interrupt:
-			return Route{Channel: Pane}
-		}
-		return Route{}
-	case "codex":
-		switch {
-		case service:
-			return Route{Channel: Service}
-		case verb == Interrupt:
-			return Route{Channel: Pane}
-		}
-		// An embedded app-server listens nowhere, and a dialog's keys cannot
-		// be bound to a particular request.
-		return Route{}
-	case "pi":
-		switch {
-		case service:
-			// A session serving a program takes input from it alone.
-			return Route{}
-		case verb == Interrupt:
-			return Route{Channel: Inbox, Fallback: Pane}
-		}
-		return Route{}
-	case "omp":
-		switch {
-		case service:
-			// A session serving a program takes input from it alone.
-			return Route{}
-		case verb == Interrupt:
-			// oh-my-pi's extension API was not observed to abort a turn.
-			return Route{Channel: Pane}
-		}
-		return Route{}
-	}
-	return Route{}
 }
 
 // ReportsInterrupt says whether the agent reports an interrupted turn to its
@@ -195,23 +140,21 @@ func route(agent, runtime, verb string) Route {
 // runs end as any other; Claude Code reports nothing, not even its idle
 // notification, so tmag records the interrupt it delivered itself.
 func ReportsInterrupt(agent string) bool {
-	return agent == "codex" || agent == "pi" || agent == "omp"
+	return agent == proc.Codex || agent == proc.Pi || agent == proc.OMP
 }
 
-// Capabilities lists the verbs some channel carries to a session of agent
-// with runtime. Each verb still checks its own gate when used.
+// Capabilities are the verbs some channel carries to a session of agent with
+// runtime, in Verbs order.
 func Capabilities(agent, runtime string) []string {
 	out := []string{}
-	for _, verb := range Verbs {
-		carried := false
-		if verb == Send {
-			carried = SendRoute(agent, runtime, Agent, Now, true).Channel != ""
-		} else {
-			carried = Channel(agent, runtime, verb) != ""
-		}
-		if carried {
-			out = append(out, verb)
-		}
+	if len(SendPlan(agent, runtime, Agent, false, true).Try) > 0 {
+		out = append(out, Send)
+	}
+	if len(InterruptPlan(agent, runtime).Try) > 0 {
+		out = append(out, Interrupt)
+	}
+	if AnswerChannel(agent, runtime) != "" {
+		out = append(out, Answer)
 	}
 	return out
 }

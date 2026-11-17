@@ -16,7 +16,6 @@ import (
 	"github.com/ChrAlpha/tmux-agent-experience/internal/adapter"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/codexsvc"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/codexsvc/svctest"
-	"github.com/ChrAlpha/tmux-agent-experience/internal/driver"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/inbox"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
@@ -56,23 +55,6 @@ func TestHeader(t *testing.T) {
 		}
 		if got != "" && !strings.HasPrefix(got, Marker+" ") {
 			t.Errorf("%s: %q does not start with the marker", c.name, got)
-		}
-	}
-}
-
-// The answer a prompt asks for chooses the driver's response mode.
-func TestAskModes(t *testing.T) {
-	for _, c := range []struct {
-		ask  Ask
-		want driver.Mode
-	}{
-		{AskNoAnswer, driver.Now},
-		{AskReply, driver.Reply},
-		{Answering, driver.Reply},
-		{AskFinal, driver.Wait},
-	} {
-		if got := driverMode(c.ask); got != c.want {
-			t.Errorf("ask %d drives %d, want %d", c.ask, got, c.want)
 		}
 	}
 }
@@ -152,26 +134,6 @@ func TestSendGates(t *testing.T) {
 	unread.Queued = now.Add(-time.Second)
 	if err := liveGate(unread, now); !isRefused(err, RefuseBusy) || !strings.Contains(err.Error(), "has not reached its next step") {
 		t.Fatalf("an unread message: %v", err)
-	}
-}
-
-// An unproven inbox is busy while a terminal session works, which leaves the
-// idle pane as the next try; a background session has no pane to fall back to.
-func TestNoMessageChannel(t *testing.T) {
-	working := Session{Agent: proc.Claude, ID: "s1", State: adapter.Working}
-	if err := noMessageChannel(working, driver.Person, false); !isRefused(err, RefuseBusy) {
-		t.Errorf("a person's working Claude prompt: %v", err)
-	}
-	if err := noMessageChannel(working, driver.Agent, false); !isRefused(err, RefuseBusy) {
-		t.Errorf("an agent's working Claude prompt: %v", err)
-	}
-	background := Session{Agent: proc.Claude, Runtime: "service", ID: "s1", State: adapter.Working}
-	if err := noMessageChannel(background, driver.Agent, false); err != nil {
-		t.Errorf("an agent's working background prompt: %v", err)
-	}
-	idle := Session{Agent: proc.Claude, ID: "s1", State: adapter.Idle}
-	if err := noMessageChannel(idle, driver.Person, true); err != nil {
-		t.Errorf("an idle session: %v", err)
 	}
 }
 
@@ -335,7 +297,7 @@ func TestClaudeAttestationUsesTheDeliveryDecision(t *testing.T) {
 	caller := Caller{By: &eventlog.Actor{Agent: proc.Claude, Session: sender.ID}}
 	v := View{records: []session.Record{stale, receiver}}
 	d, err := throughInbox(ctx, log, v, Session{Agent: proc.Claude, ID: receiver.ID, State: adapter.Idle},
-		"hello", caller, liveGate, driver.Now)
+		"hello", caller, liveGate, false)
 	if err != nil {
 		t.Fatal(err)
 	}

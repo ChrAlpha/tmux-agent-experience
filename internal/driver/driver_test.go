@@ -5,87 +5,63 @@ import (
 	"testing"
 )
 
-func TestChannel(t *testing.T) {
-	for _, c := range []struct{ agent, runtime, verb, want string }{
-		{"claude", "terminal", Interrupt, Pane},
-		{"claude", "terminal", Answer, Hook},
-		{"claude", "terminal", Send, ""},
-		{"claude", "service", Interrupt, ""},
-		{"claude", "service", Answer, Hook},
-		{"claude", "service", Send, ""},
-		{"codex", "terminal", Interrupt, Pane},
-		{"codex", "terminal", Answer, ""},
-		{"codex", "service", Interrupt, Service},
-		{"codex", "service", Answer, Service},
-		{"pi", "terminal", Interrupt, Inbox},
-		{"pi", "terminal", Answer, ""},
-		{"pi", "service", Interrupt, ""},
-		{"pi", "service", Answer, ""},
-		{"aider", "terminal", Interrupt, ""},
-	} {
-		if got := Channel(c.agent, c.runtime, c.verb); got != c.want {
-			t.Errorf("Channel(%s, %s, %s) = %q, want %q", c.agent, c.runtime, c.verb, got, c.want)
-		}
-	}
-}
-
-func TestInterruptRoute(t *testing.T) {
-	for _, c := range []struct {
-		agent, runtime string
-		want           Route
-	}{
-		{"claude", "terminal", Route{Channel: Pane}},
-		{"claude", "service", Route{}},
-		{"codex", "terminal", Route{Channel: Pane}},
-		{"codex", "service", Route{Channel: Service}},
-		{"pi", "terminal", Route{Channel: Inbox, Fallback: Pane}},
-		{"pi", "service", Route{}},
-		{"omp", "terminal", Route{Channel: Pane}},
-		{"omp", "service", Route{}},
-		{"aider", "terminal", Route{}},
-	} {
-		if got := InterruptRoute(c.agent, c.runtime); got != c.want {
-			t.Errorf("InterruptRoute(%s, %s) = %+v, want %+v", c.agent, c.runtime, got, c.want)
-		}
-	}
-}
-
-func TestSendRoute(t *testing.T) {
+func TestSendPlan(t *testing.T) {
+	inbox, pane, svc := []string{Inbox}, []string{Pane}, []string{Service}
 	for _, c := range []struct {
 		name           string
 		agent, runtime string
 		caller         Caller
-		mode           Mode
-		idle           bool
-		want           Route
+		wait, idle     bool
+		want           Plan
 	}{
-		{"a person's idle Claude prompt is typed", "claude", "terminal", Person, Now, true, Route{Channel: Pane}},
-		{"a person's working Claude prompt goes to its inbox", "claude", "terminal", Person, Now, false, Route{Channel: Inbox}},
-		{"a person's working Claude reply goes to its inbox", "claude", "terminal", Person, Reply, false, Route{Channel: Inbox}},
-		{"a person's Claude wait stays on the pane", "claude", "terminal", Person, Wait, true, Route{Channel: Pane}},
-		{"a person's working Claude wait stays on the pane", "claude", "terminal", Person, Wait, false, Route{Channel: Pane}},
-		{"an agent's idle Claude prompt goes to its inbox", "claude", "terminal", Agent, Now, true, Route{Channel: Inbox, Fallback: Pane}},
-		{"an agent's working Claude prompt goes to its inbox", "claude", "terminal", Agent, Now, false, Route{Channel: Inbox}},
-		{"an agent's idle Claude wait is an inbox turn", "claude", "terminal", Agent, Wait, true, Route{Channel: Inbox, Fallback: Pane}},
-		{"a person's Claude background prompt goes to its inbox", "claude", "service", Person, Now, true, Route{Channel: Inbox}},
-		{"a person's Claude background wait has no pane", "claude", "service", Person, Wait, true, Route{}},
-		{"an agent's Claude background wait is an inbox turn", "claude", "service", Agent, Wait, true, Route{Channel: Inbox}},
-		{"a person's idle Codex prompt is typed", "codex", "terminal", Person, Now, true, Route{Channel: Pane}},
-		{"a person's working Codex prompt has no channel", "codex", "terminal", Person, Now, false, Route{}},
-		{"an agent's idle Codex prompt is typed", "codex", "terminal", Agent, Now, true, Route{Channel: Pane}},
-		{"an agent's working Codex prompt has no channel", "codex", "terminal", Agent, Now, false, Route{}},
-		{"the Codex daemon takes every prompt", "codex", "service", Person, Now, true, Route{Channel: Service}},
-		{"the Codex daemon takes an agent's wait", "codex", "service", Agent, Wait, false, Route{Channel: Service}},
-		{"a person's idle Pi prompt is typed", "pi", "terminal", Person, Now, true, Route{Channel: Pane}},
-		{"a person's working Pi prompt goes to its inbox", "pi", "terminal", Person, Now, false, Route{Channel: Inbox}},
-		{"a person's Pi wait stays on the pane", "pi", "terminal", Person, Wait, true, Route{Channel: Pane}},
-		{"an agent's idle Pi prompt goes to its inbox", "pi", "terminal", Agent, Now, true, Route{Channel: Inbox, Fallback: Pane}},
-		{"an agent's working oh-my-pi prompt goes to its inbox", "omp", "terminal", Agent, Reply, false, Route{Channel: Inbox}},
-		{"Pi serving a program takes no prompt", "pi", "service", Agent, Now, true, Route{}},
-		{"oh-my-pi serving a program takes no prompt", "omp", "service", Person, Now, true, Route{}},
+		{"a person's idle Claude prompt is typed", "claude", "terminal", Person, false, true, Plan{Try: pane}},
+		{"a person's working Claude prompt goes to its inbox", "claude", "terminal", Person, false, false, Plan{Try: inbox, Busy: true}},
+		{"a person's Claude wait stays on the pane", "claude", "terminal", Person, true, true, Plan{Try: pane}},
+		{"a person's working Claude wait stays on the pane", "claude", "terminal", Person, true, false, Plan{Try: pane, Busy: true}},
+		{"an agent's idle Claude prompt tries its inbox, then the pane", "claude", "terminal", Agent, false, true, Plan{Try: []string{Inbox, Pane}}},
+		{"an agent's working Claude prompt goes to its inbox", "claude", "terminal", Agent, false, false, Plan{Try: inbox, Busy: true}},
+		{"an agent's idle Claude wait is an inbox turn, or the pane", "claude", "terminal", Agent, true, true, Plan{Try: []string{Inbox, Pane}}},
+		{"a person's background Claude prompt goes to its inbox, never busy", "claude", "service", Person, false, false, Plan{Try: inbox}},
+		{"a person's background Claude wait has no pane", "claude", "service", Person, true, true, Plan{}},
+		{"an agent's background Claude wait is an inbox turn", "claude", "service", Agent, true, true, Plan{Try: inbox}},
+		{"a person's idle Codex prompt is typed", "codex", "terminal", Person, false, true, Plan{Try: pane}},
+		{"a working Codex in a pane is busy", "codex", "terminal", Agent, false, false, Plan{Busy: true}},
+		{"the Codex daemon takes every prompt", "codex", "service", Person, false, true, Plan{Try: svc}},
+		{"the Codex daemon takes an agent's wait", "codex", "service", Agent, true, false, Plan{Try: svc}},
+		{"a person's working Pi prompt goes to its inbox", "pi", "terminal", Person, false, false, Plan{Try: inbox, Busy: true}},
+		{"an agent's idle oh-my-pi prompt tries its inbox, then the pane", "omp", "terminal", Agent, false, true, Plan{Try: []string{Inbox, Pane}}},
+		{"Pi serving a program takes no prompt", "pi", "service", Agent, false, true, Plan{}},
+		{"oh-my-pi serving a program takes no prompt", "omp", "service", Person, false, false, Plan{}},
+		{"an agent tmag does not know", "aider", "terminal", Person, false, true, Plan{}},
 	} {
-		if got := SendRoute(c.agent, c.runtime, c.caller, c.mode, c.idle); got != c.want {
+		got := SendPlan(c.agent, c.runtime, c.caller, c.wait, c.idle)
+		if !slices.Equal(got.Try, c.want.Try) || got.Busy != c.want.Busy {
 			t.Errorf("%s: %+v, want %+v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestInterruptPlanAndAnswerChannel(t *testing.T) {
+	for _, c := range []struct {
+		agent, runtime string
+		interrupt      []string
+		answer         string
+	}{
+		{"claude", "terminal", []string{Pane}, Hook},
+		{"claude", "service", nil, Hook},
+		{"codex", "terminal", []string{Pane}, ""},
+		{"codex", "service", []string{Service}, Service},
+		{"pi", "terminal", []string{Inbox, Pane}, ""},
+		{"pi", "service", nil, ""},
+		{"omp", "terminal", []string{Pane}, ""},
+		{"omp", "service", nil, ""},
+		{"aider", "terminal", nil, ""},
+	} {
+		if got := InterruptPlan(c.agent, c.runtime); !slices.Equal(got.Try, c.interrupt) || got.Busy {
+			t.Errorf("InterruptPlan(%s, %s) = %+v, want %v", c.agent, c.runtime, got, c.interrupt)
+		}
+		if got := AnswerChannel(c.agent, c.runtime); got != c.answer {
+			t.Errorf("AnswerChannel(%s, %s) = %q, want %q", c.agent, c.runtime, got, c.answer)
 		}
 	}
 }

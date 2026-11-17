@@ -2,7 +2,6 @@ package query
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -48,61 +47,71 @@ func Interrupt(ctx context.Context, log *eventlog.Log, target string) (Delivery,
 	if err := caller.selfGate(s, "interrupt"); err != nil {
 		return Delivery{}, err
 	}
-	route := driver.InterruptRoute(s.Agent, s.Runtime)
-	if route.Channel == driver.Inbox {
-		d, err := throughInboxInterrupt(ctx, log, v, s, caller)
-		if err == nil {
-			return d, nil
+	var tried error
+	for _, channel := range driver.InterruptPlan(s.Agent, s.Runtime).Try {
+		var d Delivery
+		switch channel {
+		case driver.Inbox:
+			d, tried = throughInboxInterrupt(ctx, log, v, s, caller)
+		case driver.Service:
+			d, tried = throughService(ctx, log, v, s, serviceInterrupt(s, caller))
+		case driver.Pane:
+			d, tried = throughPane(ctx, log, v, s, named, runningGate, paneInterrupt(caller))
 		}
-		var refused *RefusedError
-		if !errors.As(err, &refused) || refused.Reason != RefuseUnbound || route.Fallback != driver.Pane {
-			return Delivery{}, err
+		if !unbound(tried) {
+			return d, tried
 		}
-		route.Channel = driver.Pane
 	}
-	switch route.Channel {
-	case driver.Service:
-		var turn string
-		return throughService(ctx, log, v, s, serviceVerb{
-			gate: runningGate,
-			check: func(ctx context.Context, c *codexsvc.Client) error {
-				return threadIn(ctx, c, s, RefuseIdle, codexsvc.StatusActive)
-			},
-			mark: func(rec *session.Record) eventlog.Event {
-				rec.Halted, turn = time.Now().UTC().Truncate(time.Second), rec.Turn
-				ev := eventlog.Event{Event: eventlog.Halt, Cwd: rec.Cwd}
-				caller.stamp(&ev)
-				return ev
-			},
-			deliver: func(ctx context.Context, c *codexsvc.Client) error {
-				return c.InterruptTurn(ctx, s.ID, turn)
-			},
-		})
-	case driver.Pane:
-		return throughPane(ctx, log, v, s, named, runningGate, paneVerb{
-			plan: func(s Session, p Pane, rec session.Record) (session.Record, eventlog.Event, *session.Record) {
-				now := time.Now()
-				rec.Halted = now.UTC().Truncate(time.Second)
-				ev := eventlog.Event{Event: eventlog.Halt, Cwd: p.Cwd}
-				caller.stamp(&ev)
-				if driver.ReportsInterrupt(s.Agent) {
-					return rec, ev, nil
-				}
-				// The agent reports nothing of it: its turn is over, and with it
-				// whatever it asked the user.
-				after, _ := session.Apply(rec, adapter.Transition{Action: adapter.Set, State: adapter.Idle, Turn: rec.Turn, Synthetic: true}, now)
-				after.Halted = rec.Halted
-				return rec, ev, &after
-			},
-			press: func(ctx context.Context, _ Session, p Pane) error {
-				if err := (tmux.Server{Socket: p.Server}).Interrupt(ctx, p.ID); err != nil {
-					return fmt.Errorf("pressing Escape in %s failed: %w", p.ID, err)
-				}
-				return nil
-			},
-		})
+	if tried != nil {
+		return Delivery{}, tried
 	}
 	return Delivery{}, unsupported(s, driver.Interrupt)
+}
+
+// serviceInterrupt is the Codex daemon's interrupt: of the active turn the
+// fresh record names.
+func serviceInterrupt(s Session, caller Caller) serviceVerb {
+	var turn string
+	return serviceVerb{
+		gate: runningGate,
+		check: func(ctx context.Context, c *codexsvc.Client) error {
+			return threadIn(ctx, c, s, RefuseIdle, codexsvc.StatusActive)
+		},
+		mark: func(rec *session.Record) eventlog.Event {
+			rec.Halted, turn = time.Now().UTC().Truncate(time.Second), rec.Turn
+			ev := eventlog.Event{Event: eventlog.Halt, Cwd: rec.Cwd}
+			caller.stamp(&ev)
+			return ev
+		},
+		deliver: func(ctx context.Context, c *codexsvc.Client) error {
+			return c.InterruptTurn(ctx, s.ID, turn)
+		},
+	}
+}
+
+// paneInterrupt presses Escape in the session's pane. An agent that reports
+// nothing of it has its turn ended by tmag, with whatever it asked the user.
+func paneInterrupt(caller Caller) paneVerb {
+	return paneVerb{
+		plan: func(s Session, p Pane, rec session.Record) (session.Record, eventlog.Event, *session.Record) {
+			now := time.Now()
+			rec.Halted = now.UTC().Truncate(time.Second)
+			ev := eventlog.Event{Event: eventlog.Halt, Cwd: p.Cwd}
+			caller.stamp(&ev)
+			if driver.ReportsInterrupt(s.Agent) {
+				return rec, ev, nil
+			}
+			after, _ := session.Apply(rec, adapter.Transition{Action: adapter.Set, State: adapter.Idle, Turn: rec.Turn, Synthetic: true}, now)
+			after.Halted = rec.Halted
+			return rec, ev, &after
+		},
+		press: func(ctx context.Context, _ Session, p Pane) error {
+			if err := (tmux.Server{Socket: p.Server}).Interrupt(ctx, p.ID); err != nil {
+				return fmt.Errorf("pressing Escape in %s failed: %w", p.ID, err)
+			}
+			return nil
+		},
+	}
 }
 
 // throughInboxInterrupt stops s's turn through the inbox its own agent

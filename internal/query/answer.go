@@ -60,7 +60,7 @@ func Show(ctx context.Context, log *eventlog.Log, target, id string) (Asked, err
 	if err != nil {
 		return Asked{}, err
 	}
-	switch driver.Channel(s.Agent, s.Runtime, driver.Answer) {
+	switch driver.AnswerChannel(s.Agent, s.Runtime) {
 	case driver.Hook:
 		if answer.Probe(ctx, log.Dir, id) == answer.Dead {
 			return Asked{}, noHook(s, id)
@@ -106,7 +106,7 @@ func Answer(ctx context.Context, log *eventlog.Log, target, id string, d answer.
 	if err := answerGate(ctx, s, caller); err != nil {
 		return Delivery{}, err
 	}
-	switch driver.Channel(s.Agent, s.Runtime, driver.Answer) {
+	switch driver.AnswerChannel(s.Agent, s.Runtime) {
 	case driver.Hook:
 		return answerHook(ctx, log, s, id, d, caller)
 	case driver.Service:

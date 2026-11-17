@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/adapter"
-	"github.com/ChrAlpha/tmux-agent-experience/internal/driver"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/transcript"
@@ -20,7 +19,7 @@ import (
 // so the caller may try again. Only an agent whose session tmag proves may
 // reply.
 func Reply(ctx context.Context, log *eventlog.Log, target, text string) (Delivery, error) {
-	return deliver(ctx, log, target, text, Answering, driver.Reply, "reply", "reply")
+	return deliver(ctx, log, target, text, Answering, "reply", "reply")
 }
 
 // ErrNoReply reports a session whose last turn left no reply to read.

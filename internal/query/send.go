@@ -62,17 +62,6 @@ const (
 	AskNoAnswer
 )
 
-// driverMode is how the driver sees the response the caller asks for.
-func driverMode(ask Ask) driver.Mode {
-	switch ask {
-	case AskFinal:
-		return driver.Wait
-	case AskReply, Answering:
-		return driver.Reply
-	}
-	return driver.Now
-}
-
 // header is the line tmag writes atop a prompt the caller sends: none for a
 // person's, whose prompts are their own.
 func header(c Caller, ask Ask) (string, error) {
@@ -112,14 +101,15 @@ func header(c Caller, ask Ask) (string, error) {
 // caller's own. The Send event is logged under the session's lock before the
 // channel writes, so what the prompt causes is logged after it.
 func Send(ctx context.Context, log *eventlog.Log, target, text string, ask Ask) (Delivery, error) {
-	return deliver(ctx, log, target, text, ask, driverMode(ask), "send", "prompt")
+	return deliver(ctx, log, target, text, ask, "send", "prompt")
 }
 
-// deliver carries a prompt for Send or Reply by the route the driver chooses.
-// The channel is reached and proven first; the prompt is marked on the
-// session and its Send event logged under the session's lock, against fresh
-// state, before it is written.
-func deliver(ctx context.Context, log *eventlog.Log, target, text string, ask Ask, mode driver.Mode, verb, selfVerb string) (Delivery, error) {
+// deliver carries a prompt for Send or Reply by the plan the driver makes,
+// trying each channel in turn while the previous cannot be proven to reach
+// the session. A channel is reached and proven first; the prompt is marked
+// on the session and its Send event logged under the session's lock,
+// against fresh state, before it is written.
+func deliver(ctx context.Context, log *eventlog.Log, target, text string, ask Ask, verb, selfVerb string) (Delivery, error) {
 	text = strings.TrimRight(tmux.SanitizePrompt(text), "\n")
 	if strings.TrimSpace(text) == "" {
 		return Delivery{}, errors.New("nothing to " + verb)
@@ -145,85 +135,95 @@ func deliver(ctx context.Context, log *eventlog.Log, target, text string, ask As
 	if err := caller.selfGate(s, selfVerb); err != nil {
 		return Delivery{}, err
 	}
-	idle := s.State == adapter.Idle
+	idle, wait := s.State == adapter.Idle, ask == AskFinal
 	from := driver.Person
 	if caller.By != nil {
 		from = driver.Agent
 	}
-	route := driver.SendRoute(s.Agent, s.Runtime, from, mode, idle)
 	gate := liveGate
-	if mode == driver.Wait {
+	if wait {
 		gate = idleGate
 	}
-	switch route.Channel {
-	case driver.Inbox:
-		d, err := throughInbox(ctx, log, v, s, text, caller, gate, mode)
-		if err == nil {
-			return d, nil
+	plan := driver.SendPlan(s.Agent, s.Runtime, from, wait, idle)
+	var tried error
+	for _, channel := range plan.Try {
+		var d Delivery
+		switch channel {
+		case driver.Inbox:
+			d, tried = throughInbox(ctx, log, v, s, text, caller, gate, wait)
+		case driver.Pane:
+			d, tried = throughPane(ctx, log, v, s, named, idleGate, panePrompt(text, caller))
+		case driver.Service:
+			d, tried = throughService(ctx, log, v, s, servicePrompt(s, text, caller, gate, wait))
 		}
-		var refused *RefusedError
-		if !errors.As(err, &refused) || refused.Reason != RefuseUnbound {
-			return Delivery{}, err
+		if !unbound(tried) {
+			return d, tried
 		}
-		if route.Fallback == driver.Pane {
-			return throughPane(ctx, log, v, s, named, idleGate, panePrompt(text, caller))
-		}
-		if refusal := noMessageChannel(s, from, idle); refusal != nil {
-			return Delivery{}, refusal
-		}
-		return Delivery{}, err
-	case driver.Pane:
-		return throughPane(ctx, log, v, s, named, idleGate, panePrompt(text, caller))
-	case driver.Service:
-		active, turn := false, ""
-		return throughService(ctx, log, v, s, serviceVerb{
-			gate: gate,
-			check: func(ctx context.Context, c *codexsvc.Client) error {
-				if mode == driver.Wait {
-					return threadIn(ctx, c, s, RefuseBusy, codexsvc.StatusIdle)
-				}
-				st, err := threadStatus(ctx, c, s)
-				if err != nil {
-					return err
-				}
-				switch st {
-				case codexsvc.StatusIdle:
-					return nil
-				case codexsvc.StatusActive:
-					active = true
-					return nil
-				}
-				return &RefusedError{RefuseChanged, fmt.Sprintf("the Codex daemon has %s %s", s.ID, st)}
-			},
-			mark: func(rec *session.Record) eventlog.Event {
-				// A prompt into a turn is queued until a main-agent report
-				// confirms it, like one on the session's own channel. A wait
-				// leaves the prompt it started unconfirmed instead. A steer
-				// is bound to the turn the fresh record names.
-				if mode == driver.Wait {
-					rec.Sent = time.Now().UTC().Truncate(time.Second)
-				} else {
-					rec.Queued = time.Now().UTC().Truncate(time.Second)
-				}
-				if active {
-					turn = rec.Turn
-				}
-				return sentEvent(*rec, text, caller)
-			},
-			deliver: func(ctx context.Context, c *codexsvc.Client) error {
-				if active {
-					return c.SteerTurn(ctx, s.ID, turn, text)
-				}
-				// turn/start starts an idle thread's turn.
-				_, err := c.StartTurn(ctx, s.ID, text)
-				return err
-			},
-		})
 	}
-	if !idle && hasPane(s.Agent, s.Runtime) {
+	switch {
+	case plan.Busy && tried != nil:
+		return Delivery{}, &RefusedError{RefuseBusy, fmt.Sprintf("%s is %s and has no message channel tmag can prove", s.ID, describe(s.State, s.Kind))}
+	case plan.Busy:
 		return Delivery{}, &RefusedError{RefuseBusy, fmt.Sprintf("%s is %s; tmag does not type into a busy pane", s.ID, describe(s.State, s.Kind))}
+	case tried != nil:
+		return Delivery{}, tried
 	}
 	return Delivery{}, unsupported(s, driver.Send)
+}
+
+// unbound reports a refusal that no channel tmag can prove reaches the
+// session: the plan's next channel may.
+func unbound(err error) bool {
+	var refused *RefusedError
+	return errors.As(err, &refused) && refused.Reason == RefuseUnbound
+}
+
+// servicePrompt is the Codex daemon's delivery of a prompt: a turn of its
+// own starts on an idle thread; any other prompt starts an idle thread's
+// turn or steers the active one, bound to the turn the fresh record names.
+func servicePrompt(s Session, text string, caller Caller, gate stateGate, wait bool) serviceVerb {
+	active, turn := false, ""
+	return serviceVerb{
+		gate: gate,
+		check: func(ctx context.Context, c *codexsvc.Client) error {
+			if wait {
+				return threadIn(ctx, c, s, RefuseBusy, codexsvc.StatusIdle)
+			}
+			st, err := threadStatus(ctx, c, s)
+			if err != nil {
+				return err
+			}
+			switch st {
+			case codexsvc.StatusIdle:
+				return nil
+			case codexsvc.StatusActive:
+				active = true
+				return nil
+			}
+			return &RefusedError{RefuseChanged, fmt.Sprintf("the Codex daemon has %s %s", s.ID, st)}
+		},
+		mark: func(rec *session.Record) eventlog.Event {
+			// A prompt into a turn is queued until a main-agent report
+			// confirms it, like one on the session's own channel. A wait
+			// leaves the prompt it started unconfirmed instead.
+			if wait {
+				rec.Sent = time.Now().UTC().Truncate(time.Second)
+			} else {
+				rec.Queued = time.Now().UTC().Truncate(time.Second)
+			}
+			if active {
+				turn = rec.Turn
+			}
+			return sentEvent(*rec, text, caller)
+		},
+		deliver: func(ctx context.Context, c *codexsvc.Client) error {
+			if active {
+				return c.SteerTurn(ctx, s.ID, turn, text)
+			}
+			_, err := c.StartTurn(ctx, s.ID, text)
+			return err
+		},
+	}
 }
 
 // panePrompt is the pane delivery of a prompt: it marks the prompt sent
@@ -255,7 +255,7 @@ func sentEvent(rec session.Record, text string, caller Caller) eventlog.Event {
 // throughInbox delivers text on the socket the session's own agent serves
 // for messages. The socket is dialled and proven before anything is logged,
 // so a message is only recorded for a channel that reaches the session.
-func throughInbox(outer context.Context, log *eventlog.Log, v View, s Session, text string, caller Caller, gate stateGate, mode driver.Mode) (Delivery, error) {
+func throughInbox(outer context.Context, log *eventlog.Log, v View, s Session, text string, caller Caller, gate stateGate, wait bool) (Delivery, error) {
 	if err := gateOf(v, s, gate); err != nil {
 		return Delivery{}, err
 	}
@@ -286,7 +286,7 @@ func throughInbox(outer context.Context, log *eventlog.Log, v View, s Session, t
 		// Sent mark. A late report of the previous turn clears neither it nor
 		// the wait. The asynchronous modes are queued until the main agent's
 		// next report.
-		if mode == driver.Wait {
+		if wait {
 			rec.Sent = sent
 		} else {
 			rec.Queued = sent
@@ -374,35 +374,6 @@ func inboxAt(ctx context.Context, s Session, rec session.Record) (*inbox.Conn, e
 		return nil, &RefusedError{RefuseUnbound, fmt.Sprintf("%s is served by process %d, which does not run %s", rec.Inbox.Path, c.PeerPID, s.ID)}
 	}
 	return c, nil
-}
-
-// noMessageChannel says what an unproven inbox means for a caller: a person
-// working, or an agent working a terminal session, may try once it is idle;
-// a background session has no pane to fall back to.
-func noMessageChannel(s Session, from driver.Caller, idle bool) error {
-	if from == driver.Person {
-		if !idle {
-			return &RefusedError{RefuseBusy, fmt.Sprintf("%s is %s and has no message channel tmag can prove", s.ID, describe(s.State, s.Kind))}
-		}
-		return nil
-	}
-	if !idle && hasPane(s.Agent, s.Runtime) {
-		return &RefusedError{RefuseBusy, fmt.Sprintf("%s is %s and has no message channel tmag can prove", s.ID, describe(s.State, s.Kind))}
-	}
-	return nil
-}
-
-// hasPane reports whether a session of this agent and runtime can be typed
-// into at all, idle or not.
-func hasPane(agent, runtime string) bool {
-	if runtime == "service" {
-		return false
-	}
-	switch agent {
-	case proc.Claude, proc.Codex, proc.Pi, proc.OMP:
-		return true
-	}
-	return false
 }
 
 // liveGate admits a send to a live session with nothing of tmag's still

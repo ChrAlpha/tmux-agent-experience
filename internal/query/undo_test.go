@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/adapter"
-	"github.com/ChrAlpha/tmux-agent-experience/internal/driver"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
@@ -62,7 +61,7 @@ func TestNotTakenDeliveryLeavesNoMark(t *testing.T) {
 		if !ok {
 			t.Fatal("no session")
 		}
-		_, err = throughInbox(ctx, log, v, s, "hello", Caller{}, liveGate, driver.Now)
+		_, err = throughInbox(ctx, log, v, s, "hello", Caller{}, liveGate, false)
 		var notTaken *NotTakenError
 		if !errors.As(err, &notTaken) {
 			t.Fatalf("attempt %d: %v, want the inbox's refusal to take it", attempt, err)
