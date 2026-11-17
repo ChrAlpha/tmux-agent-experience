@@ -266,28 +266,22 @@ func SanitizePrompt(text string) string {
 	}, text)
 }
 
-// GlobalOption returns a global option's value, or "" when unset or unreadable.
-// Call GlobalOptionContext when an unavailable server must remain distinguishable.
-func (s Server) GlobalOption(ctx context.Context, name string) string {
-	value, _ := s.GlobalOptionContext(ctx, name)
-	return value
-}
-
-// GlobalOptionContext returns an unset option as "", nil while preserving
-// command, cancellation and decoding errors. It performs no value expansion.
-func (s Server) GlobalOptionContext(ctx context.Context, name string) (string, error) {
-	values, err := s.GlobalOptionsContext(ctx, name)
+// Option returns a global option's value, "" when it is unset, and the
+// command's, cancellation's or decoding's error. It performs no value
+// expansion.
+func (s Server) Option(ctx context.Context, name string) (string, error) {
+	values, err := s.Options(ctx, name)
 	if err != nil {
 		return "", err
 	}
 	return values[name], nil
 }
 
-// GlobalOptionsContext reads several global options in one tmux invocation.
+// Options reads several global options in one tmux invocation.
 // An unset option is absent, and values are not expanded. It performs no
 // command or environment expansion, and preserves cancellation and decoding
 // errors.
-func (s Server) GlobalOptionsContext(ctx context.Context, names ...string) (map[string]string, error) {
+func (s Server) Options(ctx context.Context, names ...string) (map[string]string, error) {
 	// Read tmux's quoted representation so literal backslashes and control
 	// characters remain distinguishable. tmux 3.4 additionally escapes dollar
 	// variables when printing; probe that layer in the same command invocation.
@@ -301,13 +295,13 @@ func (s Server) GlobalOptionsContext(ctx context.Context, names ...string) (map[
 	if err != nil {
 		return nil, err
 	}
-	return ParseGlobalOptions(out, names...)
+	return ParseOptions(out, names...)
 }
 
-// ParseGlobalOptions decodes the show-option output of GlobalOptionsContext,
-// including its $TMAG_OPTION_PRINT probe, from a tmux invocation that also
-// carried other output.
-func ParseGlobalOptions(out []byte, names ...string) (map[string]string, error) {
+// ParseOptions decodes the show-option output of Options, including its
+// $TMAG_OPTION_PRINT probe, from a tmux invocation that also carried other
+// output.
+func ParseOptions(out []byte, names ...string) (map[string]string, error) {
 	const probe = "$TMAG_OPTION_PRINT"
 	lines := strings.Split(string(out), "\n")
 	printed := false

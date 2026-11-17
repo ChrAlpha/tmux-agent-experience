@@ -105,17 +105,17 @@ func checkTmuxOptions(ctx context.Context) check {
 	}
 	var problems []string
 	for _, s := range servers {
-		alert, err := s.GlobalOptionContext(ctx, "@tmag-alert")
+		alert, err := s.Option(ctx, "@tmag-alert")
 		if err != nil {
 			continue
 		}
 		name := serverName(s.Socket)
 		if alert != "" && alert != "off" {
-			if v, err := s.GlobalOptionContext(ctx, "monitor-bell"); err == nil && v == "off" {
+			if v, err := s.Option(ctx, "monitor-bell"); err == nil && v == "off" {
 				problems = append(problems, fmt.Sprintf("monitor-bell is off on %s, so alerts flag no window: set -g monitor-bell on, or set -g @tmag-alert off", name))
 			}
 		}
-		if v, err := s.GlobalOptionContext(ctx, "allow-set-title"); err == nil && v == "off" {
+		if v, err := s.Option(ctx, "allow-set-title"); err == nil && v == "off" {
 			problems = append(problems, fmt.Sprintf("allow-set-title is off on %s, so a Codex pane cannot show the thread it runs: set -g allow-set-title on", name))
 		}
 	}
@@ -133,7 +133,7 @@ func checkPlugin(ctx context.Context) check {
 		return check{"plugin", "warn", "server discovery incomplete"}
 	}
 	for _, s := range servers {
-		value, err := s.GlobalOptionContext(ctx, "@tmag-plugin-version")
+		value, err := s.Option(ctx, "@tmag-plugin-version")
 		if err != nil {
 			return check{"plugin", "warn", "plugin option unavailable"}
 		}
@@ -300,7 +300,7 @@ func doctorPeers(ctx context.Context) (bool, error) {
 	}
 	peers := true
 	for _, s := range servers {
-		v, err := s.GlobalOptionContext(ctx, peersOption)
+		v, err := s.Option(ctx, peersOption)
 		if err != nil {
 			return false, err
 		}

@@ -48,7 +48,8 @@ func Mode(ctx context.Context) string {
 		return Off
 	}
 	for _, srv := range servers {
-		switch srv.GlobalOption(ctx, Option) {
+		value, _ := srv.Option(ctx, Option)
+		switch value {
 		case Off:
 			return Off
 		case Agents:

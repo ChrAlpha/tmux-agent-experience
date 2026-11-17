@@ -85,7 +85,7 @@ func (a *app) cmdNotify(args []string) int {
 func notifyCommands(ctx context.Context) (commands []string) {
 	servers, _ := tmux.Servers(ctx)
 	for _, srv := range servers {
-		command := srv.GlobalOption(ctx, notify.Option)
+		command, _ := srv.Option(ctx, notify.Option)
 		if command == "" || slices.Contains(commands, command) {
 			continue
 		}
@@ -102,7 +102,7 @@ func (a *app) checkNotify(ctx context.Context) check {
 	}
 	configured := false
 	for _, s := range servers {
-		v, err := s.GlobalOptionContext(ctx, notify.Option)
+		v, err := s.Option(ctx, notify.Option)
 		if err != nil {
 			return check{"notify", "warn", "notification option unavailable"}
 		}

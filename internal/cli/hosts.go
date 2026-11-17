@@ -44,7 +44,7 @@ const peersOption = "@tmag-peers"
 func peersWanted(ctx context.Context) bool {
 	servers, _ := tmux.Servers(ctx)
 	for _, srv := range servers {
-		if srv.GlobalOption(ctx, peersOption) == "off" {
+		if value, _ := srv.Option(ctx, peersOption); value == "off" {
 			return false
 		}
 	}

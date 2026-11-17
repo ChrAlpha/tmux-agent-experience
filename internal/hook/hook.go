@@ -355,7 +355,8 @@ func Alert(prev, next string) string {
 // (@tmag-alert) and nobody is looking at the pane. tmux turns the bell into the
 // window's alert flag, which prefix + M-n jumps to.
 func alert(ctx context.Context, srv tmux.Server, pane tmux.Pane, kind string) {
-	alertWith(srv.GlobalOption(ctx, "@tmag-alert"), pane, kind)
+	enabled, _ := srv.Option(ctx, "@tmag-alert")
+	alertWith(enabled, pane, kind)
 }
 
 // alertWith rings a pane's bell when enabled names this kind of alert and
@@ -408,7 +409,7 @@ func tell(ctx context.Context, rec session.Record, shown []tmux.Pane, kind strin
 		if known != nil && srv.Socket == known.Server {
 			command, enabled = known.Notify, known.Alert
 		} else {
-			values, err := srv.GlobalOptionsContext(ctx, notify.Option, "@tmag-alert")
+			values, err := srv.Options(ctx, notify.Option, "@tmag-alert")
 			if err != nil {
 				continue
 			}

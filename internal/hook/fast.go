@@ -128,7 +128,7 @@ func writeHintProjection(ctx context.Context, hint session.PaneHint, agent, id s
 	var enabled, notifier string
 	present := false
 	if alert {
-		values, err := tmux.ParseGlobalOptions(raw, notify.Option, "@tmag-alert")
+		values, err := tmux.ParseOptions(raw, notify.Option, "@tmag-alert")
 		if err != nil {
 			return tmux.Pane{}, "", "", false, false, false
 		}
