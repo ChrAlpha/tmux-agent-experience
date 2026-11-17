@@ -256,7 +256,7 @@ func sentEvent(rec session.Record, text string, caller Caller) eventlog.Event {
 // for messages. The socket is dialled and proven before anything is logged,
 // so a message is only recorded for a channel that reaches the session.
 func throughInbox(outer context.Context, log *eventlog.Log, v View, s Session, text string, caller Caller, gate stateGate, mode driver.Mode) (Delivery, error) {
-	if err := gate(s, v, time.Now()); err != nil {
+	if err := gateOf(v, s, gate); err != nil {
 		return Delivery{}, err
 	}
 	store := session.Store{Dir: log.Dir}
@@ -292,8 +292,8 @@ func throughInbox(outer context.Context, log *eventlog.Log, v View, s Session, t
 			rec.Queued = sent
 		}
 		return sentEvent(*rec, text, caller)
-	}, func(fresh View, receiver session.Record) {
-		fromMode, held = claudeDelivery(fresh, receiver, caller)
+	}, func(receiver session.Record) {
+		fromMode, held = claudeDelivery(ctx, store, receiver, caller)
 	})
 	if err != nil {
 		return Delivery{}, err
@@ -316,8 +316,8 @@ func throughInbox(outer context.Context, log *eventlog.Log, v View, s Session, t
 // receiver will hold it. v is the fresh view read under the receiver's lock:
 // a person or owner client speaks with the receiver's class from receiver,
 // and an agent with its own class as its freshly read record says.
-func claudeDelivery(v View, receiver session.Record, caller Caller) (mode string, held bool) {
-	mode = claudeMode(v, receiver, caller)
+func claudeDelivery(ctx context.Context, store session.Store, receiver session.Record, caller Caller) (mode string, held bool) {
+	mode = claudeMode(ctx, store, receiver, caller)
 	held = receiver.Permission == adapter.PermissionBypass && mode != adapter.PermissionBypass
 	return mode, held
 }
@@ -325,19 +325,18 @@ func claudeDelivery(v View, receiver session.Record, caller Caller) (mode string
 // claudeMode is the permission class tmag can attest for a sender to Claude
 // Code: a person or owner client speaks with the receiver's own class, and an
 // agent with its own recorded class, when its session is known.
-func claudeMode(v View, rec session.Record, caller Caller) string {
+func claudeMode(ctx context.Context, store session.Store, rec session.Record, caller Caller) string {
 	if caller.By == nil {
 		return rec.Permission
 	}
 	if caller.By.Session == "" {
 		return ""
 	}
-	for _, r := range v.records {
-		if r.Agent == caller.By.Agent && r.ID == caller.By.Session {
-			return r.Permission
-		}
+	sender, ok, err := store.Get(ctx, caller.By.Agent, caller.By.Session)
+	if err != nil || !ok {
+		return ""
 	}
-	return ""
+	return sender.Permission
 }
 
 // inboxFailure reports a failed inbox write: an explicit refusal or a
@@ -408,23 +407,14 @@ func hasPane(agent, runtime string) bool {
 
 // liveGate admits a send to a live session with nothing of tmag's still
 // unconfirmed. Any state takes it: the session's own channel queues it.
-func liveGate(s Session, v View, now time.Time) error {
-	for _, r := range v.records {
-		if r.Agent == s.Agent && r.ID == s.ID {
-			if err := unconfirmed(r, now); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
+func liveGate(rec session.Record, now time.Time) error { return unconfirmed(rec, now) }
 
 // idleGate admits an idle session with nothing of tmag's unconfirmed.
-func idleGate(s Session, v View, now time.Time) error {
-	if s.State != adapter.Idle {
-		return &RefusedError{RefuseBusy, fmt.Sprintf("%s is %s", s.ID, describe(s.State, s.Kind))}
+func idleGate(rec session.Record, now time.Time) error {
+	if rec.State() != adapter.Idle {
+		return &RefusedError{RefuseBusy, fmt.Sprintf("%s is %s", rec.ID, describe(rec.State(), rec.Kind()))}
 	}
-	return liveGate(s, v, now)
+	return liveGate(rec, now)
 }
 
 // unconfirmed reports what tmag last submitted that the session has not

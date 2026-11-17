@@ -110,46 +110,48 @@ func TestSendRefusesEmptyText(t *testing.T) {
 // unconfirmed; a wait also needs it idle.
 func TestSendGates(t *testing.T) {
 	now := time.Now()
-	s := Session{Agent: proc.Claude, ID: "s1"}
+	in := func(state string) session.Record {
+		rec := session.Record{Agent: proc.Claude, ID: "s1", Main: state}
+		switch state {
+		case adapter.Blocked:
+			rec.Main, rec.Requests = adapter.Working, []session.Request{{ID: "r1", Prompt: adapter.Prompt{Tool: "Bash"}}}
+		case adapter.Unknown:
+			rec.Main = ""
+		}
+		return rec
+	}
 	for _, state := range []string{adapter.Idle, adapter.Working, adapter.Blocked, adapter.Unknown} {
-		s.State = state
-		if err := liveGate(s, View{}, now); err != nil {
+		if err := liveGate(in(state), now); err != nil {
 			t.Errorf("a liveGate for a %s session refused a prompt: %v", state, err)
 		}
 	}
 	for _, state := range []string{adapter.Working, adapter.Blocked, adapter.Unknown} {
-		s.State = state
-		if err := idleGate(s, View{}, now); !isRefused(err, RefuseBusy) {
+		if err := idleGate(in(state), now); !isRefused(err, RefuseBusy) {
 			t.Errorf("an idleGate for a %s session: %v", state, err)
 		}
 	}
-	s.State = adapter.Idle
-	if err := idleGate(s, View{}, now); err != nil {
+	if err := idleGate(in(adapter.Idle), now); err != nil {
 		t.Errorf("an idle session refused a prompt: %v", err)
 	}
-	started := session.Record{Agent: proc.Claude, ID: "s1", Sent: now.Add(-PendingWindow - time.Second)}
-	if err := liveGate(s, View{records: []session.Record{started}}, now); err != nil {
+	started := in(adapter.Idle)
+	started.Sent = now.Add(-PendingWindow - time.Second)
+	if err := liveGate(started, now); err != nil {
 		t.Errorf("a confirmed prompt still holds the session: %v", err)
 	}
 	pending := started
 	pending.Sent = now.Add(-time.Second)
-	if err := liveGate(s, View{records: []session.Record{pending}}, now); !isRefused(err, RefuseBusy) || !strings.Contains(err.Error(), "has not started") {
+	if err := liveGate(pending, now); !isRefused(err, RefuseBusy) || !strings.Contains(err.Error(), "has not started") {
 		t.Fatalf("an unstarted prompt: %v", err)
 	}
 	read := started
 	read.Queued = now.Add(-PendingWindow - time.Second)
-	if err := liveGate(s, View{records: []session.Record{read}}, now); err != nil {
+	if err := liveGate(read, now); err != nil {
 		t.Errorf("a read message still holds the session: %v", err)
 	}
 	unread := read
 	unread.Queued = now.Add(-time.Second)
-	if err := liveGate(s, View{records: []session.Record{unread}}, now); !isRefused(err, RefuseBusy) || !strings.Contains(err.Error(), "has not reached its next step") {
+	if err := liveGate(unread, now); !isRefused(err, RefuseBusy) || !strings.Contains(err.Error(), "has not reached its next step") {
 		t.Fatalf("an unread message: %v", err)
-	}
-	other := unread
-	other.ID = "s2"
-	if err := liveGate(s, View{records: []session.Record{other}}, now); err != nil {
-		t.Errorf("another session's message held s1 off: %v", err)
 	}
 }
 
@@ -245,7 +247,12 @@ func TestSenderName(t *testing.T) {
 func TestClaudeModeAttestsOnlyAProvenClass(t *testing.T) {
 	receiver := session.Record{Agent: proc.Claude, ID: "r1", Permission: adapter.PermissionBypass}
 	asked := session.Record{Agent: proc.Claude, ID: "a1", Permission: adapter.PermissionPrompting}
-	v := View{records: []session.Record{receiver, asked}}
+	store := session.Store{Dir: t.TempDir()}
+	for _, rec := range []session.Record{receiver, asked} {
+		if err := store.Put(t.Context(), rec); err != nil {
+			t.Fatal(err)
+		}
+	}
 	agent := Caller{By: &eventlog.Actor{Agent: proc.Claude, Session: "a1"}}
 	named := Caller{By: &eventlog.Actor{Agent: proc.Claude, Session: "a2"}}
 	unproven := Caller{By: &eventlog.Actor{Agent: proc.Claude}}
@@ -263,7 +270,7 @@ func TestClaudeModeAttestsOnlyAProvenClass(t *testing.T) {
 		{"an agent of an unknown session", named, receiver, ""},
 		{"an agent of no proven session", unproven, receiver, ""},
 	} {
-		if got := claudeMode(v, c.rec, c.caller); got != c.want {
+		if got := claudeMode(t.Context(), store, c.rec, c.caller); got != c.want {
 			t.Errorf("%s: %q, want %q", c.name, got, c.want)
 		}
 	}

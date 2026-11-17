@@ -125,8 +125,7 @@ func TestWaitForInboxPromptIgnoresThePreviousTurnsIdleNotification(t *testing.T)
 		t.Fatal("the previous turn's idle notification cleared the prompt's Sent mark")
 	}
 	put(t, store, late)
-	idle := Session{Agent: "claude", ID: "s1", State: adapter.Idle}
-	if err := liveGate(idle, View{records: []session.Record{late}}, now); !isRefused(err, RefuseBusy) {
+	if err := liveGate(late, now); !isRefused(err, RefuseBusy) {
 		t.Fatalf("the previous turn's idle notification released the send gate: %v", err)
 	}
 	got := make(chan session.Record, 1)

@@ -110,7 +110,7 @@ func Interrupt(ctx context.Context, log *eventlog.Log, target string) (Delivery,
 // the record is marked under the session's lock against fresh state before
 // the extension is asked; the extension checks the session again at delivery.
 func throughInboxInterrupt(outer context.Context, log *eventlog.Log, v View, s Session, caller Caller) (Delivery, error) {
-	if err := runningGate(s, v, time.Now()); err != nil {
+	if err := gateOf(v, s, runningGate); err != nil {
 		return Delivery{}, err
 	}
 	store := session.Store{Dir: log.Dir}
@@ -147,21 +147,20 @@ func throughInboxInterrupt(outer context.Context, log *eventlog.Log, v View, s S
 
 // runningGate admits a session whose main agent runs a turn or waits on a
 // prompt, and which tmag has not just interrupted.
-func runningGate(s Session, v View, now time.Time) error {
+func runningGate(rec session.Record, now time.Time) error {
+	state, kind := rec.State(), rec.Kind()
 	switch {
-	case s.State == adapter.Blocked:
-	case s.State == adapter.Working && s.Kind != adapter.KindBackground:
+	case state == adapter.Blocked:
+	case state == adapter.Working && kind != adapter.KindBackground:
 	default:
-		detail := fmt.Sprintf("%s is %s; no turn to interrupt", s.ID, describe(s.State, s.Kind))
-		if s.Kind == adapter.KindBackground {
-			detail = fmt.Sprintf("%s runs only background work; its main agent has no turn to interrupt", s.ID)
+		detail := fmt.Sprintf("%s is %s; no turn to interrupt", rec.ID, describe(state, kind))
+		if kind == adapter.KindBackground {
+			detail = fmt.Sprintf("%s runs only background work; its main agent has no turn to interrupt", rec.ID)
 		}
 		return &RefusedError{RefuseIdle, detail}
 	}
-	for _, r := range v.records {
-		if r.Agent == s.Agent && r.ID == s.ID && halting(r, now) {
-			return &RefusedError{RefuseBusy, fmt.Sprintf("%s was interrupted %s ago and has not reported since", s.ID, now.Sub(r.Halted).Round(time.Second))}
-		}
+	if halting(rec, now) {
+		return &RefusedError{RefuseBusy, fmt.Sprintf("%s was interrupted %s ago and has not reported since", rec.ID, now.Sub(rec.Halted).Round(time.Second))}
 	}
 	return nil
 }
