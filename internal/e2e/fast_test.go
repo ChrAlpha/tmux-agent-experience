@@ -577,14 +577,16 @@ func TestFastHookNotifyPreservesNewlines(t *testing.T) {
 // A record lists at most eight panes, and drops none to list another: a
 // ninth pane showing the thread stays unattached rather than leave one of
 // the eight showing it unlisted. A full pass lists again an attachment whose
-// listing was lost, so that hooks project onto it.
+// listing was lost, before it attaches anything new, so that hooks project
+// onto it.
 func TestARecordListsEightPanesAndAFullPassRelistsThem(t *testing.T) {
 	h := start(t)
 	d := h.daemon()
 	d.hook(map[string]any{"hook_event_name": "UserPromptSubmit", "session_id": sidB, "cwd": h.dir, "turn_id": "t1"})
 	h.waitSession(sidB, "working")
-	var panes []string
-	for i := range 9 {
+	// The first pane in tmux's order shows another thread for now.
+	panes := []string{h.spawn(h.dir, map[string]string{"FAKE_TITLE": codexTitle("other", sidC)}, filepath.Join(bin, "codex"))}
+	for i := range 8 {
 		panes = append(panes, h.spawn(h.dir, map[string]string{"FAKE_TITLE": codexTitle("thread "+strconv.Itoa(i), sidB)}, filepath.Join(bin, "codex")))
 	}
 	h.eventually("nine clients ready", func() bool {
@@ -617,20 +619,46 @@ func TestARecordListsEightPanesAndAFullPassRelistsThem(t *testing.T) {
 		return shown, rec
 	}
 	shown, rec := attached()
-	if len(shown) != 8 || len(rec.Shown) != 8 {
+	if len(shown) != 8 || len(rec.Shown) != 8 || slices.Contains(shown, panes[0]) {
 		t.Fatalf("attached %v, listed %+v", shown, rec.Shown)
 	}
+
+	// The first pane now shows the thread too: a ninth, it stays unattached.
+	h.tmux("select-pane", "-t", panes[0], "-T", codexTitle("now this", sidB))
 	if again, _ := attached(); !slices.Equal(again, shown) {
-		t.Fatalf("a second pass moved attachments: %v, then %v", shown, again)
+		t.Fatalf("a ninth pane moved attachments: %v, then %v", shown, again)
 	}
 
 	// A listing lost, as when the state directory is purged under a running
-	// session, comes back with the next full pass.
-	rec.Shown = rec.Shown[1:]
+	// session, comes back with the next full pass, ahead of the ninth pane
+	// that tmux lists first.
+	rec, _, _ = store.Get(ctx, proc.Codex, sidB)
+	rec.Shown = rec.Shown[:7]
 	if err := store.Put(ctx, rec); err != nil {
 		t.Fatal(err)
 	}
 	if again, rec := attached(); !slices.Equal(again, shown) || len(rec.Shown) != 8 {
 		t.Fatalf("after a lost listing: attached %v, listed %+v", again, rec.Shown)
+	}
+
+	// A record full of other panes, one of them closed, cannot list a pane
+	// it lost: that pane stops showing the session. The next hook finds the
+	// closed pane gone, and a full pass fills the room it leaves.
+	rec, _, _ = store.Get(ctx, proc.Codex, sidB)
+	lost := rec.Shown[7].Pane
+	rec.Shown[7].Pane = "%999"
+	if err := store.Put(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+	if again, _ := attached(); len(again) != 7 || slices.Contains(again, lost) {
+		t.Fatalf("a full record kept %s attached: %v", lost, again)
+	}
+	d.hook(map[string]any{"hook_event_name": "Stop", "session_id": sidB, "cwd": h.dir, "turn_id": "t1"})
+	h.waitSession(sidB, "idle")
+	if rec, _, _ := store.Get(ctx, proc.Codex, sidB); len(rec.Shown) != 7 || slices.ContainsFunc(rec.Shown, func(e session.Shown) bool { return e.Pane == "%999" }) {
+		t.Fatalf("the hook kept a closed pane listed: %+v", rec.Shown)
+	}
+	if again, rec := attached(); len(again) != 8 || len(rec.Shown) != 8 {
+		t.Fatalf("after the closed pane left: attached %v, listed %+v", again, rec.Shown)
 	}
 }

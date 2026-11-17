@@ -109,10 +109,10 @@ func Links(w *World, live []session.Record) []Link {
 // Reconcile brings every pane in w in line with the sessions:
 //
 //   - a session whose host process is gone without SessionEnd ends (Exit);
+//   - a confirmed attachment its record does not list is listed again, and
+//     a projection that lags its session is rewritten;
 //   - a pane whose stored attachment Links no longer confirms loses it
-//     (Detach), and one Links attaches by title gains it (Attach);
-//   - a confirmed attachment its record does not list is listed again;
-//   - a projection that lags its session is rewritten.
+//     (Detach), and then one Links attaches by title gains it (Attach).
 //
 // Every change is decided again under the pane's or session's lock against
 // fresh state, so several tmag processes reconciling at once make each change
@@ -146,37 +146,31 @@ func Reconcile(ctx context.Context, env Env, w *World) error {
 			return err
 		}
 	}
+	// What holds is kept and what does not is removed before anything new
+	// attaches: a record's room goes to the attachments it has.
+	links := Links(w, live)
 	linked := map[[2]string]bool{}
-	for _, l := range Links(w, live) {
+	for _, l := range links {
+		linked[[2]string{l.Client.Pane.Server, l.Client.Pane.ID}] = true
+	}
+	for _, l := range links {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		p := l.Client.Pane
-		linked[[2]string{p.Server, p.ID}] = true
+		a, stored := FromPane(p)
 		switch {
-		case l.Stored:
+		case l.Stored && !l.Session.Lists(a.entry(p)):
 			// An attachment the record does not list is listed again, so
-			// that hooks project onto it; a listed one only catches up.
-			a, _ := FromPane(p)
-			if !l.Session.Lists(a.entry(p)) {
-				if err := env.Attach(ctx, w, l.Client, *l.Session, a.Evidence); err != nil {
-					return err
-				}
-			} else if projectionFromPane(p) != ProjectionOf(*l.Session) {
-				if err := env.Show(ctx, p, a); err != nil {
-					return err
-				}
-			}
-		case l.Session != nil:
-			if err := env.Attach(ctx, w, l.Client, *l.Session, l.Evidence); err != nil {
-				return err
-			}
-		default:
-			if a, ok := FromPane(p); ok {
-				if err := env.detach(ctx, p, a); err != nil {
-					return err
-				}
-			}
+			// that hooks project onto it.
+			err = env.Attach(ctx, w, l.Client, *l.Session, a.Evidence)
+		case l.Stored && projectionFromPane(p) != ProjectionOf(*l.Session):
+			err = env.Show(ctx, p, a)
+		case !l.Stored && l.Session == nil && stored:
+			err = env.detach(ctx, p, a)
+		}
+		if err != nil {
+			return err
 		}
 	}
 	// Panes whose agent is gone altogether, and options that are no
@@ -188,6 +182,16 @@ func Reconcile(ctx context.Context, env Env, w *World) error {
 			}
 		} else if !ok && len(p.Options) > 0 {
 			if err := env.clearBroken(ctx, p); err != nil {
+				return err
+			}
+		}
+	}
+	for _, l := range links {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if !l.Stored && l.Session != nil {
+			if err := env.Attach(ctx, w, l.Client, *l.Session, l.Evidence); err != nil {
 				return err
 			}
 		}
@@ -304,7 +308,8 @@ func (env Env) clearBroken(ctx context.Context, p tmux.Pane) error {
 // The session's record lists the pane before the pane shows the session,
 // under the session's lock, so a hook that saved a newer state either sees
 // the pane listed or has its state read here. A record that lists as many
-// panes as it takes gets no more, and the pane is left as it was. A session the pane stops
+// panes as it takes gets no more: a new attachment is not made, and one the
+// pane holds already is removed. A session the pane stops
 // showing unlists it after the pane changed, under that session's own lock.
 // The pane changes first, then the events are logged: a Detach of the
 // session the pane stops showing, then the Attach; a change of evidence or
@@ -338,7 +343,15 @@ func (env Env) Attach(ctx context.Context, w *World, c Client, rec session.Recor
 						return err
 					}
 				}
-				if !latest.Lists(entry) || projectionFromPane(fresh) == ProjectionOf(latest) {
+				if !latest.Lists(entry) {
+					// A full record cannot list the pane, so the pane stops
+					// showing the session.
+					if err := srv.ClearPaneOptions(ctx, fresh.ID); err != nil {
+						return err
+					}
+					return env.append(ctx, eventlog.Event{Agent: cur.Agent, Session: cur.Session, Event: eventlog.Detach, Pane: ref(fresh)})
+				}
+				if projectionFromPane(fresh) == ProjectionOf(latest) {
 					return nil
 				}
 				return writeProjection(ctx, srv, fresh.ID, ProjectionOf(latest))
