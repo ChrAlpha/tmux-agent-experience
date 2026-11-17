@@ -78,8 +78,10 @@ func TestSendClaudeThroughItsChannels(t *testing.T) {
 	readEventually(t, outA, "inbox claude "+sidB[:8]+" via tmag")
 	f.agrees(h)
 
-	// A person's prompt while A works goes through the inbox too.
-	if r := h.tmag("", "send", sidA[:8], "long work"); r.code != 0 || strings.Contains(r.out, "(inbox)") {
+	// A person's prompt while A works goes through the inbox too. A works
+	// until the test ends its turn: a timed turn may end before a slow
+	// runner's send arrives.
+	if r := h.tmag("", "send", sidA[:8], "sleep long work"); r.code != 0 || strings.Contains(r.out, "(inbox)") {
 		t.Fatalf("a person's idle send: %d %s", r.code, r.out)
 	}
 	h.waitSession(sidA, "working")
@@ -87,20 +89,22 @@ func TestSendClaudeThroughItsChannels(t *testing.T) {
 		t.Fatalf("a person's working send: %d %s", r.code, r.out)
 	}
 	readEventually(t, outA, "inbox tmag", "message during")
+	h.tmux("send-keys", "-t", a, "/end", "Enter")
 	h.waitSession(sidA, "idle")
-	if r := h.tmag("", "read", sidA[:8], "--last"); r.code != 0 || r.out != "answered: long work\n" {
+	if r := h.tmag("", "read", sidA[:8], "--last"); r.code != 0 || r.out != "answered: sleep long work\n" {
 		t.Fatalf("read --last after a working send: %d %q", r.code, r.out)
 	}
 
 	// An agent's prompt while A works reaches it at its next step.
-	if r := h.tmag("", "send", sidA[:8], "long work two"); r.code != 0 || strings.Contains(r.out, "(inbox)") {
+	if r := h.tmag("", "send", sidA[:8], "sleep long work two"); r.code != 0 || strings.Contains(r.out, "(inbox)") {
 		t.Fatalf("a person's idle send: %d %s", r.code, r.out)
 	}
 	h.waitSession(sidA, "working")
 	agentSend(t, h, b, "send", sidA[:8], "during agent")
 	readEventually(t, outA, "inbox claude "+sidB[:8]+" via tmag", "message [tmag] From claude "+sidB+", another agent. No answer needed.", "during agent")
+	h.tmux("send-keys", "-t", a, "/end", "Enter")
 	h.waitSession(sidA, "idle")
-	if r := h.tmag("", "read", sidA[:8], "--last"); r.code != 0 || r.out != "answered: long work two\n" {
+	if r := h.tmag("", "read", sidA[:8], "--last"); r.code != 0 || r.out != "answered: sleep long work two\n" {
 		t.Fatalf("read --last after an agent's working send: %d %q", r.code, r.out)
 	}
 	f.agrees(h)

@@ -2204,7 +2204,9 @@ func TestReplyWaitsForTheAsker(t *testing.T) {
 	b := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidB, "FAKE_OUT": outB, "FAKE_HOOKS": "1"}, filepath.Join(bin, "claude"))
 	h.waitPane(a, "idle", "process")
 	h.waitPane(b, "idle", "process")
-	if r := h.tmag("long work", "send", sidA[:8]); r.code != 0 {
+	// A works until the test ends its turn: a timed turn may end before a
+	// slow runner's reply, a turn of B's that proves its caller, gets there.
+	if r := h.tmag("sleep long work", "send", sidA[:8]); r.code != 0 {
 		t.Fatalf("send: %d %s", r.code, r.out)
 	}
 	h.waitSession(sidA, "working")
@@ -2214,14 +2216,17 @@ func TestReplyWaitsForTheAsker(t *testing.T) {
 	}
 	// Not before its timeout: then nothing is delivered, and the agent is
 	// told to try again.
-	h.tmux("send-keys", "-t", b, "tmag reply "+sidA+" --timeout 300ms too soon", "Enter")
+	h.tmux("send-keys", "-t", b, "tmag reply "+sidA+" --timeout 2s too soon", "Enter")
 	h.eventually("B's reply times out", func() bool {
 		got, _ := os.ReadFile(outB)
-		return strings.Contains(string(got), "tool 4 tmag reply: timed out after 300ms, nothing delivered: refused (busy)") &&
+		return strings.Contains(string(got), "tool 4 tmag reply: timed out after 2s, nothing delivered: refused (busy)") &&
 			strings.Contains(string(got), "next: nothing was delivered: run the same tmag reply again")
 	})
 	h.waitSession(sidB, "idle")
+	// The reply waits while A works, and A's turn ends meanwhile.
 	h.tmux("send-keys", "-t", b, "tmag reply "+sidA+" all done", "Enter")
+	h.waitSession(sidB, "working")
+	h.tmux("send-keys", "-t", a, "/end", "Enter")
 	h.eventually("B's reply is delivered", func() bool {
 		got, _ := os.ReadFile(outB)
 		return strings.Contains(string(got), "tool 0 replied to "+sidA[:8])

@@ -29,8 +29,9 @@
 // notification hook Claude Code sends after a while idle. The prompt "block" raises a
 // permission prompt; in Pi (an extension's dialog) and oh-my-pi (a tool
 // approval) it starts a turn the next line ends, answering it in the
-// terminal ("yes" or anything else). The prompt "sleep" starts a turn that
-// lasts a minute unless "/end" or an interrupt ends it first.
+// terminal ("yes" or anything else). The prompt "sleep", alone or followed by
+// words, starts a turn that lasts a minute unless "/end" or an interrupt ends
+// it first.
 // A line "/end" typed while a turn runs ends it at once, as its time running
 // out would; outside a turn it is a slash command like the others. A prompt
 // "tmag ARGS" is a turn whose Bash tool runs tmag ARGS, with the variable the
@@ -348,7 +349,7 @@ func main() {
 			hook(ev.ask, call)
 		case line == "block":
 			hook("PermissionRequest", map[string]any{turnKey: fmt.Sprintf("t%d", n), "tool_name": "Bash"})
-		case line == "sleep":
+		case line == "sleep" || strings.HasPrefix(line, "sleep "):
 			// Lasts a minute unless "/end" or an interrupt ends it.
 			begin(line)
 			ends = time.After(time.Minute)

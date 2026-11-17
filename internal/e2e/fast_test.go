@@ -178,10 +178,11 @@ func TestHintGuardRefusesAChangedAttachment(t *testing.T) {
 	h.eventually("the full path restored the attachment", func() bool {
 		return h.tmux("display-message", "-p", "-t", pane, "#{@tmag_session}|#{@tmag_state}|#{@tmag_kind}") == sidA+"|working|"
 	})
-	rec, ok, err := store.Get(context.Background(), proc.Claude, sidA)
-	if err != nil || !ok || !hasHint(rec, pane) {
-		t.Fatalf("hint after the full path = %+v, %v, %v", rec.Pane, ok, err)
-	}
+	// The Attach writes the pane before it saves the hint.
+	h.eventually("the full path restored the hint", func() bool {
+		rec, ok, err := store.Get(context.Background(), proc.Claude, sidA)
+		return err == nil && ok && hasHint(rec, pane)
+	})
 }
 
 // A session shown in two panes is projected onto both by a fast hook, without
