@@ -69,6 +69,9 @@ const (
 	optKind     = "kind"
 	optSince    = "since"
 	optCmd      = "cmd"
+	// optTitle is the Codex title a guarded write judged, which its guard
+	// asks the pane's title still to be.
+	optTitle = "title"
 )
 
 // FromPane reads the attachment stored on a pane: only one tmag could have
@@ -200,24 +203,17 @@ func isActivity(r rune) bool { return (r >= 0x2800 && r <= 0x28ff) || r == '●'
 // shows reports how a Codex title relates to a session: the view it shows,
 // or ok false when it shows no id of the session's.
 func shows(title string, rec session.Record) (view string, ok bool) {
-	_, view, ok = shownID(title, rec)
-	return view, ok
-}
-
-// shownID is the title's id item that shows rec, as TitleIDs reads it, and
-// the view it shows.
-func shownID(title string, rec session.Record) (id, view string, ok bool) {
 	for _, id := range TitleIDs(title) {
 		if strings.HasPrefix(rec.ID, id) {
-			return id, ViewMain, true
+			return ViewMain, true
 		}
 		for _, sub := range rec.Subagents {
 			if strings.HasPrefix(sub, id) {
-				return id, ViewSubagent, true
+				return ViewSubagent, true
 			}
 		}
 	}
-	return "", "", false
+	return "", false
 }
 
 // Check reports whether an attachment still holds in the world, and which

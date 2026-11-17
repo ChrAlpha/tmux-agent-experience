@@ -282,7 +282,7 @@ func TestProjectWritesACodexPaneOnlyWhileItsTitleShowsTheSession(t *testing.T) {
 	}
 	wrap := t.TempDir()
 	flip := filepath.Join(wrap, "title")
-	script := "#!/bin/sh\nif [ \"$4\" = if ] && [ -s '" + flip + "' ]; then '" + real + "' -S \"$3\" select-pane -t " + pane +
+	script := "#!/bin/sh\nif [ \"$4 $8\" = 'set-option @tmag_title' ] && [ -s '" + flip + "' ]; then '" + real + "' -S \"$3\" select-pane -t " + pane +
 		" -T \"$(cat '" + flip + "')\"; fi\nexec '" + real + "' \"$@\"\n"
 	if err := os.WriteFile(filepath.Join(wrap, "tmux"), []byte(script), 0o700); err != nil {
 		t.Fatal(err)
@@ -295,8 +295,13 @@ func TestProjectWritesACodexPaneOnlyWhileItsTitleShowsTheSession(t *testing.T) {
 		{TitleID, "repo | " + a[:29] + "...", "repo | " + b[:29] + "...", false},
 		// A name that mentions the thread's id is no id item.
 		{TitleID, "repo | " + a[:29] + "...", "Investigate " + a[:29] + "... | repo | " + b[:29] + "...", false},
+		{TitleID, "repo | " + a[:29] + "...", "调查 " + a[:29] + "... | repo | " + b[:29] + "...", false},
+		{TitleID, "repo | " + a[:29] + "...", "name| " + a[:29] + "... | repo | " + b[:29] + "...", false},
+		// A spinner's turn is read and judged again, and written.
+		{TitleID, "⠋ work | repo | " + a[:29] + "...", "⠙ work | repo | " + a[:29] + "...", true},
 		{Process, "repo", "repo | " + b[:29] + "...", false},
-		// Nor is it one for a process attachment whose title shows none.
+		{Process, "repo", "repo |  " + b[:29] + "...", false},
+		// A name that mentions an id is none for a process attachment either.
 		{Process, "Investigate " + b[:29] + "...", "Investigate " + b[:29] + "...", true},
 	} {
 		if err := srv.SetPaneOptions(ctx, pane, map[string]string{"evidence": tc.evidence, "state": "idle"}, nil); err != nil {
@@ -358,44 +363,82 @@ func TestProjectReadsTheRecordUnderThePaneLock(t *testing.T) {
 	}
 }
 
-// The title terms the guard sends read a title as TitleIDs does, in tmux's
-// own regular expressions: a name that mentions an id is no id item.
-func TestTitleTermsReadTitlesAsTitleIDs(t *testing.T) {
-	srv, pane, _ := startTmuxPane(t)
+// Whatever a title holds, the write stores it as a value and compares it as
+// one: tmux expands and runs nothing of it, and the pane is written exactly
+// when TitleIDs reads the session's thread in it.
+func TestAnyTitleIsStoredAndComparedAsAValue(t *testing.T) {
+	srv, pane, cmd := startTmuxPane(t)
 	ctx := context.Background()
+	if err := srv.SetPaneOptions(ctx, pane, map[string]string{
+		"agent": proc.Codex, "session": threadA, "pid": "123", "start": "12345", "evidence": TitleID, "cmd": cmd,
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	env := Env{Log: eventlog.Open(dir), Store: session.Store{Dir: dir}}
+	entry := session.Shown{Server: srv.Socket, Pane: pane, PID: 123, Start: "12345"}
 	a, b := shown(threadA), shown(threadB)
-	for _, title := range []string{
+	for i, title := range []string{
 		"proj | " + a,
 		"⠼ 运行 echo hi | proj | " + a,
-		"[ ! ] Action Required | name | " + a,
-		"⠼ " + a + " | proj",
-		a + " ●",
-		"proj | " + b + " | " + a,
-		"proj | " + b,
+		" " + a + " ",
+		"proj | " + a + ";",
+		"x ; set-option -g @tmag_pwned 1 ; " + a,
+		"#{pane_id} | " + a,
+		"a}b,c | " + a,
+		"{",
+		"\\;",
+		"-t | " + a,
 		"see " + a + " | proj",
-		"Investigate " + a + " | repo | " + b,
-		"Investigate " + a,
-		threadA + " | proj",
-		"GPT-6 | proj",
+		"proj | " + b,
 		"",
 	} {
-		if _, err := srv.Run(ctx, "select-pane", "-t", pane, "-T", title); err != nil {
+		rec := session.Record{Agent: proc.Codex, ID: threadA, Main: adapter.Working, Since: time.Unix(int64(1000+i), 0).UTC(), Shown: []session.Shown{entry}}
+		if err := env.Store.Put(ctx, rec); err != nil {
 			t.Fatal(err)
 		}
-		eval := func(term string) bool {
-			t.Helper()
-			out, err := srv.Run(ctx, "display-message", "-p", "-t", pane, term)
-			if err != nil {
-				t.Fatal(err)
-			}
-			return strings.TrimSpace(string(out)) == "1"
+		setTitle(t, srv, pane, title)
+		written, _, err := env.Project(ctx, rec)
+		if err != nil {
+			t.Fatal(err)
 		}
-		ids := TitleIDs(title)
-		if got, want := eval("#{!=:"+withoutItem(threadA[:titleIDLen])+",#{pane_title}}"), slices.Contains(ids, threadA[:titleIDLen]); got != want {
-			t.Errorf("title %q: tmux reads A's item %v, TitleIDs %v", title, got, want)
+		want := slices.Contains(TitleIDs(title), threadA[:titleIDLen])
+		if (len(written) == 1) != want {
+			t.Errorf("title %q: written %v, TitleIDs reads the thread %v", title, len(written) == 1, want)
 		}
-		if got, want := eval("#{!=:"+withoutItem(anyID)+",#{pane_title}}"), len(ids) > 0; got != want {
-			t.Errorf("title %q: tmux reads an id item %v, TitleIDs %v", title, got, want)
+		out, err := srv.Run(ctx, "display-message", "-p", "-t", pane, "#{@tmag_title}\t#{@tmag_pwned}")
+		if err != nil {
+			t.Fatal(err)
+		}
+		stored, pwned, _ := strings.Cut(strings.TrimRight(string(out), "\n"), "\t")
+		if pwned != "" || (want && stored != title+".") {
+			t.Errorf("title %q: stored %q, ran %q", title, stored, pwned)
+		}
+	}
+}
+
+// setTitle sets the pane's title as a program in it does, through its
+// terminal, so that tmux takes it as text.
+func setTitle(t *testing.T, srv tmux.Server, pane, title string) {
+	t.Helper()
+	ctx := context.Background()
+	out, err := srv.Run(ctx, "display-message", "-p", "-t", pane, "#{pane_tty}")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(strings.TrimSpace(string(out)), []byte("\x1b]2;"+title+"\x1b\\"), 0); err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(2 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+		out, err := srv.Run(ctx, "display-message", "-p", "-t", pane, "#{pane_title}")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.TrimRight(string(out), "\n") == title {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("title %q not set: %q", title, out)
 		}
 	}
 }

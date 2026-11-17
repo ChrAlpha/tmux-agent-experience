@@ -108,18 +108,56 @@ const guardRefused = "tmag-guard-refused"
 // guardedWrite sets pr on the listed pane s in one tmux invocation, only if
 // tmux still shows the attachment s names on a live pane running the program
 // it was attached with, then prints the pane; with ask it also reads the
-// server's options and client activity. A Codex pane is read first, under
-// the same pane lock, so that its title is judged as Check judges it; the
-// guard then asks that the title still shows what it showed.
+// server's options and client activity.
+//
+// A Codex pane is written only while its title shows the session, as Check
+// judges it. Its title is read and judged first, under the same pane lock,
+// and the write's invocation stores the title it judged on the pane, as a
+// value tmux never expands, for its guard to ask that the title is still
+// that one. A title that changed in between, as a spinner's does, is read
+// and judged again, titleReads times at most.
 func guardedWrite(ctx context.Context, s session.Shown, rec session.Record, pr Projection, ask bool, options []string) (Projected, outcome) {
 	if !s.Valid() || !named(rec.Agent, rec.ID) {
 		return Projected{}, unwritten
 	}
 	srv := tmux.Server{Socket: s.Server}
-	holds := func(p tmux.Pane) bool {
-		a, ok := FromPane(p)
-		return ok && a.Agent == rec.Agent && a.Session == rec.ID && a.PID == s.PID && a.Start == s.Start
+	if rec.Agent != proc.Codex {
+		got, out, _ := guardedCall(ctx, srv, s, rec, pr, ask, options, nil)
+		return got, out
 	}
+	for range titleReads {
+		p, err := srv.Pane(ctx, s.Pane)
+		if err != nil {
+			return Projected{}, absence(ctx, srv, s.Pane)
+		}
+		if !holds(p, s, rec) {
+			return Projected{}, gone
+		}
+		if !titleShows(p, rec) {
+			return Projected{}, unwritten
+		}
+		got, out, after := guardedCall(ctx, srv, s, rec, pr, ask, options, &p.Title)
+		if out != unwritten || after == nil || after.Title == p.Title {
+			return got, out
+		}
+	}
+	return Projected{}, unwritten
+}
+
+// titleReads bounds how often a Codex pane's title is read and judged again
+// for one write, when it changed under the write.
+const titleReads = 3
+
+// holds reports whether pane p holds the attachment s lists for rec.
+func holds(p tmux.Pane, s session.Shown, rec session.Record) bool {
+	a, ok := FromPane(p)
+	return ok && a.Agent == rec.Agent && a.Session == rec.ID && a.PID == s.PID && a.Start == s.Start
+}
+
+// guardedCall is one guarded write. With title, the invocation first stores
+// title on the pane and the guard asks that the pane's title still is it.
+// It returns the pane as printed after the guard, when tmux printed it.
+func guardedCall(ctx context.Context, srv tmux.Server, s session.Shown, rec session.Record, pr Projection, ask bool, options []string, title *string) (Projected, outcome, *tmux.Pane) {
 	terms := []string{
 		"#{==:#{" + tmux.OptionPrefix + optAgent + "}," + rec.Agent + "}",
 		"#{==:#{" + tmux.OptionPrefix + optSession + "}," + rec.ID + "}",
@@ -128,25 +166,17 @@ func guardedWrite(ctx context.Context, s session.Shown, rec session.Record, pr P
 		"#{?pane_dead,0,1}",
 		"#{==:#{pane_current_command},#{" + tmux.OptionPrefix + optCmd + "}}",
 	}
-	if rec.Agent == proc.Codex {
-		p, err := srv.Pane(ctx, s.Pane)
-		if err != nil {
-			return Projected{}, absence(ctx, srv, s.Pane)
-		}
-		if !holds(p) {
-			return Projected{}, gone
-		}
-		term, ok := titleGuard(p, rec)
-		if !ok {
-			return Projected{}, unwritten
-		}
-		terms = append(terms, term)
+	var args []string
+	if title != nil {
+		// The stored value ends in a dot, as the compared title does, so
+		// that no title ends the argument as tmux's command separator.
+		args = []string{"set-option", "-p", "-t", s.Pane, tmux.OptionPrefix + optTitle, *title + ".", ";"}
+		terms = append(terms, "#{==:"+tmux.TitleFormat+".,#{"+tmux.OptionPrefix+optTitle+"}}")
 	}
-	guard := conjunction(terms...)
 	accepted := projectionCommands(s.Pane, pr) + " ; display-message -p -t " + s.Pane + " ok"
 	refused := "display-message -p -t " + s.Pane + " " + guardRefused
-	args := []string{"if", "-F", "-t", s.Pane, guard, accepted, refused, ";",
-		"display-message", "-p", "-t", s.Pane, tmux.PaneFormat}
+	args = append(args, "if", "-F", "-t", s.Pane, conjunction(terms...), accepted, refused, ";",
+		"display-message", "-p", "-t", s.Pane, tmux.PaneFormat)
 	if ask {
 		args = append(append(args, ";"), tmux.OptionCommands(options...)...)
 		args = append(args, ";", "list-clients", "-F", "#{client_activity}")
@@ -154,61 +184,41 @@ func guardedWrite(ctx context.Context, s session.Shown, rec session.Record, pr P
 	raw, err := srv.Run(ctx, args...)
 	lines := strings.SplitN(string(raw), "\n", 3)
 	if err != nil || len(lines) < 2 {
-		return Projected{}, absence(ctx, srv, s.Pane)
+		return Projected{}, absence(ctx, srv, s.Pane), nil
 	}
 	pane, ok := srv.ParsePane(lines[1])
 	if !ok || pane.ID != s.Pane {
 		// tmux prints a target it cannot find as an empty pane.
-		return Projected{}, absence(ctx, srv, s.Pane)
+		return Projected{}, absence(ctx, srv, s.Pane), nil
 	}
-	if !holds(pane) {
-		return Projected{}, gone
+	if !holds(pane, s, rec) {
+		return Projected{}, gone, &pane
 	}
 	if lines[0] != "ok" || projectionFromPane(pane) != pr {
-		return Projected{}, unwritten
+		return Projected{}, unwritten, &pane
 	}
 	got := Projected{Pane: pane}
 	if ask {
 		values, err := tmux.ParseOptions(raw, options...)
 		if err != nil {
-			return Projected{}, unwritten
+			return Projected{}, unwritten, &pane
 		}
 		got.Read, got.Options = true, values
 		got.Activity, _ = tmux.ClientActivity(tmux.AfterOptions(raw))
 	}
-	return got, wrote
+	return got, wrote, &pane
 }
 
-// titleGuard decides, as Check does, whether a Codex pane's title lets it
-// show rec: it shows one of the session's threads, or, for a process
-// attachment, no thread at all. The term it returns asks tmux, in the write's
-// own invocation, that the title still does: that it still holds the id item
-// it showed, or still holds no id item.
-func titleGuard(p tmux.Pane, rec session.Record) (term string, ok bool) {
-	if id, _, ok := shownID(p.Title, rec); ok {
-		return "#{!=:" + withoutItem(id) + ",#{pane_title}}", true
+// titleShows reports whether a Codex pane's title lets it show rec, as Check
+// decides: it shows one of the session's threads, or, for a process
+// attachment, no thread at all.
+func titleShows(p tmux.Pane, rec session.Record) bool {
+	if _, ok := shows(p.Title, rec); ok {
+		return true
 	}
-	if a, _ := FromPane(p); a.Evidence != TitleID && len(TitleIDs(p.Title)) == 0 {
-		return "#{==:" + withoutItem(anyID) + ",#{pane_title}}", true
-	}
-	return "", false
+	a, _ := FromPane(p)
+	return a.Evidence != TitleID && len(TitleIDs(p.Title)) == 0
 }
-
-// withoutItem is the pane's title with an id item matching pattern replaced,
-// so that it differs from the title exactly when the title shows one. The
-// regular expression reads items as TitleIDs does: between " | "
-// separators, the id followed by "...", with nothing beside it but activity
-// glyphs, here any word of characters outside printable ASCII. It holds
-// nothing tmux formats would take for their own syntax.
-func withoutItem(pattern string) string {
-	return "#{s/(^|[|] )([^ -~]+ )*" + pattern + "[.][.][.]( [^ -~]+)*( [|]|$)/X/:pane_title}"
-}
-
-// anyID matches the id of any thread as the title shows it, spelled out
-// because tmux would take a repetition count's braces for format syntax.
-var anyID = strings.Join([]string{hexDigits(8), hexDigits(4), hexDigits(4), hexDigits(4), hexDigits(titleIDLen - 24)}, "-")
-
-func hexDigits(n int) string { return strings.Repeat("[0-9a-f]", n) }
 
 // absence is what a failed tmux call proves of a pane: gone when its server
 // answers without it, or no server listens on its socket any more.

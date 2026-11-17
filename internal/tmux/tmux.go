@@ -57,7 +57,7 @@ const OptionPrefix = "@tmag_"
 // OptionKeys lists every pane option tmag reads or writes, without the
 // prefix: the attachment (agent, session, pid, start, evidence) and the
 // display projection (state, kind, since, cmd).
-var OptionKeys = []string{"agent", "session", "pid", "start", "evidence", "state", "kind", "since", "cmd"}
+var OptionKeys = []string{"agent", "session", "pid", "start", "evidence", "state", "kind", "since", "cmd", "title"}
 
 // sep separates the fields of a pane line. It must be a byte every tmux
 // prints as is: tmux 3.4 writes other control characters in -F output as
@@ -72,6 +72,9 @@ const sep = "\t"
 func clean(name string) string {
 	return "#{s/[\x01-\x1f\x7f]//:" + name + "}"
 }
+
+// TitleFormat is a pane's title as PaneFormat prints it.
+var TitleFormat = clean("pane_title")
 
 // PaneFormat prints a pane as a line ParsePane reads: its identity, its
 // display, every tmag pane option and its title, free text cleaned.
