@@ -71,7 +71,9 @@ func clean(name string) string {
 	return "#{s/[\x01-\x1f\x7f]//:" + name + "}"
 }
 
-var paneFormat = func() string {
+// PaneFormat prints a pane as a line ParsePane reads: its identity, its
+// display, every tmag pane option and its title, free text cleaned.
+var PaneFormat = func() string {
 	fields := []string{
 		"#{pane_id}", "#{pane_pid}", clean("pane_current_command"), clean("pane_current_path"),
 		clean("session_name"), "#{window_index}", "#{pane_index}", "#{pane_tty}",
@@ -122,13 +124,13 @@ func (s Server) RunInput(ctx context.Context, stdin []byte, args ...string) ([]b
 
 // Panes lists every pane on the server.
 func (s Server) Panes(ctx context.Context) ([]Pane, error) {
-	out, err := s.Run(ctx, "list-panes", "-a", "-F", paneFormat)
+	out, err := s.Run(ctx, "list-panes", "-a", "-F", PaneFormat)
 	if err != nil {
 		return nil, err
 	}
 	var panes []Pane
 	for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
-		if p, ok := s.parsePane(line); ok {
+		if p, ok := s.ParsePane(line); ok {
 			panes = append(panes, p)
 		}
 	}
@@ -156,18 +158,19 @@ func (s Server) PaneID(ctx context.Context, target string) (string, error) {
 
 // Pane reads one pane afresh.
 func (s Server) Pane(ctx context.Context, id string) (Pane, error) {
-	out, err := s.Run(ctx, "display-message", "-p", "-t", id, paneFormat)
+	out, err := s.Run(ctx, "display-message", "-p", "-t", id, PaneFormat)
 	if err != nil {
 		return Pane{}, err
 	}
-	p, ok := s.parsePane(strings.TrimRight(string(out), "\n"))
+	p, ok := s.ParsePane(strings.TrimRight(string(out), "\n"))
 	if !ok || p.ID != id {
 		return Pane{}, fmt.Errorf("pane %s: unexpected tmux output", id)
 	}
 	return p, nil
 }
 
-func (s Server) parsePane(line string) (Pane, bool) {
+// ParsePane reads a line PaneFormat printed for a pane of s.
+func (s Server) ParsePane(line string) (Pane, bool) {
 	const fixed = 9
 	f := strings.Split(line, sep)
 	if len(f) != fixed+len(OptionKeys)+1 || !paneIDRE.MatchString(f[0]) {
@@ -289,31 +292,48 @@ func (s Server) Option(ctx context.Context, name string) (string, error) {
 // command or environment expansion, and preserves cancellation and decoding
 // errors.
 func (s Server) Options(ctx context.Context, names ...string) (map[string]string, error) {
-	// Read tmux's quoted representation so literal backslashes and control
-	// characters remain distinguishable. tmux 3.4 additionally escapes dollar
-	// variables when printing; probe that layer in the same command invocation.
-	const probe = "$TMAG_OPTION_PRINT"
-	args := make([]string, 0, 3*len(names)+3)
-	for _, name := range names {
-		args = append(args, "show-option", "-gq", name, ";")
-	}
-	args = append(args, "display-message", "-p", probe)
-	out, err := s.Run(ctx, args...)
+	out, err := s.Run(ctx, OptionCommands(names...)...)
 	if err != nil {
 		return nil, err
 	}
 	return ParseOptions(out, names...)
 }
 
-// ParseOptions decodes the show-option output of Options, including its
-// $TMAG_OPTION_PRINT probe, from a tmux invocation that also carried other
-// output.
+// optionProbe follows the options an invocation reads. tmux's quoted
+// representation keeps literal backslashes and control characters apart;
+// tmux 3.4 additionally escapes dollar variables when printing, and the
+// probe shows whether it did.
+const optionProbe = "$TMAG_OPTION_PRINT"
+
+// OptionCommands are the commands that read the named global options, for
+// an invocation that runs them among others; ParseOptions decodes what they
+// print, and AfterOptions returns what the invocation printed after them.
+func OptionCommands(names ...string) []string {
+	args := make([]string, 0, 4*len(names)+3)
+	for _, name := range names {
+		args = append(args, "show-option", "-gq", name, ";")
+	}
+	return append(args, "display-message", "-p", optionProbe)
+}
+
+// AfterOptions returns what an invocation printed after its OptionCommands.
+func AfterOptions(out []byte) []byte {
+	lines := strings.Split(string(out), "\n")
+	for i, line := range lines {
+		if strings.TrimSpace(strings.TrimPrefix(line, `\`)) == optionProbe {
+			return []byte(strings.Join(lines[i+1:], "\n"))
+		}
+	}
+	return nil
+}
+
+// ParseOptions decodes what OptionCommands printed, from a tmux invocation
+// that may also have printed other output.
 func ParseOptions(out []byte, names ...string) (map[string]string, error) {
-	const probe = "$TMAG_OPTION_PRINT"
 	lines := strings.Split(string(out), "\n")
 	printed := false
 	for _, line := range lines {
-		if strings.TrimSpace(line) == `\`+probe {
+		if strings.TrimSpace(line) == `\`+optionProbe {
 			printed = true
 		}
 	}
