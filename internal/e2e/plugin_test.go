@@ -140,6 +140,9 @@ func TestPluginInstallsBinaryAndSetsUp(t *testing.T) {
 	if got := h.tmux("show-option", "-gqv", "@tmag-peers"); got != "on" {
 		t.Errorf("@tmag-peers = %q", got)
 	}
+	if got := h.tmux("show-option", "-gqv", "@tmag-peer-depth"); got != "3" {
+		t.Errorf("@tmag-peer-depth = %q", got)
+	}
 	if got := h.tmux("show-option", "-gqv", "@tmag-plugin-version"); got != version.Version {
 		t.Errorf("@tmag-plugin-version = %q", got)
 	}
@@ -247,7 +250,7 @@ func TestStatusFormatSkipsRetainedDeadPanes(t *testing.T) {
 
 func TestPluginDefaultsCanBeTurnedOff(t *testing.T) {
 	h := start(t)
-	plugin := h.loadPlugin(false, map[string]string{"@tmag-key-picker": "off", "@tmag-key-setup": "off", "@tmag-alert": "off", "@tmag-peers": "off"})
+	plugin := h.loadPlugin(false, map[string]string{"@tmag-key-picker": "off", "@tmag-key-setup": "off", "@tmag-alert": "off", "@tmag-peers": "off", "@tmag-peer-depth": "1"})
 	h.waitBinary(plugin)
 	if got := h.key("a"); strings.Contains(got, "choose-tree") {
 		t.Errorf("picker bound although off: %q", got)
@@ -263,6 +266,9 @@ func TestPluginDefaultsCanBeTurnedOff(t *testing.T) {
 	}
 	if got := h.tmux("show-option", "-gqv", "@tmag-peers"); got != "off" {
 		t.Errorf("@tmag-peers = %q", got)
+	}
+	if got := h.tmux("show-option", "-gqv", "@tmag-peer-depth"); got != "1" {
+		t.Errorf("@tmag-peer-depth = %q", got)
 	}
 }
 

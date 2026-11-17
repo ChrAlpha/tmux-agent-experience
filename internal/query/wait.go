@@ -7,6 +7,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/ChrAlpha/tmux-agent-experience/internal/adapter"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
@@ -120,4 +121,99 @@ func WaitShown(ctx context.Context, store session.Store, ref eventlog.PaneRef) (
 		case <-tick.C:
 		}
 	}
+}
+
+// Reached is where one session of a wait over several stands: the state it
+// reached, whether it settled the asks that were waited on, or whether it
+// ended.
+type Reached struct {
+	Session Session `json:"session"`
+	State   string  `json:"state,omitempty"`
+	Kind    string  `json:"kind,omitempty"`
+	// Settled says it owes the caller nothing more of what was waited on:
+	// it replied, or the turn a final ask started ended.
+	Settled bool `json:"settled,omitempty"`
+	Ended   bool `json:"ended,omitempty"`
+}
+
+// Awaited is one session a wait over several waits on: for one of states,
+// or, when Owed names obligations, until it owes none of them or needs the
+// person.
+type Awaited struct {
+	Session Session
+	States  []string
+	Owed    []string
+}
+
+// Owing are the sessions that owe the caller an answer, each with every
+// obligation it owes the caller: what wait --asked waits on.
+func Owing(v View, c Caller) ([]Awaited, error) {
+	if c.By == nil || c.By.Session == "" {
+		return nil, ErrNoSender
+	}
+	me, now := asker(c), time.Now()
+	var out []Awaited
+	for _, r := range v.records {
+		var ids []string
+		for _, o := range r.Owing(now) {
+			if o.To == me {
+				ids = append(ids, o.ID)
+			}
+		}
+		if s, ok := v.Session(r.Agent, r.ID); ok && ids != nil {
+			out = append(out, Awaited{Session: s, Owed: ids})
+		}
+	}
+	return out, nil
+}
+
+// WaitMany blocks until any of the awaited sessions, or all of them, reach
+// what each waits for, and returns where each one that did stands. An ended
+// session counts as reached. It reads records, as Wait does.
+func WaitMany(ctx context.Context, store session.Store, awaited []Awaited, all bool) ([]Reached, error) {
+	tick := time.NewTicker(waitPoll)
+	defer tick.Stop()
+	nextLive := time.Now()
+	for {
+		live := !time.Now().Before(nextLive)
+		if live {
+			nextLive = time.Now().Add(livenessInterval)
+		}
+		var reached []Reached
+		for _, a := range awaited {
+			if r, ok := standing(ctx, store, a, live); ok {
+				reached = append(reached, r)
+			}
+		}
+		if err := ctx.Err(); err != nil {
+			return reached, err
+		}
+		if len(reached) > 0 && (!all || len(reached) == len(awaited)) {
+			return reached, nil
+		}
+		select {
+		case <-ctx.Done():
+			return reached, ctx.Err()
+		case <-tick.C:
+		}
+	}
+}
+
+// standing reads where one awaited session stands, and whether that is what it
+// is waited for. live checks that its process still runs.
+func standing(ctx context.Context, store session.Store, a Awaited, live bool) (Reached, bool) {
+	s := a.Session
+	rec, ok, err := store.Get(ctx, s.Agent, s.ID)
+	switch {
+	case err != nil:
+		return Reached{}, false
+	case !ok, live && rec.Host.PID > 0 && !proc.Running(ctx, rec.Host.PID, rec.Host.Start):
+		return Reached{Session: s, Ended: true}, true
+	}
+	r := Reached{Session: s, State: rec.State(), Kind: rec.Kind()}
+	if a.Owed == nil {
+		return r, slices.Contains(a.States, r.State)
+	}
+	r.Settled = !slices.ContainsFunc(rec.Owing(time.Now()), func(o eventlog.Obligation) bool { return slices.Contains(a.Owed, o.ID) })
+	return r, r.Settled || r.State == adapter.Blocked
 }

@@ -3,7 +3,9 @@
 - Status: accepted; amended 2026-11-10 (when agents look at peers, and the
   `next:` line after refusals); amended again 2026-11-10 (one `send` verb,
   and replies through the asker's channel); amended 2026-11-16 (a message
-  attests the sender's permission class and names the receiver's session)
+  attests the sender's permission class and names the receiver's session);
+  amended 2026-11-17 (agents work as a flat team: an ask is owed until it is
+  answered, and tmag bounds waits and how far work is passed on)
 - Date: 2026-11-04
 - Builds on: [ADR 0001](0001-agent-control-surface.md), whose verbs agents
   use here unchanged.
@@ -117,6 +119,87 @@ with exit 4; it says nothing was delivered, and may run again, only when its
 last try was refused, which delivers nothing. After any other error the
 delivery is unknown, and the reply is not sent again.
 
+### Asks are owed until they are answered
+
+Agents work as a flat team: any agent may ask any other, and none is
+another's parent. A tree of parents and children would tie five relations
+to one edge: who started whom, who owes whom an answer, who waits for whom,
+who keeps whom running, and who may direct whom. tmag keeps each apart. Who
+started a session is history, in the events; tmux and the person keep
+sessions running, in windows that stay until closed; the person, the proven
+sender and its permission class say who may direct whom. What a tree's edge
+would give for answers and waits, tmag gives per ask. An agent's own
+subagents stay its business: a tree inside one session, a flat team between
+sessions.
+
+- **An obligation per ask.** An agent's `send --wait` opens a `final`
+  obligation on the receiver, and `send --reply` a `reply` one, in the
+  delivery's mark, under the receiver's lock, logged by the `Send` event,
+  which then reports the receiver. Each names the asker, its kind, its depth
+  and when it opened, and `list --json`, `inspect --json` and watch report
+  them as `owes`. A person's prompt opens none. A session owes at most 16:
+  an ask beyond them is refused `owing`, so no ask it took is forgotten. A
+  delivery proven not taken takes its obligation back, and an `Owes` event
+  reports that.
+- **Closed by the answer.** A `final` obligation is bound to the turn its
+  prompt starts and closed when that turn ends; one whose prompt starts no
+  turn within the pending window is owed no more, and binds no later turn.
+  `tmag reply` answers only a `reply` obligation: a reply to an agent that
+  asked for none, or for the answer in a final message, is refused
+  `unasked`, so the line `Reply from …, to your prompt` is true when tmag
+  writes it. The reply claims the oldest such obligation under the
+  replier's lock before it is delivered, so two replies at once answer it
+  once. The claim names the tmag process delivering the reply and lasts as
+  long as that process runs, which the process table proves; no event
+  reports it. The obligation is settled, with an `Owes` event, once the
+  reply was delivered or may have been, a channel having begun to write it,
+  and the claim released when the delivery proved nothing was taken.
+- **A reply is invited.** A message tmag queued for an agent holds off the
+  next one until the agent reaches its next step (ADR 0001); a reply or a
+  notice is not held off by it, since the asker invited it and its
+  obligations bound how many come. An agent that asks several peers and
+  waits for them in one turn receives every answer at its next step.
+- **An end settles what it leaves.** The `SessionEnd` or `Exit` event of a
+  session lists what it owed. Whatever ended it then starts a detached `tmag
+  notify --ended SEQ`, as alerts are started, so a hook keeps its deadline.
+  It reads that end from the log, tells each agent the session owed a reply,
+  through its own channel, in the one prompt tmag writes on its own account,
+  and closes what other sessions owed the session that ended:
+
+  ```
+  [tmag] Notice: codex 01a1e902-… ended without answering your prompt. No answer needed.
+  ```
+
+  The notice's `Send` event names the end it tells of as `notice`, and has
+  no `by`. Only an end tmag logged names askers, so running the command
+  tells nobody of an end that did not happen, and tmag tells them within a
+  minute of the end; a later run tells nobody, and still closes what was
+  owed to the session that ended. The asker's record keeps the
+  ends tmag told it of for two minutes, at most 64, checked and written
+  under its lock with the delivery: two runs at once tell it once, a notice
+  beyond them waits rather than one being forgotten, and a notice its
+  channel proved not taken, or that could not be logged, is taken back for a
+  later run to tell. A busy asker is tried again each round, so it holds no
+  other asker up. An asker that waits for a final answer learns of the end
+  from its wait.
+- **No wait closes a cycle, as far as tmag sees.** An agent's `send --wait`
+  to a session that waits for it, itself or through others, is refused
+  `cycle`: a session waits for another that owes it a final answer while its
+  own turn runs. `send --reply` never holds a turn, so it closes no cycle.
+  The check reads the records without a lock common to them: two agents
+  that ask each other at the same instant can still both wait, until their
+  `--timeout`.
+- **Work is passed on a bounded number of times.** An ask is one deeper
+  than the deepest answer its asker owes to a session that still runs: an
+  agent the person prompted asks at depth 1. An ask deeper than
+  `@tmag-peer-depth` (default 3; `off` bounds it only at 255) is refused
+  `depth`. It bounds asks that await an answer; a message that asks for none
+  carries no depth.
+- **Waiting for several.** `tmag wait` takes several targets, each a session
+  it shows, any or `--all` of them, and `--asked` waits until each agent
+  that owes the caller has settled every ask it owes it, ended, or needs the
+  person.
+
 ### Answers are read from the transcript
 
 `tmag read ID --last` prints the reply that ended an idle session's last turn,
@@ -151,6 +234,10 @@ This is the one transcript reader. It extends "no content is stored" as
 - Settled: a reply is delivered now through the asker's own channel when its
   driver has one; a pane-only asker still waits for its `--timeout` while it
   is busy.
+- What agents owe each other is state, which a client follows from the
+  watch and a person sees on a phone: who works for whom, and who waits.
+  `tmag reply` refuses what no ask invited, which an agent that replied
+  unasked meets as a refusal with its next step.
 
 ## Alternatives considered
 
@@ -167,6 +254,14 @@ This is the one transcript reader. It extends "no content is stored" as
   the published contract; a new flag keeps it.
 - **One skill in the `tmag` plugin.** The person could not keep it out of the
   agents' context without losing the hooks.
+- **Parents and children**, as herdr-core keeps them: a child ends with its
+  parent, which waits for its children and hears when they stop. It ties
+  every relation to the session that started another, which a peer that
+  several agents ask, or that the person took over, does not have; and a
+  child that ends with its parent ends work the person may want to keep.
+- **A shared board of messages or documents**, as Codex's message board and
+  herdr-core's documents keep. It stores what agents write, and the
+  repository the agents share already holds their work.
 
 ## Checked live
 

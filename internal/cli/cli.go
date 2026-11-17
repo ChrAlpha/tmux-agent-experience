@@ -47,8 +47,9 @@ Usage:
   tmag request  <target> <request> [--json]    what an open request asks
   tmag answer   <target> <request> allow|deny [--message M] [--answers JSON] [--json]
                                                decide an open request
-  tmag wait     <target> [--for STATES] [--timeout D] [--json]
-                                               wait for a state (default idle,blocked)
+  tmag wait     [<target>...] [--asked] [--all] [--for STATES] [--timeout D] [--json]
+                                               wait for a state (default idle,blocked), or for
+                                               the agents you asked to answer; any, or --all
   tmag status   [--tmux] [--server S]          one-line summary for the status line
   tmag prune    [--server S]                   reconcile panes with the sessions
   tmag jump     [--client C] [--server S] [--from %N] [--json]

@@ -50,6 +50,9 @@ type Session struct {
 	// Requests are the prompts the session waits on the user for, by the ids
 	// `answer` takes.
 	Requests []eventlog.Request `json:"requests,omitempty"`
+	// Owes are the answers the session owes the agents that asked it, oldest
+	// first.
+	Owes []eventlog.Obligation `json:"owes,omitempty"`
 	// Panes are the panes that show the session.
 	Panes []Shown `json:"panes"`
 }
@@ -121,7 +124,7 @@ func sessionOf(r session.Record, panes []Shown) Session {
 		LastHookAt: r.LastHookAt,
 		ID:         r.ID, Agent: r.Agent, State: r.State(), Kind: r.Kind(), Reason: r.Reason, Turn: r.Turn,
 		Cwd: r.Cwd, Runtime: string(r.Host.Role), Transcript: r.TranscriptRef(), Subagents: r.RunningSubagents(),
-		Capabilities: r.Capabilities(), Requests: r.RequestRefs(), Panes: panes,
+		Capabilities: r.Capabilities(), Requests: r.RequestRefs(), Owes: r.Owes, Panes: panes,
 	}
 	if s.Panes == nil {
 		s.Panes = []Shown{}

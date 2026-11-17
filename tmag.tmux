@@ -14,11 +14,13 @@
 #   @tmag-notify      (unset)     command that tells you of an alert away from the terminal
 #   @tmag-answer      on          who may decide prompts with `tmag answer`: on (people), agents, off
 #   @tmag-peers       on          tmag setup gives agents the tmag-peers skill, to work with each other
+#   @tmag-peer-depth  3           how many times agents may pass on work they were asked for, or off
 #   #{tmag_status}               placeholder for status-left / status-right
 #
 # Set a key option to "off" to leave that key unbound, @tmag-alert to "off" to
 # disable bells, @tmag-answer to "off" to answer prompts only in the agent,
-# @tmag-peers to "off" to keep tmag out of the agents' context.
+# @tmag-peers to "off" to keep tmag out of the agents' context, and
+# @tmag-peer-depth to "off" to let agents pass work on without that bound.
 
 dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 tmag="$dir/scripts/tmag"
@@ -46,6 +48,11 @@ tmux set-option -g @tmag-answer "$(option @tmag-answer on)"
 # `tmag setup` reads this to install the tmag-peers plugin in the agents, or
 # to remove it.
 tmux set-option -g @tmag-peers "$(option @tmag-peers on)"
+
+# `tmag send` reads this to refuse an agent's ask that would pass work on
+# further: a person's prompt starts at 0, and each ask by an agent that owes
+# an answer adds one.
+tmux set-option -g @tmag-peer-depth "$(option @tmag-peer-depth 3)"
 
 # A pane is live only while its agent still runs in it: a dead pane retained by
 # remain-on-exit, a pane another program took, and a pane of the same name that

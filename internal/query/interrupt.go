@@ -135,7 +135,7 @@ func throughInboxInterrupt(outer context.Context, log *eventlog.Log, v View, s S
 	}
 	defer c.Close()
 
-	d, undo, err := recordDelivery(ctx, log, s, runningGate, driver.Inbox, rec.Inbox, func() error {
+	d, undo, project, err := recordDelivery(ctx, log, s, runningGate, driver.Inbox, rec.Inbox, func() error {
 		return sessionEnded(s.ID)
 	}, func(rec *session.Record) eventlog.Event {
 		rec.Halted = time.Now().UTC()
@@ -143,8 +143,12 @@ func throughInboxInterrupt(outer context.Context, log *eventlog.Log, v View, s S
 		caller.stamp(&ev)
 		return ev
 	}, nil)
+	defer project(outer)
 	if err != nil {
 		return Delivery{}, err
+	}
+	if err := outer.Err(); err != nil {
+		return undone(outer, d, &NotTakenError{Seq: d.Seq, Target: s.ID, Err: err}, undo) // nothing written
 	}
 	ctx, cancelDelivery := context.WithTimeout(outer, serviceTimeout)
 	defer cancelDelivery()

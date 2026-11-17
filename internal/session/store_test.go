@@ -134,7 +134,7 @@ func TestEndDeletesThenLogs(t *testing.T) {
 	if err := s.Put(ctx, rec); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.End(ctx, log, rec, eventlog.Event{Event: eventlog.Exit}); err != nil {
+	if _, err := s.End(ctx, log, rec, eventlog.Event{Event: eventlog.Exit}); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok, _ := s.Get(ctx, rec.Agent, rec.ID); ok {

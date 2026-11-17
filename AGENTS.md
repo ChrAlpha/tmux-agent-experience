@@ -56,7 +56,9 @@ promise is documented in the package, and changes with it.
 - **tmag writes who sent a prompt.** An agent's prompt gets a first line
   `query.Send` writes from the proven caller; a person's gets none, and no
   prompt or message given to tmag may start with `[tmag]`. A caller never
-  names itself.
+  names itself. A reply answers an ask tmag recorded as owed, and the one
+  prompt tmag writes on its own account tells an asker that the session it
+  asked ended without answering.
 - **Hooks fail open.** `tmag hook` saves the session's record and event before
   it asks tmux anything, then exits 0, never writes stdout and finishes
   within `hook.Deadline`, also through the `tmag-peers` launcher; failures,
@@ -132,13 +134,13 @@ promise is documented in the package, and changes with it.
 | `cmd/tmag` | Entry point |
 | `internal/cli` | Commands, flags, output, exit codes |
 | `internal/hook` | One hook invocation: apply to the session, attach on proof, update panes, alert, log |
-| `internal/notify` | An alert's variables, and `@tmag-notify` run detached within a time limit |
+| `internal/notify` | An alert's variables, `@tmag-notify` run detached within a time limit, and the detached `notify --ended` that settles what a session's end leaves |
 | `internal/auth` | Persistent owner credentials, one-use invitations and revocation |
 | `internal/serve` | Local HTTP/SSE contract, admission and allowlisted in-process CLI operations |
 | `internal/adapter` | Hook payload → state transition, per agent |
 | `internal/session` | Session records, the state machine, the per-session file store and lock |
 | `internal/attach` | Clients, attachments and their evidence, the `@tmag_*` pane projection, reconciliation |
-| `internal/query` | list / send / reply / wait / snapshot over sessions and panes; the control verbs' gates |
+| `internal/query` | list / send / reply / wait / snapshot over sessions and panes; the control verbs' gates; what agents' asks owe, and the bounds on waits and on passing work on |
 | `internal/driver` | Which channel (pane, service, hook, inbox) carries each verb for each agent and runtime |
 | `internal/codexsvc` | One-command client of the Codex daemon's control socket (JSON-RPC over WebSocket) |
 | `internal/inbox` | The socket a session's agent serves for messages and interrupts: dial, proof, Claude Code's envelope and the extension framing |

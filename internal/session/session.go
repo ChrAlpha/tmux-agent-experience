@@ -69,6 +69,17 @@ type Record struct {
 	// Requests are the prompts awaiting the user, oldest first, each under an
 	// id tmag answers it by: a prompt two answer hooks wait on has two.
 	Requests []Request `json:"requests,omitempty"`
+	// Owes are the answers the session owes the agents that asked it, oldest
+	// first: a final one closes when the turn the ask started ends, a reply
+	// one when the session replies.
+	Owes []eventlog.Obligation `json:"owes,omitempty"`
+	// Replying are the reply obligations a reply of the session's is being
+	// delivered for, each by the tmag process delivering it: no other reply
+	// takes one while that process runs. Notified are the ends tmag told
+	// the session of within the notice window. Both are tmag's own, like
+	// Sent, not part of what an event reports.
+	Replying []Claim `json:"replying,omitempty"`
+	Notified []Told  `json:"notified,omitempty"`
 	// Calls are the tool calls started and not yet over.
 	Calls []adapter.Call `json:"calls,omitempty"`
 	// Done are calls that finished before their start was seen; a late start
@@ -93,6 +104,14 @@ type Record struct {
 	// Halted is when tmag last interrupted the main agent, until the agent
 	// reports again: Claude Code reports nothing on an interrupt.
 	Halted time.Time `json:"halted,omitzero"`
+}
+
+// Claim is a reply obligation a reply is being delivered for, and the tmag
+// process delivering it.
+type Claim struct {
+	ID    string `json:"id"`
+	PID   int    `json:"pid"`
+	Start string `json:"start,omitempty"`
 }
 
 // Inbox is the socket a session's own agent serves for messages, and the
@@ -269,6 +288,7 @@ type Report struct {
 	Transcript string
 	Subagents  string
 	Requests   string
+	Owes       string
 	Since      time.Time
 }
 
@@ -279,8 +299,18 @@ func (r Record) Reports() Report {
 	return Report{
 		State: r.State(), Kind: r.Kind(), Reason: r.Reason, Turn: r.Turn, Cwd: r.Cwd, Runtime: string(r.Host.Role),
 		Transcript: r.Transcript, Subagents: strings.Join(r.RunningSubagents(), "\n"),
-		Requests: strings.Join(r.requestIDs(), "\n"), Since: r.Since.UTC(),
+		Requests: strings.Join(r.requestIDs(), "\n"), Owes: strings.Join(r.owedIDs(), "\n"), Since: r.Since.UTC(),
 	}
+}
+
+// owedIDs name the obligations as an event reports them: a bound turn is
+// part of one.
+func (r Record) owedIDs() []string {
+	var out []string
+	for _, o := range r.Owes {
+		out = append(out, o.ID+"/"+o.Turn)
+	}
+	return out
 }
 
 func (r Record) requestIDs() []string {
@@ -306,6 +336,7 @@ func (r Record) Report(ev *eventlog.Event) {
 	ev.Subagents = r.RunningSubagents()
 	ev.Capabilities = r.Capabilities()
 	ev.Requests = r.RequestRefs()
+	ev.Owes = slices.Clone(r.Owes)
 }
 
 // Capabilities are the verbs some channel carries to the session. They follow
@@ -350,6 +381,122 @@ const (
 	maxTasks     = 64
 	maxSubagents = 32
 )
+
+// MaxOwes is how many answers a session may owe at once: an ask beyond it
+// is refused rather than one owed before forgotten.
+const MaxOwes = 16
+
+// Told is an end, by its seq, tmag told the session of, and when.
+type Told struct {
+	Seq int64     `json:"seq"`
+	At  time.Time `json:"at"`
+}
+
+// EndWindow is how long after a session's end tmag tells the agents it owed
+// a reply that none will come; NoticeWindow is how long a record remembers
+// telling one, longer than any telling within EndWindow can last. MaxNotices
+// is how many ends a record remembers within it: a notice beyond them waits.
+const (
+	EndWindow    = time.Minute
+	NoticeWindow = 2 * EndWindow
+	MaxNotices   = 64
+)
+
+// Notices are the ends tmag told the session of within NoticeWindow of now.
+func (r Record) Notices(now time.Time) []Told {
+	out := slices.DeleteFunc(slices.Clone(r.Notified), func(t Told) bool { return now.Sub(t.At) >= NoticeWindow })
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// Notify records that tmag tells the session of the end at seq, forgetting
+// those it told of before NoticeWindow. The caller checked that it was not
+// told of seq, and that it has room (Notices).
+func (r *Record) Notify(seq int64, now time.Time) {
+	r.Notified = append(r.Notices(now), Told{Seq: seq, At: now.UTC()})
+}
+
+// PendingWindow is how long a delivery holds off another without the agent
+// reporting: a prompt until a turn confirms it, a message until the main
+// agent reaches its next step. Input that starts no turn (a slash command,
+// say) releases the session when it passes, and a final ask whose prompt
+// started no turn by then is owed no more.
+const PendingWindow = 15 * time.Second
+
+// Owe opens an obligation of the session to the agent that asked it, under a
+// fresh id, and returns it. The caller checked that the session has room
+// (Owing).
+func (r *Record) Owe(to eventlog.Actor, kind string, depth int, now time.Time) eventlog.Obligation {
+	o := eventlog.Obligation{ID: NewRequestID(), To: to, Kind: kind, Depth: depth, Since: now.UTC()}
+	r.Owes = append(slices.DeleteFunc(slices.Clone(r.Owes), func(o eventlog.Obligation) bool { return !Owed(o, now) }), o)
+	return o
+}
+
+// Owing are the obligations the session still owes at now: every reply
+// obligation, and every final one its asker may still wait for.
+func (r Record) Owing(now time.Time) []eventlog.Obligation {
+	var out []eventlog.Obligation
+	for _, o := range r.Owes {
+		if Owed(o, now) {
+			out = append(out, o)
+		}
+	}
+	return out
+}
+
+// Owed reports whether obligation o is still owed at now: a final one whose
+// prompt started no turn within the pending window is not.
+func Owed(o eventlog.Obligation, now time.Time) bool {
+	return o.Kind != eventlog.OweFinal || Waiting(o, now)
+}
+
+// Claim marks reply obligation id as being answered by c's process, in
+// place of a claim whose process no longer runs.
+func (r *Record) Claim(c Claim) {
+	r.Replying = append(slices.DeleteFunc(slices.Clone(r.Replying), func(o Claim) bool { return o.ID == c.ID }), c)
+}
+
+// Claimed reports whether a reply is being delivered for obligation id: its
+// claim's process still runs, as alive says. A claim outlives no process.
+func (r Record) Claimed(id string, alive func(Claim) bool) bool {
+	return slices.ContainsFunc(r.Replying, func(c Claim) bool { return c.ID == id && alive(c) })
+}
+
+// Unclaim releases c, the claim its own process made, and reports whether
+// the record held it.
+func (r *Record) Unclaim(c Claim) bool {
+	n := len(r.Replying)
+	r.Replying = slices.DeleteFunc(slices.Clone(r.Replying), func(o Claim) bool { return o == c })
+	if len(r.Replying) == 0 {
+		r.Replying = nil
+	}
+	return len(r.Replying) != n
+}
+
+// Settle closes obligation id, and reports whether the session owed it.
+func (r *Record) Settle(id string) bool {
+	i := slices.IndexFunc(r.Owes, func(o eventlog.Obligation) bool { return o.ID == id })
+	if i < 0 {
+		return false
+	}
+	r.Owes = slices.Delete(slices.Clone(r.Owes), i, i+1)
+	if len(r.Owes) == 0 {
+		r.Owes = nil
+	}
+	r.Replying = slices.DeleteFunc(slices.Clone(r.Replying), func(c Claim) bool { return c.ID == id })
+	if len(r.Replying) == 0 {
+		r.Replying = nil
+	}
+	return true
+}
+
+// Waiting reports whether a final obligation still holds its asker: its turn
+// is bound, or its prompt may still start one.
+func Waiting(o eventlog.Obligation, now time.Time) bool {
+	return o.Kind == eventlog.OweFinal && (o.Turn != "" || now.Sub(o.Since) < PendingWindow)
+}
 
 // State is the session's state as tmag reports it: blocked while a prompt is
 // open, working during a turn or while background work runs, otherwise the
@@ -397,7 +544,11 @@ func Apply(cur Record, tr adapter.Transition, now time.Time) (Record, bool) {
 	rec.Done = slices.Clone(cur.Done)
 	rec.Background = slices.Clone(cur.Background)
 	rec.Subagents = slices.Clone(cur.Subagents)
+	rec.Owes = slices.DeleteFunc(slices.Clone(cur.Owes), func(o eventlog.Obligation) bool { return !Owed(o, now) })
+	rec.Replying = slices.Clone(cur.Replying)
+	rec.Notified = rec.Notices(now)
 	main := tr.Call.Agent == "" && tr.Prompt.Agent == ""
+	ended := cur.Turn // the turn an idle report ends
 
 	switch tr.Action {
 	case adapter.Set:
@@ -486,6 +637,11 @@ func Apply(cur Record, tr adapter.Transition, now time.Time) (Record, bool) {
 	}
 	if main && tr.Turn != "" {
 		rec.Turn = tr.Turn
+		ended = tr.Turn
+	}
+	if main && tr.Action == adapter.Set {
+		prompted := !cur.Sent.IsZero() && now.Sub(cur.Sent) < PendingWindow
+		rec.Owes = owing(rec.Owes, tr.State, prompted, rec.Turn, ended)
 	}
 	if main {
 		rec.Halted = time.Time{} // the main agent reports again
@@ -498,6 +654,24 @@ func Apply(cur Record, tr adapter.Transition, now time.Time) (Record, bool) {
 		rec.Since = now.UTC().Truncate(time.Second)
 	}
 	return rec, !rec.Same(cur)
+}
+
+// owing is what a main-agent report makes of the final obligations: a turn
+// that confirms a prompt tmag sent within the pending window is the turn
+// every unbound final ask started, and a turn that ends settles the asks
+// bound to it.
+func owing(owes []eventlog.Obligation, state string, prompted bool, turn, ended string) []eventlog.Obligation {
+	for i := range owes {
+		if owes[i].Kind == eventlog.OweFinal && owes[i].Turn == "" && state == adapter.Working && prompted {
+			owes[i].Turn = turn
+		}
+	}
+	if state != adapter.Idle || ended == "" {
+		return owes
+	}
+	return slices.DeleteFunc(owes, func(o eventlog.Obligation) bool {
+		return o.Kind == eventlog.OweFinal && o.Turn == ended
+	})
 }
 
 // request opens the prompt an Ask is about. A prompt no request names gets
@@ -607,6 +781,9 @@ func normalize(r *Record) {
 	r.Done = newest(r.Done, maxDone)
 	r.Background = newest(r.Background, maxTasks)
 	r.Subagents = newest(r.Subagents, maxSubagents)
+	r.Owes = newest(r.Owes, MaxOwes)
+	r.Replying = newest(r.Replying, MaxOwes)
+	r.Notified = newest(r.Notified, MaxNotices)
 }
 
 // validShown keeps the entries of s a hook could prove.

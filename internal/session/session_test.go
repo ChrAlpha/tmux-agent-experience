@@ -662,11 +662,142 @@ func TestSameTellsEveryRecordedFactApart(t *testing.T) {
 		"permission": func(r *Record) { r.Permission = adapter.PermissionBypass },
 		"status":     func(r *Record) { r.StatusFile = "/home/me/.claude/sessions/10.json" },
 		"pane":       func(r *Record) { r.List(Shown{Server: "/tmp/s", Pane: "%1", PID: 10, Start: "s10"}) },
+		"owes": func(r *Record) {
+			r.Owe(eventlog.Actor{Agent: proc.Codex, Session: "a1"}, eventlog.OweReply, 1, t0)
+		},
 	} {
 		next := base
 		change(&next)
 		if base.Same(next) {
 			t.Errorf("a changed %s is the same record", name)
 		}
+	}
+}
+
+func TestFinalAskClosesWithTheTurnItStarted(t *testing.T) {
+	asker := eventlog.Actor{Agent: proc.Codex, Session: "a1"}
+	rec := Record{Agent: proc.Claude, ID: "s1", Main: adapter.Idle, Turn: "p0", Since: t0}
+	o := rec.Owe(asker, eventlog.OweFinal, 1, t0)
+	rec.Sent = t0
+
+	// The person's turn before it, reported late, binds nothing.
+	rec, _ = Apply(rec, adapter.Transition{Action: adapter.Set, State: adapter.Idle, Turn: "p0"}, t0)
+	if len(rec.Owes) != 1 || rec.Owes[0].Turn != "" {
+		t.Fatalf("an idle report bound the ask: %+v", rec.Owes)
+	}
+	rec, _ = Apply(rec, adapter.Transition{Action: adapter.Set, State: adapter.Working, Turn: "p1"}, t0.Add(time.Second))
+	if len(rec.Owes) != 1 || rec.Owes[0].ID != o.ID || rec.Owes[0].Turn != "p1" {
+		t.Fatalf("the turn the ask started is not bound: %+v", rec.Owes)
+	}
+	// It outlives the ask's window once bound, and a request in the turn.
+	rec, _ = Apply(rec, askFor("", "Bash"), t0.Add(time.Minute))
+	if len(rec.Owes) != 1 {
+		t.Fatalf("a bound ask lapsed: %+v", rec.Owes)
+	}
+	rec, _ = Apply(rec, adapter.Transition{Action: adapter.Set, State: adapter.Idle, Turn: "p1"}, t0.Add(2*time.Minute))
+	if rec.Owes != nil {
+		t.Fatalf("the turn ended and the ask is still owed: %+v", rec.Owes)
+	}
+}
+
+func TestFinalAskIsBoundOnlyByAPromptTmagSent(t *testing.T) {
+	asker := eventlog.Actor{Agent: proc.Codex, Session: "a1"}
+	rec := Record{Agent: proc.Claude, ID: "s1", Main: adapter.Idle, Turn: "p0", Since: t0}
+	rec.Owe(asker, eventlog.OweFinal, 1, t0)
+	// The person typed first: no prompt of tmag's waits for a turn.
+	rec, _ = Apply(rec, adapter.Transition{Action: adapter.Set, State: adapter.Working, Turn: "p1"}, t0.Add(time.Second))
+	if len(rec.Owes) != 1 || rec.Owes[0].Turn != "" {
+		t.Fatalf("a turn tmag did not prompt was bound: %+v", rec.Owes)
+	}
+	// The ask's prompt started no turn within the window: nothing is owed.
+	rec, _ = Apply(rec, startOf("", "Bash", "c1"), t0.Add(PendingWindow))
+	if rec.Owes != nil {
+		t.Fatalf("an ask that started no turn is still owed: %+v", rec.Owes)
+	}
+}
+
+func TestReplyAskOutlivesTurnsUntilSettled(t *testing.T) {
+	asker := eventlog.Actor{Agent: proc.Codex, Session: "a1"}
+	rec := Record{Agent: proc.Claude, ID: "s1", Main: adapter.Idle, Turn: "p0", Since: t0}
+	o := rec.Owe(asker, eventlog.OweReply, 2, t0)
+	rec.Queued = t0
+	for i, state := range []string{adapter.Working, adapter.Idle, adapter.Working, adapter.Idle} {
+		rec, _ = Apply(rec, adapter.Transition{Action: adapter.Set, State: state, Turn: "p" + strconv.Itoa(1+i/2)}, t0.Add(time.Hour))
+	}
+	if len(rec.Owes) != 1 || rec.Owes[0] != o {
+		t.Fatalf("turns changed a reply ask: %+v", rec.Owes)
+	}
+	if !rec.Settle(o.ID) || rec.Owes != nil || rec.Settle(o.ID) {
+		t.Fatalf("settling: %+v", rec.Owes)
+	}
+}
+
+func TestAFinalAskThatLapsedBindsNoLaterTurn(t *testing.T) {
+	asker := eventlog.Actor{Agent: proc.Codex, Session: "a1"}
+	rec := Record{Agent: proc.Claude, ID: "s1", Main: adapter.Idle, Turn: "p0", Since: t0}
+	rec.Owe(asker, eventlog.OweFinal, 1, t0)
+	rec.Sent = t0
+	if len(rec.Owing(t0.Add(PendingWindow-time.Second))) != 1 || rec.Owing(t0.Add(PendingWindow)) != nil {
+		t.Fatalf("owing across the window: %+v", rec.Owes)
+	}
+	// The receiver was silent; the person's prompt starts the next turn.
+	rec, _ = Apply(rec, adapter.Transition{Action: adapter.Set, State: adapter.Working, Turn: "p1"}, t0.Add(time.Minute))
+	if rec.Owes != nil {
+		t.Fatalf("a lapsed ask was bound to a later turn: %+v", rec.Owes)
+	}
+}
+
+func TestAClaimHoldsAReplyObligationWhileItsProcessRuns(t *testing.T) {
+	var rec Record
+	o := rec.Owe(eventlog.Actor{Agent: proc.Codex, Session: "a1"}, eventlog.OweReply, 1, t0)
+	mine, theirs := Claim{ID: o.ID, PID: 10, Start: "s10"}, Claim{ID: o.ID, PID: 11, Start: "s11"}
+	rec.Claim(mine)
+	running := func(c Claim) bool { return c.PID == 10 }
+	if !rec.Claimed(o.ID, running) || rec.Claimed(o.ID, func(Claim) bool { return false }) {
+		t.Fatalf("claimed: %+v", rec.Replying)
+	}
+	// Another process takes over the claim of one that no longer runs; the
+	// first one's release then leaves it alone.
+	rec.Claim(theirs)
+	before := rec.Reports()
+	if rec.Unclaim(mine) || len(rec.Replying) != 1 || rec.Reports() != before {
+		t.Fatalf("a stale release took %+v", rec.Replying)
+	}
+	if !rec.Unclaim(theirs) || rec.Replying != nil {
+		t.Fatalf("unclaiming: %+v", rec.Replying)
+	}
+	rec.Claim(mine)
+	if !rec.Settle(o.ID) || rec.Owes != nil || rec.Replying != nil {
+		t.Fatalf("settling keeps %+v %+v", rec.Owes, rec.Replying)
+	}
+}
+
+func TestOwesAreBounded(t *testing.T) {
+	var rec Record
+	for range 3 * MaxOwes {
+		rec.Owe(eventlog.Actor{Agent: proc.Codex, Session: "a1"}, eventlog.OweReply, 1, t0)
+	}
+	rec, _ = Apply(rec, adapter.Transition{Action: adapter.Set, State: adapter.Idle}, t0)
+	if len(rec.Owes) != MaxOwes {
+		t.Fatalf("a record keeps %d obligations", len(rec.Owes))
+	}
+}
+
+func TestEventsReportWhatASessionOwes(t *testing.T) {
+	rec := Record{Agent: proc.Claude, ID: "s1", Main: adapter.Idle, Turn: "p0", Since: t0}
+	before := rec.Reports()
+	rec.Owe(eventlog.Actor{Agent: proc.Codex, Session: "a1"}, eventlog.OweFinal, 1, t0)
+	if rec.Reports() == before {
+		t.Fatal("opening an obligation changes nothing an event reports")
+	}
+	opened := rec.Reports()
+	rec.Owes[0].Turn = "p1"
+	if rec.Reports() == opened {
+		t.Fatal("binding an obligation's turn changes nothing an event reports")
+	}
+	var ev eventlog.Event
+	rec.Report(&ev)
+	if len(ev.Owes) != 1 || ev.Owes[0] != rec.Owes[0] {
+		t.Fatalf("event owes = %+v", ev.Owes)
 	}
 }

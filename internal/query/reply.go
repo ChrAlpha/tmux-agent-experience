@@ -17,9 +17,10 @@ import (
 // its state, with the first line that says who answered. A pane-only asker
 // gets it through the pane while idle; while it is busy the refusal is busy,
 // so the caller may try again. Only an agent whose session tmag proves may
-// reply.
+// reply, and only to an ask of the asker's for a reply, which the reply
+// settles (see claimReply).
 func Reply(ctx context.Context, log *eventlog.Log, target, text string) (Delivery, error) {
-	return deliver(ctx, log, target, text, Answering, "reply", "reply")
+	return deliver(ctx, log, target, prompt{text: text, ask: Answering}, "reply", "reply")
 }
 
 // ErrNoReply reports a session whose last turn left no reply to read.

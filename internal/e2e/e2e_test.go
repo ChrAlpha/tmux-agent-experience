@@ -1298,7 +1298,7 @@ func (f *follower) apply(line []byte) {
 			f.sessions[key] = query.Session{
 				LastHookAt: e.LastHookAt, ID: e.Session, Agent: e.Agent, State: e.State, Kind: e.Kind, Reason: e.Reason, Turn: e.Turn, Since: since,
 				Cwd: e.Cwd, Runtime: e.Runtime, Transcript: e.Transcript, Subagents: e.Subagents,
-				Capabilities: e.Capabilities, Requests: e.Requests,
+				Capabilities: e.Capabilities, Requests: e.Requests, Owes: e.Owes,
 			}
 		}
 	default:
@@ -1387,6 +1387,9 @@ func reported(s query.Session) query.Session {
 	}
 	if len(s.Requests) == 0 {
 		s.Requests = nil
+	}
+	if len(s.Owes) == 0 {
+		s.Owes = nil
 	}
 	return s
 }
@@ -2186,6 +2189,15 @@ func TestDaemonThreadsActOnEachOther(t *testing.T) {
 	if r := d.tool(sidC, "read", sidD[:8], "--last"); r.code != 0 || r.out != "answered: hello\n" {
 		t.Fatalf("read --last from C: %d %q", r.code, r.out)
 	}
+	// C asked for D's answer in its final message, not for a reply; C asks
+	// for one, and D replies.
+	if r := d.tool(sidD, "reply", sidC[:8], "thanks"); r.code != 3 || !strings.Contains(r.out, "refused (unasked)") {
+		t.Fatalf("a reply to a final ask: %d %s", r.code, r.out)
+	}
+	if r := d.tool(sidC, "send", sidD[:8], "--reply", "and then?"); r.code != 0 {
+		t.Fatalf("an ask for a reply: %d %s", r.code, r.out)
+	}
+	h.waitSession(sidD, "idle")
 	if r := d.tool(sidD, "reply", sidC[:8], "thanks"); r.code != 0 {
 		t.Fatalf("reply from D: %d %s", r.code, r.out)
 	}
@@ -2204,6 +2216,9 @@ func TestReplyWaitsForTheAsker(t *testing.T) {
 	b := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidB, "FAKE_OUT": outB, "FAKE_HOOKS": "1"}, filepath.Join(bin, "claude"))
 	h.waitPane(a, "idle", "process")
 	h.waitPane(b, "idle", "process")
+	typed(t, h, a, sidA, "tmag send "+sidB+" --reply -- what is left")
+	h.waitSession(sidB, "idle")
+	asked := len(h.events(sidA))
 	// A works until the test ends its turn: a timed turn may end before a
 	// slow runner's reply, a turn of B's that proves its caller, gets there.
 	if r := h.tmag("sleep long work", "send", sidA[:8]); r.code != 0 {
@@ -2234,6 +2249,7 @@ func TestReplyWaitsForTheAsker(t *testing.T) {
 	stopped, replied := -1, -1
 	for i, e := range h.events(sidA) {
 		switch {
+		case i < asked:
 		case e.Event == "Stop" && stopped < 0:
 			stopped = i
 		case e.Event == eventlog.Send && e.By != nil && e.By.Session == sidB:

@@ -259,15 +259,25 @@ func save(ctx context.Context, env attach.Env, in Input, p adapter.Payload, tr a
 		// Whatever the agent calls it, the contract's end of a session is
 		// SessionEnd, which followers drop the session on.
 		ev.Event = eventlog.End
+		var seq int64
 		err = env.Store.Lock(ctx, in.Agent, p.SessionID, func() error {
 			cur, _, err := get()
 			if err != nil {
 				return err
 			}
 			prev = cur
-			return env.Store.End(ctx, in.Log, cur, ev)
+			seq, err = env.Store.End(ctx, in.Log, cur, ev)
+			return err
 		})
-		return prev, session.Record{}, err == nil, err
+		if err != nil {
+			return prev, session.Record{}, false, err
+		}
+		// The session ended; what settles its end runs on its own, and one
+		// that cannot start is the hook's failure to record, not the end's.
+		if err := notify.Ended(seq); err != nil {
+			RecordError(ctx, in.Log.Dir, in.Agent, err)
+		}
+		return prev, session.Record{}, true, nil
 	}
 	// The inbox a hook's agent names, and the process that serves it, are
 	// recorded for a send to prove later. The hook never connects to it.

@@ -8,26 +8,38 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"time"
 
+	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/hook"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/notify"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/query"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/tmux"
 )
 
 // cmdNotify sends a test alert through @tmag-notify and reports what each
 // command did. A hook starts it as `notify --alert`, with the alert and the
 // command in its environment; it then runs the command and records a failure
-// in hook.log, and always exits 0.
+// in hook.log, and always exits 0. Whatever ends a session starts it as
+// `notify --ended SEQ`, which settles what that end leaves.
 func (a *app) cmdNotify(args []string) int {
 	fs := flag.NewFlagSet("notify", flag.ContinueOnError)
 	fs.BoolVar(&a.json, "json", false, "")
 	fromHook := fs.Bool("alert", false, "")
+	ended := fs.Int64("ended", 0, "")
 	pos, err := parse(fs, args)
 	if err == nil && len(pos) > 0 {
 		err = fmt.Errorf("unexpected argument %q", pos[0])
 	}
 	if err != nil {
 		return a.usageError("notify", err)
+	}
+	if *ended > 0 {
+		if err := a.settleEnd(*ended); err != nil {
+			hook.RecordError(a.ctx, a.log.Dir, "notify", err)
+		}
+		return ExitOK
 	}
 	if *fromHook {
 		if err := notify.RunAlert(a.log.Dir, os.Environ()); err != nil {
@@ -113,4 +125,55 @@ func (a *app) checkNotify(ctx context.Context) check {
 		return check{"notify", "skip", notify.Option + " is not set: alerts ring tmux's bell only"}
 	}
 	return check{"notify", "ok", fmt.Sprintf("%s configured; tmag notify tests delivery", notify.Option)}
+}
+
+// settleEnd settles what the end tmag logged at seq leaves: what other
+// sessions owed it is closed, whenever this runs, and within
+// session.EndWindow of the end each agent the session owed a reply is told,
+// once whoever runs this, that none will come. A notice whose delivery is
+// unknown is not sent again. Every busy asker is tried again each round
+// until the window closes, so one that stays busy holds no other up.
+func (a *app) settleEnd(seq int64) error {
+	ended, askers, until, err := query.Ending(a.ctx, a.log, seq)
+	if err != nil {
+		return err
+	}
+	forget, cancelForget := context.WithTimeout(a.ctx, session.EndWindow)
+	defer cancelForget()
+	errs := []error{query.Forget(forget, a.log, ended)}
+	if !time.Now().Before(until) {
+		return errors.Join(errs...) // the window to tell its askers closed
+	}
+	ctx, cancel := context.WithDeadline(a.ctx, until)
+	defer cancel()
+	failed := func(asker eventlog.Actor, err error) {
+		errs = append(errs, fmt.Errorf("telling %s that %s ended: %w", asker.Session, ended.Session, err))
+	}
+	for pending := askers; len(pending) > 0; {
+		var busy []eventlog.Actor
+		for _, asker := range pending {
+			_, err := query.Tell(ctx, a.log, asker, ended, seq)
+			var refused *query.RefusedError
+			switch {
+			case err == nil, errors.Is(err, query.ErrTold):
+			case errors.As(err, &refused) && refused.Reason == query.RefuseBusy:
+				busy = append(busy, asker)
+			default:
+				failed(asker, err)
+			}
+		}
+		if len(busy) == 0 {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			for _, asker := range busy {
+				failed(asker, ctx.Err())
+			}
+			return errors.Join(errs...)
+		case <-time.After(replyRetry):
+		}
+		pending = busy
+	}
+	return errors.Join(errs...)
 }

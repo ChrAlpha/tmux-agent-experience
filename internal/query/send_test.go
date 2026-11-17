@@ -302,7 +302,7 @@ func TestClaudeAttestationUsesTheDeliveryDecision(t *testing.T) {
 	caller := Caller{By: &eventlog.Actor{Agent: proc.Claude, Session: sender.ID}}
 	v := View{records: []session.Record{stale, receiver}}
 	d, err := throughInbox(ctx, log, v, Session{Agent: proc.Claude, ID: receiver.ID, State: adapter.Idle},
-		"hello", caller, liveGate, false)
+		prompt{text: "hello", caller: caller, ask: AskNoAnswer}, liveGate)
 	if err != nil {
 		t.Fatal(err)
 	}
