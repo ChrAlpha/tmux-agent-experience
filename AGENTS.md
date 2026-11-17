@@ -229,8 +229,11 @@ gh workflow run stress.yml --ref BRANCH -f run='^TestA$' -f count=20   # the sam
 - E2E tests start private servers (`tmux -L e2e` under a temporary
   `TMUX_TMPDIR`) and run `internal/e2e/fakeagent` installed as `claude`,
   `claude.exe` (as Claude Code's npm package runs), `codex`, `pi` and `omp`,
-  so process names and `pane_current_command` match real agents; as `pi` and
-  `omp` it reports what tmag's extensions report. Run
+  first on `PATH`, so process names and `pane_current_command` match real
+  agents and no agent's name reaches the developer's own, in a window opened
+  from a pane either: tmux gives it the `PATH` of the client that asks; a
+  last argument that is no option is its first prompt, as `codex TASK`
+  takes one; as `pi` and `omp` it reports what tmag's extensions report. Run
   as `codex app-server …` it is a Codex daemon outside every pane that runs
   hooks for any thread and serves a control socket under `CODEX_HOME`
   (`internal/codexsvc/svctest` is its server end), replaying the approvals a

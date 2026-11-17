@@ -340,7 +340,6 @@ func TestJumpAndStatus(t *testing.T) {
 func TestSetupInstallsAgentPlugins(t *testing.T) {
 	h := start(t)
 	log := filepath.Join(h.dir, "plugin-commands")
-	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("FAKE_PLUGIN_LOG", log)
 	// Pi and oh-my-pi install tmag's packages from the tmux plugin whose
 	// tmag the hooks run; Pi lists them in its settings.
