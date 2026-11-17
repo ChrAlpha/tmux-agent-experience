@@ -207,6 +207,9 @@ func (l *Log) Append(ctx context.Context, e *Event) error {
 		} else if end != st.Size() {
 			line = append([]byte{'\n'}, line...)
 		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		_, err = f.Write(line)
 		return err
 	})

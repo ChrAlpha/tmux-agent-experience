@@ -87,7 +87,9 @@ func (s Store) Put(ctx context.Context, rec Record) error {
 	if err != nil {
 		return err
 	}
-	_, err = f.Write(data)
+	if err = ctx.Err(); err == nil {
+		_, err = f.Write(data)
+	}
 	if closed := f.Close(); err == nil {
 		err = closed
 	}

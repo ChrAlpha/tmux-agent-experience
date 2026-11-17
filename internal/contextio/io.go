@@ -168,6 +168,9 @@ const backwardChunk = 64 << 10
 // line longer than max is passed as nil, without being held: work and memory
 // stay linear in what is read, whatever the lines' lengths.
 func Backward(ctx context.Context, r io.ReaderAt, size, max int64, fn func(line []byte, start int64) bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	var pieces [][]byte // the end of the line being read, nearest the file's end first
 	held, long := int64(0), false
 	emit := func(head []byte, start int64) bool {
@@ -182,13 +185,13 @@ func Backward(ctx context.Context, r io.ReaderAt, size, max int64, fn func(line 
 		return fn(line, start)
 	}
 	for end := size; end > 0; {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
 		n := min(backwardChunk, end)
 		buf := make([]byte, n)
 		if _, err := r.ReadAt(buf, end-n); err != nil && !errors.Is(err, io.EOF) {
 			return err
+		}
+		if err := ctx.Err(); err != nil {
+			return err // a read that outlived the budget is not looked at
 		}
 		end -= n
 		for {
@@ -198,6 +201,9 @@ func Backward(ctx context.Context, r io.ReaderAt, size, max int64, fn func(line 
 			}
 			if emit(buf[i+1:], end+int64(i)+1) {
 				return nil
+			}
+			if err := ctx.Err(); err != nil {
+				return err
 			}
 			buf = buf[:i]
 		}

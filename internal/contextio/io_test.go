@@ -231,3 +231,37 @@ func trim(s string) string {
 	}
 	return s
 }
+
+// cancelingReader cancels its context while it reads.
+type cancelingReader struct {
+	data   []byte
+	cancel func()
+}
+
+func (r cancelingReader) ReadAt(p []byte, off int64) (int, error) {
+	r.cancel()
+	return copy(p, r.data[off:]), nil
+}
+
+// A read or a line that outlives the budget is the last Backward looks at.
+func TestBackwardStopsOnCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	called := false
+	err := Backward(ctx, cancelingReader{[]byte("a\n"), cancel}, 2, 16, func([]byte, int64) bool { called = true; return false })
+	if !errors.Is(err, context.Canceled) || called {
+		t.Fatalf("a read canceled meanwhile: callback=%v, %v", called, err)
+	}
+	ctx, cancel = context.WithCancel(context.Background())
+	var lines []string
+	err = Backward(ctx, bytes.NewReader([]byte("a\nb\nc\n")), 6, 16, func(b []byte, _ int64) bool {
+		lines = append(lines, string(b))
+		cancel()
+		return false
+	})
+	if !errors.Is(err, context.Canceled) || len(lines) != 1 {
+		t.Fatalf("a callback that canceled: %q, %v", lines, err)
+	}
+	if err := Backward(ctx, bytes.NewReader(nil), 0, 16, func([]byte, int64) bool { return false }); !errors.Is(err, context.Canceled) {
+		t.Fatalf("an empty input after cancellation: %v", err)
+	}
+}

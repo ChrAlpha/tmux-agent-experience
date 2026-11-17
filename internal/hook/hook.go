@@ -565,6 +565,9 @@ func recordHookLog(parent context.Context, dir, agent, category string) {
 				return err
 			}
 		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		_, err = f.Write(line)
 		return err
 	})
