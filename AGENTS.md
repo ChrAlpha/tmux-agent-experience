@@ -241,12 +241,13 @@ gh workflow run stress.yml --ref BRANCH -f run='^TestA$' -f count=20   # the sam
   turn, and oh-my-pi's extension refuses it as unsupported. Like the agents
   it turns on bracketed paste, so a pasted prompt is one prompt, and ends
   each turn with the reply `answered: LINE` written to the transcript its
-  hooks name, in the agent's format. A line `tmag ARGS` typed into it,
-  or a `{"tool":[…]}` line given to the daemon, runs tmag as the agent's
-  tool, so tmag sees an agent calling; `/pretool` runs one PreToolUse event,
-  for hook-cost tests, and `sleep`, alone or followed by words, starts a turn
-  that only `/end` or an interrupt ends before a minute is up, for tests that
-  act while a turn runs. The same binary answers `--version`
+  hooks name, in the agent's format. A prompt `tmag ARGS`, or one whose
+  last line is, typed or through its inbox, or a `{"tool":[…]}` line given
+  to the daemon, runs tmag as the agent's tool, so tmag sees an agent
+  calling, a peer's prompt under tmag's first line included; `/pretool`
+  runs one PreToolUse event, for hook-cost tests, and `sleep`, alone or
+  followed by words, starts a turn that only `/end` or an interrupt ends
+  before a minute is up, for tests that act while a turn runs. The same binary answers `--version`
   and `plugin …` as a fake host CLI. Plugin tests lay out a TPM directory
   and serve a local release over `file://`.
 - `TestExtensionsReport` runs Pi's and oh-my-pi's extensions on Node.js 22.6

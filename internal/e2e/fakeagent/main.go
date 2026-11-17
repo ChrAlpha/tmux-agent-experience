@@ -34,8 +34,10 @@
 // it first.
 // A line "/end" typed while a turn runs ends it at once, as its time running
 // out would; outside a turn it is a slash command like the others. A prompt
-// "tmag ARGS" is a turn whose Bash tool runs tmag ARGS, with the variable the
-// agent sets for its tools naming the session; FAKE_OUT gets "tool CODE
+// "tmag ARGS", or one whose last line is, as a peer's prompt under tmag's
+// first line may be, is a turn whose Bash tool runs tmag ARGS, with the
+// variable the agent sets for its tools naming the session, whether the
+// prompt was typed or came through the inbox; FAKE_OUT gets "tool CODE
 // OUTPUT".
 // Every prompt, and how each dialog was answered, goes to FAKE_OUT.
 //
@@ -315,6 +317,16 @@ func main() {
 		end()
 		dialog = nil
 	}
+	// toolTurn is a turn on prompt whose Bash tool runs command.
+	toolTurn := func(prompt, command string) {
+		begin(prompt)
+		call := map[string]any{turnKey: turn, "tool_name": "Bash", "tool_use_id": fmt.Sprintf("u%d", n)}
+		hook(ev.toolStart, call)
+		code, out := tool(agent, session, strings.Fields(command)[1:])
+		record(fmt.Sprintf("tool %d %s", code, strings.Join(strings.Fields(out), " ")))
+		hook(ev.toolEnd, call)
+		ends = time.After(time.Duration(turnMS) * time.Millisecond)
+	}
 	handle := func(line string) {
 		n++
 		record(line)
@@ -354,14 +366,8 @@ func main() {
 			// Lasts a minute unless "/end" or an interrupt ends it.
 			begin(line)
 			ends = time.After(time.Minute)
-		case strings.HasPrefix(line, "tmag "):
-			begin(line)
-			call := map[string]any{turnKey: turn, "tool_name": "Bash", "tool_use_id": fmt.Sprintf("u%d", n)}
-			hook(ev.toolStart, call)
-			code, out := tool(agent, session, strings.Fields(line)[1:])
-			record(fmt.Sprintf("tool %d %s", code, strings.Join(strings.Fields(out), " ")))
-			hook(ev.toolEnd, call)
-			ends = time.After(time.Duration(turnMS) * time.Millisecond)
+		case strings.HasPrefix(lastLine(line), "tmag "):
+			toolTurn(line, lastLine(line))
 		default:
 			begin(line)
 			ends = time.After(time.Duration(turnMS) * time.Millisecond)
@@ -430,10 +436,14 @@ loop:
 				}
 				record(line)
 			}
-			if ends != nil || dialog != nil {
+			switch {
+			case ends != nil || dialog != nil:
 				// Working: the message is read at the agent's next step.
 				record("message " + m.text)
-			} else {
+			case strings.HasPrefix(lastLine(m.text), "tmag "):
+				n++
+				toolTurn(m.text, lastLine(m.text))
+			default:
 				n++
 				begin(m.text)
 				ends = time.After(time.Duration(turnMS) * time.Millisecond)
@@ -551,6 +561,9 @@ func setEnv(env []string, key, value string) []string {
 }
 
 // tool runs tmag as a tool of the session's, a child of the agent's process.
+// lastLine is a prompt's last line.
+func lastLine(prompt string) string { return prompt[strings.LastIndex(prompt, "\n")+1:] }
+
 func tool(agent, session string, args []string) (int, string) {
 	cmd := exec.Command(os.Getenv("TMAG_BIN"), args...)
 	cmd.Env = setEnv(os.Environ(), toolVars[agent], session)
