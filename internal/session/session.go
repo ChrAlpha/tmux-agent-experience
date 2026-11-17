@@ -457,7 +457,7 @@ func Apply(cur Record, tr adapter.Transition, now time.Time) (Record, bool) {
 			if _, ok := rec.Request(tr.Request); !ok {
 				return cur, false
 			}
-			rec.Requests = slices.DeleteFunc(rec.Requests, func(o Request) bool { return o.ID == tr.Request })
+			rec.Requests = closeRequest(rec.Requests, tr.Request)
 			break
 		}
 		if asks(rec.Requests, tr.Prompt) {
@@ -567,6 +567,21 @@ func asks(reqs []Request, p adapter.Prompt) bool {
 // closePrompt closes prompt p: every request naming it.
 func closePrompt(reqs []Request, p adapter.Prompt) []Request {
 	return slices.DeleteFunc(reqs, func(q Request) bool { return q.Prompt == p })
+}
+
+// closeRequest closes one request. A later request on the same prompt takes
+// its place: the prompt stays open, where it first opened.
+func closeRequest(reqs []Request, id string) []Request {
+	i := slices.IndexFunc(reqs, func(q Request) bool { return q.ID == id })
+	if i < 0 {
+		return reqs
+	}
+	p := reqs[i].Prompt
+	if j := slices.IndexFunc(reqs[i+1:], func(q Request) bool { return q.Prompt == p }); j >= 0 {
+		reqs[i] = reqs[i+1+j]
+		return slices.Delete(reqs, i+1+j, i+2+j)
+	}
+	return slices.Delete(reqs, i, i+1)
 }
 
 // answerUnnamed closes the oldest prompt that named no tool. It says nothing

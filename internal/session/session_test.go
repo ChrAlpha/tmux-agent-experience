@@ -563,6 +563,21 @@ func TestAnsweringARequestClosesItsPromptOnce(t *testing.T) {
 	if _, changed := Apply(rec, answered("h2"), t0); changed {
 		t.Fatal("answering a closed request changed the session")
 	}
+
+	// A prompt another request still waits on keeps its place: answering
+	// the first of its requests leaves the session blocked on it, as before.
+	question := func(id string) adapter.Transition {
+		tr := askFor("", "AskUserQuestion")
+		tr.Request, tr.Waits = id, true
+		return tr
+	}
+	rec = play(t, question("q1"), ask("q2"), question("q3"))
+	is(t, rec, adapter.Blocked, adapter.KindQuestion)
+	rec, _ = Apply(rec, answered("q1"), t0)
+	is(t, rec, adapter.Blocked, adapter.KindQuestion)
+	if p := rec.Pending(); len(p) != 2 || p[0].Tool != "AskUserQuestion" || len(rec.Requests) != 2 || rec.Requests[0].ID != "q3" {
+		t.Fatalf("after answering the question's first request: %+v", rec.Requests)
+	}
 }
 
 func TestShownBounds(t *testing.T) {
