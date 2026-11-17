@@ -102,6 +102,9 @@ func start(t *testing.T) *harness {
 		t.Fatalf("start tmux: %v %s", err, out)
 	}
 	t.Cleanup(func() {
+		if t.Failed() {
+			h.keepEvidence()
+		}
 		_ = exec.Command("tmux", "-L", h.name, "kill-server").Run() // may already be gone
 	})
 	return h
