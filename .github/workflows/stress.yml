@@ -29,6 +29,7 @@ jobs:
   test:
     uses: ./.github/workflows/test.yml
     with:
-      count: ${{ inputs.count || 5 }}
+      # A dispatch passes its inputs as strings, and a schedule passes none.
+      count: ${{ fromJSON(inputs.count || '5') }}
       cpus: 2
       run: ${{ inputs.run }}
