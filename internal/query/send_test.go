@@ -151,7 +151,12 @@ func TestInboxAtProvesTheRecordedProcess(t *testing.T) {
 			if err != nil {
 				return
 			}
-			conn.Close()
+			// macOS has no peer for a connection its peer closed: read to
+			// EOF first.
+			go func() {
+				_, _ = io.Copy(io.Discard, conn)
+				conn.Close()
+			}()
 		}
 	}()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
