@@ -182,18 +182,33 @@ func guardedWrite(ctx context.Context, s session.Shown, rec session.Record, pr P
 // titleGuard decides, as Check does, whether a Codex pane's title lets it
 // show rec: it shows one of the session's threads, or, for a process
 // attachment, no thread at all. The term it returns asks tmux, in the write's
-// own invocation, that the title still does: that it still holds the id it
-// showed, or still holds nothing shaped like an id. An id item is hex digits
-// and dashes, so the term carries nothing tmux would expand.
+// own invocation, that the title still does: that it still holds the id item
+// it showed, or still holds no id item.
 func titleGuard(p tmux.Pane, rec session.Record) (term string, ok bool) {
 	if id, _, ok := shownID(p.Title, rec); ok {
-		return "#{m:*" + id + "...*,#{pane_title}}", true
+		return "#{!=:" + withoutItem(id) + ",#{pane_title}}", true
 	}
 	if a, _ := FromPane(p); a.Evidence != TitleID && len(TitleIDs(p.Title)) == 0 {
-		return "#{?#{m:*????????-????-????-????-?????...*,#{pane_title}},0,1}", true
+		return "#{==:" + withoutItem(anyID) + ",#{pane_title}}", true
 	}
 	return "", false
 }
+
+// withoutItem is the pane's title with an id item matching pattern replaced,
+// so that it differs from the title exactly when the title shows one. The
+// regular expression reads items as TitleIDs does: between " | "
+// separators, the id followed by "...", with nothing beside it but activity
+// glyphs, here any word of characters outside printable ASCII. It holds
+// nothing tmux formats would take for their own syntax.
+func withoutItem(pattern string) string {
+	return "#{s/(^|[|] )([^ -~]+ )*" + pattern + "[.][.][.]( [^ -~]+)*( [|]|$)/X/:pane_title}"
+}
+
+// anyID matches the id of any thread as the title shows it, spelled out
+// because tmux would take a repetition count's braces for format syntax.
+var anyID = strings.Join([]string{hexDigits(8), hexDigits(4), hexDigits(4), hexDigits(4), hexDigits(titleIDLen - 24)}, "-")
+
+func hexDigits(n int) string { return strings.Repeat("[0-9a-f]", n) }
 
 // absence is what a failed tmux call proves of a pane: gone when its server
 // answers without it, or no server listens on its socket any more.

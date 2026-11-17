@@ -290,9 +290,14 @@ func TestProjectWritesACodexPaneOnlyWhileItsTitleShowsTheSession(t *testing.T) {
 	t.Setenv("PATH", wrap+string(os.PathListSeparator)+os.Getenv("PATH"))
 	for _, tc := range []struct {
 		evidence, before, after string
+		written                 bool
 	}{
-		{TitleID, "repo | " + a[:29] + "...", "repo | " + b[:29] + "..."},
-		{Process, "repo", "repo | " + b[:29] + "..."},
+		{TitleID, "repo | " + a[:29] + "...", "repo | " + b[:29] + "...", false},
+		// A name that mentions the thread's id is no id item.
+		{TitleID, "repo | " + a[:29] + "...", "Investigate " + a[:29] + "... | repo | " + b[:29] + "...", false},
+		{Process, "repo", "repo | " + b[:29] + "...", false},
+		// Nor is it one for a process attachment whose title shows none.
+		{Process, "Investigate " + b[:29] + "...", "Investigate " + b[:29] + "...", true},
 	} {
 		if err := srv.SetPaneOptions(ctx, pane, map[string]string{"evidence": tc.evidence, "state": "idle"}, nil); err != nil {
 			t.Fatal(err)
@@ -307,11 +312,11 @@ func TestProjectWritesACodexPaneOnlyWhileItsTitleShowsTheSession(t *testing.T) {
 			t.Fatal(err)
 		}
 		written, missed, err := env.Project(ctx, rec)
-		if err != nil || len(written) != 0 || len(missed) != 1 {
+		if err != nil || (len(written) == 1) != tc.written || len(written)+len(missed) != 1 {
 			t.Fatalf("%s attachment, title %q then %q: written %+v, missed %+v, %v", tc.evidence, tc.before, tc.after, written, missed, err)
 		}
-		if got := state(); got != "idle" {
-			t.Fatalf("%s attachment: the thread's state landed on a title that moved on: %q", tc.evidence, got)
+		if want := map[bool]string{false: "idle", true: "working"}[tc.written]; state() != want {
+			t.Fatalf("%s attachment, title %q then %q: pane state %q, want %q", tc.evidence, tc.before, tc.after, state(), want)
 		}
 	}
 }
@@ -350,5 +355,47 @@ func TestProjectReadsTheRecordUnderThePaneLock(t *testing.T) {
 	written := <-done
 	if len(written) != 1 || !written[0].Newer || written[0].Pane.Options["state"] != adapter.Idle {
 		t.Fatalf("Project wrote %+v, not the record saved under the lock", written)
+	}
+}
+
+// The title terms the guard sends read a title as TitleIDs does, in tmux's
+// own regular expressions: a name that mentions an id is no id item.
+func TestTitleTermsReadTitlesAsTitleIDs(t *testing.T) {
+	srv, pane, _ := startTmuxPane(t)
+	ctx := context.Background()
+	a, b := shown(threadA), shown(threadB)
+	for _, title := range []string{
+		"proj | " + a,
+		"⠼ 运行 echo hi | proj | " + a,
+		"[ ! ] Action Required | name | " + a,
+		"⠼ " + a + " | proj",
+		a + " ●",
+		"proj | " + b + " | " + a,
+		"proj | " + b,
+		"see " + a + " | proj",
+		"Investigate " + a + " | repo | " + b,
+		"Investigate " + a,
+		threadA + " | proj",
+		"GPT-6 | proj",
+		"",
+	} {
+		if _, err := srv.Run(ctx, "select-pane", "-t", pane, "-T", title); err != nil {
+			t.Fatal(err)
+		}
+		eval := func(term string) bool {
+			t.Helper()
+			out, err := srv.Run(ctx, "display-message", "-p", "-t", pane, term)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return strings.TrimSpace(string(out)) == "1"
+		}
+		ids := TitleIDs(title)
+		if got, want := eval("#{!=:"+withoutItem(threadA[:titleIDLen])+",#{pane_title}}"), slices.Contains(ids, threadA[:titleIDLen]); got != want {
+			t.Errorf("title %q: tmux reads A's item %v, TitleIDs %v", title, got, want)
+		}
+		if got, want := eval("#{!=:"+withoutItem(anyID)+",#{pane_title}}"), len(ids) > 0; got != want {
+			t.Errorf("title %q: tmux reads an id item %v, TitleIDs %v", title, got, want)
+		}
 	}
 }
