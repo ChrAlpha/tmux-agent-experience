@@ -3,11 +3,13 @@ package e2e
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -184,6 +186,20 @@ func TestServeCarriesOwnerVerbs(t *testing.T) {
 	}
 	if code, body := call(http.MethodPost, "/v2/act", `{"verb":"start","agent":"claude","dir":"relative"}`); code != http.StatusBadRequest {
 		t.Fatalf("a start without an absolute dir: %d %s", code, body)
+	}
+
+	// The page reads a screen and types into the pane that shows it.
+	var screen struct {
+		Screen string `json:"screen"`
+	}
+	if code, body := call(http.MethodGet, "/v2/read?target="+sidA+"&lines=20", ""); code != http.StatusOK || json.Unmarshal([]byte(body), &screen) != nil || screen.Screen == "" {
+		t.Fatalf("read lines: %d %s", code, body)
+	}
+	if code, body := call(http.MethodPost, "/v2/act", `{"verb":"keys","target":"`+sidA+`","screen":"`+screen.Screen+`","keys":["BSpace"]}`); code != http.StatusOK {
+		t.Fatalf("keys: %d %s", code, body)
+	}
+	if i := slices.IndexFunc(h.events(sidA), func(e eventlog.Event) bool { return e.Event == eventlog.Keys }); i < 0 || h.events(sidA)[i].Credential != issued.ID {
+		t.Fatalf("no Keys event on the credential: %+v", h.events(sidA))
 	}
 
 	// A separate CLI process revokes admission. Existing gates still refused

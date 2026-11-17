@@ -214,7 +214,7 @@ func (s *Server) info(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"schema": Schema, "state_schema": version.Schema, "version": s.cfg.Version, "instance": instance,
-		"operations": []string{"list", "inspect", "watch", "read", "request", "send", "interrupt", "answer", "start"}})
+		"operations": []string{"list", "inspect", "watch", "read", "request", "send", "interrupt", "answer", "start", "keys"}})
 }
 func (s *Server) relay(w http.ResponseWriter, r *http.Request, args []string, input io.Reader) int {
 	ctx, cancel := context.WithTimeout(r.Context(), actTimeout)
@@ -300,6 +300,8 @@ type action struct {
 	Dir      string            `json:"dir,omitempty"`
 	Worktree string            `json:"worktree,omitempty"`
 	Text     string            `json:"text,omitempty"`
+	Screen   string            `json:"screen,omitempty"`
+	Keys     []string          `json:"keys,omitempty"`
 	Request  string            `json:"request,omitempty"`
 	Decision string            `json:"decision,omitempty"`
 	Message  string            `json:"message,omitempty"`
@@ -338,6 +340,13 @@ func (s *Server) act(w http.ResponseWriter, r *http.Request) {
 		input = strings.NewReader(a.Text)
 	case "interrupt":
 		args = append(args, "--", a.Target)
+	case "keys":
+		if a.Screen == "" {
+			fail(w, 400, "usage", "keys needs the screen they answer")
+			return
+		}
+		args = append(args, "--screen="+a.Screen, "--text="+a.Text, "--", a.Target)
+		args = append(args, a.Keys...)
 	case "answer":
 		if a.Request == "" || (a.Decision != "allow" && a.Decision != "deny") {
 			fail(w, 400, "usage", "answer needs a request and allow or deny")

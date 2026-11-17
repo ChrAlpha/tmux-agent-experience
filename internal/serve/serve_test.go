@@ -333,3 +333,26 @@ func TestStartNamesAnAgentOrATemplate(t *testing.T) {
 		t.Fatalf("an invalid start reached the local CLI: %q", got)
 	}
 }
+
+// Keys name the screen they answer and the keys, which stay literal.
+func TestKeysNameTheirScreen(t *testing.T) {
+	var got []string
+	s, _, c := fixture(t, func(ctx context.Context, args []string, in io.Reader, out, stderr io.Writer) int {
+		got = args
+		_, _ = io.WriteString(out, `{"schema":"tmag/v2"}`)
+		return 0
+	})
+	r := call(s, "POST", "/v2/act", `{"verb":"keys","target":"%3","screen":"abc","text":"yes","keys":["Enter","--json"]}`, c.Token, "", "")
+	if r.Code != 200 || strings.Join(got, " ") != "keys --json --screen=abc --text=yes -- %3 Enter --json" {
+		t.Fatalf("keys: %d %q", r.Code, got)
+	}
+	got = nil
+	for _, b := range []string{`{"verb":"keys","target":"%3","keys":["Enter"]}`, `{"verb":"keys","screen":"abc","keys":["Enter"]}`} {
+		if res := call(s, "POST", "/v2/act", b, c.Token, "", ""); res.Code != 400 {
+			t.Errorf("%s: %d", b, res.Code)
+		}
+	}
+	if got != nil {
+		t.Fatalf("invalid keys reached the local CLI: %q", got)
+	}
+}

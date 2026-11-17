@@ -69,7 +69,7 @@ func next(cmd, target string, err error) string {
 	case errors.Is(err, errUnshown):
 		return fmt.Sprintf("tmag wait %s --for idle waits until it shows its session", target)
 	case errors.As(err, new(notShownStart)):
-		return fmt.Sprintf("its window stays: see what holds it with tmag read %s --lines 40. An agent at a trust dialog or a login waits for the person; Codex in its shared daemon shows its session only with the thread-id title item", target)
+		return fmt.Sprintf("its window stays: see what holds it with tmag read %s --lines 40. An agent at a trust dialog or a login waits for the person, who answers it there or with tmag keys; Codex in its shared daemon shows its session only with the thread-id title item", target)
 	case errors.Is(err, query.ErrNoWindow):
 		return "run tmag start in a tmux pane: the agent's window opens beside it"
 	case errors.As(err, new(notShown)):
@@ -117,6 +117,9 @@ func nextAfterRefusal(cmd, target, reason string) string {
 	case query.RefuseSubagent:
 		return fmt.Sprintf("wait until it is idle with tmag wait %s --for idle, then try once more", target)
 	case query.RefuseChanged:
+		if cmd == "keys" {
+			return fmt.Sprintf("see what it shows now with tmag read %s --lines 40 --json, and type again for that screen", target)
+		}
 		return "run tmag list and decide again"
 	case query.RefuseIdle:
 		return "nothing to do: it runs no turn"
@@ -129,6 +132,9 @@ func nextAfterRefusal(cmd, target, reason string) string {
 	case query.RefuseSelf:
 		return "this is your own session: use another agent's id from tmag list"
 	case query.RefuseAgent:
+		if cmd == "keys" {
+			return "only the person types into a pane: talk to the agent with tmag send"
+		}
 		return "only the person can decide this"
 	case query.RefuseUnasked:
 		return fmt.Sprintf("answer an ask of send --wait in your final message; to tell %s something it did not ask for, use tmag send %s -", target, target)

@@ -46,6 +46,10 @@ Usage:
   tmag start    <agent|template> [--dir D] [--worktree BRANCH] [--wait | --reply] [--timeout D] [--json] [text | -]
                                                start an agent in a window beside this pane
   tmag interrupt <target> [--json]             stop the agent's running turn
+  tmag keys     <target> --screen DIGEST [--text TEXT] [KEY...] [--json]
+                                               type into a pane that shows the screen you read
+                                               (keys: Enter Escape Tab BTab Up Down Left Right
+                                               Space BSpace C-c y n 0-9)
   tmag request  <target> <request> [--json]    what an open request asks
   tmag answer   <target> <request> allow|deny [--message M] [--answers JSON] [--json]
                                                decide an open request
@@ -208,6 +212,8 @@ func (a *app) run(args []string) int {
 		return a.cmdStart(rest)
 	case "interrupt":
 		return a.cmdInterrupt(rest)
+	case "keys":
+		return a.cmdKeys(rest)
 	case "answer":
 		return a.cmdAnswer(rest)
 	case "request":

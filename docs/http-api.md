@@ -41,9 +41,9 @@ Successful commands and command failures preserve their `tmag/v2` documents.
 | GET /v2/list | none | `list --json` |
 | GET /v2/inspect | target | `inspect --json` |
 | GET /v2/request | target, request | `request --json` |
-| GET /v2/read | target and one of last=1, lines=1..2000 or turns=1..20 | `read --json` |
+| GET /v2/read | target and one of last=1, lines=1..2000 or turns=1..20 | `read --json`; with lines, `ansi` and `cursor` show the screen and `screen` names it for keys |
 | GET /v2/watch | optional since cursor, otherwise Last-Event-ID | event stream |
-| POST /v2/act | JSON action | send, interrupt, answer or start result |
+| POST /v2/act | JSON action | send, interrupt, answer, start or keys result |
 | POST /v2/pair | JSON `{code}`; no bearer needed | `{schema,credential:{id,label,created,expires?,token}}` |
 
 Actions contain `verb` and `target`. A send carries `text`; an answer carries
@@ -58,6 +58,10 @@ A start carries no target but `agent` (claude, codex, pi or omp) or
 and optionally `worktree` (a branch) and `text`: it opens the agent's window
 beside serve's, waits until it shows its session, and delivers `text` as a
 send does.
+Keys carry `target`, `screen` (as a read with lines gave it), and
+`keys` (Enter, Escape, Tab, BTab, Up, Down, Left, Right, Space, BSpace, C-c,
+y, n, 0-9) after an optional `text`: they are typed only once a shot of the
+pane right before matches that screen.
 There is no machine selector, command string, sender identity or arbitrary shell.
 Bodies are limited to 1 MiB and ten seconds to read. Control authority is
 revalidated after the complete body and verb are checked; a stalled upload

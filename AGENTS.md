@@ -104,7 +104,9 @@ promise is documented in the package, and changes with it.
   again under the locks they need; an inbox is proven when its listener is
   the agent process that named it. `send` delivers now without needing an idle
   turn, and `--wait` keeps today's idle gate. `internal/driver` alone picks
-  the channel from the agent, runtime, caller and response mode.
+  the channel from the agent, runtime, caller and response mode. `keys` is
+  the person's own typing, refused to agents, typed only once tmag checked,
+  right before, that the pane shows the screen the person read.
 - **Callers are proven too.** Who runs a verb comes from process ancestry
   (`query.Caller`), never from a variable alone, and every control event
   records it. An agent never acts on its own session, and answers for the
