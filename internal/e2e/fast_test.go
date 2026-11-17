@@ -665,9 +665,10 @@ func TestARecordListsEightPanesAndAFullPassRelistsThem(t *testing.T) {
 }
 
 // Purging tmag's state while an Attach writes a pane leaves no pane showing a
-// session its record does not list: the state goes first, its lock files
-// stay, and each pane is cleared under its lock, after the Attach. The PATH
-// wrapper holds the Attach at its pane write while the purge runs.
+// session its record does not list: the purge holds every pane's lock, so it
+// waits for the Attach, then clears the pane it wrote. The PATH wrapper
+// holds the Attach at its pane write, after it listed the pane, while the
+// pane has no option the purge could see.
 func TestPurgeUnderAnAttachLeavesNoPaneUnlisted(t *testing.T) {
 	h := start(t)
 	a := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_HOOKS": "1"}, filepath.Join(bin, "claude"))
@@ -692,7 +693,9 @@ func TestPurgeUnderAnAttachLeavesNoPaneUnlisted(t *testing.T) {
 		t.Fatal("no client in the pane")
 	}
 	// The pane shows nothing yet, so the Attach below writes it afresh.
-	h.tmux("set-option", "-p", "-u", "-t", a, "@tmag_agent")
+	if err := (tmux.Server{Socket: c.Pane.Server}).ClearPaneOptions(ctx, a); err != nil {
+		t.Fatal(err)
+	}
 	real, err := exec.LookPath("tmux")
 	if err != nil {
 		t.Fatal(err)
@@ -723,10 +726,7 @@ func TestPurgeUnderAnAttachLeavesNoPaneUnlisted(t *testing.T) {
 	})
 	purged := make(chan result, 1)
 	go func() { purged <- h.tmag("", "uninstall", "--purge") }()
-	h.eventually("the purge removed the state", func() bool {
-		_, err := os.Stat(filepath.Join(h.state, "sessions"))
-		return os.IsNotExist(err)
-	})
+	time.Sleep(300 * time.Millisecond) // a purge that would not wait runs ahead
 	if err := os.WriteFile(release, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}

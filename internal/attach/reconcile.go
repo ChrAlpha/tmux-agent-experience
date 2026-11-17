@@ -8,6 +8,7 @@ import (
 	"github.com/ChrAlpha/tmux-agent-experience/internal/adapter"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/claudestatus"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/lockfile"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/tmux"
@@ -282,21 +283,40 @@ func statusProvesIdle(ctx context.Context, path, sessionID, procStart string, la
 	return err == nil && status.IdleAfter(sessionID, procStart, lastHookAt)
 }
 
-// Clear removes every tmag option from a pane, under the pane's lock, as
-// tmag's state goes: an Attach that ran before it is undone, and one that
-// runs after it lists the pane in a record written after the state went.
-// It reports whether the pane had options to clear.
-func Clear(ctx context.Context, stateDir string, srv tmux.Server, pane string) (bool, error) {
-	had := false
-	err := Lock(ctx, stateDir, srv.Socket, pane, func() error {
-		fresh, err := srv.Pane(ctx, pane)
-		if err != nil || len(fresh.Options) == 0 {
+// Purge clears tmag's options from every pane of every server, then runs
+// remove, holding every pane's lock throughout: no Attach and no hook writes
+// a pane meanwhile, so none shows a session once remove has taken its
+// record. A pane it cannot clear, or a server that listens but does not
+// list its panes, ends it before remove, with every record still in place.
+// It reports how many panes it cleared.
+func Purge(ctx context.Context, stateDir string, remove func() error) (int, error) {
+	cleared := 0
+	err := lockfile.All(ctx, stateDir, paneLocks, func() error {
+		servers, err := tmux.Servers(ctx)
+		if err != nil {
 			return err
 		}
-		had = true
-		return srv.ClearPaneOptions(ctx, fresh.ID)
+		for _, s := range servers {
+			panes, err := s.Panes(ctx)
+			if err != nil {
+				if s.Listening(ctx) {
+					return err
+				}
+				continue // no server there, and no pane of it shows anything
+			}
+			for _, p := range panes {
+				if len(p.Options) == 0 {
+					continue
+				}
+				if err := s.ClearPaneOptions(ctx, p.ID); err != nil {
+					return err
+				}
+				cleared++
+			}
+		}
+		return remove()
 	})
-	return had && err == nil, err
+	return cleared, err
 }
 
 // clearBroken removes tmag options that hold no attachment, if they still
