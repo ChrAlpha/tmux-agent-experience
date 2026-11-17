@@ -15,18 +15,14 @@ import (
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/sockettest"
 )
 
 // serve listens at a fresh socket and runs handle for every connection, in
 // the order the connections arrive.
 func serve(t *testing.T, handle func(net.Conn)) string {
 	t.Helper()
-	dir, err := os.MkdirTemp("", "inbox") // socket paths are short
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.RemoveAll(dir) })
-	sock := filepath.Join(dir, "s.sock")
+	sock := filepath.Join(sockettest.Dir(t), "s.sock")
 	ln, err := net.Listen("unix", sock)
 	if err != nil {
 		t.Fatal(err)
@@ -275,7 +271,9 @@ func TestCleanName(t *testing.T) {
 }
 
 func TestServesTheRecordedProcess(t *testing.T) {
-	sock := serve(t, func(net.Conn) {})
+	// The listener holds the connection until the test closes it: on macOS,
+	// a peer that has closed has no pid to read.
+	sock := serve(t, func(conn net.Conn) { _, _ = io.Copy(io.Discard, conn) })
 	c := dial(t, sock)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()

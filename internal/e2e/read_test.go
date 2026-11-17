@@ -49,11 +49,13 @@ func TestReadTurns(t *testing.T) {
 				t.Fatalf("read --turns 1: %d %q", r.code, r.out)
 			}
 
-			if r := h.tmag("", "send", sidA[:8], "long work"); r.code != 0 {
+			// A turn that runs until the test ends: a timed one may end
+			// before a slow runner reads it.
+			if r := h.tmag("", "send", sidA[:8], "sleep"); r.code != 0 {
 				t.Fatalf("send: %d %s", r.code, r.out)
 			}
 			h.waitSession(sidA, "working")
-			if got := turns("1"); len(got) != 1 || !reflect.DeepEqual(got[0].Prompts, []transcript.Prompt{{Text: "long work"}}) || got[0].Reply != "" {
+			if got := turns("1"); len(got) != 1 || !reflect.DeepEqual(got[0].Prompts, []transcript.Prompt{{Text: "sleep"}}) || got[0].Reply != "" {
 				t.Fatalf("a running turn: %+v", got)
 			}
 			if r := h.tmag("", "read", sidA[:8], "--turns", "21"); r.code != 2 || !strings.Contains(r.out, "1 to 20") {

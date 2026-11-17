@@ -1,0 +1,66 @@
+name: Set up tmux
+description: Put tmux on PATH, the image's or Homebrew's, or a release built from source on Linux.
+
+inputs:
+  version:
+    description: A tmux release to build, such as 3.2a; empty takes the image's tmux, or Homebrew's on macOS.
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - id: image
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+      run: |
+        if [ -n "$VERSION" ]; then
+          echo "path=$RUNNER_TEMP/tmux-$VERSION" >> "$GITHUB_OUTPUT"
+        else
+          echo "path=$RUNNER_TEMP/tmux.tar" >> "$GITHUB_OUTPUT"
+        fi
+        echo "key=tmux-${VERSION:-image}-$ImageOS-$ImageVersion-$RUNNER_ARCH" >> "$GITHUB_OUTPUT"
+    # Homebrew takes about fifteen seconds to pour tmux and its dependencies,
+    # and a release takes longer to build; either gives the same files on the
+    # same image, so they are kept per image. Ubuntu images come with tmux.
+    - if: inputs.version != '' || runner.os == 'macOS'
+      uses: actions/cache@v6
+      with:
+        path: ${{ steps.image.outputs.path }}
+        key: ${{ steps.image.outputs.key }}
+    - shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+        CACHED: ${{ steps.image.outputs.path }}
+      run: |
+        if [ -n "$VERSION" ]; then
+          [ "$RUNNER_OS" = Linux ] || { echo "::error::tmux $VERSION is built on Linux only"; exit 1; }
+          # The releases this action builds, by the checksum of their source.
+          case $VERSION in
+            3.2a) sum=551553a4f82beaa8dadc9256800bcc284d7c000081e47aa6ecbb6ff36eacd05f ;;
+            *) echo "::error::no checksum for tmux $VERSION"; exit 1 ;;
+          esac
+          if ! { [ -x "$CACHED/bin/tmux" ] && "$CACHED/bin/tmux" -V; }; then
+            sudo apt-get update && sudo apt-get install -y libevent-dev libncurses-dev bison
+            src=$RUNNER_TEMP/tmux-src
+            mkdir -p "$src"
+            curl -fsSL --retry 3 -o "$src/tmux.tar.gz" "https://github.com/tmux/tmux/releases/download/$VERSION/tmux-$VERSION.tar.gz"
+            echo "$sum  $src/tmux.tar.gz" | sha256sum -c
+            tar -xzf "$src/tmux.tar.gz" -C "$src"
+            (cd "$src/tmux-$VERSION" && ./configure --prefix="$CACHED" && make -j"$(nproc)" && make install)
+          fi
+          echo "$CACHED/bin" >> "$GITHUB_PATH"
+          "$CACHED/bin/tmux" -V
+        elif [ "$RUNNER_OS" = macOS ]; then
+          prefix=$(brew --prefix)
+          if ! { [ -f "$CACHED" ] && tar -xf "$CACHED" -C "$prefix" && tmux -V; }; then
+            brew install tmux
+            # shellcheck disable=SC2046 # one path per formula
+            tar -cf "$CACHED" -C "$prefix" bin/tmux $(for f in tmux $(brew deps tmux); do echo "Cellar/$f opt/$f"; done)
+          fi
+          tmux -V
+        else
+          command -v tmux > /dev/null || { sudo apt-get update && sudo apt-get install -y tmux; }
+          tmux -V
+        fi

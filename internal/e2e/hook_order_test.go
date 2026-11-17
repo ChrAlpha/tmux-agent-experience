@@ -15,17 +15,14 @@ import (
 	"github.com/ChrAlpha/tmux-agent-experience/internal/hook"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/sockettest"
 )
 
 // A tmux server that accepts and never answers used to hold a hook before it
 // wrote its record. The record and its event now come first, and the hook
 // still finishes within hook.Deadline.
 func TestHangingTmuxCannotKeepAHookFromRecording(t *testing.T) {
-	sock, err := os.MkdirTemp("/tmp", "tm-hang")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.RemoveAll(sock) })
+	sock := sockettest.Dir(t)
 	dir := t.TempDir()
 	state := filepath.Join(dir, "state")
 	t.Setenv("TMUX", "")

@@ -20,11 +20,10 @@ defaults:
 
 jobs:
   plan:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     outputs:
       code: ${{ steps.changes.outputs.code }}
       go: ${{ steps.go.outputs.version }}
-      matrix: ${{ steps.split.outputs.matrix }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -51,141 +50,21 @@ jobs:
           fi
       # Every job of a run uses the same release, the latest one.
       - id: go
-        name: Resolve the Go release
-        run: |
-          version=$(curl -fsSL --retry 3 'https://go.dev/VERSION?m=text' | sed -n '1s/^go//p')
-          [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::no Go release in go.dev's answer: '$version'"; exit 1; }
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-      - uses: actions/cache/restore@v6
-        with:
-          path: e2e-durations
-          key: e2e-durations-${{ github.run_id }}
-          restore-keys: e2e-durations-
-      # The end-to-end tests run one after another, so they are split across
-      # machines: longest first, each onto the least loaded shard, by the
-      # durations main last recorded on that OS (the average for a test
-      # without one). The last shard runs every test the others do not, so a
-      # test always runs somewhere.
-      - id: split
-        name: Split the end-to-end tests
-        env:
-          SHARDS: 3
-        run: |
-          touch e2e-durations
-          sed -n 's/^func \(Test[A-Za-z0-9_]*\)(.*/\1/p' internal/e2e/*_test.go | grep -vx TestMain | sort -u > tests
-          awk 'FILENAME == ARGV[1] { t[$1]; next } $2 in t' tests e2e-durations > known
-          matrix=$(for os in ubuntu-latest macos-latest; do
-            avg=$(awk -v os="$os" '$1 == os { s += $3; n++ } END { print n ? s / n : 1 }' known)
-            awk -v os="$os" -v avg="$avg" 'FILENAME == ARGV[1] { if ($1 == os) w[$2] = $3; next } { print ($1 in w ? w[$1] : avg), $1 }' known tests |
-              sort -k1,1gr -k2,2 |
-              awk -v os="$os" -v n="$SHARDS" '
-                {
-                  k = 1
-                  for (i = 2; i <= n; i++) if (load[i] < load[k]) k = i
-                  load[k] += $1
-                  names[k] = names[k] (names[k] == "" ? "" : "|") $2
-                }
-                END {
-                  printf "{\"os\":\"%s\",\"suite\":{\"name\":\"unit\"}}", os
-                  for (i = 1; i < n; i++) {
-                    printf ",{\"os\":\"%s\",\"suite\":{\"name\":\"e2e-%d/%d\",\"run\":\"^(%s)$\"}}", os, i, n, names[i]
-                    others = others (others == "" ? "" : "|") names[i]
-                  }
-                  printf ",{\"os\":\"%s\",\"suite\":{\"name\":\"e2e-%d/%d\",\"skip\":\"^(%s)$\"}}\n", os, n, n, others
-                }'
-          done | paste -sd, -)
-          echo "matrix=[$matrix]" >> "$GITHUB_OUTPUT"
-          jq . <<< "[$matrix]"
+        uses: ./.github/actions/go-release
 
+  # Each commit to main records how long its end-to-end tests took.
   test:
     needs: plan
     if: needs.plan.outputs.code == 'true'
-    name: test (${{ matrix.os }}, ${{ matrix.suite.name }})
-    strategy:
-      fail-fast: false
-      matrix:
-        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v7
-      - uses: ./.github/actions/setup-go
-        with:
-          go-version: ${{ needs.plan.outputs.go }}
-          build-cache: race-${{ matrix.suite.name == 'unit' && 'unit' || 'e2e' }}
-      # Homebrew takes about fifteen seconds to pour tmux and its
-      # dependencies, and pours the same files on the same image: they are
-      # kept per image. Ubuntu images come with tmux.
-      - id: image
-        if: runner.os == 'macOS'
-        run: echo "version=$ImageOS-$ImageVersion" >> "$GITHUB_OUTPUT"
-      - if: runner.os == 'macOS'
-        uses: actions/cache@v6
-        with:
-          path: ${{ runner.temp }}/tmux.tar
-          key: tmux-${{ steps.image.outputs.version }}-${{ runner.arch }}
-      - name: Install tmux
-        run: |
-          if [ "$RUNNER_OS" = macOS ]; then
-            archive=$RUNNER_TEMP/tmux.tar prefix=$(brew --prefix)
-            if ! { [ -f "$archive" ] && tar -xf "$archive" -C "$prefix" && tmux -V; }; then
-              brew install tmux
-              # shellcheck disable=SC2046 # one path per formula
-              tar -cf "$archive" -C "$prefix" bin/tmux $(for f in tmux $(brew deps tmux); do echo "Cellar/$f opt/$f"; done)
-            fi
-          elif ! command -v tmux > /dev/null; then
-            sudo apt-get update && sudo apt-get install -y tmux
-          fi
-          tmux -V
-      # The unit suite runs tmag's extensions for Pi and oh-my-pi, on a
-      # Node.js that runs TypeScript as it is.
-      - if: matrix.suite.name == 'unit'
-        uses: actions/setup-node@v5
-        with:
-          node-version: 24
-      - name: Test
-        env:
-          SUITE: ${{ matrix.suite.name }}
-          RUN: ${{ matrix.suite.run }}
-          SKIP: ${{ matrix.suite.skip }}
-        run: |
-          if [ "$SUITE" = unit ]; then
-            # Some packages mostly wait, such as the installer's on its
-            # transfer deadline: twice as many test binaries as CPUs keep the
-            # CPUs busy meanwhile.
-            go list ./... | grep -v '/internal/e2e$' | xargs go test -race -p "$((2 * $(getconf _NPROCESSORS_ONLN)))"
-          else
-            # TestMain builds tmag and the fake agent apart from the test
-            # binary, where Go's test cache cannot see them: never reuse a
-            # result.
-            go test -race -count=1 -v -run "$RUN" -skip "$SKIP" ./internal/e2e | tee "$RUNNER_TEMP/e2e.log"
-          fi
-      # Main's shards keep the durations the next split works from: each adds
-      # its own to the latest record, which shards finishing earlier saved.
-      - if: github.ref == 'refs/heads/main' && matrix.suite.name != 'unit'
-        uses: actions/cache/restore@v6
-        with:
-          path: e2e-durations
-          key: e2e-durations-${{ github.run_id }}-${{ github.run_attempt }}-${{ strategy.job-index }}
-          restore-keys: e2e-durations-
-      - name: Record end-to-end durations
-        if: github.ref == 'refs/heads/main' && matrix.suite.name != 'unit'
-        env:
-          OS: ${{ matrix.os }}
-        run: |
-          touch e2e-durations
-          awk -v os="$OS" '/^--- (PASS|FAIL): / { gsub(/[()s]/, "", $4); print os, $3, $4 }' "$RUNNER_TEMP/e2e.log" > measured
-          awk '{ w[$1 " " $2] = $3 } END { for (k in w) print k, w[k] }' e2e-durations measured | sort > merged
-          mv merged e2e-durations
-      - if: github.ref == 'refs/heads/main' && matrix.suite.name != 'unit'
-        uses: actions/cache/save@v6
-        with:
-          path: e2e-durations
-          key: e2e-durations-${{ github.run_id }}-${{ github.run_attempt }}-${{ strategy.job-index }}
+    uses: ./.github/workflows/test.yml
+    with:
+      go: ${{ needs.plan.outputs.go }}
+      record: ${{ github.event_name == 'push' }}
 
   lint:
     needs: plan
     if: needs.plan.outputs.code == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-go
@@ -200,7 +79,7 @@ jobs:
   vulncheck:
     needs: plan
     if: needs.plan.outputs.code == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-go
@@ -225,7 +104,7 @@ jobs:
   manifests:
     needs: plan
     if: needs.plan.outputs.code == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
       - name: Validate plugin and marketplace manifests
@@ -243,7 +122,7 @@ jobs:
   ci:
     if: always()
     needs: [plan, test, lint, vulncheck, manifests]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - env:
           CODE: ${{ needs.plan.outputs.code }}

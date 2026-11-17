@@ -21,6 +21,7 @@ import (
 	"github.com/ChrAlpha/tmux-agent-experience/internal/inbox"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/sockettest"
 )
 
 // tmag writes who sent a prompt and how to answer it, from the caller it
@@ -174,12 +175,7 @@ func TestNoMessageChannel(t *testing.T) {
 
 // A send reaches only an inbox its recorded process still serves.
 func TestInboxAtProvesTheRecordedProcess(t *testing.T) {
-	dir, err := os.MkdirTemp("", "tmag-inbox") // socket paths are short
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.RemoveAll(dir) })
-	sock := filepath.Join(dir, "s.sock")
+	sock := filepath.Join(sockettest.Dir(t), "s.sock")
 	ln, err := net.Listen("unix", sock)
 	if err != nil {
 		t.Fatal(err)
@@ -291,12 +287,7 @@ func TestClaudeAttestationUsesTheDeliveryDecision(t *testing.T) {
 	if !ok || self.Start == "" {
 		t.Fatal("this process is not in its own process table")
 	}
-	sockDir, err := os.MkdirTemp("/tmp", "tm-") // socket paths are short
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.RemoveAll(sockDir) })
-	sock := filepath.Join(sockDir, "inbox.sock")
+	sock := filepath.Join(sockettest.Dir(t), "inbox.sock")
 	ln, err := net.Listen("unix", sock)
 	if err != nil {
 		t.Fatal(err)
@@ -433,12 +424,8 @@ func TestThreadInAcceptsIdleAndActive(t *testing.T) {
 // status.
 func statusDaemon(t *testing.T, status string) *codexsvc.Client {
 	t.Helper()
-	dir, err := os.MkdirTemp("", "tmag-status")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.RemoveAll(dir) })
-	ln, err := net.Listen("unix", filepath.Join(dir, "s"))
+	sock := filepath.Join(sockettest.Dir(t), "s")
+	ln, err := net.Listen("unix", sock)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -468,7 +455,7 @@ func statusDaemon(t *testing.T, status string) *codexsvc.Client {
 	}()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	t.Cleanup(cancel)
-	c, err := codexsvc.Dial(ctx, filepath.Join(dir, "s"))
+	c, err := codexsvc.Dial(ctx, sock)
 	if err != nil {
 		t.Fatal(err)
 	}

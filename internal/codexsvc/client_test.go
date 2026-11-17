@@ -13,17 +13,13 @@ import (
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/codexsvc"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/codexsvc/svctest"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/sockettest"
 )
 
 // serve runs handle for every connection to a fresh socket.
 func serve(t *testing.T, handle func(c *svctest.Conn, m svctest.Message)) string {
 	t.Helper()
-	dir, err := os.MkdirTemp("", "svc") // socket paths are short
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.RemoveAll(dir) })
-	sock := filepath.Join(dir, "s.sock")
+	sock := filepath.Join(sockettest.Dir(t), "s.sock")
 	ln, err := net.Listen("unix", sock)
 	if err != nil {
 		t.Fatal(err)
