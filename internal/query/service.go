@@ -84,8 +84,7 @@ func throughService(outer context.Context, log *eventlog.Log, v View, s Session,
 		return Delivery{}, err
 	}
 
-	var d Delivery
-	d, err = recordDelivery(ctx, log, s, verb.gate, driver.Service, nil, func() error {
+	d, undo, err := recordDelivery(ctx, log, s, verb.gate, driver.Service, nil, func() error {
 		return &RefusedError{RefuseChanged, fmt.Sprintf("%s has ended", s.ID)}
 	}, verb.mark, nil)
 	if err != nil {
@@ -94,14 +93,27 @@ func throughService(outer context.Context, log *eventlog.Log, v View, s Session,
 	ctx, cancelDelivery := context.WithTimeout(outer, serviceTimeout)
 	defer cancelDelivery()
 	if err := verb.deliver(ctx, c); err != nil {
-		failure := deliveryFailure(d, err)
-		var refused *RefusedError
-		if errors.As(failure, &refused) {
-			return Delivery{}, failure // a refusal proves nothing was delivered
-		}
-		return d, failure
+		return undone(outer, d, deliveryFailure(d, err), undo)
 	}
 	return d, nil
+}
+
+// undone reports a delivery that failed after it was marked and logged. A
+// failure that proves nothing was delivered takes the delivery's marks back,
+// so the next delivery the failure's next: line advises is not held off by
+// this one; a refusal returns no delivery.
+func undone(outer context.Context, d Delivery, failure error, undo func(context.Context) error) (Delivery, error) {
+	var refused *RefusedError
+	var notTaken *NotTakenError
+	if errors.As(failure, &refused) || errors.As(failure, &notTaken) {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(outer), time.Second)
+		defer cancel()
+		failure = errors.Join(failure, undo(ctx))
+	}
+	if refused != nil {
+		return Delivery{}, failure
+	}
+	return d, failure
 }
 
 // deliveryFailure reports a failed write after its event was logged. A
@@ -131,9 +143,12 @@ func unknownDelivery(d Delivery, err error) error {
 // gone says what a session that ended meanwhile is. decide, when not nil,
 // fixes what the delivery depends on before it is marked and logged: it runs
 // under the session's lock, after the fresh gate and record read.
-func recordDelivery(ctx context.Context, log *eventlog.Log, s Session, gate stateGate, via string, proven *session.Inbox, gone func() error, mark func(*session.Record) eventlog.Event, decide func(View, session.Record)) (Delivery, error) {
+//
+// undo takes back what mark set, for a delivery that proved it took nothing.
+func recordDelivery(ctx context.Context, log *eventlog.Log, s Session, gate stateGate, via string, proven *session.Inbox, gone func() error, mark func(*session.Record) eventlog.Event, decide func(View, session.Record)) (Delivery, func(context.Context) error, error) {
 	store := session.Store{Dir: log.Dir}
 	var d Delivery
+	var prior, marked session.Record
 	var freshWorld *attach.World
 	nativeIdle := false
 	err := store.Lock(ctx, s.Agent, s.ID, func() error {
@@ -163,7 +178,9 @@ func recordDelivery(ctx context.Context, log *eventlog.Log, s Session, gate stat
 		if decide != nil {
 			decide(fresh, rec)
 		}
+		prior = rec
 		ev := mark(&rec)
+		marked = rec
 		ev.Agent, ev.Session, ev.Via = fs.Agent, fs.ID, via
 		if err := store.Put(ctx, rec); err != nil {
 			return err
@@ -179,7 +196,35 @@ func recordDelivery(ctx context.Context, log *eventlog.Log, s Session, gate stat
 			err = errors.Join(err, perr)
 		}
 	}
-	return d, err
+	return d, unmark(store, s, prior, marked), err
+}
+
+// unmark returns what takes back the marks a delivery set on its session
+// (Sent, Queued, Halted): each one the record still holds goes back to what
+// it was, under the session's lock. Nothing is logged: the marks are tmag's
+// own, not part of what an event reports.
+func unmark(store session.Store, s Session, prior, marked session.Record) func(context.Context) error {
+	return func(ctx context.Context) error {
+		return store.Lock(ctx, s.Agent, s.ID, func() error {
+			cur, ok, err := store.Get(ctx, s.Agent, s.ID)
+			if err != nil || !ok {
+				return err
+			}
+			changed := false
+			back := func(field *time.Time, was, set time.Time) {
+				if !set.Equal(was) && field.Equal(set) {
+					*field, changed = was, true
+				}
+			}
+			back(&cur.Sent, prior.Sent, marked.Sent)
+			back(&cur.Queued, prior.Queued, marked.Queued)
+			back(&cur.Halted, prior.Halted, marked.Halted)
+			if !changed {
+				return nil
+			}
+			return store.Put(ctx, cur)
+		})
+	}
 }
 
 // inboxChanged reports a fresh record that no longer names the inbox the

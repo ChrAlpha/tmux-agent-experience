@@ -309,6 +309,7 @@ func answerService(ctx context.Context, log *eventlog.Log, v View, s Session, id
 	// taker has given up: deliveries end within serviceTimeout.
 	store := session.Store{Dir: log.Dir}
 	var dl Delivery
+	var answered time.Time
 	err = store.Lock(ctx, s.Agent, s.ID, func() error {
 		rec, ok, err := store.Get(ctx, s.Agent, s.ID)
 		if err != nil || !ok {
@@ -322,8 +323,9 @@ func answerService(ctx context.Context, log *eventlog.Log, v View, s Session, id
 		if at := rec.Requests[i].Answered; now.Before(at.Add(serviceTimeout)) {
 			return &RefusedError{RefuseChanged, fmt.Sprintf("request %s of %s is being answered", id, s.ID)}
 		}
+		answered = now.UTC()
 		rec.Requests = slices.Clone(rec.Requests)
-		rec.Requests[i].Answered = now.UTC()
+		rec.Requests[i].Answered = answered
 		ev := eventlog.Event{Event: eventlog.Answer, Via: driver.Service, Request: id, Decision: d.Behavior}
 		caller.stamp(&ev)
 		if err := store.Report(ctx, log, rec, &ev); err != nil {
@@ -336,7 +338,22 @@ func answerService(ctx context.Context, log *eventlog.Log, v View, s Session, id
 		return Delivery{}, err
 	}
 	if err := c.Respond(ctx, m.ID, map[string]string{"decision": decision}); err != nil {
-		return dl, fmt.Errorf("logged at seq %d, but the Codex daemon did not take it: %w", dl.Seq, err)
+		// A refusal from the daemon frees the request at once; another
+		// failure leaves it taken for as long as a delivery may run.
+		return undone(ctx, dl, deliveryFailure(dl, err), func(ctx context.Context) error {
+			return store.Lock(ctx, s.Agent, s.ID, func() error {
+				rec, ok, err := store.Get(ctx, s.Agent, s.ID)
+				if err != nil || !ok {
+					return err
+				}
+				i := slices.IndexFunc(rec.Requests, func(o session.Request) bool { return o.ID == id })
+				if i < 0 || !rec.Requests[i].Answered.Equal(answered) {
+					return nil
+				}
+				rec.Requests[i].Answered = time.Time{}
+				return store.Put(ctx, rec)
+			})
+		})
 	}
 	if err := c.AwaitResolved(ctx, m.ID); err != nil {
 		return dl, fmt.Errorf("logged at seq %d and sent, but the Codex daemon did not report it resolved: %w", dl.Seq, err)

@@ -279,7 +279,7 @@ func throughInbox(outer context.Context, log *eventlog.Log, v View, s Session, t
 	// either class; the frame still attests what was true then.
 	var fromMode string
 	var held bool
-	d, err := recordDelivery(ctx, log, s, gate, driver.Inbox, rec.Inbox, func() error {
+	d, undo, err := recordDelivery(ctx, log, s, gate, driver.Inbox, rec.Inbox, func() error {
 		return sessionEnded(s.ID)
 	}, func(rec *session.Record) eventlog.Event {
 		// A wait asks for a turn of its own: only a turn starting clears its
@@ -307,7 +307,7 @@ func throughInbox(outer context.Context, log *eventlog.Log, v View, s Session, t
 		err = c.Extension(ctx, text, s.ID)
 	}
 	if err != nil {
-		return d, inboxFailure(d, err)
+		return undone(outer, d, inboxFailure(d, err), undo)
 	}
 	return d, nil
 }

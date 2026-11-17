@@ -126,7 +126,7 @@ func throughInboxInterrupt(outer context.Context, log *eventlog.Log, v View, s S
 	}
 	defer c.Close()
 
-	d, err := recordDelivery(ctx, log, s, runningGate, driver.Inbox, rec.Inbox, func() error {
+	d, undo, err := recordDelivery(ctx, log, s, runningGate, driver.Inbox, rec.Inbox, func() error {
 		return &RefusedError{RefuseChanged, fmt.Sprintf("%s has ended", s.ID)}
 	}, func(rec *session.Record) eventlog.Event {
 		rec.Halted = time.Now().UTC().Truncate(time.Second)
@@ -140,12 +140,7 @@ func throughInboxInterrupt(outer context.Context, log *eventlog.Log, v View, s S
 	ctx, cancelDelivery := context.WithTimeout(outer, serviceTimeout)
 	defer cancelDelivery()
 	if err := c.Interrupt(ctx, s.ID); err != nil {
-		failure := inboxFailure(d, err)
-		var refused *RefusedError
-		if errors.As(failure, &refused) {
-			return Delivery{}, failure // a refusal proves nothing was delivered
-		}
-		return d, failure
+		return undone(outer, d, inboxFailure(d, err), undo)
 	}
 	return d, nil
 }
