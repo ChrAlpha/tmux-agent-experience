@@ -8,10 +8,12 @@ import {
   agents,
   credential,
   pairingCode,
+  paneOf,
   person,
   said,
   serves,
   session,
+  startable,
   startServe,
   stopServe,
   tmux,
@@ -737,4 +739,262 @@ test('leaves the person where they went while a pairing they left ends', async (
   hold = false
   await watched
   await expect(page).toHaveURL(new RegExp(`#/s/${api.session}$`))
+})
+
+test('starts an agent from the page, and opens it', async ({ page }) => {
+  test.skip(!serves('start'), 'tmag starts agents after 0.7.0')
+  const sid = '0e000000-0000-7000-8000-00000000000e'
+  const started = startable({ FAKE_SESSION: sid, FAKE_HOOKS: '1', FAKE_TURN_MS: '500' })
+  try {
+    await paired(page)
+    await page.goto('/')
+    await page.getByRole('link', { name: 'Start' }).click()
+    await expect(page.getByRole('heading', { name: 'Start an agent' })).toBeVisible()
+    await page.getByRole('combobox', { name: 'Directory' }).selectOption(session(api)?.cwd ?? '')
+    await page.getByRole('textbox', { name: 'Prompt' }).fill('from the start sheet')
+    await page.getByRole('button', { name: 'Start' }).click()
+    await expect(page).toHaveURL(new RegExp(`#/s/${sid}$`), { timeout: 30_000 })
+    await expect(page.locator('.reply').last()).toHaveText('answered: from the start sheet', { timeout: 15_000 })
+  } finally {
+    started.stop()
+  }
+})
+
+// stalled answers a start with the 504 of an agent whose pane shows no
+// session in time, as tmag gives it, once go is called.
+function stalled(page: Page, pane: { server: string; id: string }) {
+  let go = () => {}
+  const held = new Promise<void>((r) => {
+    go = r
+  })
+  void page.route(
+    (url) => url.pathname === '/v2/act',
+    async (route) => {
+      if (route.request().postDataJSON().verb !== 'start') return route.continue()
+      await held
+      await route.fulfill({
+        status: 504,
+        json: {
+          schema: 'tmag/v2',
+          error: {
+            code: 'timeout',
+            message: `the agent started in ${pane.id}, which shows no session tmag can prove yet`,
+          },
+          pane,
+        },
+      })
+    },
+  )
+  return go
+}
+
+test('opens the pane of an agent that shows no session yet, with keys to answer it and its prompt kept', async ({
+  page,
+}) => {
+  test.skip(!serves('start'), 'tmag starts agents after 0.7.0')
+  await paired(page)
+  const pane = paneOf(docs)
+  stalled(page, pane)()
+  await page.goto('/#/start')
+  // Opened before the page knows its sessions, it starts in their first directory once it does.
+  await expect(page.getByRole('combobox', { name: 'Directory' })).toHaveValue(/^\//)
+  await page.getByRole('combobox', { name: 'Directory' }).selectOption(session(docs)?.cwd ?? '')
+  await page.getByRole('textbox', { name: 'Prompt' }).fill('held for its session')
+  await page.getByRole('button', { name: 'Start' }).click()
+  await expect(page.getByRole('heading', { name: `Pane ${pane.id}` })).toBeVisible()
+  await expect(page.locator('.terminal')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Escape' })).toBeVisible()
+  // Its pane shows a session, as the agent's would once its dialog is answered.
+  await page.getByRole('link', { name: 'Open its session' }).click()
+  await expect(page.locator('header .name')).toHaveText('docs')
+  await expect(page.getByRole('textbox', { name: 'Message' })).toHaveValue('held for its session')
+})
+
+test('leaves the person where they went while a start they left ends', async ({ page }) => {
+  test.skip(!serves('start'), 'tmag starts agents after 0.7.0')
+  await paired(page)
+  const pane = paneOf(docs)
+  const go = stalled(page, pane)
+  await page.goto('/#/start')
+  await page.getByRole('combobox', { name: 'Directory' }).selectOption(session(docs)?.cwd ?? '')
+  await page.getByRole('button', { name: 'Start' }).click()
+  await page.getByRole('button', { name: 'Agents' }).click()
+  await row(page, api).click()
+  go()
+  await page.getByRole('link', { name: 'Open its pane' }).click()
+  await expect(page.getByRole('heading', { name: `Pane ${pane.id}` })).toBeVisible()
+  await page.goBack()
+  await expect(page).toHaveURL(new RegExp(`#/s/${api.session}$`))
+})
+
+test('leaves the person on the start sheet of another computer while a start they left there ends', async ({
+  page,
+}) => {
+  test.skip(!serves('start'), 'tmag starts agents after 0.7.0')
+  await paired(page, '', 'two')
+  const pane = paneOf(docs)
+  const go = stalled(page, pane)
+  await page.goto('/#/start')
+  await expect(page.getByRole('combobox', { name: 'Computer' })).toHaveValue('')
+  await page.getByRole('combobox', { name: 'Directory' }).selectOption(session(docs)?.cwd ?? '')
+  await page.getByRole('button', { name: 'Start' }).click()
+  await page.goto('/#/two/start')
+  await expect(page.getByRole('combobox', { name: 'Computer' })).toHaveValue('two')
+  go()
+  await expect(page.getByRole('link', { name: 'Open its pane' })).toBeVisible()
+  await expect(page).toHaveURL(/#\/two\/start$/)
+})
+
+test('starts on the computer its link names, once that computer says it starts agents', async ({ page }) => {
+  test.skip(!serves('start'), 'tmag starts agents after 0.7.0')
+  await paired(page, '', 'two')
+  await page.goto('/#/two/start')
+  await expect(page.getByRole('combobox', { name: 'Computer' })).toHaveValue('two')
+})
+
+// startFailed answers a start with an agent that started and a prompt that
+// then failed with error.
+function startFailed(page: Page, status: number, error: { code: string; message: string }) {
+  return page.route(
+    (url) => url.pathname === '/v2/act',
+    (route) =>
+      route.fulfill({ status, json: { schema: 'tmag/v2', error, started: { id: api.session, agent: 'claude' } } }),
+  )
+}
+
+test('says when a started agent did not get its prompt, and keeps the prompt for it', async ({ page }) => {
+  test.skip(!serves('start'), 'tmag starts agents after 0.7.0')
+  await paired(page)
+  await startFailed(page, 409, { code: 'refused:busy', message: 'it works' })
+  await page.goto('/#/start')
+  await page.getByRole('combobox', { name: 'Directory' }).selectOption(session(api)?.cwd ?? '')
+  await page.getByRole('textbox', { name: 'Prompt' }).fill('never given')
+  await page.getByRole('button', { name: 'Start' }).click()
+  await expect(page.getByRole('alert')).toContainText(
+    'It started, but tmag did not give it the prompt, which waits in its message: it cannot take a prompt while it works',
+  )
+  await page.getByRole('link', { name: 'Open it' }).click()
+  await expect(page.locator('header .name')).toHaveText('api')
+  await expect(page.getByRole('textbox', { name: 'Message' })).toHaveValue('never given')
+})
+
+test('says when it is unknown whether a started agent got its prompt, and keeps no copy to send again', async ({
+  page,
+}) => {
+  test.skip(!serves('start'), 'tmag starts agents after 0.7.0')
+  await paired(page)
+  await startFailed(page, 500, { code: 'error', message: 'delivered but not logged; do not repeat it' })
+  await page.goto('/#/start')
+  await page.getByRole('combobox', { name: 'Directory' }).selectOption(session(api)?.cwd ?? '')
+  await page.getByRole('textbox', { name: 'Prompt' }).fill('maybe given')
+  await page.getByRole('button', { name: 'Start' }).click()
+  await expect(page.getByRole('alert')).toContainText('It started, and whether it got the prompt is unknown')
+  await page.getByRole('link', { name: 'Open it' }).click()
+  await expect(page.getByRole('textbox', { name: 'Message' })).toHaveValue('')
+})
+
+test('shows no screen of a pane tmag no longer finds', async ({ page }) => {
+  await paired(page)
+  let gone = false
+  await page.route(
+    (url) => url.pathname === '/v2/read' && url.searchParams.has('lines'),
+    (route) =>
+      gone
+        ? route.fulfill({
+            status: 404,
+            json: { schema: 'tmag/v2', error: { code: 'not_found', message: 'not found in pane %1' } },
+          })
+        : route.continue(),
+  )
+  await page.goto(`/#/p/${encodeURIComponent(paneOf(api).id)}`)
+  await expect(page.locator('.terminal')).toContainText('ready')
+  gone = true
+  await expect(page.locator('.terminal')).toHaveText('not found in pane %1')
+  if (serves('keys')) await expect(page.getByRole('button', { name: 'Escape' })).toBeDisabled()
+})
+
+test('reads no pane on a computer that serves no reads', async ({ page }) => {
+  await paired(page)
+  const reads: string[] = []
+  page.on('request', (r) => new URL(r.url()).pathname === '/v2/read' && reads.push(r.url()))
+  await page.route(
+    (url) => url.pathname === '/v2/info',
+    (route) =>
+      route.fulfill({ json: { schema: 'tmag/http/v2', version: '0.7.0', operations: ['list', 'watch', 'keys'] } }),
+  )
+  await page.goto(`/#/p/${encodeURIComponent(paneOf(api).id)}`)
+  await expect(page.locator('.empty')).toHaveText('tmag on this computer does not read a pane.')
+  await expect(page.getByRole('button', { name: 'Escape' })).toHaveCount(0)
+  expect(reads).toEqual([])
+})
+
+test('types into what a session shows, on the screen the person reads', async ({ page }) => {
+  test.skip(!serves('keys'), 'tmag types keys after 0.7.0')
+  await paired(page)
+  await open(page, api)
+  await page.getByRole('button', { name: 'Screen' }).click()
+  await expect(page.locator('.terminal')).toContainText('ready')
+  // The line in the field goes before whichever key is pressed; what the
+  // person writes while it is typed waits for the next key, which waits for
+  // the screen to be read again.
+  await page.getByRole('textbox', { name: 'Type' }).fill('typed on')
+  await page.getByRole('button', { name: 'Space', exact: true }).click()
+  await page.getByRole('textbox', { name: 'Type' }).fill('the screen')
+  await page.getByRole('button', { name: 'Enter' }).click()
+  await expect.poll(() => said(api)).toContain('typed on the screen')
+  await expect(page.getByRole('textbox', { name: 'Type' })).toHaveValue('')
+})
+
+test('waits to type again until the screen is read again', async ({ page }) => {
+  test.skip(!serves('keys'), 'tmag types keys after 0.7.0')
+  await paired(page)
+  let failing = false
+  await page.route(
+    (url) => url.pathname === '/v2/read' && url.searchParams.has('lines'),
+    (route) =>
+      failing
+        ? route.fulfill({ status: 503, json: { schema: 'tmag/v2', error: { code: 'backend', message: 'not now' } } })
+        : route.continue(),
+  )
+  await page.route(
+    (url) => url.pathname === '/v2/act',
+    async (route) => {
+      const res = await route.fetch()
+      failing = true
+      await route.fulfill({ response: res })
+    },
+  )
+  await open(page, api)
+  await page.getByRole('button', { name: 'Screen' }).click()
+  await page.getByRole('button', { name: 'Escape' }).click()
+  await expect(page.locator('.stale')).toContainText('Not read again: not now')
+  await expect(page.getByRole('button', { name: 'Escape' })).toBeDisabled()
+  // The two-second reads fail too: the bar waits for one that does not.
+  await page.waitForTimeout(2500)
+  await expect(page.getByRole('button', { name: 'Escape' })).toBeDisabled()
+  failing = false
+  await expect(page.getByRole('button', { name: 'Escape' })).toBeEnabled()
+  await expect(page.locator('.stale')).toHaveCount(0)
+})
+
+test('types nothing on a screen that changed since it was read', async ({ page }) => {
+  test.skip(!serves('keys'), 'tmag types keys after 0.7.0')
+  await paired(page)
+  await page.route(
+    (url) => url.pathname === '/v2/read' && url.searchParams.has('lines'),
+    async (route) => {
+      const res = await route.fetch()
+      const doc = await res.json()
+      doc.screen = doc.screen.replace(/:.*$/, `:${'0'.repeat(64)}`)
+      await route.fulfill({ response: res, json: doc })
+    },
+  )
+  await open(page, api)
+  await page.getByRole('button', { name: 'Screen' }).click()
+  const before = said(api).length
+  await page.getByRole('button', { name: 'Escape' }).click()
+  await expect(page.getByRole('status').last()).toHaveText(
+    'Not typed: the screen changed before it was typed. Look at it again.',
+  )
+  expect(said(api).length).toBe(before)
 })

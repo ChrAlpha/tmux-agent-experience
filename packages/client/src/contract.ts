@@ -113,9 +113,16 @@ export interface TurnsDoc {
   turns: Turn[]
 }
 
-/** `read --lines N --json`: the text of the pane that shows the session. */
+/**
+ * `read --lines N --json`: what the pane shows, as text and, where tmag gives
+ * them, with its terminal's colours and the digest keys are typed against.
+ */
 export interface ScreenDoc {
   text: string
+  /** The same lines with their SGR escapes. */
+  ansi?: string
+  /** What `keys --screen` takes: this screen, as it was read. */
+  screen?: string
 }
 
 /** `request --json`: what a request asks, with the tool's input. */
@@ -145,6 +152,50 @@ export interface PairDoc {
   credential: Credential & { created?: string; expires?: string }
 }
 
+/** A pane: on which tmux server, and which. */
+export interface PaneRef {
+  server: string
+  id: string
+}
+
+/** `start --json`: the pane a started agent runs in, and its session. */
+export interface StartDoc {
+  pane: PaneRef
+  session: Pick<Session, 'id' | 'agent'>
+  dir: string
+}
+
+/** The agents `start` runs by name. */
+export const startable = ['claude', 'codex', 'pi', 'omp'] as const
+
+/** The keys `keys` presses, by tmux's names. */
+export const keyNames = [
+  'Enter',
+  'Escape',
+  'Tab',
+  'BTab',
+  'Up',
+  'Down',
+  'Left',
+  'Right',
+  'Space',
+  'BSpace',
+  'C-c',
+  'y',
+  'n',
+  '0',
+  '1',
+  '2',
+  '3',
+  '4',
+  '5',
+  '6',
+  '7',
+  '8',
+  '9',
+] as const
+export type Key = (typeof keyNames)[number]
+
 export type Action =
   | { verb: 'send'; target: string; text: string }
   | { verb: 'interrupt'; target: string }
@@ -156,8 +207,21 @@ export type Action =
       message?: string
       answers?: Record<string, string>
     }
+  | {
+      verb: 'start'
+      agent?: (typeof startable)[number]
+      template?: string
+      dir: string
+      worktree?: string
+      text?: string
+    }
+  | { verb: 'keys'; target: string; screen: string; keys: Key[]; text?: string }
 
 /** The error document of tmag/http/v2 and of tmag/v2's refusals. */
 export interface ErrorDoc {
   error: { code: string; message: string }
+  /** A start whose agent started and whose prompt then failed: its session. */
+  started?: Pick<Session, 'id' | 'agent'>
+  /** A start whose agent showed no session in time: the pane it waits in. */
+  pane?: PaneRef
 }

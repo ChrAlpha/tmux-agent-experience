@@ -13,6 +13,25 @@
   --danger: #dc2626;
   --mine: #e8eefc;
   --code: #efefeb;
+  /* A terminal's 16 colours, as a light theme draws them. */
+  --term-fg: #1c1c1e;
+  --term-bg: #efefeb;
+  --t0: #1c1c1e;
+  --t1: #c0362c;
+  --t2: #2f8a3a;
+  --t3: #9a6a00;
+  --t4: #2456c7;
+  --t5: #9b3fb0;
+  --t6: #1f7f8c;
+  --t7: #6e6e73;
+  --t8: #55555b;
+  --t9: #e0473c;
+  --t10: #3aa748;
+  --t11: #b58200;
+  --t12: #3b6fe3;
+  --t13: #b653cc;
+  --t14: #2b97a5;
+  --t15: #2c2c2e;
   --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 }
 @media (prefers-color-scheme: dark) {
@@ -31,6 +50,24 @@
     --danger: #f87171;
     --mine: #1f2a44;
     --code: #22262d;
+    --term-fg: #e7e7ea;
+    --term-bg: #22262d;
+    --t0: #3a3f47;
+    --t1: #f2777a;
+    --t2: #8fd18a;
+    --t3: #e6c463;
+    --t4: #7aa6f2;
+    --t5: #d49ae6;
+    --t6: #70c9d2;
+    --t7: #c8c8cc;
+    --t8: #6b6b74;
+    --t9: #ff8f8f;
+    --t10: #a8e6a1;
+    --t11: #f5d97a;
+    --t12: #9dbdff;
+    --t13: #e6b3f5;
+    --t14: #8fe0e8;
+    --t15: #f5f5f7;
   }
 }
 
@@ -162,9 +199,21 @@ button.link {
   color: var(--accent);
   padding: 4px 8px;
 }
-button.mode {
+button.mode,
+a.mode {
   font-size: 14px;
   padding: 6px 12px;
+}
+a.mode {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--card);
+  color: var(--fg);
+  text-decoration: none;
 }
 input,
 textarea {
@@ -386,6 +435,103 @@ footer a.link {
   margin: 0;
   min-height: 100%;
   font-size: 11.5px;
+  color: var(--term-fg);
+  background: var(--term-bg);
+}
+.terminal .b {
+  font-weight: 700;
+}
+.terminal .d {
+  opacity: 0.6;
+}
+.terminal .i {
+  font-style: italic;
+}
+.terminal .u {
+  text-decoration: underline;
+}
+
+/* The keys a person types into a pane with. */
+.keybar {
+  border-top: 1px solid var(--line);
+  padding: 8px max(12px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom))
+    max(12px, env(safe-area-inset-left));
+}
+.keybar .keys {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 8px;
+  scrollbar-width: none;
+}
+.keybar .keys button {
+  flex: none;
+  min-width: 44px;
+  padding: 6px 10px;
+  font-family: var(--mono);
+  font-size: 14px;
+}
+.keybar form {
+  display: flex;
+  gap: 8px;
+}
+.keybar .line {
+  flex: 1;
+  font-family: var(--mono);
+}
+
+/* The start sheet. */
+.start {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.start label,
+.start fieldset {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 14px;
+  color: var(--muted);
+}
+.start fieldset {
+  border: 0;
+  margin: 0;
+  padding: 0;
+}
+.start legend {
+  padding: 0;
+  margin-bottom: 6px;
+}
+.start .field {
+  color: var(--fg);
+  font-size: 16px;
+  resize: vertical;
+}
+.start fieldset label.choice {
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  min-height: 40px;
+  font-size: 16px;
+  color: var(--fg);
+}
+.start .choice input {
+  width: 20px;
+  height: 20px;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--accent);
+}
+.start select {
+  font: inherit;
+  color: var(--fg);
+  min-height: 44px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--card);
+  padding: 8px 10px;
 }
 @media (prefers-reduced-motion: reduce) {
   .working .dot,
@@ -570,6 +716,17 @@ footer a.link {
   display: none;
 }
 .toast.error {
+  color: var(--danger);
+}
+/* A note above what a screen shows: a reread that failed, a prompt a pane holds. */
+.stale,
+.held {
+  margin: 0;
+  padding: 6px 16px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.stale {
   color: var(--danger);
 }
 .composer {

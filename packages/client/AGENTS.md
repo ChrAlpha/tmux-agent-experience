@@ -29,7 +29,8 @@ and how to set it up.
   seconds, and turns every second, three times, while they lag what tmag
   reported. A control action whose answer is lost is an unknown outcome: the
   page says so and never tries again by itself.
-- **What an agent wrote stays text.** Components render strings as text.
+- **What an agent wrote stays text.** Components render strings as text,
+  a screen's in the colours its SGR escapes name and no other escape.
   Only `src/ui/Markdown.tsx` sets HTML, from `src/markdown.ts`: markdown-it
   with raw HTML off, links to http and https only, no images.
 - **The page keeps its credentials, drafts and what the person saw, nothing
@@ -54,7 +55,8 @@ and how to set it up.
 | `src/route.ts` | The routes the address's hash names |
 | `src/store.ts` | Signals the screens read across computers: the computers, pairing, the route, one inbox |
 | `src/markdown.ts` | Markdown to HTML that holds only Markdown's tags |
-| `src/ui/` | Screens: pairing, agents, a session with its turns, screen, requests and composer |
+| `src/ansi.ts` | A terminal's SGR escapes read into runs of styled text |
+| `src/ui/` | Screens: pairing, agents, a session with its turns, screen and keys, requests and composer, a pane, the start sheet |
 | `src/app.css` | Styles, light and dark, for phones first |
 | `src/*.test.ts` | Vitest tests of the modules that need no browser |
 | `e2e/` | Playwright tests against two computers' tmag and fake agents in a private tmux server |

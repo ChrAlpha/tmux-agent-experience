@@ -10,13 +10,30 @@ describe('routes', () => {
       { name: 'add' },
       { name: 'session', at: '', id: '0a000000-0000-7000-8000-00000000000a' },
       { name: 'session', at: 'mini', id: 'a/b c', request: 'req 1' },
+      { name: 'start', at: '' },
+      { name: 'start', at: 'mini' },
+      { name: 'pane', at: '', pane: '%12' },
+      { name: 'pane', at: 'mini', pane: '/tmp/tmux-1000/default:%3' },
     ]
     for (const r of routes) expect(parse(hash(r)), hash(r)).toEqual(r)
     expect(hash({ name: 'session', at: 'mini', id: 'x', request: 'r1' })).toBe('#/mini/s/x/r/r1')
   })
 
   it('reads anything else as the list', () => {
-    for (const h of ['', '#', '#/', '#/s', '#/mini', '#/s/x/r', '#/s/x/r/y/z', '#/s/%E0%A4%A', '#/Mini/s/x', '#/start'])
+    for (const h of [
+      '',
+      '#',
+      '#/',
+      '#/s',
+      '#/mini',
+      '#/s/x/r',
+      '#/s/x/r/y/z',
+      '#/s/%E0%A4%A',
+      '#/Mini/s/x',
+      '#/start/x',
+      '#/p',
+      '#/p/%251/x',
+    ])
       expect(parse(h), h).toEqual({ name: 'list' })
   })
 
