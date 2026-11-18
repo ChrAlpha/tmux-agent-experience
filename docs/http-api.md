@@ -57,7 +57,9 @@ the Codex daemon joins an active turn. A person's or an owner's prompt carries
 no sender line.
 Unknown body fields are rejected.
 There is no machine selector, command string, sender identity or arbitrary shell.
-Bodies are limited to 1 MiB and ten seconds to read. Control authority is
+Bodies are limited to 1 MiB and ten seconds to read; a connection has ten
+seconds to send a request's header and closes after five idle minutes between
+requests. Control authority is
 revalidated after the complete body and verb are checked; a stalled upload
 cannot retain revoked or expired authority. Targets after the CLI's `--` remain literal.
 
