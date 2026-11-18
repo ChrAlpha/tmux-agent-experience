@@ -80,6 +80,10 @@ func next(cmd, target string, err error) string {
 		return "tmag list shows the agents that run"
 	case errors.Is(err, query.ErrAmbiguous):
 		return "name it by a longer id or by its pane, as tmag list shows them"
+	case errors.Is(err, query.ErrNoRepository):
+		return "its directory is in no git repository: tmag read shows what its pane shows"
+	case errors.Is(err, query.ErrNoPatch):
+		return fmt.Sprintf("tmag changes %s lists the files that changed; git diff in its directory shows what tmag does not", target)
 	case errors.Is(err, query.ErrNoReply):
 		return fmt.Sprintf("see what its pane shows with tmag read %s", target)
 	}

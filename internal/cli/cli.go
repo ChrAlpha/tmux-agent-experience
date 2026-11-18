@@ -39,6 +39,8 @@ Usage:
   tmag watch    [--since SEQ]                  JSON lines: snapshot, then events
   tmag read     <target> [--lines N | --last | --turns N] [--json]
                                                recent pane output, the agent's last reply, or its last turns
+  tmag changes  <target> [--file PATH] [--json]
+                                               what the agent's directory changed against HEAD, or a file's patch
   tmag send     <target> [--wait | --reply] [--timeout D] [--json] [text | -]
                                                deliver a prompt now, or wait for its turn
   tmag reply    <target> [--timeout D] [--json] [text | -]
@@ -214,6 +216,8 @@ func (a *app) run(args []string) int {
 		return a.cmdInterrupt(rest)
 	case "keys":
 		return a.cmdKeys(rest)
+	case "changes":
+		return a.cmdChanges(rest)
 	case "answer":
 		return a.cmdAnswer(rest)
 	case "request":
@@ -306,6 +310,8 @@ func (a *app) failOn(cmd, target string, err error) int {
 		code = "no_reply"
 	case errors.Is(err, query.ErrNotFound):
 		code = "not_found"
+	case errors.Is(err, query.ErrNoPatch):
+		code = "no_patch"
 	case errors.Is(err, query.ErrAmbiguous):
 		code = "ambiguous"
 	case errors.Is(err, query.ErrEnded):

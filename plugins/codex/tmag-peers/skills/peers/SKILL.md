@@ -35,9 +35,9 @@ command again with the permissions it needs.
    [Receiving](#receiving)).
 3. On your own, act only to settle a collision with a peer that works in
    your repository: leave its changes alone and tell the user what collides.
-   Read it (`tmag inspect`, `tmag read`) only as far as you need to, and
-   send it one short message (`tmag send ID -`) only if that settles the
-   collision. Never delegate to or interrupt a peer on your own.
+   Read it (`tmag inspect`, `tmag changes`, `tmag read`) only as far as you
+   need to, and send it one short message (`tmag send ID -`) only if that
+   settles the collision. Never delegate to or interrupt a peer on your own.
 4. Talk to agents only through tmag, and use tmux for the rest: it opens
    windows, a new peer's too, and runs what is no agent. Never use `tmux
    send-keys`, `paste-buffer` or `capture-pane` to drive or read an agent's
@@ -65,6 +65,7 @@ command again with the permissions it needs.
 | `tmag wait ID --for idle --timeout 8m` | wait until it is idle |
 | `tmag wait --asked --all --timeout 8m` | wait until every agent you asked owes you nothing more, or needs the user |
 | `tmag read ID --lines 80` | the recent text of its pane, to see what it shows |
+| `tmag changes ID` | what its directory changed against HEAD; `--file PATH` for one file's patch |
 | `tmag interrupt ID` | stop its running turn |
 | `tmag request ID REQ` | what an open request asks: the tool and its input |
 | `tmag answer ID REQ allow` | decide an open request, or `deny --message M` (rule 6) |

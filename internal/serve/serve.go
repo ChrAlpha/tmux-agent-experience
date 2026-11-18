@@ -72,6 +72,7 @@ func New(cfg Config) (*Server, error) {
 	s.mux.HandleFunc("GET /v2/inspect", s.inspect)
 	s.mux.HandleFunc("GET /v2/request", s.request)
 	s.mux.HandleFunc("GET /v2/read", s.read)
+	s.mux.HandleFunc("GET /v2/changes", s.changes)
 	s.mux.HandleFunc("GET /v2/watch", s.watch)
 	s.mux.HandleFunc("POST /v2/act", s.act)
 	return s, nil
@@ -214,7 +215,7 @@ func (s *Server) info(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"schema": Schema, "state_schema": version.Schema, "version": s.cfg.Version, "instance": instance,
-		"operations": []string{"list", "inspect", "watch", "read", "request", "send", "interrupt", "answer", "start", "keys"}})
+		"operations": []string{"list", "inspect", "watch", "read", "changes", "request", "send", "interrupt", "answer", "start", "keys"}})
 }
 func (s *Server) relay(w http.ResponseWriter, r *http.Request, args []string, input io.Reader) int {
 	ctx, cancel := context.WithTimeout(r.Context(), actTimeout)
@@ -279,6 +280,20 @@ func (s *Server) read(w http.ResponseWriter, r *http.Request) {
 	default:
 		fail(w, 400, "usage", fmt.Sprintf("read needs last=1, lines=1..2000 or turns=1..%d", transcript.MaxTurns))
 		return
+	}
+	s.relay(w, r, append(args, "--", q.Get("target")), nil)
+}
+
+// changes relays what an agent's directory changed, or one file's patch.
+func (s *Server) changes(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	if q.Get("target") == "" {
+		fail(w, 400, "usage", "target is required")
+		return
+	}
+	args := []string{"changes", "--json"}
+	if file := q.Get("file"); file != "" {
+		args = append(args, "--file="+file)
 	}
 	s.relay(w, r, append(args, "--", q.Get("target")), nil)
 }

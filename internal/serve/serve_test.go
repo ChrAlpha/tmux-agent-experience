@@ -356,3 +356,19 @@ func TestKeysNameTheirScreen(t *testing.T) {
 		t.Fatalf("invalid keys reached the local CLI: %q", got)
 	}
 }
+
+// A changes read names its target, and a file, literally.
+func TestChangesNameTheirTarget(t *testing.T) {
+	var got []string
+	s, _, c := fixture(t, func(ctx context.Context, args []string, in io.Reader, out, stderr io.Writer) int {
+		got = args
+		_, _ = io.WriteString(out, `{"schema":"tmag/v2"}`)
+		return 0
+	})
+	if r := call(s, "GET", "/v2/changes?target=--json&file=a.go", "", c.Token, "", ""); r.Code != 200 || strings.Join(got, " ") != "changes --json --file=a.go -- --json" {
+		t.Fatalf("changes: %d %q", r.Code, got)
+	}
+	if r := call(s, "GET", "/v2/changes", "", c.Token, "", ""); r.Code != 400 {
+		t.Fatalf("changes without a target: %d", r.Code)
+	}
+}
