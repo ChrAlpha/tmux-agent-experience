@@ -3,9 +3,12 @@ package serve
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -370,5 +373,219 @@ func TestChangesNameTheirTarget(t *testing.T) {
 	}
 	if r := call(s, "GET", "/v2/changes", "", c.Token, "", ""); r.Code != 400 {
 		t.Fatalf("changes without a target: %d", r.Code)
+	}
+}
+
+// Allowed hosts and origins take what people paste: an origin keeps the form a
+// browser sends, and a value holding more than a host or an origin is refused
+// with the flag that says what it meant.
+func TestAllowedHostsAndOriginsTakeWhatPeoplePaste(t *testing.T) {
+	store := auth.Store{Dir: t.TempDir()}
+	run := func(_ context.Context, _ []string, _ io.Reader, out, _ io.Writer) int {
+		_, _ = io.WriteString(out, `{"schema":"tmag/v2","sessions":[]}`)
+		return 0
+	}
+	for _, c := range []struct {
+		hosts, origins []string
+		err            string
+	}{
+		{hosts: []string{"https://Box.example.ts.net/"}, err: "--host box.example.ts.net"},
+		{hosts: []string{"http://box.example:8080/v2/info"}, err: "--host box.example:8080"},
+		{hosts: []string{"a b"}, err: `--host "a b" is not a host`},
+		{origins: []string{"https://client.example/app?x=1"}, err: "--origin https://client.example"},
+		{origins: []string{"https://me@client.example"}, err: "--origin https://client.example"},
+		{origins: []string{"https://client.example//"}, err: "--origin https://client.example"},
+		{origins: []string{"*"}, err: `--origin "*" is not an origin`},
+		{origins: []string{"client.example"}, err: `--origin "client.example" is not an origin`},
+		{origins: []string{"ftp://client.example"}, err: "is not an origin"},
+		{origins: []string{"https:client.example"}, err: `--origin "https:client.example" is not an origin`},
+		{origins: []string{`https://evil.example\@client.example`}, err: "--origin https://evil.example"},
+		{origins: []string{"https://a@b@client.example"}, err: "--origin https://client.example"},
+		{origins: []string{"https://ex%41mple.example"}, err: "is not an origin"},
+		{origins: []string{"https://client .example"}, err: "is not an origin"},
+		{hosts: []string{"box%2Eexample"}, err: "is not a host"},
+		{hosts: []string{"$(id).example"}, err: `--host "$(id).example" is not a host`},
+		{hosts: []string{"https://$(id).example/"}, err: "is not a host"},
+		{origins: []string{"https://$(id).example"}, err: "is not an origin"},
+		{origins: []string{"http://0x7f.1"}, err: "is not an origin"},
+		{origins: []string{"https://[::1]:8443/app"}, err: "--origin 'https://[::1]:8443'"},
+		{origins: []string{"https://client.example#"}, err: "--origin https://client.example"},
+		{origins: []string{"https://café.example/"}, err: "xn--"},
+		{hosts: []string{"café.example"}, err: "xn--"},
+	} {
+		if _, err := New(Config{Auth: store, Run: run, Hosts: c.hosts, Origins: c.origins}); err == nil || !strings.Contains(err.Error(), c.err) {
+			t.Errorf("hosts %q origins %q: %v, want %q", c.hosts, c.origins, err, c.err)
+		}
+	}
+	c, err := store.Issue(context.Background(), "test client", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := New(Config{Auth: store, Run: run, Hosts: []string{"BOX.example:08443"}, Origins: []string{"HTTPS://Client.Example:0443/", "http://Page.Example:80", "http://page.example:8080", "https://[2001:0DB8:0:0:0:0:0:1]/", "http://[::ffff:192.0.2.1]:8080"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, origin := range []string{"https://client.example", "http://page.example", "http://page.example:8080", "https://[2001:db8::1]", "http://[::ffff:c000:201]:8080"} {
+		if w := call(s, "GET", "/v2/list", "", c.Token, "box.example:8443", origin); w.Code != 200 {
+			t.Errorf("origin %s: %d %s", origin, w.Code, w.Body)
+		}
+	}
+	if w := call(s, "GET", "/v2/list", "", c.Token, "box.example:8443", "https://client.example:8443"); w.Code != 403 {
+		t.Errorf("another port of an allowed origin: %d", w.Code)
+	}
+	if w := call(s, "GET", "/v2/list", "", c.Token, "[::ffff:7f00:1]:7777", "http://[::ffff:7f00:1]:7777"); w.Code != 200 {
+		t.Errorf("an IPv4-mapped loopback host and its own origin: %d %s", w.Code, w.Body)
+	}
+}
+
+// Canonicalization applies to requests as well as configuration, without
+// changing the port, scheme or credential gates or the origin echoed by CORS.
+func TestCanonicalRequestsPreserveAdmissionGates(t *testing.T) {
+	store := auth.Store{Dir: t.TempDir()}
+	credential, err := store.Issue(context.Background(), "canonical request client", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := New(Config{
+		Auth:    store,
+		Hosts:   []string{"box.example:8443", "[2001:db8::1]:8443", "tls.example:443", "[::ffff:192.0.2.1]:8443"},
+		Origins: []string{"https://client.example", "https://[2001:db8::1]"},
+		Run: func(_ context.Context, _ []string, _ io.Reader, out, _ io.Writer) int {
+			_, _ = io.WriteString(out, `{"schema":"tmag/v2","sessions":[]}`)
+			return 0
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		name, host, origin string
+		unauthorized       bool
+		status             int
+	}{
+		{name: "name and port", host: "BOX.EXAMPLE:08443", origin: "HTTPS://CLIENT.EXAMPLE:0443/", status: http.StatusOK},
+		{name: "expanded IPv6", host: "[2001:0DB8:0:0:0:0:0:1]:08443", origin: "https://[2001:0DB8:0:0:0:0:0:1]:0443/", status: http.StatusOK},
+		{name: "host keeps explicit default port", host: "TLS.EXAMPLE:00443", origin: "https://client.example:443", status: http.StatusOK},
+		{name: "host default port cannot be omitted", host: "tls.example", origin: "https://client.example", status: http.StatusForbidden},
+		{name: "mapped configured host uses browser hex", host: "[::ffff:c000:201]:8443", origin: "https://client.example", status: http.StatusOK},
+		{name: "mapped configured host keeps port", host: "[::ffff:c000:201]", origin: "https://client.example", status: http.StatusForbidden},
+		{name: "mapped loopback origin is the listener's own", host: "[::ffff:7f00:1]:7777", origin: "http://[::FFFF:127.0.0.1]:7777", status: http.StatusOK},
+		{name: "same origin host default port", host: "LOCALHOST:00080", origin: "http://localhost", status: http.StatusOK},
+		{name: "same origin origin default port", host: "localhost", origin: "http://LOCALHOST:00080/", status: http.StatusOK},
+		{name: "different host port", host: "box.example:08444", origin: "https://client.example", status: http.StatusForbidden},
+		{name: "different origin port", host: "box.example:8443", origin: "https://client.example:08444", status: http.StatusForbidden},
+		{name: "different scheme", host: "box.example:8443", origin: "http://client.example:80", status: http.StatusForbidden},
+		{name: "opaque origin", host: "box.example:8443", origin: "null", status: http.StatusForbidden},
+		{name: "empty query", host: "box.example:8443", origin: "https://client.example?", status: http.StatusForbidden},
+		{name: "fragment after slash", host: "box.example:8443", origin: "https://client.example/#", status: http.StatusForbidden},
+		{name: "canonicalization needs credentials", host: "BOX.EXAMPLE:08443", origin: "HTTPS://CLIENT.EXAMPLE:0443/", unauthorized: true, status: http.StatusUnauthorized},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			token := credential.Token
+			if c.unauthorized {
+				token = ""
+			}
+			w := call(s, "GET", "/v2/list", "", token, c.host, c.origin)
+			if w.Code != c.status {
+				t.Fatalf("status %d: %s; want %d", w.Code, w.Body, c.status)
+			}
+			if w.Code == http.StatusOK && w.Header().Get("Access-Control-Allow-Origin") != c.origin {
+				t.Fatalf("CORS echoed %q; want request origin %q", w.Header().Get("Access-Control-Allow-Origin"), c.origin)
+			}
+		})
+	}
+}
+
+// A refused Host or Origin is named in serve's log once, with the flag that
+// would admit it when it could be the person's, and the log names a bounded
+// number of them whatever reaches the listener.
+func TestRefusalsAreNamedOnceWithTheFlagThatAdmits(t *testing.T) {
+	store := auth.Store{Dir: t.TempDir()}
+	c, err := store.Issue(context.Background(), "test client", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logged strings.Builder
+	s, err := New(Config{Auth: store, Run: func(context.Context, []string, io.Reader, io.Writer, io.Writer) int { return 0 }, Log: log.New(&logged, "", 0)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range []struct {
+		host, origin, message string
+	}{
+		{"box.example.ts.net", "", "host is not allowed"},
+		{"box.example.ts.net", "", "host is not allowed"},
+		{"localhost", "https://Page.example", "origin is not allowed"},
+		{"localhost:7777", "https://localhost:7777", "origin is not allowed"},
+		{"localhost", "null", "origin is not allowed"},
+		{"$(id).example", "", "host is not allowed"},
+		{"localhost", "https://$(id).example", "origin is not allowed"},
+		{"localhost", "https://[2001:db8::1]:8443", "origin is not allowed"},
+		{strings.Repeat("h", 1000) + ".example", "", "host is not allowed"},
+	} {
+		w := call(s, "GET", "/v2/list", "", c.Token, v.host, v.origin)
+		if w.Code != 403 || !strings.Contains(w.Body.String(), v.message) {
+			t.Errorf("host %q origin %q: %d %s, want 403 %q", v.host, v.origin, w.Code, w.Body, v.message)
+		}
+	}
+	lines := strings.Split(strings.TrimSuffix(logged.String(), "\n"), "\n")
+	const keys = " (prefix + M-r takes its flags from @tmag-serve)"
+	want := []string{
+		`refused Host "box.example.ts.net": if it is your tunnel's host, start tmag serve with --host box.example.ts.net` + keys,
+		`refused Origin "https://Page.example": if it is your client's page, start tmag serve with --origin https://page.example` + keys,
+		`refused Origin "https://localhost:7777": if it is your client's page, start tmag serve with --origin https://localhost:7777` + keys,
+		`refused Origin "null"`,
+		`refused Host "$(id).example"`,
+		`refused Origin "https://$(id).example"`,
+		`refused Origin "https://[2001:db8::1]:8443": if it is your client's page, start tmag serve with --origin 'https://[2001:db8::1]:8443'` + keys,
+		`refused Host "` + strings.Repeat("h", maxRefused) + `"`,
+	}
+	if !slices.Equal(lines, want) {
+		t.Fatalf("logged\n%s\nwant\n%s", strings.Join(lines, "\n"), strings.Join(want, "\n"))
+	}
+	for i := range 2 * maxRefusals {
+		call(s, "GET", "/v2/list", "", c.Token, fmt.Sprintf("h%d.example", i), "")
+	}
+	lines = strings.Split(strings.TrimSuffix(logged.String(), "\n"), "\n")
+	if len(lines) != maxRefusals+1 || !strings.HasSuffix(lines[maxRefusals], "the next ones go unnamed") {
+		t.Fatalf("logged %d lines, ending %q; want %d refusals and a last line", len(lines), lines[len(lines)-1], maxRefusals)
+	}
+}
+
+// A host is compared in the one form a browser writes it, whose characters a
+// shell takes literally; anything else is no host.
+func TestCanonicalHostIsTheFormBrowsersSend(t *testing.T) {
+	for in, want := range map[string]string{
+		"Box.Example.ts.net":             "box.example.ts.net",
+		"box.example:08443":              "box.example:8443",
+		"box.example:":                   "box.example",
+		"my_box.local.":                  "my_box.local.",
+		"127.0.0.1:7777":                 "127.0.0.1:7777",
+		"[2001:0DB8::0001]:443":          "[2001:db8::1]:443",
+		"[::1]":                          "[::1]",
+		"localhost":                      "localhost",
+		"1password.example":              "1password.example",
+		"$(id).example":                  "",
+		"a;b":                            "",
+		"box example":                    "",
+		"":                               "",
+		"..":                             "",
+		"1.2.3":                          "",
+		"0x7f.1":                         "",
+		"01.2.3.4":                       "",
+		"::1":                            "",
+		"[::ffff:127.0.0.1]":             "[::ffff:7f00:1]",
+		"[::FFFF:7F00:1]:7777":           "[::ffff:7f00:1]:7777",
+		"[fe80::1%25eth0]":               "",
+		"[1.2.3.4]":                      "",
+		"box.example:65536":              "",
+		"box.example:+80":                "",
+		"box.example:http":               "",
+		strings.Repeat("a.", 127) + "aa": "",
+	} {
+		got, ok := canonicalHost(in)
+		if got != want || ok != (want != "") {
+			t.Errorf("canonicalHost(%q) = %q, %v; want %q", in, got, ok, want)
+		}
 	}
 }

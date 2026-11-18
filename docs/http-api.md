@@ -8,10 +8,13 @@ operation documents retain their own `schema: tmag/v2` and its semantics.
 ## Admission and deployment
 
 Serve binds loopback. A remote deployment provides encrypted transport and an
-explicit allowed Host (`--host`, repeatable, including a port when present).
-Browser requests must match the listener's origin (scheme, host and port) or
-an exact `--origin`. A TLS-terminating reverse proxy lists its public HTTPS
-origin explicitly. CORS permits
+explicit allowed Host (`--host`, repeatable: a host name or IP address, with
+its port when present). Browser requests must match the listener's origin
+(scheme, host and port) or an allowed `--origin`. Hosts and origins are
+compared as a browser writes them: lower case, an IP address in its shortest
+form; a Host keeps the port it carries, and an origin drops its scheme's
+default port and a trailing slash. A TLS-terminating reverse proxy lists its
+public HTTPS origin explicitly. CORS permits
 Authorization, Content-Type and Last-Event-ID for GET/POST/OPTIONS. CORS and Host
 checks are browser/deployment restrictions, not proof of the owner.
 
@@ -23,7 +26,7 @@ Bearer tokens and pairing codes are secrets; clients protect them in transit
 and storage. Tokens are delivered only at issuance and are never put in URLs.
 
 - Missing, expired or revoked credential: 401 with a Bearer challenge.
-- Disallowed host or origin: 403.
+- Disallowed host or origin: 403 `forbidden`, whose message says which.
 - Unreadable authorization store: 503, distinct from invalid credentials.
 - Body errors: 400; a non-JSON content type: 415.
 - Control refusal: 409, with the original `tmag/v2` refusal code.

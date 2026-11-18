@@ -14,11 +14,12 @@ import (
 	"mime"
 	"net"
 	"net/http"
-	"net/url"
+	"net/netip"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/auth"
@@ -39,30 +40,37 @@ type Config struct {
 	Auth    auth.Store
 	Run     Runner
 	Hosts   []string // additional HTTP Host values; loopback is accepted by default
-	Origins []string // additional exact browser origins
+	Origins []string // additional browser origins, compared as a browser sends them
 	Version string
 	Log     *log.Logger
 }
 type Server struct {
-	cfg Config
-	mux *http.ServeMux
+	cfg     Config
+	mux     *http.ServeMux
+	refused refusals
 }
 
 func New(cfg Config) (*Server, error) {
 	if cfg.Auth.Dir == "" || cfg.Run == nil {
 		return nil, errors.New("serve needs an authorization store and a local runner")
 	}
-	for _, h := range cfg.Hosts {
-		if h == "" || strings.ContainsAny(h, "/\\@#? \t\r\n*") {
-			return nil, fmt.Errorf("invalid allowed host %q", h)
+	hosts := make([]string, len(cfg.Hosts))
+	for i, h := range cfg.Hosts {
+		host, err := allowedHost(h)
+		if err != nil {
+			return nil, err
 		}
+		hosts[i] = host
 	}
-	for _, o := range cfg.Origins {
-		u, err := url.Parse(o)
-		if err != nil || u.Host == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" || (u.Scheme != "http" && u.Scheme != "https") {
-			return nil, fmt.Errorf("invalid allowed origin %q", o)
+	origins := make([]string, len(cfg.Origins))
+	for i, o := range cfg.Origins {
+		origin, err := allowedOrigin(o)
+		if err != nil {
+			return nil, err
 		}
+		origins[i] = origin
 	}
+	cfg.Hosts, cfg.Origins = hosts, origins
 	if cfg.Log == nil {
 		cfg.Log = log.New(io.Discard, "", 0)
 	}
@@ -77,50 +85,253 @@ func New(cfg Config) (*Server, error) {
 	s.mux.HandleFunc("POST /v2/act", s.act)
 	return s, nil
 }
-func same(a, b string) bool { return strings.EqualFold(a, b) }
-func (s *Server) hostOK(host string) bool {
-	for _, h := range s.cfg.Hosts {
-		if same(host, h) {
-			return true
+
+// canonicalHost is h, a host and maybe a port, in the one form a browser
+// writes it in Host and Origin: a name in lower case, an IP address in its
+// shortest form (an IPv4-mapped IPv6 one in hex, as browsers write it), a
+// port as a number. A name holds letters, digits, hyphens,
+// underscores and dots only, and its last label is no number, which a browser
+// would read as an IPv4 address; ok is false for anything else. So a host in
+// this form is also a word a shell takes literally, apart from an IPv6
+// address's brackets.
+func canonicalHost(h string) (string, bool) {
+	name, port := h, ""
+	if i := strings.LastIndexByte(h, ':'); i >= 0 && !strings.HasSuffix(h, "]") {
+		name, port = h[:i], h[i+1:]
+	}
+	if inner, ok := strings.CutPrefix(name, "["); ok {
+		inner, closed := strings.CutSuffix(inner, "]")
+		ip, err := netip.ParseAddr(inner)
+		if !closed || err != nil || !ip.Is6() || ip.Zone() != "" {
+			return "", false
+		}
+		name = "[" + ip.String() + "]"
+		if ip.Is4In6() {
+			b := ip.As16()
+			name = fmt.Sprintf("[::ffff:%x:%x]", uint16(b[12])<<8|uint16(b[13]), uint16(b[14])<<8|uint16(b[15]))
+		}
+	} else if ip, err := netip.ParseAddr(name); err == nil && ip.Is4() {
+		name = ip.String()
+	} else if hostName(name) {
+		name = strings.ToLower(name)
+	} else {
+		return "", false
+	}
+	if port == "" {
+		return name, true
+	}
+	n, err := strconv.Atoi(port)
+	if err != nil || n > 65535 || strings.Trim(port, "0123456789") != "" {
+		return "", false
+	}
+	return name + ":" + strconv.Itoa(n), true
+}
+
+// hostName reports whether s is a host name canonicalHost takes.
+func hostName(s string) bool {
+	if len(s) > 253 {
+		return false
+	}
+	labels := strings.Split(strings.TrimSuffix(s, "."), ".")
+	for _, l := range labels {
+		if l == "" || strings.Trim(l, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_") != "" {
+			return false
 		}
 	}
-	name := host
-	if h, _, err := net.SplitHostPort(host); err == nil {
-		name = h
+	last := strings.ToLower(labels[len(labels)-1])
+	hex, isHex := strings.CutPrefix(last, "0x")
+	return strings.Trim(last, "0123456789") != "" && (!isHex || strings.Trim(hex, "0123456789abcdef") != "")
+}
+
+// defaultPort is the suffix a scheme's default port leaves on a canonical
+// host, which Host and Origin omit.
+var defaultPort = map[string]string{"http": ":80", "https": ":443"}
+
+// splitURL splits an http or https URL into its scheme in lower case, its
+// host and port, whether userinfo preceded them, and whatever follows them,
+// which a backslash starts as a slash does, as browsers read these schemes.
+// It is this small on purpose: what an origin may hold is canonicalHost's to
+// say, whatever the Go release's URL parser takes.
+func splitURL(s string) (scheme, host string, userinfo bool, rest string, ok bool) {
+	scheme, after, ok := strings.Cut(s, "://")
+	scheme = strings.ToLower(scheme)
+	if !ok || (scheme != "http" && scheme != "https") {
+		return "", "", false, "", false
+	}
+	end := strings.IndexAny(after, "/\\?#")
+	if end < 0 {
+		end = len(after)
+	}
+	host, rest = after[:end], after[end:]
+	if at := strings.LastIndexByte(host, '@'); at >= 0 {
+		host, userinfo = host[at+1:], true
+	}
+	return scheme, host, userinfo, rest, true
+}
+
+// urlHost is a URL's host as its Host header and Origin carry it.
+func urlHost(scheme, host string) (string, bool) {
+	host, ok := canonicalHost(host)
+	return strings.TrimSuffix(host, defaultPort[scheme]), ok
+}
+
+// shellWord is a canonical host or origin as a word a shell takes literally.
+func shellWord(s string) string {
+	if strings.ContainsAny(s, "[]") {
+		return "'" + s + "'"
+	}
+	return s
+}
+
+// asciiHint tells how to write a host name that is not in ASCII: a browser
+// sends its ASCII form, which only a mapping tmag does not carry derives.
+func asciiHint(s string) string {
+	for i := range len(s) {
+		if s[i] >= 0x80 {
+			return "; write an internationalized name in the ASCII form a browser sends, xn--..."
+		}
+	}
+	return ""
+}
+
+// allowedHost is h, an allowed Host header value, in canonicalHost's form. A
+// URL pasted in its place is refused with the host it names.
+func allowedHost(h string) (string, error) {
+	if scheme, host, _, _, ok := splitURL(h); ok {
+		if host, ok := urlHost(scheme, host); ok {
+			return "", fmt.Errorf("--host takes a host, not the URL %q: --host %s", h, shellWord(host))
+		}
+	}
+	host, ok := canonicalHost(h)
+	if !ok {
+		return "", fmt.Errorf("--host %q is not a host, such as box.example.ts.net%s", h, asciiHint(h))
+	}
+	return host, nil
+}
+
+// allowedOrigin is the origin o names, as a browser sends it in Origin: its
+// scheme and its host in canonicalHost's form, without the scheme's default
+// port or a trailing slash. Anything more after the host is refused with that
+// origin.
+func allowedOrigin(o string) (string, error) {
+	scheme, host, userinfo, rest, ok := splitURL(o)
+	if ok {
+		host, ok = urlHost(scheme, host)
+	}
+	if !ok {
+		return "", fmt.Errorf("--origin %q is not an origin, such as https://client.example%s", o, asciiHint(o))
+	}
+	origin := scheme + "://" + host
+	if userinfo || (rest != "" && rest != "/") {
+		return "", fmt.Errorf("an origin is a scheme and a host, without the rest of %q: --origin %s", o, shellWord(origin))
+	}
+	return origin, nil
+}
+
+// refusals names each refused Host and Origin in serve's log once, with the
+// flag that admits it, for the person who set up a tunnel or a page. Whatever
+// reaches the listener, it names at most maxRefusals values of maxRefused
+// bytes each.
+type refusals struct {
+	mu   sync.Mutex
+	seen map[string]bool
+}
+
+const maxRefusals = 32
+const maxRefused = 256
+
+// note logs a refused header's value once. A value that could be the
+// person's comes with the flag that would admit it, written as a shell takes
+// it literally; whether it is theirs is for them to say, since anyone who
+// reaches the listener chooses it.
+func (rs *refusals) note(l *log.Logger, header, value string) {
+	advice := ""
+	switch {
+	case len(value) > maxRefused:
+		value = value[:maxRefused]
+	case header == "Host":
+		if host, ok := canonicalHost(value); ok {
+			advice = "if it is your tunnel's host, start tmag serve with --host " + shellWord(host)
+		}
+	case header == "Origin":
+		if origin, err := allowedOrigin(value); err == nil {
+			advice = "if it is your client's page, start tmag serve with --origin " + shellWord(origin)
+		}
+	}
+	rs.mu.Lock()
+	key := header + " " + value
+	fresh := !rs.seen[key] && len(rs.seen) < maxRefusals
+	if fresh {
+		if rs.seen == nil {
+			rs.seen = map[string]bool{}
+		}
+		rs.seen[key] = true
+	}
+	last := fresh && len(rs.seen) == maxRefusals
+	rs.mu.Unlock()
+	if !fresh {
+		return
+	}
+	line := fmt.Sprintf("refused %s %q", header, value)
+	if advice != "" {
+		line += ": " + advice + " (prefix + M-r takes its flags from @tmag-serve)"
+	}
+	l.Print(line)
+	if last {
+		l.Printf("refused %d hosts and origins; the next ones go unnamed", maxRefusals)
+	}
+}
+
+// hostOK reports whether a request's Host names loopback or an allowed host.
+func (s *Server) hostOK(host string) bool {
+	h, ok := canonicalHost(host)
+	if !ok {
+		return false
+	}
+	if slices.Contains(s.cfg.Hosts, h) {
+		return true
+	}
+	name := h
+	if n, _, err := net.SplitHostPort(h); err == nil {
+		name = n
 	}
 	name = strings.Trim(name, "[]")
-	return same(name, "localhost") || net.ParseIP(name).IsLoopback()
+	return name == "localhost" || net.ParseIP(name).IsLoopback()
 }
+
+// originOK reports whether a request has no Origin, or one that is the
+// listener's own or an allowed origin.
 func (s *Server) originOK(r *http.Request) bool {
 	o := r.Header.Get("Origin")
 	if o == "" {
 		return true
 	}
-	u, err := url.Parse(o)
-	if err != nil || u.User != nil || u.Host == "" || u.Path != "" || u.RawQuery != "" || u.Fragment != "" || (u.Scheme != "http" && u.Scheme != "https") {
+	origin, err := allowedOrigin(o)
+	if err != nil {
 		return false
 	}
 	scheme := "http"
 	if r.TLS != nil {
 		scheme = "https"
 	}
-	if same(u.Host, r.Host) && u.Scheme == scheme {
+	if host, ok := canonicalHost(r.Host); ok && origin == scheme+"://"+strings.TrimSuffix(host, defaultPort[scheme]) {
 		return true
 	}
-	for _, allowed := range s.cfg.Origins {
-		if o == allowed {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(s.cfg.Origins, origin)
 }
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Tmag-API-Schema", Schema)
 	w.Header().Set("Vary", "Origin")
-	if !s.hostOK(r.Host) || !s.originOK(r) {
-		fail(w, 403, "forbidden", "host or origin is not allowed")
+	if !s.hostOK(r.Host) {
+		s.refused.note(s.cfg.Log, "Host", r.Host)
+		fail(w, 403, "forbidden", "host is not allowed")
+		return
+	}
+	if !s.originOK(r) {
+		s.refused.note(s.cfg.Log, "Origin", r.Header.Get("Origin"))
+		fail(w, 403, "forbidden", "origin is not allowed")
 		return
 	}
 	if o := r.Header.Get("Origin"); o != "" {
