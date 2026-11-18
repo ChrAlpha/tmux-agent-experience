@@ -55,7 +55,7 @@ command again with the permissions it needs.
 | Command | Does |
 | --- | --- |
 | `tmag list` | every agent: target, pane, agent, state, for how long, id, directory; `--json` for all fields |
-| `tmag inspect ID` | one agent, its open requests and its recent events |
+| `tmag inspect ID` | one agent, the title it set for what it works on, its open requests and its recent events |
 | `tmag send ID -` | deliver a message now: an idle agent starts a turn, a working one reads it at its next step; no answer is asked |
 | `tmag send ID --reply -` | deliver now and ask it to answer with `tmag reply` when done |
 | `tmag send ID --wait --timeout 8m -` | a turn of its own, then wait until it is idle or blocked |
