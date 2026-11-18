@@ -86,7 +86,7 @@ func (a *app) cmdServe(args []string) int {
 		}()
 	}
 	fmt.Fprintf(a.stdout, "tmag serve %s (%s)\nhttp://%s/v2/info\nUse tmag auth issue or tmag auth pair to authorize a client.\nPress Ctrl-C, or close this window, to stop.\n", version.Version, serve.Schema, ln.Addr())
-	hs := http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second, BaseContext: func(net.Listener) context.Context { return ctx }}
+	hs := httpServer(ctx, handler, serveIdle)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -102,6 +102,18 @@ func (a *app) cmdServe(args []string) int {
 		return a.fail("serve", err)
 	}
 	return ExitOK
+}
+
+// serveIdle is how long a connection may wait between requests: longer than
+// browsers, proxies and Go's clients keep an idle connection, so they close
+// it first, and short enough that one which never asks again goes.
+const serveIdle = 5 * time.Minute
+
+// httpServer serves handler within ctx. A connection has ten seconds to send
+// a request's header and idle at most between requests; a watch is one
+// request, which its pings keep alive.
+func httpServer(ctx context.Context, handler http.Handler, idle time.Duration) *http.Server {
+	return &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: idle, BaseContext: func(net.Listener) context.Context { return ctx }}
 }
 
 // notLoopback is a serve address outside loopback.

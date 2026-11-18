@@ -69,7 +69,9 @@ Keys carry `target`, `screen` (as a read with lines gave it), and
 y, n, 0-9) after an optional `text`: they are typed only once a shot of the
 pane right before matches that screen.
 There is no machine selector, command string, sender identity or arbitrary shell.
-Bodies are limited to 1 MiB and ten seconds to read. Control authority is
+Bodies are limited to 1 MiB and ten seconds to read; a connection has ten
+seconds to send a request's header and closes after five idle minutes between
+requests. Control authority is
 revalidated after the complete body and verb are checked; a stalled upload
 cannot retain revoked or expired authority. Targets after the CLI's `--` remain literal.
 

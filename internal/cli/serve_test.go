@@ -1,15 +1,22 @@
 package cli
 
 import (
+	"bufio"
 	"context"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
+	"time"
+
+	"github.com/ChrAlpha/tmux-agent-experience/internal/auth"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/serve"
 )
 
 func TestSplitArgs(t *testing.T) {
@@ -85,6 +92,97 @@ func TestServeNamesWhatHoldsItsAddress(t *testing.T) {
 		if got, err := loopbackAddr(ctx, addr); got != want || err != nil {
 			t.Errorf("loopbackAddr(%q) = %q, %v; want %q", addr, got, err, want)
 		}
+	}
+}
+
+// A connection that asked once and went quiet is closed after serve's idle
+// time, while it waits for nothing.
+func TestServeClosesIdleConnections(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hs := httpServer(context.Background(), http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "ok")
+	}), 100*time.Millisecond)
+	go func() { _ = hs.Serve(ln) }()
+	defer hs.Close()
+	conn, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if _, err := io.WriteString(conn, "GET / HTTP/1.1\r\nHost: localhost\r\n\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	br := bufio.NewReader(conn)
+	res, err := http.ReadResponse(br, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.Copy(io.Discard, res.Body)
+	res.Body.Close()
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if _, err := br.ReadByte(); err != io.EOF {
+		t.Fatalf("an idle connection stayed open: %v", err)
+	}
+}
+
+// Idle time belongs to the gap between requests. A watch may wait longer
+// than that for its next document and must still deliver it on the same request.
+func TestServeKeepsWatchOpenPastIdleTimeout(t *testing.T) {
+	const idle = 50 * time.Millisecond
+	store := auth.Store{Dir: t.TempDir()}
+	credential, err := store.Issue(context.Background(), "watch client", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release := make(chan struct{})
+	handler, err := serve.New(serve.Config{Auth: store, Run: func(ctx context.Context, _ []string, _ io.Reader, out, _ io.Writer) int {
+		select {
+		case <-release:
+			_, _ = io.WriteString(out, `{"schema":"tmag/v2","type":"snapshot","seq":19}`+"\n")
+		case <-ctx.Done():
+		}
+		return 0
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hs := httpServer(context.Background(), handler, idle)
+	go func() { _ = hs.Serve(ln) }()
+	defer hs.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+ln.Addr().String()+"/v2/watch", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+credential.Token)
+	client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
+	res, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("watch status: %s", res.Status)
+	}
+	br := bufio.NewReader(res.Body)
+	if first, err := br.ReadString('\n'); err != nil || first != ": watching\n" {
+		t.Fatalf("watch did not start: %q, %v", first, err)
+	}
+	// The subscription is already active, so this spans the server's idle
+	// timeout even on a scheduler that starts the runner late.
+	time.Sleep(3 * idle)
+	close(release)
+	body, err := io.ReadAll(br)
+	if err != nil || !strings.Contains(string(body), "id: 19\nevent: doc\n") {
+		t.Fatalf("watch stopped before its next document: %q, %v", body, err)
 	}
 }
 
