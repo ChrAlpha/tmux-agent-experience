@@ -10,7 +10,9 @@
   a Claude message attests the sender's permission class and the receiver's
   session, a native status file ends an unreported turn, and compaction and
   failure reasons reach the view; Pi interrupts through its proven inbox, and
-  a Codex send into an active turn steers with `expectedTurnId`
+  a Codex send into an active turn steers with `expectedTurnId`; amended
+  2026-11-17: the person types into a pane with `keys`, on the screen they
+  read
 - Date: 2026-11-03
 - Evidence: [Claude Code control channels](../research/claude-control-channels.md)
   (2.1.317), [Codex control channels](../research/codex-control-channels.md)
@@ -67,6 +69,7 @@ as it proves which pane shows a session (see [Callers](#callers)).
 | `interrupt <target>` | session working or blocked | the interrupt is delivered once; its `Halt` event precedes what follows |
 | `answer <target> <request> allow\|deny [--message M] [--answers JSON]` | the named request still open | the decision reaches that request and no other; its `Answer` event precedes what follows |
 | `request <target> <request>` | the named request still open | shows what the request asks (tool and input), relayed live, never stored |
+| `keys <target> --screen SCREEN [--text T] [KEY...]` | a person or owner client; a shot of the pane right before typing matches the screen they read | the person's own typing, once; what the agent draws between that check and the typing still comes first; its `Keys` event records the pane and how much was typed |
 
 `reply` is an agent's verb: it delivers now through the asker's own channel,
 or through its pane while idle. It needs a proven caller session.
@@ -78,6 +81,37 @@ agent's verb on its own session and `refused:agent` for an agent's answer
 that `@tmag-answer` does not allow, and report `via` (`pane`, `service`,
 `hook` or `inbox`) in their JSON output. `Interrupt` is already a
 Codex hook name, so tmag's own event for a delivered interrupt is `Halt`.
+
+### The person's keys
+
+Some of what an agent shows has no verb: a trust dialog before the session
+starts, a login, a menu, a message a bypass session holds for its person.
+At the terminal the person answers it; away from it they need to type too.
+`keys` types for them, and only for them: an agent is refused `agent`, and
+keeps talking to agents through the verbs.
+
+- **On the screen they read.** `read --lines N --json` gives the text, the
+  same lines with tmux's escapes for their colours (`ansi`), the cursor
+  (`cursor`, as `x,y`), so a client can show which option a menu selects,
+  and `screen`, all from one shot of the pane's last N lines: N and the SHA-256 of
+  those lines with their colours and attributes, and of where the cursor
+  is, so a menu whose selection moved reads as another screen. `keys` loads
+  its text into a buffer, takes the pane's lock, takes the same shot again
+  and, only if it matches, pastes and presses its keys in one tmux command;
+  otherwise it is refused `changed`. tmux has no compare-and-type: what the
+  agent draws, or what is typed into the pane by other means, between that
+  check and the typing still comes first. The check narrows that to the
+  time between two tmux commands; it does not close it.
+- **A small vocabulary.** Text is a bracketed paste, its control characters
+  removed, without Enter; keys are Enter, Escape, Tab, BTab, the arrows,
+  Space, BSpace, C-c, y, n and 0-9, at most 32, after at most 4 KiB of text.
+- **Any pane an agent runs in.** A pane that shows no session yet takes
+  keys, which is what a trust dialog needs; a session's target types into
+  the one pane that shows it.
+- **Typing, not delivery.** `keys` checks no state of the session: the
+  screen is the person's evidence. The `Keys` event records the pane, the
+  number of keys and the length of the text, never the text, and a buffer
+  that was not pasted is deleted.
 
 ### Drivers
 

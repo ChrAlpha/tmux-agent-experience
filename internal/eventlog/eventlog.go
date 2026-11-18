@@ -139,6 +139,8 @@ type Event struct {
 	Notice int64 `json:"notice,omitempty"`
 	// Template is the @tmag-start- template a Start ran, if one.
 	Template string `json:"template,omitempty"`
+	// Keys is how many keys a Keys event pressed, after Bytes of text.
+	Keys int `json:"keys,omitempty"`
 }
 
 // Events tmag itself records, beside those named after agent hooks.
@@ -152,6 +154,7 @@ const (
 	Idle   = "Idle"   // a native status file ended a turn no hook reported
 	Owes   = "Owes"   // what the session owes changed outside its hooks and a prompt to it
 	Start  = "Start"  // tmag started the session's agent in a window
+	Keys   = "Keys"   // the person typed into a pane through tmag keys
 	End    = "SessionEnd"
 )
 

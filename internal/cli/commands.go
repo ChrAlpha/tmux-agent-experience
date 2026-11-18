@@ -340,13 +340,21 @@ func (a *app) cmdRead(args []string) int {
 	if t.Pane == nil {
 		return a.failOn("read", pos[0], fmt.Errorf("%w: %s is shown by %d panes; name one", query.ErrAmbiguous, t.Session.ID, len(t.Session.Panes)))
 	}
-	text, err := tmux.Server{Socket: t.Pane.Server}.Capture(ctx, t.Pane.ID, *lines)
+	srv := tmux.Server{Socket: t.Pane.Server}
+	if a.json {
+		// The text and the screen tmag keys checks come from one shot.
+		shot, err := srv.Shot(ctx, t.Pane.ID, *lines)
+		if err != nil {
+			return a.failOn("read", pos[0], err)
+		}
+		// ansi and cursor show the reader what the digest tells apart, a
+		// menu's selection among them.
+		a.emit(map[string]any{"pane": t.Pane, "lines": *lines, "text": shot.Text, "ansi": shot.Ansi, "cursor": shot.Cursor, "screen": query.Screen(*lines, shot)})
+		return ExitOK
+	}
+	text, err := srv.Capture(ctx, t.Pane.ID, *lines)
 	if err != nil {
 		return a.failOn("read", pos[0], err)
-	}
-	if a.json {
-		a.emit(map[string]any{"pane": t.Pane, "lines": *lines, "text": text})
-		return ExitOK
 	}
 	fmt.Fprint(a.stdout, text)
 	return ExitOK
@@ -492,6 +500,37 @@ func (a *app) deadline(ctx context.Context, timeout time.Duration, err error) er
 		return undelivered{fmt.Errorf("%w after %s, nothing delivered: %s", errTimeout, timeout, err.Error())}
 	}
 	return fmt.Errorf("%w after %s; whether the reply was delivered is unknown: %s", errTimeout, timeout, err.Error())
+}
+
+// cmdKeys types into a pane for the person, while it still shows the screen
+// they read: text as a bracketed paste, then the keys named.
+func (a *app) cmdKeys(args []string) int {
+	fs := flag.NewFlagSet("keys", flag.ContinueOnError)
+	fs.BoolVar(&a.json, "json", false, "")
+	screen := fs.String("screen", "", "")
+	text := fs.String("text", "", "")
+	pos, err := parse(fs, args)
+	switch {
+	case err != nil:
+	case len(pos) < 1:
+		err = errors.New("expected a target")
+	case *screen == "":
+		err = errors.New("--screen names the screen you read, as tmag read TARGET --lines N --json gives it")
+	}
+	if err != nil {
+		return a.usageError("keys", err)
+	}
+	ctx, cancel := a.signalContext()
+	defer cancel()
+	d, err := query.Keys(ctx, a.log, pos[0], *screen, *text, pos[1:])
+	switch {
+	case errors.Is(err, query.ErrKeys):
+		return a.usageError("keys", err)
+	case err != nil:
+		return a.failOn("keys", pos[0], err)
+	}
+	a.reportDelivery("typed into", d)
+	return ExitOK
 }
 
 func (a *app) cmdInterrupt(args []string) int {
@@ -695,7 +734,11 @@ func (a *app) reportDelivery(what string, d query.Delivery) {
 		if d.Pane != nil {
 			where = paneName(tmux.DefaultServer().Socket, d.Pane.Server, d.Pane.ID)
 		}
-		fmt.Fprintf(a.stdout, "%s %s (%s) seq %d\n", what, shortID(d.Session.ID), where, d.Seq)
+		who := shortID(d.Session.ID)
+		if who == "" && d.Pane != nil {
+			who = d.Pane.Agent
+		}
+		fmt.Fprintf(a.stdout, "%s %s (%s) seq %d\n", what, who, where, d.Seq)
 	}
 	a.reportHeld(d)
 }

@@ -4,6 +4,8 @@ package tmux
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -281,6 +283,83 @@ func (s Server) NewWindow(ctx context.Context, p Pane, dir, command string) (str
 		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// Shot is what a pane shows at one moment: its last lines as text, the same
+// lines with tmux's escapes for their colours and attributes, where the
+// cursor is, and a digest of all of them, so that a menu whose selection
+// moved reads, and shows, as another screen.
+type Shot struct {
+	Text   string
+	Ansi   string
+	Cursor string
+	Digest string
+}
+
+// Shot captures the pane's last lines and its cursor in one tmux command.
+func (s Server) Shot(ctx context.Context, pane string, lines int) (Shot, error) {
+	out, err := s.Run(ctx, "capture-pane", "-p", "-e", "-J", "-t", pane, "-S", strconv.Itoa(-lines),
+		";", "display-message", "-p", "-t", pane, "#{cursor_x},#{cursor_y}")
+	if err != nil {
+		return Shot{}, err
+	}
+	return shot(string(out)), nil
+}
+
+// shot reads capture-pane -e's output followed by the cursor's line.
+func shot(out string) Shot {
+	sum := sha256.Sum256([]byte(out))
+	ansi, cursor := strings.TrimRight(out, "\n"), ""
+	if i := strings.LastIndexByte(ansi, '\n'); i >= 0 {
+		ansi, cursor = ansi[:i], ansi[i+1:]
+	} else {
+		ansi, cursor = "", ansi
+	}
+	ansi = strings.TrimRight(ansi, "\n") + "\n"
+	return Shot{Text: escapes.ReplaceAllString(ansi, ""), Ansi: ansi, Cursor: cursor, Digest: hex.EncodeToString(sum[:])}
+}
+
+// escapes matches the escape sequences capture-pane -e writes: SGR and
+// other CSI sequences, and OSC sequences such as hyperlinks.
+var escapes = regexp.MustCompile("\x1b\\[[0-9;:?<=>]*[ -/]*[@-~]|\x1b\\][^\x07\x1b]*(\x07|\x1b\\\\)")
+
+// Load puts text, its control characters removed (see SanitizePrompt), in
+// a tmux buffer of its own and returns the buffer's name, for Type to paste.
+func (s Server) Load(ctx context.Context, text string) (string, error) {
+	buf := fmt.Sprintf("tmag-%d-%d", os.Getpid(), time.Now().UnixNano())
+	if _, err := s.RunInput(ctx, []byte(SanitizePrompt(text)), "load-buffer", "-b", buf, "-"); err != nil {
+		s.Discard(ctx, buf)
+		return "", err
+	}
+	return buf, nil
+}
+
+// Discard deletes a buffer Load filled that was not pasted, within a budget
+// of its own: a buffer left behind would keep the text in the server.
+func (s Server) Discard(ctx context.Context, buf string) {
+	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
+	defer cancel()
+	_, _ = s.Run(cleanup, "delete-buffer", "-b", buf)
+}
+
+// Type pastes buffer buf, bracketed, without Enter and deleting it, then
+// presses keys, by tmux's names, in one tmux command; buf "" pastes nothing.
+func (s Server) Type(ctx context.Context, pane, buf string, keys []string) error {
+	var args []string
+	if buf != "" {
+		args = append(args, "paste-buffer", "-p", "-d", "-b", buf, "-t", pane)
+	}
+	if len(keys) > 0 {
+		if args != nil {
+			args = append(args, ";")
+		}
+		args = append(append(args, "send-keys", "-t", pane), keys...)
+	}
+	if args == nil {
+		return nil
+	}
+	_, err := s.Run(ctx, args...)
+	return err
 }
 
 // Interrupt presses Escape in the pane, the key every agent tmag knows stops
