@@ -1,0 +1,42 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Check version
+        run: |
+          want="${GITHUB_REF_NAME#v}"
+          [ "$(node -p 'require("./package.json").version')" = "$want" ] || { echo "tag $GITHUB_REF_NAME does not match package.json"; exit 1; }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm check
+      - run: pnpm build
+      # The archive holds the page at its root, under a name that stays the
+      # same, so that releases/latest/download/ always serves the latest.
+      - name: Archive
+        run: |
+          mkdir release
+          tar -C dist -czf release/tmag-client.tar.gz .
+          (cd release && sha256sum -- tmag-client.tar.gz > checksums.txt)
+      - uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: release/tmag-client.tar.gz
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" release/* --title "$GITHUB_REF_NAME" --generate-notes
