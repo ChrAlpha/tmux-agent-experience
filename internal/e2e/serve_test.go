@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -230,5 +231,41 @@ func TestAgentCannotIssueOwnerCredentials(t *testing.T) {
 	}
 	if r := h.tmag("", "auth", "issue", "person", "--json"); r.code != 0 {
 		t.Fatalf("person issuance: %d", r.code)
+	}
+}
+
+// The key binding's --open path must diagnose an occupied port before opening
+// a window, and must not mistake a redirect to tmag for tmag at that address.
+func TestServeOpenPreflightsAddress(t *testing.T) {
+	h := start(t)
+	tmag := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Tmag-API-Schema", "tmag/http/v2")
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer tmag.Close()
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer other.Close()
+	redirect := httptest.NewServer(http.RedirectHandler(tmag.URL+"/v2/info", http.StatusFound))
+	defer redirect.Close()
+	before := h.tmux("list-windows", "-a", "-F", "#{window_id}")
+	for _, c := range []struct{ addr, message string }{
+		{tmag.Listener.Addr().String(), "tmag serve already runs at http://" + tmag.Listener.Addr().String()},
+		{other.Listener.Addr().String(), "another program listens on " + other.Listener.Addr().String()},
+		{redirect.Listener.Addr().String(), "another program listens on " + redirect.Listener.Addr().String()},
+		{"0.0.0.0:0", "serve listens on loopback only"},
+		{"[fe80::1%lo]:0", "serve listens on loopback only"},
+	} {
+		t.Run(c.addr, func(t *testing.T) {
+			h.tmux("set-option", "-g", "@tmag-serve", "--addr "+c.addr)
+			r := h.tmag("", "serve", "--open", "--server", h.name)
+			if r.code != 1 || !strings.Contains(r.out, c.message) || !strings.Contains(r.out, "next:") {
+				t.Fatalf("serve --open: exit %d, %s; want exit 1, %q and next:", r.code, r.out, c.message)
+			}
+			if after := h.tmux("list-windows", "-a", "-F", "#{window_id}"); after != before {
+				t.Fatalf("preflight created windows: before %q, after %q", before, after)
+			}
+		})
 	}
 }

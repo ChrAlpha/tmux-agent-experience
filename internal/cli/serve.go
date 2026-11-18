@@ -9,8 +9,11 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/auth"
@@ -67,12 +70,12 @@ func (a *app) cmdServe(args []string) int {
 	if err != nil {
 		return a.usageError("serve", err)
 	}
-	ln, err := listenLoopback(f.addr)
+	ctx, cancel := a.signalContext()
+	defer cancel()
+	ln, err := listenLoopback(ctx, f.addr)
 	if err != nil {
 		return a.fail("serve", err)
 	}
-	ctx, cancel := a.signalContext()
-	defer cancel()
 	if f.server != "" {
 		srv := tmux.ServerByName(f.server)
 		_, _ = srv.Run(ctx, "set-option", "-g", serveAddressOption, "http://"+ln.Addr().String())
@@ -100,18 +103,108 @@ func (a *app) cmdServe(args []string) int {
 	}
 	return ExitOK
 }
-func listenLoopback(addr string) (net.Listener, error) {
-	ln, err := net.Listen("tcp", addr)
+
+// notLoopback is a serve address outside loopback.
+type notLoopback struct{ addr string }
+
+func (e notLoopback) Error() string {
+	return fmt.Sprintf("serve listens on loopback only, not on %s", e.addr)
+}
+
+// addrInUse is the numeric address something else listens on, where serve
+// would have; tmag reports whether a tmag serve answered there.
+type addrInUse struct {
+	addr string
+	tmag bool
+}
+
+func (e addrInUse) Error() string {
+	if e.tmag {
+		return fmt.Sprintf("tmag serve already runs at http://%s", e.addr)
+	}
+	return fmt.Sprintf("another program listens on %s", e.addr)
+}
+
+// listenLoopback listens on addr, whose host, a name such as localhost too,
+// must name loopback addresses only; serve listens on one of them, so it
+// never binds another interface, even for a moment.
+func listenLoopback(ctx context.Context, addr string) (net.Listener, error) {
+	bind, err := loopbackAddr(ctx, addr)
 	if err != nil {
 		return nil, err
 	}
-	tcp, ok := ln.Addr().(*net.TCPAddr)
-	if !ok || !tcp.IP.IsLoopback() {
-		ln.Close()
-		return nil, errors.New("serve listens on loopback; use an authenticated, encrypted tunnel for remote access")
+	ln, err := net.Listen("tcp", bind)
+	if errors.Is(err, syscall.EADDRINUSE) {
+		return nil, addrInUse{bind, servedByTmag(ctx, bind)}
+	}
+	if err != nil {
+		return nil, err
 	}
 	return ln, nil
 }
+
+// loopbackAddr is the numeric address serve listens on for addr: a loopback
+// address its host names, and its port, a service's name too, as a number.
+func loopbackAddr(ctx context.Context, addr string) (string, error) {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return "", err
+	}
+	if host == "" {
+		return "", notLoopback{addr}
+	}
+	n, err := net.DefaultResolver.LookupPort(ctx, "tcp", port)
+	if err != nil {
+		return "", err
+	}
+	ips, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
+	if err != nil {
+		return "", err
+	}
+	ip, ok := loopbackOnly(ips)
+	if !ok {
+		return "", notLoopback{addr}
+	}
+	return net.JoinHostPort(ip.String(), strconv.Itoa(n)), nil
+}
+
+// loopbackOnly is the address of ips that serve listens on, IPv4 first as
+// net.Listen picks; ok only when there is one and every one is loopback.
+func loopbackOnly(ips []netip.Addr) (netip.Addr, bool) {
+	var pick netip.Addr
+	for _, ip := range ips {
+		ip = ip.Unmap()
+		if !ip.IsLoopback() {
+			return netip.Addr{}, false
+		}
+		if !pick.IsValid() || (ip.Is4() && !pick.Is4()) {
+			pick = ip
+		}
+	}
+	return pick, pick.IsValid()
+}
+
+// servedByTmag reports whether a tmag serve answers at addr itself within a
+// second: every response it gives, a refusal too, names its HTTP contract.
+func servedByTmag(ctx context.Context, addr string) bool {
+	ctx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+"/v2/info", nil)
+	if err != nil {
+		return false
+	}
+	client := &http.Client{
+		Transport:     &http.Transport{DisableKeepAlives: true},
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	res, err := client.Do(req)
+	if err != nil {
+		return false
+	}
+	res.Body.Close()
+	return strings.HasPrefix(res.Header.Get("Tmag-API-Schema"), "tmag/http/")
+}
+
 func (a *app) openServe(server string) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -145,7 +238,7 @@ func (a *app) openServe(server string) int {
 	if _, err := serve.New(a.serveConfig(f)); err != nil {
 		return a.usageError("serve", err)
 	}
-	listener, err := listenLoopback(f.addr)
+	listener, err := listenLoopback(ctx, f.addr)
 	if err != nil {
 		return a.fail("serve", err)
 	}
