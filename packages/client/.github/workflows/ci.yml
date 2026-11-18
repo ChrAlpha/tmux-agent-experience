@@ -4,6 +4,11 @@ on:
   push:
     branches: [main]
   pull_request:
+  # tmag's main moves without the page: each day tells whether the page
+  # still works with it.
+  schedule:
+    - cron: '17 5 * * *'
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -13,7 +18,8 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  # The tmag release the page is tested against: the oldest README.md names.
+  # The oldest tmag the page works with, the release README.md names; the
+  # page is also tested against tmag's main, whose every operation it offers.
   TMAG_REF: v0.7.0
 
 jobs:
@@ -31,13 +37,18 @@ jobs:
       - run: pnpm build
 
   e2e:
+    name: e2e (tmag ${{ matrix.tmag }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        tmag: [oldest, main]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/checkout@v7
         with:
           repository: ChrAlpha/tmux-agent-experience
-          ref: ${{ env.TMAG_REF }}
+          ref: ${{ matrix.tmag == 'oldest' && env.TMAG_REF || 'main' }}
           path: tmag-src
       - uses: actions/setup-go@v7
         with:
@@ -57,5 +68,5 @@ jobs:
       - if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: test-results
+          name: test-results-${{ matrix.tmag }}
           path: test-results/

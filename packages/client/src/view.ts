@@ -31,6 +31,7 @@ function session(s: Partial<Session> & Pick<Session, 'id' | 'agent' | 'state'>):
     capabilities: s.capabilities ?? [],
     requests: s.requests ?? [],
     subagents: s.subagents ?? [],
+    owes: s.owes ?? [],
   }
 }
 
@@ -88,6 +89,10 @@ export function find(view: View, id: string): Session | undefined {
   for (const s of view.sessions.values()) if (s.id === id) return s
   return undefined
 }
+
+// shared says whether more than one agent runs a session by this id: tmag
+// names none of them by it, and neither does the page.
+export const shared = (view: View, id: string) => [...view.sessions.values()].filter((s) => s.id === id).length > 1
 
 // paneOf is the pane that shows the session, if one does.
 export function paneOf(view: View, s: Session): Pane | undefined {
@@ -177,4 +182,68 @@ export function status(s: Session): string {
     default:
       return s.state
   }
+}
+
+/**
+ * What the person saw of each session of a computer: the turn it last ended
+ * while they looked.
+ */
+export type Seen = Readonly<Record<string, string>>
+
+// done says whether a session ended a turn the person has not seen it end.
+export const done = (s: Session, seen: Seen) => s.state === 'idle' && !!s.turn && seen[s.id] !== s.turn
+
+// look is what the person has seen once they look at a session: the turn it
+// ended, if it is idle. A turn that runs while they look is seen once it
+// ends with them still looking.
+export function look(seen: Seen, s: Session): Seen {
+  if (s.state !== 'idle' || !s.turn || seen[s.id] === s.turn) return seen
+  return { ...seen, [s.id]: s.turn }
+}
+
+// firstSeen is what the person is taken to have seen of a computer the page
+// has never shown: the turns its idle sessions ended. What runs then is done
+// once it ends.
+export function firstSeen(view: View): Seen {
+  const seen: Record<string, string> = {}
+  for (const s of view.sessions.values()) if (s.state === 'idle' && s.turn) seen[s.id] = s.turn
+  return seen
+}
+
+// kept is what was seen of the sessions a view still shows.
+export function kept(seen: Seen, view: View): Seen {
+  const ids = new Set([...view.sessions.values()].map((s) => s.id))
+  const left = Object.entries(seen).filter(([id]) => ids.has(id))
+  return left.length === Object.keys(seen).length ? seen : Object.fromEntries(left)
+}
+
+/** Another session of the computer a session is tied to by an ask. */
+export interface Tie {
+  s: Session
+  kind: 'final' | 'reply'
+}
+
+// workingFor is whom a session owes answers: the sessions that asked it, by
+// what they asked for.
+export function workingFor(view: View, s: Session): Tie[] {
+  return s.owes.flatMap((o) => {
+    const asker = o.to.session && view.sessions.get(key(o.to.agent, o.to.session))
+    return asker ? [{ s: asker, kind: o.kind }] : []
+  })
+}
+
+// waitsFor is whom a session asked and waits on: the sessions that owe it.
+export function waitsFor(view: View, s: Session): Tie[] {
+  return [...view.sessions.values()].flatMap((other) =>
+    other.owes.filter((o) => o.to.session === s.id && o.to.agent === s.agent).map((o) => ({ s: other, kind: o.kind })),
+  )
+}
+
+// ties says, in a few words each, how a session works with others: for whom,
+// and on whom it waits.
+export function ties(view: View, s: Session): { text: string; s: Session }[] {
+  return [
+    ...workingFor(view, s).map((t) => ({ text: t.kind === 'final' ? 'working for' : 'owes a reply to', s: t.s })),
+    ...waitsFor(view, s).map((t) => ({ text: t.kind === 'final' ? 'waits for' : 'asked', s: t.s })),
+  ]
 }

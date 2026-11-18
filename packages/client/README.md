@@ -12,8 +12,11 @@ contract, on its own origin under `/v2/`, and loads nothing from anywhere else.
 
 ## What it shows
 
-- **Agents**: every session tmag knows, blocked first, then working, then
-  idle, kept current by `/v2/watch`. The title counts the blocked ones.
+- **Agents**: every session tmag knows on each computer the page works with,
+  blocked first, then working, then idle, kept current by each computer's
+  `/v2/watch`. A session that ended a turn since you last looked at it is
+  marked done; the title counts those and the blocked ones. A session that
+  works for another agent, or waits on one, says so.
 - **A session**: its last 20 turns, each the prompts it was given (including
   those from other agents and background tasks) and its reply, rendered as
   Markdown. Below them:
@@ -21,7 +24,9 @@ contract, on its own origin under `/v2/`, and loads nothing from anywhere else.
   - a card for each request it waits on: a permission (Allow, or Deny with a
     reason), a question (pick an option or write your own answer), a plan
     (Approve, or Keep planning);
-  - Screen, which shows the text of the pane that shows the session.
+  - Screen, which shows the text of the pane that shows the session;
+  - links to the sessions it works for, and to those it waits on, as tmag
+    records an agent's asks.
 
 To start new work, prompt an agent that runs: it starts peers in tmux itself.
 
@@ -87,6 +92,35 @@ with the computer's name in your tailnet: `Self.DNSName` in
    Safari: pair in Safari. Safari may clear the storage of a site you have not
    opened for a week; pair again then.
 
+## Several computers
+
+The page works with the computer that serves it and with others, each paired on
+its own. The computer that serves the page reaches another's `tmag serve`
+through an SSH tunnel and serves it at `/NAME/v2/`; the page stays on one
+origin. For a computer `mini` that `box` reaches over SSH:
+
+1. On `mini`, let `tmag serve` accept the page's address, as in step 1 above
+   but with `box`'s name, and start it with `prefix + M-r`:
+
+   ```tmux
+   set -g @tmag-serve '--host box.tail1234.ts.net --origin https://box.tail1234.ts.net'
+   ```
+
+2. On `box`, keep a tunnel to it in a tmux window, and serve it at `/mini/v2`:
+
+   ```sh
+   tmux new-window -d -n mini-tunnel 'ssh -N -o ExitOnForwardFailure=yes -L 127.0.0.1:7779:127.0.0.1:7777 mini'
+   sudo tailscale serve --bg --set-path /mini/v2 http://127.0.0.1:7779/v2
+   ```
+
+   Each other computer takes a port of its own on `box`: 7780 for the next.
+
+3. On the page, choose **Add a computer** at the foot of the agents' list, name
+   it `mini`, and enter the code `tmag auth pair phone` prints on `mini`.
+
+A name is lowercase letters, digits and `-`. The page will not add a computer
+it already works with at another name; it tells you which credential to revoke.
+
 ## Notifications with ntfy
 
 tmag runs `@tmag-notify` when an agent waits for you or finishes and you are not
@@ -97,7 +131,10 @@ that opens the session on the page, add to `~/.tmux.conf`:
 set -g @tmag-notify 'curl -fsS -m 10 -H "Title: $TMAG_TITLE" -H "Click: https://box.tail1234.ts.net/#/s/$TMAG_SESSION" -d "$TMAG_MESSAGE" https://ntfy.sh/your-topic'
 ```
 
-and subscribe to the topic in the ntfy app. Anyone who knows a topic's name on
+and subscribe to the topic in the ntfy app. On another computer, put its name
+in the link: `https://box.tail1234.ts.net/#/mini/s/$TMAG_SESSION`. A link
+that ends in `${TMAG_REQUEST:+/r/$TMAG_REQUEST}` opens the request the agent
+waits on, when it waits on one. Anyone who knows a topic's name on
 ntfy.sh can read it, so choose a long random one, or run your own ntfy server. An
 alert holds only what tmag knows of the session: the agent, the session's id in
 the link, the tool it asks for, the directory's name, the pane and the
@@ -119,14 +156,15 @@ pnpm dev      # the page on http://localhost:5173, /v2/ proxied to tmag serve
 ```
 
 `pnpm dev` and `pnpm preview` proxy `/v2/` to `TMAG_SERVE`
-(default `http://127.0.0.1:7777`) as `tailscale serve` does; a tmag serve they
+(default `http://127.0.0.1:7777`) as `tailscale serve` does, and `/NAME/v2/`
+to each `NAME=URL` in `TMAG_COMPUTERS`, separated by commas; a tmag serve they
 reach needs `--host localhost:5173 --origin http://localhost:5173` (4173 for
 `preview`).
 
 `TMAG_SRC=/path/to/tmux-agent-experience pnpm e2e` builds the page and runs
 the end-to-end tests in WebKit and Chromium, at a phone's size, against tmag
-and the fake agents built from that checkout, in a private tmux server: nothing
-touches your own sessions. They need Go, tmux and
+and the fake agents built from that checkout, in private tmux servers, one for
+each of two computers: nothing touches your own sessions. They need Go, tmux and
 `pnpm exec playwright install chromium webkit`.
 
 ## History

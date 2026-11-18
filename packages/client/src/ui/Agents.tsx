@@ -1,11 +1,14 @@
-import type { Pane, Session } from '../contract'
-import { credential, forget, loaded, now, view } from '../store'
-import { ago, helpers, paneOf, place, sessions, status } from '../view'
+import type { Computer } from '../computer'
+import type { Pane } from '../contract'
+import { hash } from '../route'
+import { computers, type Entry, forget, inbox, now, title } from '../store'
+import { ago, done, helpers, paneOf, place, status, ties } from '../view'
+import { cls } from './explain'
 
 export function Agents() {
-  const v = view.value
-  const all = sessions(v)
-  const device = credential.value
+  const all = inbox.value
+  const several = computers.value.length > 1
+  const loaded = computers.value.every((c) => c.loaded.value)
   return (
     <div class="screen list">
       <header>
@@ -13,51 +16,86 @@ export function Agents() {
       </header>
       <main class="scroll">
         <ul class="sessions">
-          {loaded.value && !all.length && (
+          {loaded && !all.length && (
             <li class="empty">No agent is running. Start one in tmux, or ask a running one to start a peer.</li>
           )}
-          {all.map((s) => (
-            <Row key={`${s.agent}/${s.id}`} s={s} pane={paneOf(v, s)} />
+          {all.map((e) => (
+            <Row key={`${e.c.name}/${e.s.agent}/${e.s.id}`} e={e} several={several} />
           ))}
         </ul>
-        {device && (
-          <footer>
-            <span>
-              This device: {device.label} · {device.id}
-            </span>
-            <button
-              class="link"
-              type="button"
-              onClick={() => {
-                if (
-                  confirm(
-                    `Forget this device? Revoke its credential on the computer with: tmag auth revoke ${device.id}`,
-                  )
-                )
-                  forget()
-              }}
-            >
-              Forget
-            </button>
-          </footer>
-        )}
+        <footer>
+          {several && <span>This device:</span>}
+          {computers.value.map((c) => (
+            <Device key={c.name} c={c} several={several} />
+          ))}
+          <a class="link" href={hash({ name: 'add' })}>
+            Add a computer
+          </a>
+        </footer>
       </main>
     </div>
   )
 }
 
-function Row({ s, pane }: { s: Session; pane: Pane | undefined }) {
+function Row({ e: { c, s }, several }: { e: Entry; several: boolean }) {
+  const v = c.view.value
+  const pane: Pane | undefined = paneOf(v, s)
   const asks = s.state === 'blocked' ? s.requests[0]?.tool : undefined
+  const seen = c.seen.value
+  const unseen = !!seen && done(s, seen)
+  const tie = ties(v, s)[0]
   return (
     <li>
-      <a class={`row ${s.state}`} href={`#/s/${encodeURIComponent(s.id)}`}>
+      <a class={cls('row', s.state, unseen && 'done')} href={hash({ name: 'session', at: c.name, id: s.id })}>
         <span class="dot" />
         <span class="what">
-          <span class="name">{place(s)}</span>
-          <span class="meta">{[s.agent, status(s), helpers(s), asks, pane?.target].filter(Boolean).join(' · ')}</span>
+          <span class="name">
+            {place(s)}
+            {several && <small> · {title(c)}</small>}
+          </span>
+          <span class="meta">
+            {[
+              s.agent,
+              unseen ? 'done' : status(s),
+              tie && `${tie.text} ${place(tie.s)}`,
+              helpers(s),
+              asks,
+              pane?.target,
+            ]
+              .filter(Boolean)
+              .join(' · ')}
+          </span>
         </span>
         <span class="when">{ago(s.since, now.value)}</span>
       </a>
     </li>
+  )
+}
+
+// Device is this device's credential on a computer, which the page can
+// forget; the computer is then the person's to tell to revoke it.
+function Device({ c, several }: { c: Computer; several: boolean }) {
+  const device = c.credential
+  return (
+    <div class="device">
+      <span>
+        {several ? `${title(c)}: ` : 'This device: '}
+        {device.label} · {device.id}
+      </span>
+      <button
+        class="link"
+        type="button"
+        onClick={() => {
+          if (
+            confirm(
+              `Forget ${title(c)} on this device? Revoke its credential on that computer with: tmag auth revoke ${device.id}`,
+            )
+          )
+            forget(c)
+        }}
+      >
+        Forget
+      </button>
+    </div>
   )
 }

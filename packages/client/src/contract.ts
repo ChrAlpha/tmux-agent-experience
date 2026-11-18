@@ -32,6 +32,17 @@ export interface Request {
   agent?: string
 }
 
+/** An answer a session owes the session that asked it, until it answers. */
+export interface Obligation {
+  id: string
+  /** The session that asked. */
+  to: { agent: string; session?: string }
+  /** final: what the turn it started ends with; reply: a `tmag reply`. */
+  kind: 'final' | 'reply'
+  depth: number
+  since: string
+}
+
 export interface Session {
   id: string
   agent: string
@@ -45,6 +56,8 @@ export interface Session {
   requests: Request[]
   /** The ids of its running subagents. */
   subagents: string[]
+  /** The answers it owes the sessions that asked it, oldest first. */
+  owes: Obligation[]
 }
 
 export interface Pane {
@@ -75,6 +88,7 @@ export interface Event {
   capabilities?: string[]
   requests?: Request[]
   subagents?: string[]
+  owes?: Obligation[]
 }
 
 export type WatchDoc =
@@ -114,6 +128,10 @@ export interface RequestDoc {
 /** `GET /v2/info`: the instance tmag serve answers for. */
 export interface InfoDoc {
   version: string
+  /** Stable for the computer: two addresses of one computer give the same. */
+  instance?: string
+  /** The resources and verbs it serves: what the page may offer there. */
+  operations?: string[]
 }
 
 /** The credential `POST /v2/pair` issues; the page keeps it. */
