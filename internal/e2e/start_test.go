@@ -117,8 +117,8 @@ func TestAPersonStartsATemplateInAWorktree(t *testing.T) {
 func TestAStartThatShowsNoSessionLeavesItsWindow(t *testing.T) {
 	h := start(t)
 	startable(h, map[string]string{"FAKE_SESSION": sidC, "FAKE_OUT": filepath.Join(h.dir, "c")})
-	out := person(h, `"$TMAG_BIN" start claude --timeout 2s >"$OUT" 2>&1`)
-	readEventually(t, out, "which shows no session tmag can prove yet", "next: its window stays: see what holds it with tmag read %", "exit 4")
+	out := person(h, `"$TMAG_BIN" start claude --timeout 2s --json >"$OUT" 2>&1`)
+	readEventually(t, out, "which shows no session tmag can prove yet", `"pane":{"server":"`, `"id":"%`, "next: its window stays: see what holds it with tmag read %", "exit 4")
 	panes := h.tmux("list-panes", "-a", "-F", "#{pane_current_command}")
 	if strings.Count(panes, "claude") != 1 {
 		t.Fatalf("the started agent's window is gone: %q", panes)
