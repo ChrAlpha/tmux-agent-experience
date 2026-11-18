@@ -28,6 +28,10 @@ contract, on its own origin under `/v2/`, and loads nothing from anywhere else.
     terminal's colours, with keys to answer what it asks there (a trust
     dialog, a login, a menu): tmag types them only while the pane still
     shows the screen you read;
+  - Changes, what its directory changed against HEAD, file by file, each
+    file's patch with its lines numbered; a comment on a line stays with
+    that line as the agent changes the file, and goes into the message to
+    the agent as `path:LINE: comment` with the line quoted;
   - links to the sessions it works for, and to those it waits on, as tmag
     records an agent's asks.
 - **Start**: an agent (Claude Code, Codex, Pi or oh-my-pi, or a template
@@ -37,8 +41,8 @@ contract, on its own origin under `/v2/`, and loads nothing from anywhere else.
   session in time, at a trust dialog say, opens on its pane's screen, with
   its keys.
 
-Start, keys, and an agent's asks need a tmag newer than 0.7.0; on an older
-one the page leaves them out.
+Start, keys, changes, and an agent's asks need a tmag newer than 0.7.0; on
+an older one the page leaves them out.
 
 ## Set up with Tailscale
 

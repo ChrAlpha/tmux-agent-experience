@@ -152,6 +152,29 @@ export interface PairDoc {
   credential: Credential & { created?: string; expires?: string }
 }
 
+/** A file the work tree of a session's directory changed against HEAD. */
+export interface Changed {
+  path: string
+  /** git's two status letters, staged then unstaged; "??" untracked. */
+  status: string
+  added?: number
+  removed?: number
+  binary?: boolean
+  /** Kept through a filter tmag does not run: no counts, no patch. */
+  filtered?: boolean
+}
+
+/** `changes --json`: what a session's directory changed. */
+export interface ChangesDoc {
+  changes: { dir: string; top: string; files: Changed[]; truncated?: boolean }
+}
+
+/** `changes --file PATH --json`: one file's patch. */
+export interface PatchDoc {
+  file: string
+  patch: string
+}
+
 /** A pane: on which tmux server, and which. */
 export interface PaneRef {
   server: string
