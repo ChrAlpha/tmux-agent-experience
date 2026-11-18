@@ -32,14 +32,24 @@ func (e notShown) Error() string { return e.err.Error() }
 func (e notShown) Unwrap() error { return e.err }
 
 // next says what to do after err ended cmd on target, for the outcomes a
-// person or an agent meets when working with another agent; "" when the
-// error says it all, including whenever it cannot tell whether a prompt was
-// delivered. It is printed to stderr only, so JSON documents keep their
-// contract, and teaching it there keeps it out of the skill: an agent reads
-// it only when it meets the outcome.
+// person or an agent meets when working with another agent, and a person
+// meets starting tmag serve; "" when the error says it all, including
+// whenever it cannot tell whether a prompt was delivered. It is printed to
+// stderr only, so JSON documents keep their contract, and teaching it there
+// keeps it out of the skill: an agent reads it only when it meets the outcome.
 func next(cmd, target string, err error) string {
 	if target == "" {
 		target = "ID"
+	}
+	var inUse addrInUse
+	if errors.As(err, &inUse) {
+		if inUse.tmag {
+			return "if it is the one you want, clients reach it there; otherwise stop it where it runs, or give this one another port with --addr 127.0.0.1:PORT (prefix + M-r takes its flags from @tmag-serve)"
+		}
+		return "give tmag serve another port with --addr 127.0.0.1:PORT (prefix + M-r takes its flags from @tmag-serve)"
+	}
+	if errors.As(err, new(notLoopback)) {
+		return "keep --addr on 127.0.0.1, and reach it from elsewhere through an encrypted tunnel or reverse proxy named with --host"
 	}
 	var notTaken *query.NotTakenError
 	if errors.As(err, &notTaken) {
