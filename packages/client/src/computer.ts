@@ -4,7 +4,7 @@
 // the person has seen of it. Of all that, the page keeps only the
 // credential and what was seen, in this browser's storage.
 
-import { batch, computed, type Signal, signal } from '@preact/signals'
+import { batch, computed, effect, type Signal, signal } from '@preact/signals'
 import * as api from './api'
 import {
   type Action,
@@ -47,6 +47,8 @@ export interface Saved {
 export interface Read<T> {
   value?: T
   error?: Error
+  /** When the read that gave value began, as Computer.begun counts. */
+  began?: number
 }
 
 /** What the store does as a computer learns of itself. */
@@ -109,7 +111,9 @@ export class Computer {
   readonly #requests = new Map<string, Signal<Read<RequestDoc>>>()
   readonly #sent = new Map<string, Signal<readonly Sent[]>>()
   #sends = 0
+  readonly #drafts = new Map<string, Signal<string>>()
   readonly #running = new Map<Signal<unknown>, { again: boolean }>()
+  #begun = 0
 
   constructor(saved: Saved, hooks: Hooks) {
     this.name = saved.name
@@ -317,11 +321,46 @@ export class Computer {
   screenOf = (id: string) => this.#slot(this.#screens, id)
   requestOf = (id: string) => this.#slot(this.#requests, id)
 
+  // kept is a signal of what the person writes for a session, kept in this
+  // tab's storage under key, as save writes it, while it holds something.
+  #kept<T>(m: Map<string, Signal<T>>, id: string, key: string, load: (kept: string) => T, save: (v: T) => string) {
+    const s = m.get(id)
+    if (s) return s
+    const kept = sessionStorage.getItem(key)
+    let start = load('')
+    try {
+      if (kept) start = load(kept)
+    } catch {}
+    const held = signal<T>(start)
+    effect(() => {
+      const v = save(held.value)
+      if (v) sessionStorage.setItem(key, v)
+      else sessionStorage.removeItem(key)
+    })
+    m.set(id, held)
+    return held
+  }
+
+  /** The prompt the person is writing to a session, or one a pane holds for the session it will show. */
+  draftOf = (id: string) =>
+    this.#kept(
+      this.#drafts,
+      id,
+      `tmag.draft.${this.name}/${id}`,
+      (kept) => kept,
+      (v) => v,
+    )
+
   /** What the page sent a session that its turns do not show yet. */
   sentTo(id: string): Signal<readonly Sent[]> {
     const s = this.#sent.get(id) ?? signal<readonly Sent[]>([])
     this.#sent.set(id, s)
     return s
+  }
+
+  /** How many reads began: a read whose began is above a count taken now began after it. */
+  get begun() {
+    return this.#begun
   }
 
   // read runs load now, or once more after the run in flight for the same
@@ -340,11 +379,12 @@ export class Computer {
       do {
         next.again = false
         if (this.#gone) break
+        const began = ++this.#begun
         try {
           const value = await this.#authorized(load)
           if (this.#gone) break
           batch(() => {
-            into.value = { value }
+            into.value = { value, began }
             got?.(value)
           })
         } catch (e) {

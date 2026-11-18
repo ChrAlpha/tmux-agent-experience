@@ -13,6 +13,11 @@ export function Agents() {
     <div class="screen list">
       <header>
         <h1>Agents</h1>
+        {computers.value.some((c) => c.can('start')) && (
+          <a class="mode" href={hash({ name: 'start', at: '' })}>
+            Start
+          </a>
+        )}
       </header>
       <main class="scroll">
         <ul class="sessions">

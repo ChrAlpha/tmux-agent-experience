@@ -24,11 +24,21 @@ contract, on its own origin under `/v2/`, and loads nothing from anywhere else.
   - a card for each request it waits on: a permission (Allow, or Deny with a
     reason), a question (pick an option or write your own answer), a plan
     (Approve, or Keep planning);
-  - Screen, which shows the text of the pane that shows the session;
+  - Screen, which shows what the pane that shows the session shows, in its
+    terminal's colours, with keys to answer what it asks there (a trust
+    dialog, a login, a menu): tmag types them only while the pane still
+    shows the screen you read;
   - links to the sessions it works for, and to those it waits on, as tmag
     records an agent's asks.
+- **Start**: an agent (Claude Code, Codex, Pi or oh-my-pi, or a template
+  you set as `@tmag-start-NAME` in tmux) in a directory its computer's
+  sessions run in, or another, optionally in a worktree of its own, with a
+  first prompt. It opens in a window beside `tmag serve`'s. One that shows no
+  session in time, at a trust dialog say, opens on its pane's screen, with
+  its keys.
 
-To start new work, prompt an agent that runs: it starts peers in tmux itself.
+Start, keys, and an agent's asks need a tmag newer than 0.7.0; on an older
+one the page leaves them out.
 
 ## Set up with Tailscale
 

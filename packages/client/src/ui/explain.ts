@@ -11,7 +11,13 @@ export function explain(e: unknown): string {
   return e instanceof Error ? e.message : String(e)
 }
 
-const not: Record<Verb, string> = { send: 'Not sent', interrupt: 'Not stopped', answer: 'Not answered' }
+const not: Record<Verb, string> = {
+  send: 'Not sent',
+  interrupt: 'Not stopped',
+  answer: 'Not answered',
+  start: 'Not started',
+  keys: 'Not typed',
+}
 
 // Why tmag refused a verb, by the tmag/v2 code it refused with, in what the
 // person can do about it. A code missing here keeps tmag's own message.
@@ -28,6 +34,7 @@ const refusals: Record<string, string | Partial<Record<Verb, string>>> = {
     send: 'it changed meanwhile.',
     interrupt: 'it changed meanwhile.',
     answer: 'it changed meanwhile. If it still asks, answer it in the terminal.',
+    keys: 'the screen changed before it was typed. Look at it again.',
   },
   'refused:unsupported': {
     send: 'tmag has no way to prompt this session.',
@@ -42,6 +49,14 @@ const refusals: Record<string, string | Partial<Record<Verb, string>>> = {
 // failed on the way, or tmag ran it without saying how it ended.
 const lost = (e: Failure) =>
   e.code === 'network' || e.code === 'timeout' || e.code === 'backend' || (e.code === 'http' && e.status >= 500)
+
+// refusal is why tmag refused a verb, in what the person can do about it,
+// when it refused: a refused verb did nothing.
+export function refusal(e: unknown, verb: Verb): string | undefined {
+  if (!(e instanceof Failure) || !e.code.startsWith('refused:')) return undefined
+  const why = refusals[e.code]
+  return (typeof why === 'string' ? why : why?.[verb]) ?? e.message
+}
 
 // outcome tells what became of an action that failed: one whose answer was
 // lost may or may not have happened; one tmag refused did not. tmag's own

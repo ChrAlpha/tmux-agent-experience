@@ -61,6 +61,8 @@ const made = (s: Saved) => new Computer(s, hooks)
 export const computers = signal<readonly Computer[]>(saved().map(made))
 /** Why the page forgot a computer, if it did. */
 export const notice = signal('')
+/** What became of a start the person left before it ended, and where to see it. */
+export const later = signal<{ text: string; href?: string; label?: string } | null>(null)
 
 // title names a computer: by the name it is proxied at, or the one that
 // serves the page by the first label of its host.

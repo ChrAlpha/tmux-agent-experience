@@ -1,14 +1,17 @@
 import type { ComponentChildren } from 'preact'
 import { createContext } from 'preact'
 import { useCallback, useContext, useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks'
+import { Failure } from '../api'
 import type { Computer } from '../computer'
 import type { Prompt, Session as S } from '../contract'
 import { hash } from '../route'
 import { back, now } from '../store'
 import { ago, can, find, follows, helpers, paneOf, place, shared, status, stoppable, ties, unwritten } from '../view'
 import { cls, explain, outcome } from './explain'
+import { KeyBar } from './KeyBar'
 import { Markdown } from './Markdown'
 import { Requests } from './Requests'
+import { Terminal } from './Terminal'
 
 export type Say = (text: string, error?: boolean) => void
 
@@ -77,7 +80,7 @@ export function Session({ c, id, request }: { c: Computer; id: string; request?:
         ) : !c.can('read') ? (
           <p class="empty">tmag on this computer does not read a session's turns.</p>
         ) : showScreen ? (
-          <Screen c={c} id={id} />
+          <Screen c={c} target={id} />
         ) : (
           <Turns c={c} id={id} s={s} />
         )}
@@ -86,7 +89,13 @@ export function Session({ c, id, request }: { c: Computer; id: string; request?:
       <p class={cls('toast', toast.error && 'error')} role="status">
         {toast.text}
       </p>
-      {!gone && !ambiguous && <Composer c={c} id={id} s={s} screen={showScreen} say={say} />}
+      {!gone &&
+        !ambiguous &&
+        (showScreen && c.can('keys') && c.screenOf(id).value.value?.screen ? (
+          <KeyBar c={c} target={id} say={say} />
+        ) : (
+          <Composer c={c} id={id} s={s} screen={showScreen} say={say} />
+        ))}
     </div>
   )
 }
@@ -111,7 +120,7 @@ function Ties({ c, s }: { c: Computer; s: S }) {
 // the person has not scrolled away from it, or brings it there.
 const Follow = createContext((_pin?: boolean) => {})
 
-function Scroller({ children }: { children: ComponentChildren }) {
+export function Scroller({ children }: { children: ComponentChildren }) {
   const ref = useRef<HTMLElement>(null)
   const stick = useRef(true)
   const follow = useCallback((pin = false) => {
@@ -227,18 +236,31 @@ function PromptText({ p, sent = false }: { p: Prompt; sent?: boolean }) {
   )
 }
 
-function Screen({ c, id }: { c: Computer; id: string }) {
-  const read = c.screenOf(id).value
+// Screen is what a pane shows, read when shown, in its terminal's colours.
+// A screen that could not be read again shows as it was, and says so; one
+// whose pane tmag no longer finds shows nothing.
+export function Screen({ c, target }: { c: Computer; target: string }) {
+  const read = c.screenOf(target).value
   const follow = useContext(Follow)
   // biome-ignore lint/correctness/useExhaustiveDependencies: the screen read changes what shows
   useLayoutEffect(follow, [follow, read])
-  const text = read.value?.text ?? (read.error ? explain(read.error) : 'Reading its screen…')
-  return <pre class="terminal">{text}</pre>
+  const gone = read.error instanceof Failure && read.error.code === 'not_found'
+  if (!read.value || gone) return <pre class="terminal">{read.error ? explain(read.error) : 'Reading its screen…'}</pre>
+  return (
+    <>
+      {read.error && (
+        <p class="stale" role="status">
+          Not read again: {explain(read.error)} It shows the screen as it was.
+        </p>
+      )}
+      <Terminal text={read.value.text} ansi={read.value.ansi} />
+    </>
+  )
 }
 
 function Composer({ c, id, s, screen, say }: { c: Computer; id: string; s: S | undefined; screen: boolean; say: Say }) {
-  const draft = `tmag.draft.${c.name}/${id}`
-  const [text, setText] = useState(() => sessionStorage.getItem(draft) ?? '')
+  const draft = c.draftOf(id)
+  const text = draft.value
   const [busy, setBusy] = useState(false)
   const box = useRef<HTMLTextAreaElement>(null)
 
@@ -252,9 +274,7 @@ function Composer({ c, id, s, screen, say }: { c: Computer; id: string; s: S | u
   }, [text])
 
   const edit = (value: string) => {
-    setText(value)
-    if (value) sessionStorage.setItem(draft, value)
-    else sessionStorage.removeItem(draft)
+    draft.value = value
   }
   const prompts = !s || (can(s, 'send') && c.can('send'))
   // A prompt is told from the same text sent before by what the turns held
@@ -321,7 +341,7 @@ function Composer({ c, id, s, screen, say }: { c: Computer; id: string; s: S | u
 }
 
 // useToast holds a short message: a few seconds, longer for an error.
-function useToast(): [{ text: string; error: boolean }, Say] {
+export function useToast(): [{ text: string; error: boolean }, Say] {
   const [toast, setToast] = useState({ text: '', error: false })
   const hide = useRef<ReturnType<typeof setTimeout>>(undefined)
   useEffect(() => () => clearTimeout(hide.current), [])

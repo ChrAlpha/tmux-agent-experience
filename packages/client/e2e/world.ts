@@ -106,6 +106,31 @@ export function session(a: Agent): Session | undefined {
   return list.sessions.find((s: Session) => s.id === a.session)
 }
 
+/** The pane that shows an agent's session. */
+export function paneOf(a: Agent): { server: string; id: string } {
+  const list = JSON.parse(execFileSync('tmag', ['list', '--json'], { env: env(a.at), encoding: 'utf8' }))
+  const { server, id } = list.panes.find((p: { session?: string }) => p.session === a.session) ?? {}
+  return { server: server ?? '', id: id ?? '' }
+}
+
+// startable makes the next agent tmag starts on the first computer a fake
+// with this environment, and returns its output file and how to stop it.
+export function startable(fake: Record<string, string>): { out: string; stop: () => void } {
+  const out = join(dir(), `started-${Date.now()}.out`)
+  const vars = { TMAG_BIN: join(dir(), 'bin', 'tmag'), FAKE_OUT: out, ...fake }
+  for (const [k, v] of Object.entries(vars)) tmux('set-environment', '-g', k, v)
+  writeFileSync(out, '')
+  return {
+    out,
+    stop() {
+      for (const k of Object.keys(vars)) tmux('set-environment', '-g', '-u', k)
+      const list = JSON.parse(execFileSync('tmag', ['list', '--json'], { env: env(), encoding: 'utf8' }))
+      const pane = list.panes.find((p: { session?: string }) => p.session === fake.FAKE_SESSION)?.id
+      if (pane) tmux('kill-pane', '-t', pane)
+    },
+  }
+}
+
 /** Appends a turn to a Claude Code agent's transcript, as Claude Code writes one. */
 export function addTurn(a: Agent, turn: { id: string; peer?: string; prompt?: string; reply: string }) {
   const lines = [
