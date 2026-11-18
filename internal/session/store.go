@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/lockfile"
@@ -146,10 +147,11 @@ func (s Store) Report(ctx context.Context, log *eventlog.Log, rec Record, ev *ev
 }
 
 // End ends the session with ev (SessionEnd or Exit): its record is deleted,
-// then the event logged. The caller holds the session's lock.
-func (s Store) End(ctx context.Context, log *eventlog.Log, rec Record, ev eventlog.Event) error {
+// then the event logged with the answers the session owed, and its sequence
+// number returned. The caller holds the session's lock.
+func (s Store) End(ctx context.Context, log *eventlog.Log, rec Record, ev eventlog.Event) (int64, error) {
 	if err := s.Delete(ctx, rec.Agent, rec.ID); err != nil {
-		return err
+		return 0, err
 	}
 	ev.Agent, ev.Session = rec.Agent, rec.ID
 	if ev.Cwd == "" {
@@ -158,5 +160,7 @@ func (s Store) End(ctx context.Context, log *eventlog.Log, rec Record, ev eventl
 	if ev.LastHookAt.IsZero() {
 		ev.LastHookAt = rec.LastHookAt
 	}
-	return log.Append(ctx, &ev)
+	ev.Owes = rec.Owing(time.Now())
+	err := log.Append(ctx, &ev)
+	return ev.Seq, err
 }

@@ -62,6 +62,8 @@ func next(cmd, target string, err error) string {
 		return nextAfterRefusal(cmd, target, refused.Reason)
 	}
 	switch {
+	case errors.Is(err, errUnshown):
+		return fmt.Sprintf("tmag wait %s --for idle waits until it shows its session", target)
 	case errors.As(err, new(notShown)):
 		return "it still shows no session: tmag list shows what runs there. An agent at a trust dialog waits for the person; Codex shows its session from its first prompt, and in its shared daemon only with the thread-id title item"
 	case cmd == "wait" && (errors.Is(err, errTimeout) || errors.Is(err, context.DeadlineExceeded)):
@@ -105,6 +107,14 @@ func nextAfterRefusal(cmd, target, reason string) string {
 		return "this is your own session: use another agent's id from tmag list"
 	case query.RefuseAgent:
 		return "only the person can decide this"
+	case query.RefuseUnasked:
+		return fmt.Sprintf("answer an ask of send --wait in your final message; to tell %s something it did not ask for, use tmag send %s -", target, target)
+	case query.RefuseCycle:
+		return fmt.Sprintf("ask it with tmag send %s --reply - instead, which does not hold your turn, and finish your turn", target)
+	case query.RefuseDepth:
+		return "do the work yourself, or tell the person what needs another agent"
+	case query.RefuseOwing:
+		return fmt.Sprintf("ask another agent, or wait for %s's answers with tmag wait %s --for idle", target, target)
 	}
 	return ""
 }

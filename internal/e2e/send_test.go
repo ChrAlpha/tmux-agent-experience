@@ -258,6 +258,8 @@ func TestReplyReachesABusyAsker(t *testing.T) {
 	}, filepath.Join(bin, "claude"))
 	h.waitPane(a, "idle", "process")
 	h.waitPane(b, "idle", "process")
+	typed(t, h, a, sidA, "tmag send "+sidB+" --reply -- what is left")
+	h.waitSession(sidB, "idle")
 
 	if r := h.tmag("", "send", sidA[:8], "long work"); r.code != 0 {
 		t.Fatalf("send: %d %s", r.code, r.out)
@@ -288,6 +290,8 @@ func TestReplyReachesAPaneOnlyAsker(t *testing.T) {
 	}, filepath.Join(bin, "claude"))
 	h.waitPane(a, "idle", "process")
 	h.waitPane(b, "idle", "process")
+	typed(t, h, a, sidA, "tmag send "+sidB+" --reply -- what is left")
+	h.waitSession(sidB, "idle")
 
 	if r := h.tmag("", "send", sidA[:8], "long work"); r.code != 0 {
 		t.Fatalf("send: %d %s", r.code, r.out)

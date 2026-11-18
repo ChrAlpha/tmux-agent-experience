@@ -84,11 +84,15 @@ func throughService(outer context.Context, log *eventlog.Log, v View, s Session,
 		return Delivery{}, err
 	}
 
-	d, undo, err := recordDelivery(ctx, log, s, verb.gate, driver.Service, nil, func() error {
+	d, undo, project, err := recordDelivery(ctx, log, s, verb.gate, driver.Service, nil, func() error {
 		return sessionEnded(s.ID)
 	}, verb.mark, nil)
+	defer project(outer)
 	if err != nil {
 		return Delivery{}, err
+	}
+	if err := outer.Err(); err != nil {
+		return undone(outer, d, &NotTakenError{Seq: d.Seq, Target: s.ID, Err: err}, undo) // nothing written
 	}
 	ctx, cancelDelivery := context.WithTimeout(outer, serviceTimeout)
 	defer cancelDelivery()
@@ -145,7 +149,7 @@ func unknownDelivery(d Delivery, err error) error {
 // logged: it runs under the session's lock, after the fresh gate.
 //
 // undo takes back what mark set, for a delivery that proved it took nothing.
-func recordDelivery(ctx context.Context, log *eventlog.Log, s Session, gate stateGate, via string, proven *session.Inbox, gone func() error, mark func(*session.Record) eventlog.Event, decide func(session.Record)) (Delivery, func(context.Context) error, error) {
+func recordDelivery(ctx context.Context, log *eventlog.Log, s Session, gate stateGate, via string, proven *session.Inbox, gone func() error, mark func(*session.Record) eventlog.Event, decide func(session.Record)) (Delivery, func(context.Context) error, func(context.Context), error) {
 	store := session.Store{Dir: log.Dir}
 	var d Delivery
 	var prior, marked, idled session.Record
@@ -175,29 +179,44 @@ func recordDelivery(ctx context.Context, log *eventlog.Log, s Session, gate stat
 		prior = rec
 		ev := mark(&rec)
 		marked = rec
+		if rec.Reports() != prior.Reports() {
+			rec.Report(&ev) // the mark opened an obligation
+		}
 		ev.Agent, ev.Session, ev.Via = fs.Agent, fs.ID, via
 		if err := store.Put(ctx, rec); err != nil {
 			return err
 		}
 		if err := log.Append(ctx, &ev); err != nil {
-			return err
+			// Nothing was delivered: the record goes back to what it was,
+			// marks included, for the next delivery to go through.
+			cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
+			defer cancel()
+			return errors.Join(err, store.Put(cleanup, prior))
 		}
 		d = Delivery{Session: fs, Via: via, Seq: ev.Seq}
 		return nil
 	})
-	if nativeIdle {
-		err = errors.Join(err, projectNativeIdle(ctx, log, store, idled))
+	// A native idle applied here reaches the panes once the channel was
+	// written: projecting it first could spend the delivery's budget.
+	project := func(outer context.Context) {
+		if nativeIdle {
+			ctx, cancel := context.WithTimeout(context.WithoutCancel(outer), cleanupTimeout)
+			defer cancel()
+			projectNativeIdle(ctx, log, store, idled)
+		}
 	}
-	return d, unmark(store, s, prior, marked), err
+	return d, unmark(log, store, s, prior, marked), project, err
 }
 
 // unmark returns what takes back the marks a delivery set on its session
-// (Sent, Queued, Halted): each one the record still holds goes back to what
-// it was, under the session's lock. A mark is the time it was set, to the
-// nanosecond, so one a later delivery set is never taken for this one's.
-// Nothing is logged: the marks are tmag's own, not part of what an event
-// reports.
-func unmark(store session.Store, s Session, prior, marked session.Record) func(context.Context) error {
+// (Sent, Queued, Halted, the end a notice told of) and the obligation it
+// opened: each mark the record
+// still holds goes back to what it was, under the session's lock. A mark is
+// the time it was set, to the nanosecond, so one a later delivery set is
+// never taken for this one's. The marks are tmag's own, not part of what an
+// event reports, so taking one back logs nothing; closing the obligation
+// logs the Owes event that reports it.
+func unmark(log *eventlog.Log, store session.Store, s Session, prior, marked session.Record) func(context.Context) error {
 	return func(ctx context.Context) error {
 		return store.Lock(ctx, s.Agent, s.ID, func() error {
 			cur, ok, err := store.Get(ctx, s.Agent, s.ID)
@@ -213,10 +232,24 @@ func unmark(store session.Store, s Session, prior, marked session.Record) func(c
 			back(&cur.Sent, prior.Sent, marked.Sent)
 			back(&cur.Queued, prior.Queued, marked.Queued)
 			back(&cur.Halted, prior.Halted, marked.Halted)
-			if !changed {
-				return nil
+			owed := false
+			for _, o := range marked.Owes {
+				if !slices.ContainsFunc(prior.Owes, func(p eventlog.Obligation) bool { return p.ID == o.ID }) {
+					owed = cur.Settle(o.ID) || owed
+				}
 			}
-			return store.Put(ctx, cur)
+			for _, t := range marked.Notified {
+				if i := slices.Index(cur.Notified, t); i >= 0 && !slices.Contains(prior.Notified, t) {
+					cur.Notified, changed = slices.Delete(slices.Clone(cur.Notified), i, i+1), true
+				}
+			}
+			switch {
+			case owed:
+				return store.Report(ctx, log, cur, &eventlog.Event{Event: eventlog.Owes})
+			case changed:
+				return store.Put(ctx, cur)
+			}
+			return nil
 		})
 	}
 }

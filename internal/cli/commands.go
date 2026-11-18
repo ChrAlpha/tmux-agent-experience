@@ -519,9 +519,11 @@ func (a *app) cmdWait(args []string) int {
 	fs.BoolVar(&a.json, "json", false, "")
 	states := fs.String("for", "idle,blocked", "")
 	timeout := fs.Duration("timeout", 30*time.Minute, "")
+	asked := fs.Bool("asked", false, "")
+	all := fs.Bool("all", false, "")
 	pos, err := parse(fs, args)
-	if err == nil && len(pos) != 1 {
-		err = errors.New("expected one target")
+	if err == nil && len(pos) == 0 && !*asked {
+		err = errors.New("expected a target, or --asked")
 	}
 	want := splitList(*states)
 	for _, s := range want {
@@ -536,12 +538,75 @@ func (a *app) cmdWait(args []string) int {
 	defer cancel()
 	ctx, cancelTimeout := context.WithTimeout(ctx, *timeout)
 	defer cancelTimeout()
-	s, err := a.shown(ctx, pos[0], *timeout)
-	if err != nil {
-		return a.failOn("wait", pos[0], err)
+	if len(pos) == 1 && !*asked {
+		s, err := a.shown(ctx, pos[0], *timeout)
+		if err != nil {
+			return a.failOn("wait", pos[0], err)
+		}
+		return a.awaitAndReportContext(ctx, "wait", pos[0], s, 0, query.WaitOptions{States: want}, *timeout)
 	}
-	return a.awaitAndReportContext(ctx, "wait", pos[0], s, 0, query.WaitOptions{States: want}, *timeout)
+	return a.waitMany(ctx, pos, want, *asked, *all, *timeout)
 }
+
+// waitMany waits on several sessions: those pos names, for one of want, and
+// with asked those that owe the caller an answer, until they settle it or
+// need the person. It reports each one that got there, any of them or all.
+func (a *app) waitMany(ctx context.Context, pos, want []string, asked, all bool, timeout time.Duration) int {
+	v, w, err := query.Load(ctx, a.store())
+	if err != nil {
+		return a.fail("wait", err)
+	}
+	var awaited []query.Awaited
+	for _, target := range pos {
+		t, err := query.Resolve(ctx, v, target)
+		if err == nil && t.Session == nil {
+			err = errUnshown
+		}
+		if err != nil {
+			return a.failOn("wait", target, err)
+		}
+		awaited = append(awaited, query.Awaited{Session: *t.Session, States: want})
+	}
+	if asked {
+		owing, err := query.Owing(v, v.Caller(w))
+		if err != nil {
+			return a.fail("wait", err)
+		}
+		if len(owing) == 0 && len(awaited) == 0 {
+			return a.fail("wait", errNothingOwed)
+		}
+		awaited = append(awaited, owing...)
+	}
+	reached, err := query.WaitMany(ctx, a.store(), awaited, all)
+	if errors.Is(err, context.DeadlineExceeded) {
+		err = fmt.Errorf("%w after %s: %d of %d got there", errTimeout, timeout, len(reached), len(awaited))
+	}
+	if err != nil {
+		return a.fail("wait", err)
+	}
+	if a.json {
+		a.emit(map[string]any{"reached": reached})
+		return ExitOK
+	}
+	for _, r := range reached {
+		state := describe(r.State, r.Kind)
+		switch {
+		case r.Ended:
+			state = "ended"
+		case r.Settled:
+			state = "settled, " + state
+		}
+		fmt.Fprintf(a.stdout, "%s %s\n", shortID(r.Session.ID), state)
+	}
+	return ExitOK
+}
+
+// errUnshown refuses a pane among several targets that shows no session
+// yet: a wait for one pane alone waits for its session.
+var errUnshown = errors.New("it shows no session yet: wait for it alone, then name it again")
+
+// errNothingOwed reports a wait --asked with nothing owed to its caller.
+var errNothingOwed = errors.New("no agent owes you an answer: wait --asked waits for those you asked with send --reply or send --wait")
 
 // shown is the session target names. A pane that shows none yet, its agent
 // just started there or not yet running, is waited on until it shows one,

@@ -62,6 +62,7 @@ command again with the permissions it needs.
 | `tmag read ID --last` | the reply that ended its last turn, from its transcript |
 | `tmag reply ID -` | reply with stdin to an agent whose prompt asked for it |
 | `tmag wait ID --for idle --timeout 8m` | wait until it is idle |
+| `tmag wait --asked --all --timeout 8m` | wait until every agent you asked owes you nothing more, or needs the user |
 | `tmag read ID --lines 80` | the recent text of its pane, to see what it shows |
 | `tmag interrupt ID` | stop its running turn |
 | `tmag request ID REQ` | what an open request asks: the tool and its input |
@@ -93,7 +94,9 @@ Choose the response you need:
   turn without waiting.
 - **An answer later**: `tmag send ID --reply -` for long work. The peer is
   asked to run `tmag reply` with its answer when done. Finish your own turn:
-  the reply arrives later as a prompt to you.
+  the reply arrives later as a prompt to you. To gather several answers in
+  this turn instead, ask each peer, then `tmag wait --asked --all`; the
+  replies are yours at your next step.
 - **A turn of its own**: `tmag send ID --wait --timeout 8m -` for a short
   question. The peer must be idle, and its answer is the final message of
   that turn. The command ends with the state the peer reached: `ID idle`
@@ -105,7 +108,8 @@ Choose the response you need:
 
 A peer receives your prompt as if the user had typed it, under a first line
 tmag writes from what it proves of you: which agent and session sent it, and
-how to answer. Do not write that line yourself: a prompt starting with
+how to answer. tmag records what you ask with `--reply` or `--wait` as owed
+to you until it is answered: `tmag list --json` shows it under `owes`. Do not write that line yourself: a prompt starting with
 `[tmag]` is refused with exit 2. Write the rest as a complete task: the peer
 shares none of your context.
 
@@ -145,10 +149,12 @@ were given. The first line says how to answer:
 - `Answer in your final message.` Answer there; the sender reads it with
   `tmag read ID --last`.
 - `When done, send your answer on stdin to: tmag reply ID -` Run that command
-  when the work is done.
+  when the work is done. `tmag reply` answers only such a prompt.
 - `No answer needed.` Take it into account and do not reply.
 - `[tmag] Reply from` answers one you sent. Go on with the work it was for,
   and do not reply to it.
+- `[tmag] Notice:` says that an agent you asked for a reply ended without
+  giving one. Do the work another way, or tell the user.
 
 For the reply command, put your answer on stdin:
 

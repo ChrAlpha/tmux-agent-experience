@@ -9,6 +9,7 @@ import (
 	"github.com/ChrAlpha/tmux-agent-experience/internal/claudestatus"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/lockfile"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/notify"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/tmux"
@@ -513,9 +514,10 @@ func (env Env) unlist(ctx context.Context, a Attachment, p tmux.Pane) error {
 }
 
 // exit ends a session whose host process exited without SessionEnd, if it
-// still has.
+// still has, and starts what settles its end.
 func (env Env) exit(ctx context.Context, r session.Record) error {
-	return env.Store.Lock(ctx, r.Agent, r.ID, func() error {
+	var seq int64
+	err := env.Store.Lock(ctx, r.Agent, r.ID, func() error {
 		cur, ok, err := env.Store.Get(ctx, r.Agent, r.ID)
 		if err != nil || !ok {
 			return err
@@ -533,8 +535,13 @@ func (env Env) exit(ctx context.Context, r session.Record) error {
 		if pt.Alive(cur.Host.PID, cur.Host.Start) {
 			return nil
 		}
-		return env.Store.End(ctx, env.Log, cur, eventlog.Event{Event: eventlog.Exit})
+		seq, err = env.Store.End(ctx, env.Log, cur, eventlog.Event{Event: eventlog.Exit})
+		return err
 	})
+	if err != nil || seq == 0 {
+		return err
+	}
+	return notify.Ended(seq)
 }
 
 func (env Env) append(ctx context.Context, e eventlog.Event) error {

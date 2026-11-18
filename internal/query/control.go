@@ -23,6 +23,10 @@ const (
 	RefuseUnsupported = "unsupported" // no channel carries the verb to this session
 	RefuseSelf        = "self"        // the session's own agent runs the command
 	RefuseAgent       = "agent"       // an agent answers only when @tmag-answer lets agents
+	RefuseUnasked     = "unasked"     // a reply to a session that asked for none
+	RefuseCycle       = "cycle"       // a wait for a session that waits for the caller
+	RefuseDepth       = "depth"       // an ask that passes work on further than @tmag-peer-depth
+	RefuseOwing       = "owing"       // an ask of a session that owes as many answers as it may
 )
 
 // RefusedError is returned when a verb's safety gate rejects delivery.
@@ -51,19 +55,25 @@ type Delivery struct {
 // afterwards is one the pane's lock guards, and returns the view and who
 // runs the verb.
 func prepare(ctx context.Context, log *eventlog.Log) (View, Caller, error) {
+	v, _, c, err := prepareWorld(ctx, log)
+	return v, c, err
+}
+
+// prepareWorld is prepare, with the world the view was built from.
+func prepareWorld(ctx context.Context, log *eventlog.Log) (View, *attach.World, Caller, error) {
 	store := session.Store{Dir: log.Dir}
 	w, err := attach.Load(ctx)
 	if err != nil {
-		return View{}, Caller{}, err
+		return View{}, nil, Caller{}, err
 	}
 	if err := attach.Reconcile(ctx, attach.Env{Log: log, Store: store}, w); err != nil {
-		return View{}, Caller{}, err
+		return View{}, nil, Caller{}, err
 	}
 	v, w, err := Load(ctx, store)
 	if err != nil {
-		return View{}, Caller{}, err
+		return View{}, nil, Caller{}, err
 	}
-	return v, callerFor(ctx, v, w), nil
+	return v, w, callerFor(ctx, v, w), nil
 }
 
 // controlled resolves target to the session a verb acts on and the pane it
@@ -213,32 +223,46 @@ func throughPane(ctx context.Context, log *eventlog.Log, v View, s Session, name
 			if err := store.Put(ctx, mark); err != nil {
 				return err
 			}
-			if err := verb.press(ctx, fs, fp); err != nil {
-				return err
+			// From here the keys may reach the agent, whatever fails next, so
+			// the verb is logged however typing went, under a budget of its own
+			// if typing spent the verb's.
+			d = Delivery{Session: fs, Pane: &fp, Via: driver.Pane}
+			pressed := verb.press(ctx, fs, fp)
+			logCtx := ctx
+			if pressed != nil {
+				var cancel context.CancelFunc
+				logCtx, cancel = context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
+				defer cancel()
 			}
 			if after != nil {
-				err = store.Report(ctx, log, *after, &ev)
+				err = store.Report(logCtx, log, *after, &ev)
 			} else {
-				err = log.Append(ctx, &ev)
+				err = log.Append(logCtx, &ev)
 			}
-			if err != nil {
+			if err == nil {
+				d.Seq = ev.Seq
+			}
+			switch {
+			case pressed != nil:
+				return errors.Join(pressed, err)
+			case err != nil:
 				return fmt.Errorf("%s delivered to %s but not logged; do not repeat it: %w", ev.Event, fp.ID, err)
 			}
-			d = Delivery{Session: fs, Pane: &fp, Via: driver.Pane, Seq: ev.Seq}
 			return nil
 		})
 	})
 	if nativeIdle {
-		err = errors.Join(err, projectNativeIdle(ctx, log, store, idled))
+		projectNativeIdle(ctx, log, store, idled)
 	}
 	return d, err
 }
 
 // projectNativeIdle projects a native idle saved under a control lock onto
-// the panes the record lists, once the lock is released.
-func projectNativeIdle(ctx context.Context, log *eventlog.Log, store session.Store, rec session.Record) error {
-	_, _, err := attach.Env{Log: log, Store: store}.Project(ctx, rec)
-	return err
+// the panes the record lists, once the lock is released and the verb was
+// delivered. It is best effort, and no verb fails on it: the record holds the
+// idle, and the session's next hook or reconciliation projects it again.
+func projectNativeIdle(ctx context.Context, log *eventlog.Log, store session.Store, rec session.Record) {
+	_, _, _ = attach.Env{Log: log, Store: store}.Project(ctx, rec)
 }
 
 // paneGate applies the pane's checks: it shows the session's main agent,

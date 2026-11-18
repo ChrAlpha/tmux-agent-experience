@@ -61,7 +61,7 @@ func TestNotTakenDeliveryLeavesNoMark(t *testing.T) {
 		if !ok {
 			t.Fatal("no session")
 		}
-		_, err = throughInbox(ctx, log, v, s, "hello", Caller{}, liveGate, false)
+		_, err = throughInbox(ctx, log, v, s, prompt{text: "hello", ask: AskNoAnswer}, liveGate)
 		var notTaken *NotTakenError
 		if !errors.As(err, &notTaken) {
 			t.Fatalf("attempt %d: %v, want the inbox's refusal to take it", attempt, err)
@@ -86,7 +86,7 @@ func TestUnmarkKeepsALaterMark(t *testing.T) {
 	if err := store.Put(t.Context(), later); err != nil {
 		t.Fatal(err)
 	}
-	if err := unmark(store, s, prior, marked)(context.Background()); err != nil {
+	if err := unmark(eventlog.Open(store.Dir), store, s, prior, marked)(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	got, _, err := store.Get(t.Context(), s.Agent, s.ID)
@@ -149,7 +149,7 @@ func TestUndoKeepsALaterMarkOfTheSameSecond(t *testing.T) {
 		if !ok {
 			return errors.New("no session")
 		}
-		_, err = throughInbox(ctx, log, v, s, "hello", Caller{}, liveGate, false)
+		_, err = throughInbox(ctx, log, v, s, prompt{text: "hello", ask: AskNoAnswer}, liveGate)
 		return err
 	}
 	queued := func() time.Time {

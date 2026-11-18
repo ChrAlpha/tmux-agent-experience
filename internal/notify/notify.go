@@ -1,6 +1,7 @@
 // Package notify runs the person's @tmag-notify command for an alert, the
 // change a hook rings a pane's bell for, so that it reaches them away from
-// the terminal too.
+// the terminal too; and it starts what settles a session's end: telling the
+// agents it owed a reply that none will come.
 package notify
 
 import (
@@ -11,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -124,6 +126,23 @@ func Start(bin, command string, a Alert) error {
 		return err
 	}
 	go func() { _ = cmd.Wait() }() // reaped, should the hook outlive it
+	return nil
+}
+
+// Ended starts, detached, `tmag notify --ended SEQ` for the end tmag logged
+// at seq, and returns at once: whoever ended the session, a hook among
+// them, does not wait for what that end leaves to settle (see query.Ending).
+func Ended(seq int64) error {
+	bin, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("notify --ended: %w", err)
+	}
+	cmd := exec.Command(bin, "notify", "--ended", strconv.FormatInt(seq, 10))
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("notify --ended: %w", err)
+	}
+	go func() { _ = cmd.Wait() }()
 	return nil
 }
 

@@ -18,10 +18,8 @@ import (
 )
 
 // PendingWindow is how long a delivery holds off another without the agent
-// reporting: a prompt until a turn confirms it, a message until the main
-// agent reaches its next step. Input that starts no turn (a slash command,
-// say) releases the session when it passes.
-const PendingWindow = 15 * time.Second
+// reporting (see session.PendingWindow).
+const PendingWindow = session.PendingWindow
 
 // pending reports whether a prompt tmag submitted is still unconfirmed.
 func pending(rec session.Record, now time.Time) bool {
@@ -60,12 +58,18 @@ const (
 	Answering
 	// AskNoAnswer tells the receiver that no answer is needed.
 	AskNoAnswer
+	// Notice tells an asker that the session it asked ended without
+	// answering: tmag writes it on its own account.
+	Notice
 )
 
 // header is the line tmag writes atop a prompt the caller sends: none for a
-// person's, whose prompts are their own.
+// person's, whose prompts are their own, nor for a notice, which is tmag's
+// line alone.
 func header(c Caller, ask Ask) (string, error) {
 	switch {
+	case ask == Notice:
+		return "", nil
 	case ask == AskNoAnswer:
 		// A message says what it says; no answer is asked for.
 		if c.By == nil {
@@ -101,7 +105,7 @@ func header(c Caller, ask Ask) (string, error) {
 // caller's own. The Send event is logged under the session's lock before the
 // channel writes, so what the prompt causes is logged after it.
 func Send(ctx context.Context, log *eventlog.Log, target, text string, ask Ask) (Delivery, error) {
-	return deliver(ctx, log, target, text, ask, "send", "prompt")
+	return deliver(ctx, log, target, prompt{text: text, ask: ask}, "send", "prompt")
 }
 
 // deliver carries a prompt for Send or Reply by the plan the driver makes,
@@ -109,52 +113,109 @@ func Send(ctx context.Context, log *eventlog.Log, target, text string, ask Ask) 
 // the session. A channel is reached and proven first; the prompt is marked
 // on the session and its Send event logged under the session's lock,
 // against fresh state, before it is written.
-func deliver(ctx context.Context, log *eventlog.Log, target, text string, ask Ask, verb, selfVerb string) (Delivery, error) {
-	text = strings.TrimRight(tmux.SanitizePrompt(text), "\n")
-	if strings.TrimSpace(text) == "" {
+func deliver(ctx context.Context, log *eventlog.Log, target string, p prompt, verb, selfVerb string) (Delivery, error) {
+	p.text = strings.TrimRight(tmux.SanitizePrompt(p.text), "\n")
+	if strings.TrimSpace(p.text) == "" {
 		return Delivery{}, errors.New("nothing to " + verb)
 	}
-	if first, _, _ := strings.Cut(strings.TrimLeft(text, " \t\n"), "\n"); strings.HasPrefix(strings.ToLower(first), Marker) {
+	if first, _, _ := strings.Cut(strings.TrimLeft(p.text, " \t\n"), "\n"); p.ask != Notice && strings.HasPrefix(strings.ToLower(first), Marker) {
 		return Delivery{}, ErrMarker
 	}
-	v, caller, err := prepare(ctx, log)
+	v, w, caller, err := prepareWorld(ctx, log)
 	if err != nil {
 		return Delivery{}, err
 	}
-	line, err := header(caller, ask)
+	if p.ask == Notice {
+		caller = Caller{} // tmag speaks for itself, about an end it logged
+	}
+	line, err := header(caller, p.ask)
 	if err != nil {
 		return Delivery{}, err
 	}
 	if line != "" {
-		text = line + "\n" + text
+		p.text = line + "\n" + p.text
 	}
 	s, named, err := controlled(ctx, v, target)
 	if err != nil {
+		if p.ask == Answering {
+			err = forgetAsker(ctx, log, v, caller, target, err)
+		}
 		return Delivery{}, err
 	}
 	if err := caller.selfGate(s, selfVerb); err != nil {
 		return Delivery{}, err
 	}
-	idle, wait := s.State == adapter.Idle, ask == AskFinal
-	from := driver.Person
-	if caller.By != nil {
-		from = driver.Agent
+	p.caller, p.from = caller, driver.Person
+	if caller.By != nil || p.ask == Notice {
+		p.from = driver.Agent
 	}
-	gate := liveGate
-	if wait {
+	switch p.ask {
+	case AskFinal, AskReply:
+		if p.owe, err = asking(ctx, v, caller, s, p.ask); err != nil {
+			return Delivery{}, err
+		}
+	case Answering:
+		claim, err := claimReply(ctx, log, w, caller, s)
+		if err != nil {
+			return Delivery{}, err
+		}
+		d, err := carry(ctx, log, v, s, named, p)
+		return d, errors.Join(err, releaseReply(ctx, log, caller, claim, d, err))
+	}
+	return carry(ctx, log, v, s, named, p)
+}
+
+// prompt is one prompt on its way: its text with tmag's first line, who it
+// speaks for and how it asks to be answered, the obligation it opens on the
+// receiver, if any, and for tmag's notice the end it tells of.
+type prompt struct {
+	text   string
+	caller Caller
+	ask    Ask
+	from   driver.Caller
+	owe    *eventlog.Obligation
+	notice int64
+}
+
+// mark records the prompt on the receiver's record, under its lock: the
+// obligation it opens, under an id of its own, or the end its notice tells
+// of.
+func (p prompt) mark(rec *session.Record) {
+	if p.owe != nil {
+		rec.Owe(p.owe.To, p.owe.Kind, p.owe.Depth, time.Now())
+	}
+	if p.notice != 0 {
+		rec.Notify(p.notice, time.Now())
+	}
+}
+
+// carry delivers p to s by the plan the driver makes for it.
+func carry(ctx context.Context, log *eventlog.Log, v View, s Session, named *Pane, p prompt) (Delivery, error) {
+	idle, wait := s.State == adapter.Idle, p.ask == AskFinal
+	gate, paneGate := liveGate, idleGate
+	switch {
+	case wait:
 		gate = idleGate
+	case p.ask == Answering || p.ask == Notice:
+		gate = invitedGate
 	}
-	plan := driver.SendPlan(s.Agent, s.Runtime, from, wait, idle)
+	switch {
+	case p.owe != nil:
+		gate, paneGate = roomy(gate), roomy(paneGate)
+	case p.notice != 0:
+		gate, paneGate = untold(p.notice, gate), untold(p.notice, paneGate)
+	}
+	plan := driver.SendPlan(s.Agent, s.Runtime, p.from, wait, idle)
 	var tried error
 	for _, channel := range plan.Try {
 		var d Delivery
 		switch channel {
 		case driver.Inbox:
-			d, tried = throughInbox(ctx, log, v, s, text, caller, gate, wait)
+			d, tried = throughInbox(ctx, log, v, s, p, gate)
 		case driver.Pane:
-			d, tried = throughPane(ctx, log, v, s, named, idleGate, panePrompt(text, caller))
+			d, tried = throughPane(ctx, log, v, s, named, paneGate, panePrompt(p))
 		case driver.Service:
-			verb, started := servicePrompt(s, text, caller, gate, wait)
+			verb, started := servicePrompt(s, p, gate)
 			d, tried = throughService(ctx, log, v, s, verb)
 			d.Turn = *started
 		}
@@ -184,8 +245,8 @@ func unbound(err error) bool {
 // own starts on an idle thread; any other prompt starts an idle thread's
 // turn or steers the active one, bound to the turn the fresh record names.
 // started is the turn a delivery started, once it has.
-func servicePrompt(s Session, text string, caller Caller, gate stateGate, wait bool) (verb serviceVerb, started *string) {
-	active, turn := false, ""
+func servicePrompt(s Session, p prompt, gate stateGate) (verb serviceVerb, started *string) {
+	active, turn, wait := false, "", p.ask == AskFinal
 	started = new(string)
 	return serviceVerb{
 		gate: gate,
@@ -218,14 +279,15 @@ func servicePrompt(s Session, text string, caller Caller, gate stateGate, wait b
 			if active {
 				turn = rec.Turn
 			}
-			return sentEvent(*rec, text, caller)
+			p.mark(rec)
+			return sentEvent(*rec, p)
 		},
 		deliver: func(ctx context.Context, c *codexsvc.Client) error {
 			if active {
-				return c.SteerTurn(ctx, s.ID, turn, text)
+				return c.SteerTurn(ctx, s.ID, turn, p.text)
 			}
 			var err error
-			*started, err = c.StartTurn(ctx, s.ID, text)
+			*started, err = c.StartTurn(ctx, s.ID, p.text)
 			return err
 		},
 	}, started
@@ -234,14 +296,21 @@ func servicePrompt(s Session, text string, caller Caller, gate stateGate, wait b
 // panePrompt is the pane delivery of a prompt: it marks the prompt sent
 // before typing, so another sender is held off even if typing fails after the
 // prompt went out, and logs Send before the agent's hooks can report the turn.
-func panePrompt(text string, caller Caller) paneVerb {
+// A prompt that opens an obligation reports the session it marked.
+func panePrompt(pr prompt) paneVerb {
 	return paneVerb{
-		plan: func(_ Session, p Pane, rec session.Record) (session.Record, eventlog.Event, *session.Record) {
+		plan: func(_ Session, _ Pane, rec session.Record) (session.Record, eventlog.Event, *session.Record) {
+			before := rec.Reports()
 			rec.Sent = time.Now().UTC()
-			return rec, sentEvent(rec, text, caller), nil
+			pr.mark(&rec)
+			var after *session.Record
+			if rec.Reports() != before {
+				after = &rec
+			}
+			return rec, sentEvent(rec, pr), after
 		},
 		press: func(ctx context.Context, s Session, p Pane) error {
-			if err := (tmux.Server{Socket: p.Server}).Submit(ctx, p.ID, text); err != nil {
+			if err := (tmux.Server{Socket: p.Server}).Submit(ctx, p.ID, pr.text); err != nil {
 				return fmt.Errorf("typing into %s failed, perhaps after the prompt was delivered; %s takes no other prompt for %s: %w",
 					p.ID, s.ID, PendingWindow, err)
 			}
@@ -251,16 +320,16 @@ func panePrompt(text string, caller Caller) paneVerb {
 }
 
 // sentEvent is the Send event of a prompt, before its channel writes it.
-func sentEvent(rec session.Record, text string, caller Caller) eventlog.Event {
-	ev := eventlog.Event{Event: eventlog.Send, Cwd: rec.Cwd, Bytes: len(text)}
-	caller.stamp(&ev)
+func sentEvent(rec session.Record, p prompt) eventlog.Event {
+	ev := eventlog.Event{Event: eventlog.Send, Cwd: rec.Cwd, Bytes: len(p.text), Notice: p.notice}
+	p.caller.stamp(&ev)
 	return ev
 }
 
 // throughInbox delivers text on the socket the session's own agent serves
 // for messages. The socket is dialled and proven before anything is logged,
 // so a message is only recorded for a channel that reaches the session.
-func throughInbox(outer context.Context, log *eventlog.Log, v View, s Session, text string, caller Caller, gate stateGate, wait bool) (Delivery, error) {
+func throughInbox(outer context.Context, log *eventlog.Log, v View, s Session, p prompt, gate stateGate) (Delivery, error) {
 	if err := gateOf(v, s, gate); err != nil {
 		return Delivery{}, err
 	}
@@ -283,32 +352,37 @@ func throughInbox(outer context.Context, log *eventlog.Log, v View, s Session, t
 	// either class; the frame still attests what was true then.
 	var fromMode string
 	var held bool
-	d, undo, err := recordDelivery(ctx, log, s, gate, driver.Inbox, rec.Inbox, func() error {
+	d, undo, project, err := recordDelivery(ctx, log, s, gate, driver.Inbox, rec.Inbox, func() error {
 		return sessionEnded(s.ID)
 	}, func(rec *session.Record) eventlog.Event {
 		// A wait asks for a turn of its own: only a turn starting clears its
 		// Sent mark. A late report of the previous turn clears neither it nor
 		// the wait. The asynchronous modes are queued until the main agent's
 		// next report.
-		if wait {
+		if p.ask == AskFinal {
 			rec.Sent = time.Now().UTC()
 		} else {
 			rec.Queued = time.Now().UTC()
 		}
-		return sentEvent(*rec, text, caller)
+		p.mark(rec)
+		return sentEvent(*rec, p)
 	}, func(receiver session.Record) {
-		fromMode, held = claudeDelivery(ctx, store, receiver, caller)
+		fromMode, held = claudeDelivery(ctx, store, receiver, p)
 	})
+	defer project(outer)
 	if err != nil {
 		return Delivery{}, err
+	}
+	if err := outer.Err(); err != nil {
+		return undone(outer, d, &NotTakenError{Seq: d.Seq, Target: s.ID, Err: err}, undo) // nothing written
 	}
 	ctx, cancelDelivery := context.WithTimeout(outer, serviceTimeout)
 	defer cancelDelivery()
 	if s.Agent == proc.Claude {
 		d.Held = held
-		err = c.Claude(ctx, inbox.ClaudeMessage{Name: senderName(caller), Mode: fromMode, Session: rec.ID, Text: text})
+		err = c.Claude(ctx, inbox.ClaudeMessage{Name: senderName(p.caller), Mode: fromMode, Session: rec.ID, Text: p.text})
 	} else {
-		err = c.Extension(ctx, text, s.ID)
+		err = c.Extension(ctx, p.text, s.ID)
 	}
 	if err != nil {
 		return undone(outer, d, inboxFailure(d, err), undo)
@@ -318,10 +392,12 @@ func throughInbox(outer context.Context, log *eventlog.Log, v View, s Session, t
 
 // claudeDelivery decides a Claude delivery's permission class and whether the
 // receiver will hold it, from the receiver's record read under its lock: a
-// person or owner client speaks with the receiver's class, and an agent with
-// its own class as its record, read afresh, says.
-func claudeDelivery(ctx context.Context, store session.Store, receiver session.Record, caller Caller) (mode string, held bool) {
-	mode = claudeMode(ctx, store, receiver, caller)
+// person or owner client speaks with the receiver's class, an agent with its
+// own class as its record, read afresh, says, and tmag's notice with none.
+func claudeDelivery(ctx context.Context, store session.Store, receiver session.Record, p prompt) (mode string, held bool) {
+	if p.ask != Notice {
+		mode = claudeMode(ctx, store, receiver, p.caller)
+	}
 	held = receiver.Permission == adapter.PermissionBypass && mode != adapter.PermissionBypass
 	return mode, held
 }
@@ -383,6 +459,17 @@ func inboxAt(ctx context.Context, s Session, rec session.Record) (*inbox.Conn, e
 // liveGate admits a send to a live session with nothing of tmag's still
 // unconfirmed. Any state takes it: the session's own channel queues it.
 func liveGate(rec session.Record, now time.Time) error { return unconfirmed(rec, now) }
+
+// invitedGate admits a reply or a notice, which the receiver's own ask
+// invited, and whose number its obligations bound: a message tmag queued
+// before does not hold it off, while a prompt tmag sent that no turn has
+// confirmed still does.
+func invitedGate(rec session.Record, now time.Time) error {
+	if pending(rec, now) {
+		return unconfirmed(rec, now)
+	}
+	return nil
+}
 
 // idleGate admits an idle session with nothing of tmag's unconfirmed.
 func idleGate(rec session.Record, now time.Time) error {

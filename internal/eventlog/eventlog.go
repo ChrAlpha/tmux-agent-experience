@@ -60,13 +60,34 @@ type Request struct {
 	Since time.Time `json:"since"`
 }
 
+// Kinds of Obligation.
+const (
+	OweFinal = "final" // the answer is the final message of a turn the ask started
+	OweReply = "reply" // the answer comes later, through tmag reply
+)
+
+// Obligation is an answer a session owes another: an agent asked it with
+// send --wait (final) or send --reply (reply), and it has not answered yet.
+type Obligation struct {
+	ID string `json:"id"`
+	// To is the session that asked, which the answer goes to.
+	To   Actor  `json:"to"`
+	Kind string `json:"kind"`
+	// Depth is how far the work was passed on: 1 for an ask by an agent that
+	// owes nobody, one more than the deepest obligation of an agent that does.
+	Depth int `json:"depth"`
+	// Turn is the turn a final ask started, once the session reported it.
+	Turn  string    `json:"turn,omitempty"`
+	Since time.Time `json:"since"`
+}
+
 // Event is one line of the log: a session's state changed (Event names the
 // hook), tmag sent it a prompt, a pane started or stopped showing it, or it
 // ended.
 //
 // An event that carries State reports the session in full: State, Kind,
-// Reason, Turn, Cwd, Runtime, Transcript, Subagents, Capabilities and
-// Requests are then what the session is, and a field left out is empty.
+// Reason, Turn, Cwd, Runtime, Transcript, Subagents, Capabilities, Requests
+// and Owes are then what the session is, and a field left out is empty.
 type Event struct {
 	// LastHookAt is the session's last hook contact when the event was
 	// logged.
@@ -93,6 +114,9 @@ type Event struct {
 	Capabilities []string `json:"capabilities,omitempty"`
 	// Requests are the prompts the session waits on the user for.
 	Requests []Request `json:"requests,omitempty"`
+	// Owes are the answers the session owes other sessions, oldest first;
+	// on SessionEnd and Exit, those it ended owing.
+	Owes []Obligation `json:"owes,omitempty"`
 	// Pane is the pane an Attach, Detach, Send or Halt is about.
 	Pane *PaneRef `json:"pane,omitempty"`
 	// Evidence is what an Attach rests on.
@@ -110,6 +134,9 @@ type Event struct {
 	// deny.
 	Request  string `json:"request,omitempty"`
 	Decision string `json:"decision,omitempty"`
+	// Notice is the end, by its seq, that a Send of tmag's own notice tells
+	// an asker of.
+	Notice int64 `json:"notice,omitempty"`
 }
 
 // Events tmag itself records, beside those named after agent hooks.
@@ -121,6 +148,7 @@ const (
 	Detach = "Detach" // a pane stopped showing the session
 	Exit   = "Exit"   // the session's process ended without SessionEnd
 	Idle   = "Idle"   // a native status file ended a turn no hook reported
+	Owes   = "Owes"   // what the session owes changed outside its hooks and a prompt to it
 	End    = "SessionEnd"
 )
 
