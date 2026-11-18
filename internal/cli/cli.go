@@ -323,6 +323,10 @@ func (a *app) failOn(cmd, target string, err error) int {
 		if errors.As(err, &started) {
 			doc["started"] = started.Session // the agent runs: starting it again starts another
 		}
+		var notShown *query.NotShownError
+		if errors.As(err, &notShown) {
+			doc["pane"] = notShown.Pane // its window stays: what holds it shows there
+		}
 		a.emit(doc)
 	}
 	fmt.Fprintf(a.stderr, "tmag %s: %v\n", cmd, err)

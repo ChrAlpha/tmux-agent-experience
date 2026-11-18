@@ -58,7 +58,9 @@ A start carries no target but `agent` (claude, codex, pi or omp) or
 `template` (a name the person set as `@tmag-start-NAME`), an absolute `dir`,
 and optionally `worktree` (a branch) and `text`: it opens the agent's window
 beside serve's, waits until it shows its session, and delivers `text` as a
-send does.
+send does. One whose agent shows no session in time fails with `pane`, the
+pane its window keeps, beside the error: a read with lines and keys reach
+it there.
 Keys carry `target`, `screen` (as a read with lines gave it), and
 `keys` (Enter, Escape, Tab, BTab, Up, Down, Left, Right, Space, BSpace, C-c,
 y, n, 0-9) after an optional `text`: they are typed only once a shot of the
