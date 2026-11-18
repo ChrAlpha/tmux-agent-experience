@@ -1,4 +1,6 @@
-import { appendFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { appendFileSync, rmSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { expect, type Page, test } from '@playwright/test'
 import type { Credential } from '../src/contract'
 import {
@@ -997,4 +999,113 @@ test('types nothing on a screen that changed since it was read', async ({ page }
     'Not typed: the screen changed before it was typed. Look at it again.',
   )
   expect(said(api).length).toBe(before)
+})
+
+// repository makes the directory an agent runs in a git repository in which
+// parse.go gained a function, for as long as run runs.
+async function repository(a: Agent, run: (dir: string) => Promise<void>) {
+  const dir = session(a)?.cwd ?? ''
+  const git = (...args: string[]) =>
+    execFileSync('git', ['-C', dir, '-c', 'user.name=t', '-c', 'user.email=t@example.com', ...args])
+  try {
+    git('init', '-q')
+    writeFileSync(join(dir, '.gitignore'), 'out\n*.jsonl\n')
+    writeFileSync(join(dir, 'parse.go'), 'package parse\n')
+    git('add', '.')
+    git('commit', '-q', '-m', 'init')
+    writeFileSync(join(dir, 'parse.go'), 'package parse\n\nfunc Parse() {}\n')
+    await run(dir)
+  } finally {
+    rmSync(join(dir, '.git'), { recursive: true, force: true })
+    rmSync(join(dir, '.gitignore'), { force: true })
+    rmSync(join(dir, 'parse.go'), { force: true })
+  }
+}
+
+test("shows what an agent's directory changed, and puts what the person says of a line in its message", async ({
+  page,
+}) => {
+  test.skip(!serves('changes'), 'tmag shows changes after 0.7.0')
+  await repository(api, async (dir) => {
+    await paired(page)
+    await open(page, api)
+    await page.getByRole('button', { name: 'Changes' }).click()
+    const file = page.getByRole('button', { name: /parse\.go/ })
+    await expect(file).toContainText('+2 −0')
+    await file.click()
+    await page.locator('.patch .line.added', { hasText: 'func Parse() {}' }).click()
+    await page.getByRole('textbox', { name: 'Comment' }).fill('name it Read')
+    // The agent changes the file while the comment is written: the comment
+    // stays with its line, and is sent as the file numbers that line now.
+    writeFileSync(join(dir, 'parse.go'), 'package parse\n\n// Parse parses.\nfunc Parse() {}\n')
+    person(`tmag send ${api.session} 'look again'`)
+    await expect(page.locator('.patch .line.added', { hasText: '// Parse parses.' })).toBeVisible()
+    await expect(page.getByRole('textbox', { name: 'Comment' })).toHaveValue('name it Read')
+    await page.getByRole('button', { name: 'Add' }).click()
+    await expect(page.locator('.patch .comment').locator('..').locator('.code')).toHaveText('func Parse() {}')
+    await page.getByRole('button', { name: 'Put in the message' }).click()
+    await expect(page.getByRole('button', { name: 'Turns' })).toHaveAttribute('aria-pressed', 'true')
+    await expect(page.getByRole('textbox', { name: 'Message' })).toHaveValue(
+      'parse.go:4: name it Read\n> func Parse() {}',
+    )
+    await idle(api)
+    await page.getByRole('button', { name: 'Send' }).click()
+    await expect.poll(() => said(api).join('\n')).toContain('parse.go:4: name it Read\n> func Parse() {}')
+    // Its turn ends, so that the next test finds the agent idle.
+    await expect(page.locator('.reply').last()).toHaveText('answered: > func Parse() {}')
+  })
+})
+
+test('keeps the comment being written across a reload, and while its file goes back to HEAD', async ({ page }) => {
+  test.skip(!serves('changes'), 'tmag shows changes after 0.7.0')
+  await repository(api, async (dir) => {
+    await paired(page)
+    await open(page, api)
+    await page.getByRole('button', { name: 'Changes' }).click()
+    await page.getByRole('button', { name: /parse\.go/ }).click()
+    await page.locator('.patch .line.added', { hasText: 'func Parse() {}' }).click()
+    await page.getByRole('textbox', { name: 'Comment' }).fill('kept while it goes')
+    // One comment at a time: no other line begins one meanwhile.
+    await expect(page.locator('.patch button.line')).toHaveCount(0)
+    await page.reload()
+    await page.getByRole('button', { name: 'Changes' }).click()
+    await expect(page.getByRole('textbox', { name: 'Comment' })).toHaveValue('kept while it goes')
+    writeFileSync(join(dir, 'parse.go'), 'package parse\n')
+    person(`tmag send ${api.session} 'look again'`)
+    await expect(page.locator('.changes .empty')).toHaveText('Nothing changed against HEAD.')
+    await expect(page.locator('.changes > .moved')).toContainText('Writing on parse.go:3')
+    await expect(page.getByRole('textbox', { name: 'Comment' })).toHaveValue('kept while it goes')
+    await page.getByRole('button', { name: 'Add' }).click()
+    await expect(page.locator('.put')).toContainText('1 comment')
+    await idle(api)
+  })
+})
+
+test('says when what a directory changed could not be read again, and takes no comment on it', async ({ page }) => {
+  test.skip(!serves('changes'), 'tmag shows changes after 0.7.0')
+  await repository(api, async () => {
+    await paired(page)
+    let failing = false
+    await page.route(
+      (url) => url.pathname === '/v2/changes',
+      (route) =>
+        failing
+          ? route.fulfill({ status: 503, json: { schema: 'tmag/v2', error: { code: 'backend', message: 'not now' } } })
+          : route.continue(),
+    )
+    await open(page, api)
+    await page.getByRole('button', { name: 'Changes' }).click()
+    await page.getByRole('button', { name: /parse\.go/ }).click()
+    await expect(page.locator('.patch button.line.added')).toHaveCount(2)
+    failing = true
+    await page.getByRole('button', { name: 'Turns' }).click()
+    await page.getByRole('button', { name: 'Changes' }).click()
+    await expect(page.locator('.changes > .stale')).toContainText('Not read again: not now')
+    await page.getByRole('button', { name: /parse\.go/ }).click()
+    await expect(page.locator('.patch .stale')).toContainText('Not read again: not now')
+    await expect(page.locator('.patch button.line')).toHaveCount(0)
+    failing = false
+    await page.locator('.patch .stale').getByRole('button', { name: 'Read again' }).click()
+    await expect(page.locator('.patch button.line.added')).toHaveCount(2)
+  })
 })

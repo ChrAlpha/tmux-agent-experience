@@ -35,9 +35,10 @@ and how to set it up.
   with raw HTML off, links to http and https only, no images.
 - **The page keeps its credentials, drafts and what the person saw, nothing
   else.** A credential lives in the browser's storage, goes only in the
-  `Authorization` header, and never in a URL or a log; what the person saw is
-  the turn each session last ended while they looked. Turns, requests and
-  screens are read when shown.
+  `Authorization` header, and never in a URL or a log; drafts (a prompt,
+  comments on a patch's lines with the line each quotes) live in the tab's
+  storage; what the person saw is the turn each session last ended while
+  they looked. Turns, requests and screens are read when shown.
 - **Out of scope, by decision:** push of its own (`@tmag-notify` and ntfy
   carry alerts). Changing that is the owner's decision, not an agent's.
 
@@ -56,6 +57,7 @@ and how to set it up.
 | `src/store.ts` | Signals the screens read across computers: the computers, pairing, the route, one inbox |
 | `src/markdown.ts` | Markdown to HTML that holds only Markdown's tags |
 | `src/ansi.ts` | A terminal's SGR escapes read into runs of styled text |
+| `src/patch.ts` | A file's patch read into numbered lines, and comments on them written as a prompt |
 | `src/ui/` | Screens: pairing, agents, a session with its turns, screen and keys, requests and composer, a pane, the start sheet |
 | `src/app.css` | Styles, light and dark, for phones first |
 | `src/*.test.ts` | Vitest tests of the modules that need no browser |

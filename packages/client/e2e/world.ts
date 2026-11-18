@@ -73,7 +73,11 @@ export const tmux = (...args: string[]) => tmuxOn('', ...args)
 // that tmag would refuse credential changes.
 export function person(command: string, at: At = ''): string {
   const out = join(dir(), `person-${Date.now()}.out`)
-  tmuxOn(at, 'run-shell', `${command} > ${out} 2>&1`)
+  try {
+    tmuxOn(at, 'run-shell', `${command} > ${out} 2>&1`)
+  } catch (e) {
+    throw new Error(`${command} failed: ${readFileSync(out, 'utf8')}`, { cause: e })
+  }
   return readFileSync(out, 'utf8')
 }
 

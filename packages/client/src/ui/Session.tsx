@@ -7,6 +7,7 @@ import type { Prompt, Session as S } from '../contract'
 import { hash } from '../route'
 import { back, now } from '../store'
 import { ago, can, find, follows, helpers, paneOf, place, shared, status, stoppable, ties, unwritten } from '../view'
+import { Changes } from './Changes'
 import { cls, explain, outcome } from './explain'
 import { KeyBar } from './KeyBar'
 import { Markdown } from './Markdown'
@@ -15,21 +16,35 @@ import { Terminal } from './Terminal'
 
 export type Say = (text: string, error?: boolean) => void
 
+type Mode = 'turns' | 'screen' | 'changes'
+const named: Record<Mode, string> = { turns: 'Turns', screen: 'Screen', changes: 'Changes' }
+
 export function Session({ c, id, request }: { c: Computer; id: string; request?: string }) {
   const v = c.view.value
   const ambiguous = shared(v, id)
   const s = ambiguous ? undefined : find(v, id)
   const pane = s && c.can('read') ? paneOf(v, s) : undefined
-  const [screen, setScreen] = useState(false)
-  const showScreen = screen && !!pane
+  // What a session shows: its turns, the screen of the pane that shows it,
+  // and what its directory changed, where its computer serves each.
+  const modes: Mode[] = [
+    'turns',
+    ...(pane ? ['screen' as const] : []),
+    ...(s && c.can('changes') ? ['changes' as const] : []),
+  ]
+  const [chosen, setMode] = useState<Mode>('turns')
+  const mode = modes.includes(chosen) ? chosen : 'turns'
+  const showScreen = mode === 'screen'
   const gone = c.loaded.value && !s
   const [toast, say] = useToast()
 
   // What the session shows is read again whenever the watch reports it: the
   // view makes a new object of each session an event or a snapshot reports.
   useEffect(() => {
-    if (s && c.can('read')) showScreen ? c.loadScreen(id) : c.loadTurns(id)
-  }, [c, id, s, showScreen])
+    if (!s) return
+    if (mode === 'screen') c.loadScreen(id)
+    else if (mode === 'changes') c.loadChanges(id)
+    else if (c.can('read')) c.loadTurns(id)
+  }, [c, id, s, mode])
   // A screen also changes with nothing to report, as an agent writes: it is
   // read again every two seconds while it shows.
   useEffect(() => {
@@ -66,21 +81,27 @@ export function Session({ c, id, request }: { c: Computer; id: string; request?:
           </div>
           {s && <Ties c={c} s={s} />}
         </div>
-        {pane && (
-          <button class="mode" type="button" onClick={() => setScreen(!showScreen)}>
-            {showScreen ? 'Turns' : 'Screen'}
-          </button>
-        )}
       </header>
-      <Scroller key={showScreen ? 'screen' : 'turns'}>
+      {modes.length > 1 && !gone && !ambiguous && (
+        <nav class="modes" aria-label="Show">
+          {modes.map((m) => (
+            <button key={m} class="tab" type="button" aria-pressed={m === mode} onClick={() => setMode(m)}>
+              {named[m]}
+            </button>
+          ))}
+        </nav>
+      )}
+      <Scroller key={mode}>
         {ambiguous ? (
           <p class="empty">More than one agent runs a session by this id, and tmag names none of them by it.</p>
         ) : gone ? (
           <p class="empty">This session is not running.</p>
+        ) : mode === 'screen' ? (
+          <Screen c={c} target={id} />
+        ) : mode === 'changes' ? (
+          <Changes c={c} id={id} s={s} put={() => setMode('turns')} />
         ) : !c.can('read') ? (
           <p class="empty">tmag on this computer does not read a session's turns.</p>
-        ) : showScreen ? (
-          <Screen c={c} target={id} />
         ) : (
           <Turns c={c} id={id} s={s} />
         )}

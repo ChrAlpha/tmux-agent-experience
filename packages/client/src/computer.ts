@@ -8,15 +8,18 @@ import { batch, computed, effect, type Signal, signal } from '@preact/signals'
 import * as api from './api'
 import {
   type Action,
+  type ChangesDoc,
   type Credential,
   type InfoDoc,
   minimum,
   older,
+  type PatchDoc,
   type RequestDoc,
   type ScreenDoc,
   type Turn,
   type TurnsDoc,
 } from './contract'
+import { type Comment, isComment } from './patch'
 import {
   apply,
   done,
@@ -109,9 +112,13 @@ export class Computer {
   readonly #turns = new Map<string, Signal<Read<Turn[]>>>()
   readonly #screens = new Map<string, Signal<Read<ScreenDoc>>>()
   readonly #requests = new Map<string, Signal<Read<RequestDoc>>>()
+  readonly #changes = new Map<string, Signal<Read<ChangesDoc['changes']>>>()
+  readonly #patches = new Map<string, Signal<Read<string>>>()
   readonly #sent = new Map<string, Signal<readonly Sent[]>>()
   #sends = 0
   readonly #drafts = new Map<string, Signal<string>>()
+  readonly #comments = new Map<string, Signal<readonly Comment[]>>()
+  readonly #writing = new Map<string, Signal<Comment | null>>()
   readonly #running = new Map<Signal<unknown>, { again: boolean }>()
   #begun = 0
 
@@ -320,6 +327,8 @@ export class Computer {
   turnsOf = (id: string) => this.#slot(this.#turns, id)
   screenOf = (id: string) => this.#slot(this.#screens, id)
   requestOf = (id: string) => this.#slot(this.#requests, id)
+  changesOf = (id: string) => this.#slot(this.#changes, id)
+  patchOf = (id: string, file: string) => this.#slot(this.#patches, `${id}\u0000${file}`)
 
   // kept is a signal of what the person writes for a session, kept in this
   // tab's storage under key, as save writes it, while it holds something.
@@ -349,6 +358,32 @@ export class Computer {
       `tmag.draft.${this.name}/${id}`,
       (kept) => kept,
       (v) => v,
+    )
+
+  /** What the person says of the lines of a session's changes, until it goes in a prompt. */
+  commentsOf = (id: string) =>
+    this.#kept<readonly Comment[]>(
+      this.#comments,
+      id,
+      `tmag.comments.${this.name}/${id}`,
+      (kept) => {
+        const said: unknown = kept ? JSON.parse(kept) : []
+        return Array.isArray(said) ? said.filter(isComment) : []
+      },
+      (v) => (v.length ? JSON.stringify(v) : ''),
+    )
+
+  /** The comment the person is writing on a line of a session's changes, if one. */
+  writingOf = (id: string) =>
+    this.#kept<Comment | null>(
+      this.#writing,
+      id,
+      `tmag.writing.${this.name}/${id}`,
+      (kept) => {
+        const writing: unknown = kept ? JSON.parse(kept) : null
+        return isComment(writing) ? writing : null
+      },
+      (v) => (v ? JSON.stringify(v) : ''),
     )
 
   /** What the page sent a session that its turns do not show yet. */
@@ -412,6 +447,20 @@ export class Computer {
 
   loadScreen(target: string) {
     this.#read(this.screenOf(target), (t) => api.get<ScreenDoc>(this.base, t, 'read', { target, lines: 120 }))
+  }
+
+  loadChanges(id: string) {
+    this.#read(
+      this.changesOf(id),
+      async (t) => (await api.get<ChangesDoc>(this.base, t, 'changes', { target: id })).changes,
+    )
+  }
+
+  loadPatch(id: string, file: string) {
+    this.#read(
+      this.patchOf(id, file),
+      async (t) => (await api.get<PatchDoc>(this.base, t, 'changes', { target: id, file })).patch,
+    )
   }
 
   loadRequest(session: string, request: string) {
