@@ -376,6 +376,22 @@ func TestChangesNameTheirTarget(t *testing.T) {
 	}
 }
 
+// A dirs read takes a directory literally, or none for where agents ran.
+func TestDirsNameTheirDirectory(t *testing.T) {
+	var got []string
+	s, _, c := fixture(t, func(ctx context.Context, args []string, in io.Reader, out, stderr io.Writer) int {
+		got = args
+		_, _ = io.WriteString(out, `{"schema":"tmag/v2"}`)
+		return 0
+	})
+	if r := call(s, "GET", "/v2/dirs?dir=--json", "", c.Token, "", ""); r.Code != 200 || strings.Join(got, " ") != "dirs --json -- --json" {
+		t.Fatalf("dirs of a directory: %d %q", r.Code, got)
+	}
+	if r := call(s, "GET", "/v2/dirs", "", c.Token, "", ""); r.Code != 200 || strings.Join(got, " ") != "dirs --json" {
+		t.Fatalf("dirs: %d %q", r.Code, got)
+	}
+}
+
 // Allowed hosts and origins take what people paste: an origin keeps the form a
 // browser sends, and a value holding more than a host or an origin is refused
 // with the flag that says what it meant.

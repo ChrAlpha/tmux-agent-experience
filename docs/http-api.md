@@ -45,6 +45,7 @@ Successful commands and command failures preserve their `tmag/v2` documents.
 | GET /v2/inspect | target | `inspect --json` |
 | GET /v2/request | target, request | `request --json` |
 | GET /v2/changes | target, optional file | `changes --json`: what the agent's directory changed against HEAD, or one file's patch |
+| GET /v2/dirs | optional dir | `dirs --json`: without dir, the home directory, the directories sessions ran in lately with their repositories, and the start templates; with an absolute dir in its shortest form, its subdirectories and its repository |
 | GET /v2/read | target and one of last=1, lines=1..2000 or turns=1..20 | `read --json`; with lines, `ansi` and `cursor` show the screen and `screen` names it for keys |
 | GET /v2/watch | optional since cursor, otherwise Last-Event-ID | event stream |
 | POST /v2/act | JSON action | send, interrupt, answer, start or keys result |
