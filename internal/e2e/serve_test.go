@@ -170,6 +170,22 @@ func TestServeCarriesOwnerVerbs(t *testing.T) {
 		t.Fatalf("answering twice: %d %s", code, body)
 	}
 
+	// A start opens the template's agent beside serve's window, on the
+	// owner's credential, and prompts it as the person would.
+	h.tmux("set-option", "-g", "@tmag-start-helper", filepath.Join(bin, "claude"))
+	startable(h, map[string]string{"FAKE_SESSION": sidB, "FAKE_HOOKS": "1", "FAKE_TURN_MS": "500", "FAKE_OUT": filepath.Join(h.dir, "b")})
+	if code, body := call(http.MethodPost, "/v2/act", `{"verb":"start","template":"helper","dir":"`+h.dir+`","text":"started from the phone"}`); code != http.StatusOK ||
+		!strings.Contains(body, sidB) || !strings.Contains(body, `"via":"pane"`) {
+		t.Fatalf("start: %d %s", code, body)
+	}
+	lastReply(t, h, sidB, "started from the phone")
+	if ev := startEvent(t, h, sidB); ev.Credential != issued.ID || ev.By != nil || ev.Template != "helper" {
+		t.Fatalf("Start event = %+v", ev)
+	}
+	if code, body := call(http.MethodPost, "/v2/act", `{"verb":"start","agent":"claude","dir":"relative"}`); code != http.StatusBadRequest {
+		t.Fatalf("a start without an absolute dir: %d %s", code, body)
+	}
+
 	// A separate CLI process revokes admission. Existing gates still refused
 	// the stale request above; authority does not bypass session state checks.
 	if r := h.tmag("", "auth", "revoke", issued.ID); r.code != 0 {

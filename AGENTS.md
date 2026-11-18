@@ -33,8 +33,9 @@ promise is documented in the package, and changes with it.
 
 - **tmux stays the entry point.** No daemon, no wrapper around agents,
   nothing resident outside tmux: `tmag serve` runs in a tmux window the
-  person opens and ends with it. A command may connect to an agent's own
-  service for its duration only.
+  person opens and ends with it, and `tmag start` opens a window for an
+  agent and leaves it to tmux and the person. A command may connect to an
+  agent's own service for its duration only.
 - **Lean on tmux and the OS.** Truth lives in session records and pane
   options; tmag adds no journal, repair, admission or migration over what
   tmux, the kernel and an atomic rename give. A mechanism that guards tmag
@@ -140,7 +141,7 @@ promise is documented in the package, and changes with it.
 | `internal/adapter` | Hook payload → state transition, per agent |
 | `internal/session` | Session records, the state machine, the per-session file store and lock |
 | `internal/attach` | Clients, attachments and their evidence, the `@tmag_*` pane projection, reconciliation |
-| `internal/query` | list / send / reply / wait / snapshot over sessions and panes; the control verbs' gates; what agents' asks owe, and the bounds on waits and on passing work on |
+| `internal/query` | list / send / reply / wait / start / snapshot over sessions and panes; the control verbs' gates; what agents' asks owe, and the bounds on waits and on passing work on |
 | `internal/driver` | Which channel (pane, service, hook, inbox) carries each verb for each agent and runtime |
 | `internal/codexsvc` | One-command client of the Codex daemon's control socket (JSON-RPC over WebSocket) |
 | `internal/inbox` | The socket a session's agent serves for messages and interrupts: dial, proof, Claude Code's envelope and the extension framing |
@@ -229,8 +230,11 @@ gh workflow run stress.yml --ref BRANCH -f run='^TestA$' -f count=20   # the sam
 - E2E tests start private servers (`tmux -L e2e` under a temporary
   `TMUX_TMPDIR`) and run `internal/e2e/fakeagent` installed as `claude`,
   `claude.exe` (as Claude Code's npm package runs), `codex`, `pi` and `omp`,
-  so process names and `pane_current_command` match real agents; as `pi` and
-  `omp` it reports what tmag's extensions report. Run
+  first on `PATH`, so process names and `pane_current_command` match real
+  agents and no agent's name reaches the developer's own, in a window opened
+  from a pane either: tmux gives it the `PATH` of the client that asks; a
+  last argument that is no option is its first prompt, as `codex TASK`
+  takes one; as `pi` and `omp` it reports what tmag's extensions report. Run
   as `codex app-server …` it is a Codex daemon outside every pane that runs
   hooks for any thread and serves a control socket under `CODEX_HOME`
   (`internal/codexsvc/svctest` is its server end), replaying the approvals a

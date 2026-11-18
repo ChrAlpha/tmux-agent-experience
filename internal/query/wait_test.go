@@ -77,6 +77,46 @@ func TestWaitForTurnReportsNoTurn(t *testing.T) {
 	}
 }
 
+// A session whose first prompt was on its command line is waited for until
+// a turn shows and ends: its idle before any turn does not count, a turn
+// that ended before the wait looked does, and none within the grace is
+// ErrNoTurn.
+func TestWaitTurnedCountsOnlyARecordThatNamesATurn(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	store := session.Store{Dir: t.TempDir()}
+	put(t, store, session.Record{Main: "idle"})
+	got := make(chan session.Record, 1)
+	go func() {
+		rec, err := Wait(ctx, store, s1, WaitOptions{States: []string{"idle"}, Turned: true, Grace: 5 * time.Second})
+		if err != nil {
+			t.Error(err)
+		}
+		got <- rec
+	}()
+	time.Sleep(3 * waitPoll)
+	select {
+	case rec := <-got:
+		t.Fatalf("an idle before any turn ended the wait: %+v", rec)
+	default:
+	}
+	put(t, store, session.Record{Main: "working", Turn: "t1"})
+	time.Sleep(3 * waitPoll)
+	put(t, store, session.Record{Main: "idle", Turn: "t1"})
+	if rec := <-got; rec.State() != "idle" || rec.Turn != "t1" {
+		t.Fatalf("Wait = %+v", rec)
+	}
+
+	if rec, err := Wait(ctx, store, s1, WaitOptions{States: []string{"idle"}, Turned: true, Grace: time.Second}); err != nil || rec.Turn != "t1" {
+		t.Fatalf("a turn that ended before the wait: %+v, %v", rec, err)
+	}
+
+	put(t, store, session.Record{Main: "idle"})
+	if _, err := Wait(ctx, store, s1, WaitOptions{States: []string{"idle"}, Turned: true, Grace: 300 * time.Millisecond}); !errors.Is(err, ErrNoTurn) {
+		t.Fatalf("no turn: %v; want ErrNoTurn", err)
+	}
+}
+
 func TestWaitEndsWithTheSession(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

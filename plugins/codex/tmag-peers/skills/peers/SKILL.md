@@ -59,6 +59,7 @@ command again with the permissions it needs.
 | `tmag send ID -` | deliver a message now: an idle agent starts a turn, a working one reads it at its next step; no answer is asked |
 | `tmag send ID --reply -` | deliver now and ask it to answer with `tmag reply` when done |
 | `tmag send ID --wait --timeout 8m -` | a turn of its own, then wait until it is idle or blocked |
+| `tmag start claude --reply -` | start an agent in a window beside yours, and prompt it as send does |
 | `tmag read ID --last` | the reply that ended its last turn, from its transcript |
 | `tmag reply ID -` | reply with stdin to an agent whose prompt asked for it |
 | `tmag wait ID --for idle --timeout 8m` | wait until it is idle |
@@ -120,23 +121,23 @@ twice. Send a prompt again only when tmag says nothing was delivered.
 
 ## Starting a peer
 
-When the user asks for an agent that does not run yet, start it yourself in a
-tmux window of its own, where the user can watch it and take it over, and
-work with it through tmag like any other peer:
+When the user asks for an agent that does not run yet, start it in a tmux
+window beside yours, where the user can watch it and take it over, and work
+with it through tmag like any other peer:
 
 ```sh
-pane=$(command tmux new-window -d -P -F '#{pane_id}' -c "$PWD" claude)
-tmag wait "$pane" --for idle --timeout 2m
-tmag send "$pane" --reply - <<'EOF'
+tmag start claude --reply --timeout 2m - <<'EOF'
 Review the parser in internal/parse.go and list the bugs you find.
 EOF
 ```
 
-`tmag wait` on a pane lasts until its agent shows its session, as Claude
-Code, Pi and oh-my-pi do once they start. Codex shows its session only from
-its first prompt: start it with the task (`codex 'TASK'` in place of
-`claude`), then `tmag wait "$pane" --for idle` and `tmag read "$pane"
---last`.
+`tmag start` opens the window, waits until the agent shows its session, and
+delivers the prompt as `tmag send` does, `--reply` or `--wait` included.
+`--worktree BRANCH` starts it in a git worktree of its own, on that branch,
+so it changes none of your files; `--dir` names another directory. The user
+may have set templates, their own command for an agent, which `tmag start
+NAME` runs; use one when the user names it. If `tmag start` fails, never run
+it again: the agent may already run, and its `next:` line says what to do.
 
 ## Receiving
 

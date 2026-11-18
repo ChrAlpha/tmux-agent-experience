@@ -69,9 +69,13 @@ func TestMain(m *testing.M) {
 			panic(err)
 		}
 	}
-	// Never touch the developer's own tmux server.
+	// Never touch the developer's own tmux server, nor run their agents: an
+	// agent's name finds a fake first, in a pane, in an agent's tool, and in
+	// a window opened from either, which tmux gives the PATH of the client
+	// that asks for it.
 	os.Unsetenv("TMUX")
 	os.Unsetenv("TMUX_PANE")
+	os.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	code := m.Run()
 	os.RemoveAll(dir)
 	os.Exit(code)

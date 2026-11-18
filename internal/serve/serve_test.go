@@ -291,3 +291,45 @@ func TestRevocationBeforeBodyCompletionPreventsAdmission(t *testing.T) {
 		t.Fatalf("revoked upload executed: %v, status %d", ran, w.Code)
 	}
 }
+
+// A start names an agent or a template, and an absolute directory: never a
+// command, and the name stays literal.
+func TestStartNamesAnAgentOrATemplate(t *testing.T) {
+	var got []string
+	var text string
+	s, _, c := fixture(t, func(ctx context.Context, args []string, in io.Reader, out, stderr io.Writer) int {
+		got, text = args, ""
+		if in != nil {
+			b, _ := io.ReadAll(in)
+			text = string(b)
+		}
+		_, _ = io.WriteString(out, `{"schema":"tmag/v2"}`)
+		return 0
+	})
+	r := call(s, "POST", "/v2/act", `{"verb":"start","template":"review","dir":"/src/api","worktree":"fix/x","text":"look"}`, c.Token, "", "")
+	if r.Code != 200 || strings.Join(got, " ") != "start --json --dir=/src/api --worktree=fix/x -- review -" || text != "look" {
+		t.Fatalf("a template start: %d %q %q", r.Code, got, text)
+	}
+	r = call(s, "POST", "/v2/act", `{"verb":"start","agent":"codex","dir":"/src/api"}`, c.Token, "", "")
+	if r.Code != 200 || strings.Join(got, " ") != "start --json --dir=/src/api -- codex" || text != "" {
+		t.Fatalf("an agent start: %d %q", r.Code, got)
+	}
+	got = nil
+	for _, b := range []string{
+		`{"verb":"start","agent":"sh","dir":"/src"}`,
+		`{"verb":"start","template":"claude","dir":"/src"}`,
+		`{"verb":"start","template":"--version","dir":"/src"}`,
+		`{"verb":"start","agent":"claude","template":"review","dir":"/src"}`,
+		`{"verb":"start","agent":"claude","dir":"src"}`,
+		`{"verb":"start","agent":"claude"}`,
+		`{"verb":"start","agent":"claude","dir":"/src","target":"%1"}`,
+		`{"verb":"start","agent":"claude","dir":"/src","command":"rm -rf /"}`,
+	} {
+		if res := call(s, "POST", "/v2/act", b, c.Token, "", ""); res.Code != 400 {
+			t.Errorf("%s: %d", b, res.Code)
+		}
+	}
+	if got != nil {
+		t.Fatalf("an invalid start reached the local CLI: %q", got)
+	}
+}

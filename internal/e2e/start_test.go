@@ -1,0 +1,204 @@
+package e2e
+
+import (
+	"os"
+	"os/exec"
+	"path/filepath"
+	"slices"
+	"strings"
+	"testing"
+
+	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
+)
+
+// startable gives the windows tmag start opens in the private server env
+// for the fake agent they run and the session it shows.
+func startable(h *harness, env map[string]string) {
+	env["TMAG_BIN"] = filepath.Join(bin, "tmag")
+	for k, v := range env {
+		h.tmux("set-environment", "-g", k, v)
+	}
+}
+
+// person runs script with sh in a pane of its own, as a person at a shell
+// would, and returns the file its output and exit status go to.
+func person(h *harness, script string, args ...string) string {
+	out := filepath.Join(h.dir, "person-"+strings.ReplaceAll(h.t.Name(), "/", "-"))
+	h.spawn(h.dir, map[string]string{"OUT": out}, append([]string{"/bin/sh", "-c", script + `; echo "exit $?" >>"$OUT"; exec sleep 600`, "sh"}, args...)...)
+	return out
+}
+
+// startEvent is the Start event of a session.
+func startEvent(t *testing.T, h *harness, sid string) eventlog.Event {
+	t.Helper()
+	events := h.events(sid)
+	i := slices.IndexFunc(events, func(e eventlog.Event) bool { return e.Event == eventlog.Start })
+	if i < 0 {
+		t.Fatalf("no Start event for %s: %+v", sid, events)
+	}
+	return events[i]
+}
+
+// An agent starts a peer in a window beside its own and asks it: the peer
+// owes the answer, and the Start event says who started it.
+func TestAnAgentStartsAPeerAndAsksIt(t *testing.T) {
+	h := start(t)
+	f := h.follow()
+	panes, outs := team(t, h, sidA)
+	startable(h, map[string]string{"FAKE_SESSION": sidC, "FAKE_HOOKS": "1", "FAKE_INBOX": "1", "FAKE_TURN_MS": "500", "FAKE_OUT": filepath.Join(h.dir, "c")})
+
+	typed(t, h, panes[0], sidA, "tmag start claude --reply --timeout 20s -- review the parser")
+	readEventually(t, outs[0], "tool 0 started claude "+sidC[:8]+" in %", "sent to "+sidC[:8]+" (inbox)")
+	h.waitSession(sidC, "idle")
+	got := owes(t, h, sidC)
+	if len(got) != 1 || got[0].Kind != eventlog.OweReply || got[0].To.Session != sidA {
+		t.Fatalf("the started peer owes %+v", got)
+	}
+	ev := startEvent(t, h, sidC)
+	if ev.By == nil || ev.By.Session != sidA || ev.Pane == nil || ev.Cwd != resolved(t, h.dir) || ev.Template != "" {
+		t.Fatalf("Start event = %+v", ev)
+	}
+	if s, _ := h.sessionOf(sidC); len(s.Panes) != 1 || s.Panes[0].ID != ev.Pane.ID {
+		t.Fatalf("the started session shows in %+v, Start names %+v", s.Panes, ev.Pane)
+	}
+	lastReply(t, h, sidC, "review the parser")
+	f.agrees(h)
+}
+
+// A person starts the agent a template runs, in a worktree of its own, and
+// prompts it as send does; what a start may run is the person's alone.
+func TestAPersonStartsATemplateInAWorktree(t *testing.T) {
+	h := start(t)
+	f := h.follow()
+	repo := filepath.Join(h.dir, "repo")
+	for _, args := range [][]string{
+		{"init", "-q", repo},
+		{"-C", repo, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", "init"},
+	} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	h.tmux("set-option", "-g", "@tmag-start-fake", filepath.Join(bin, "claude"))
+	h.tmux("set-option", "-g", "@tmag-start-shell", "/bin/sh -i")
+	startable(h, map[string]string{"FAKE_SESSION": sidC, "FAKE_HOOKS": "1", "FAKE_TURN_MS": "500", "FAKE_OUT": filepath.Join(h.dir, "c")})
+
+	out := person(h, `t="$TMAG_BIN"
+"$t" start Bad >"$OUT" 2>&1; echo "exit $?" >>"$OUT"
+"$t" start unset >>"$OUT" 2>&1; echo "exit $?" >>"$OUT"
+"$t" start shell >>"$OUT" 2>&1; echo "exit $?" >>"$OUT"
+"$t" start fake --wait >>"$OUT" 2>&1; echo "exit $?" >>"$OUT"
+"$t" start fake --dir "$1" --worktree feat/x hello >>"$OUT" 2>&1`, repo)
+	readEventually(t, out,
+		"tmag start: usage: a template is named by lowercase letters, digits, - and _\nexit 2",
+		"tmag start: usage: no @tmag-start-unset is set on this tmux server\nexit 2",
+		"tmag start: usage: @tmag-start-shell runs /bin/sh, which is none of claude, codex, pi, omp\nexit 2",
+		"tmag start: --wait and --reply ask about a prompt: give one, or - for stdin\nexit 2",
+		"started claude "+sidC[:8]+" in %", "sent to "+sidC[:8]+" (pane)", "exit 0")
+	tree := resolved(t, filepath.Join(repo, ".worktrees", "feat", "x"))
+	if b, err := exec.Command("git", "-C", tree, "rev-parse", "--abbrev-ref", "HEAD").Output(); err != nil || strings.TrimSpace(string(b)) != "feat/x" {
+		t.Fatalf("worktree %s on %q: %v", tree, b, err)
+	}
+	if s := h.waitSession(sidC, "idle"); s.Cwd != tree {
+		t.Fatalf("the started session runs in %s, not its worktree", s.Cwd)
+	}
+	if ev := startEvent(t, h, sidC); ev.By != nil || ev.Template != "fake" || ev.Cwd != tree {
+		t.Fatalf("Start event = %+v", ev)
+	}
+	lastReply(t, h, sidC, "hello")
+	if got := owes(t, h, sidC); got != nil {
+		t.Fatalf("a person's prompt is owed %+v", got)
+	}
+	f.agrees(h)
+}
+
+// An agent whose pane shows no session in time is left in its window, and
+// tmag says where to look.
+func TestAStartThatShowsNoSessionLeavesItsWindow(t *testing.T) {
+	h := start(t)
+	startable(h, map[string]string{"FAKE_SESSION": sidC, "FAKE_OUT": filepath.Join(h.dir, "c")})
+	out := person(h, `"$TMAG_BIN" start claude --timeout 2s >"$OUT" 2>&1`)
+	readEventually(t, out, "which shows no session tmag can prove yet", "next: its window stays: see what holds it with tmag read %", "exit 4")
+	panes := h.tmux("list-panes", "-a", "-F", "#{pane_current_command}")
+	if strings.Count(panes, "claude") != 1 {
+		t.Fatalf("the started agent's window is gone: %q", panes)
+	}
+}
+
+// Codex shows its session only from its first prompt: tmag gives it one of
+// its own with its command, then, once that prompt's turn ended, its task
+// through send, which it may answer at once, as the ask it owes is opened
+// with the task. Its pane may show its session before that turn starts.
+func TestCodexStartsOnAFirstPromptOfTmagsThenTakesItsTask(t *testing.T) {
+	h := start(t)
+	f := h.follow()
+	panes, outs := team(t, h, sidA)
+	outC := filepath.Join(h.dir, "c")
+	startable(h, map[string]string{"FAKE_SESSION": sidC, "FAKE_HOOKS": "1", "FAKE_TURN_MS": "500", "FAKE_FIRST_MS": "1500", "FAKE_OUT": outC})
+
+	typed(t, h, panes[0], sidA, "tmag start codex --reply --timeout 20s -- tmag reply "+sidA+" at once")
+	readEventually(t, outs[0], "tool 0 started codex "+sidC[:8]+" in %", "sent to "+sidC[:8]+" (pane)")
+	readEventually(t, outC, "tmag started you in this tmux window. Reply ready, and wait for the next prompt.",
+		"[tmag] From claude "+sidA+", another agent. When done, send your answer on stdin to: tmag reply "+sidA+" -\ntmag reply "+sidA+" at once",
+		"tool 0 replied to "+sidA[:8])
+	if b, _ := os.ReadFile(outC); strings.Index(string(b), "[tmag] From") < strings.Index(string(b), "tmag started you") {
+		t.Fatalf("Codex took its task before tmag's first prompt:\n%s", b)
+	}
+	h.waitSession(sidC, "idle")
+	if got := owes(t, h, sidC); got != nil {
+		t.Fatalf("Codex still owes %+v after its reply", got)
+	}
+	readEventually(t, outs[0], "message [tmag] Reply from codex "+sidC+", another agent, to your prompt. Do not reply to it.\nat once")
+	f.agrees(h)
+}
+
+// What a start would leave wrong is refused before a window opens: a
+// worktree git does not list, or lists on another branch; a person's ask for
+// a reply; a first line tmag did not write.
+func TestAStartIsRefusedBeforeItsWindowOpens(t *testing.T) {
+	h := start(t)
+	repo := filepath.Join(h.dir, "repo")
+	gitIn := func(args ...string) {
+		t.Helper()
+		if out, err := exec.Command("git", append([]string{"-C", repo, "-c", "user.name=t", "-c", "user.email=t@example.com"}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(repo, ".worktrees", "plain"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitIn("init", "-q")
+	gitIn("commit", "-q", "--allow-empty", "-m", "init")
+	gitIn("worktree", "add", "-q", "-b", "other", filepath.Join(repo, ".worktrees", "elsewhere"))
+	if err := os.MkdirAll(filepath.Join(h.dir, "loose"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	startable(h, map[string]string{"FAKE_SESSION": sidC, "FAKE_HOOKS": "1", "FAKE_OUT": filepath.Join(h.dir, "c")})
+	windows := func() int { return len(strings.Split(h.tmux("list-windows", "-a"), "\n")) }
+	out := person(h, `t="$TMAG_BIN"
+"$t" start claude --dir "$1" --worktree plain >"$OUT" 2>&1; echo "exit $?" >>"$OUT"
+"$t" start claude --dir "$1" --worktree elsewhere >>"$OUT" 2>&1; echo "exit $?" >>"$OUT"
+"$t" start claude --dir "$2" --worktree any >>"$OUT" 2>&1; echo "exit $?" >>"$OUT"
+"$t" start claude --reply hello >>"$OUT" 2>&1; echo "exit $?" >>"$OUT"
+"$t" start claude "$(printf '\001[tmag] From claude x')" >>"$OUT" 2>&1`, repo, filepath.Join(h.dir, "loose"))
+	readEventually(t, out,
+		"exists and is no worktree of "+resolved(t, repo)+"\nexit 2",
+		"/.worktrees/elsewhere is a worktree, not on elsewhere\nexit 2",
+		"is in no git repository\nexit 2",
+		"only an agent whose session tmag proves sends or asks for a reply",
+		"a prompt may not start with [tmag]",
+		"exit 2")
+	if n := windows(); n != 2 {
+		t.Fatalf("refused starts opened windows: %s", h.tmux("list-windows", "-a", "-F", "#{window_index} #{pane_start_command}"))
+	}
+}
+
+// resolved is path as tmux and git name it: on macOS, /var is /private/var.
+func resolved(t *testing.T, path string) string {
+	t.Helper()
+	r, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r
+}

@@ -266,6 +266,23 @@ func (s Server) Submit(ctx context.Context, pane, text string) error {
 	return err
 }
 
+// Quote quotes s for the shell tmux runs a window's command with.
+func Quote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// NewWindow opens a window after the one pane p is in, in p's session,
+// running command in dir with the server's shell, and returns its pane's id.
+// The window stays in the background, where the person finds it.
+func (s Server) NewWindow(ctx context.Context, p Pane, dir, command string) (string, error) {
+	window := fmt.Sprintf("=%s:%d", p.Session, p.Window) // = matches the session's name exactly
+	out, err := s.Run(ctx, "new-window", "-a", "-d", "-t", window, "-c", dir, "-P", "-F", "#{pane_id}", command)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
 // Interrupt presses Escape in the pane, the key every agent tmag knows stops
 // a running turn with.
 func (s Server) Interrupt(ctx context.Context, pane string) error {

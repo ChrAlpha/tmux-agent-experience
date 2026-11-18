@@ -35,6 +35,10 @@ type WaitOptions struct {
 	// Turn, when the prompt's channel named the turn it started, is that
 	// turn: only it counts, whatever other turn starts meanwhile.
 	Turn string
+	// Turned counts only a record that names a turn: a session whose first
+	// prompt was on its command line, until that prompt's turn shows. Wait
+	// fails with ErrNoTurn if none shows within Grace.
+	Turned bool
 	// Grace is how long a prompt may take to start a turn; PendingWindow
 	// when 0.
 	Grace time.Duration
@@ -49,7 +53,7 @@ type WaitOptions struct {
 // started shows there once its hooks report it: they clear the prompt's
 // Sent mark, or report another turn.
 func Wait(ctx context.Context, store session.Store, s Session, o WaitOptions) (session.Record, error) {
-	started := o.Prompted == nil
+	started := o.Prompted == nil && !o.Turned
 	if o.Grace == 0 {
 		o.Grace = PendingWindow
 	}
@@ -68,6 +72,8 @@ func Wait(ctx context.Context, store session.Store, s Session, o WaitOptions) (s
 		if err == nil {
 			switch {
 			case started:
+			case o.Turned:
+				started = rec.Turn != ""
 			case o.Turn != "":
 				started = rec.Turn == o.Turn
 			default:

@@ -5,7 +5,8 @@
   and replies through the asker's channel); amended 2026-11-16 (a message
   attests the sender's permission class and names the receiver's session);
   amended 2026-11-17 (agents work as a flat team: an ask is owed until it is
-  answered, and tmag bounds waits and how far work is passed on)
+  answered, and tmag bounds waits and how far work is passed on; an agent,
+  or the person, starts a peer with `tmag start`)
 - Date: 2026-11-04
 - Builds on: [ADR 0001](0001-agent-control-surface.md), whose verbs agents
   use here unchanged.
@@ -60,8 +61,9 @@ with `[tmag] From` or `[tmag] Reply from`.
 
 - **A plugin, not a prompt injection.** Hooks may not write to stdout (they
   fail open, and the agents put hook output into the model's context), and
-  tmag launches no agent, so a skill's description is the only text tmag can
-  put in every session.
+  tmag starts only the agents `tmag start` opens, changing nothing of how
+  they run, so a skill's description is the only text tmag can put in every
+  session.
 - **A plugin of its own.** Neither host turns off one skill of a plugin
   reliably. The skill's description is in every session, so it is a default
   like the others: `@tmag-peers` (default `on`) makes `tmag setup` install,
@@ -200,6 +202,38 @@ sessions.
   that owes the caller has settled every ask it owes it, ended, or needs the
   person.
 
+### Starting a peer is a verb
+
+`tmag start AGENT|TEMPLATE` opens a tmux window beside the pane it runs in,
+in a directory (`--dir`, by default that pane's) or a git worktree of its own
+(`--worktree BRANCH`, under the repository's `@tmag-worktrees`, by default
+`.worktrees`, added on that branch or reused), waits until the pane shows
+the agent's session, and delivers the first prompt as `send` does, with its
+first line, obligation and gates. The agent replaces the window's shell, as
+it does a person's, and stays tmux's: tmag keeps nothing of it but the
+`Start` event, which names who started it, in which pane and directory, and
+by which template. That is all tmag keeps of who started whom.
+
+- **What a start runs is the person's.** A start names one of the agents,
+  or a template the person set as `@tmag-start-NAME`, whose command starts
+  with one of them. Nobody else gives tmag a command: over HTTP a start
+  names an agent or a template, and an absolute directory.
+- **Codex shows its session from a first prompt of tmag's.** It shows its
+  session only from its first prompt, so tmag gives it one of its own with
+  its command, after `--`, asking it to wait; once that turn is over, the
+  task follows through `send`, as to any agent. The task never runs before
+  the ask it opens, and never reaches the agent's arguments or the process
+  table.
+- **A start that fails after the agent started says so.** Its error names
+  the session that runs, and its `next:` line never asks to start again,
+  which would start another.
+- **An agent that shows no session is left in its window.** A trust dialog,
+  a login or a missing `thread-id` title item holds it; the start exits 4
+  and its `next:` line says where to look.
+- **The window takes the caller's `PATH`.** tmux gives a window the `PATH`
+  of the client that asks for it, so a start finds the agent the caller
+  would.
+
 ### Answers are read from the transcript
 
 `tmag read ID --last` prints the reply that ended an idle session's last turn,
@@ -244,8 +278,9 @@ This is the one transcript reader. It extends "no content is stored" as
 - **The sender writes its own header**, as the skill first asked. A model
   writes the id it believes it has, or none, and any model can write any
   header; tmag already knows the caller.
-- **Injecting the protocol at launch**, as ae does. It needs tmag to start
-  the agents, which a tmux plugin does not.
+- **Injecting the protocol at launch**, as ae does. `tmag start` opens an
+  agent's window, but changes nothing of how the agent runs: its plugins,
+  the skill and its first prompt's line carry what it needs to know.
 - **A mailbox or an MCP server.** It stores messages and runs beside the
   agents, against two invariants, and adds nothing the verbs lack. The
   agents' own inboxes are different: the queue lives in the agent, tmag

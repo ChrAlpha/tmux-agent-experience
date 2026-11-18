@@ -43,6 +43,8 @@ Usage:
                                                deliver a prompt now, or wait for its turn
   tmag reply    <target> [--timeout D] [--json] [text | -]
                                                answer an agent that asked for a reply
+  tmag start    <agent|template> [--dir D] [--worktree BRANCH] [--wait | --reply] [--timeout D] [--json] [text | -]
+                                               start an agent in a window beside this pane
   tmag interrupt <target> [--json]             stop the agent's running turn
   tmag request  <target> <request> [--json]    what an open request asks
   tmag answer   <target> <request> allow|deny [--message M] [--answers JSON] [--json]
@@ -202,6 +204,8 @@ func (a *app) run(args []string) int {
 		return a.cmdSend(rest)
 	case "reply":
 		return a.cmdReply(rest)
+	case "start":
+		return a.cmdStart(rest)
 	case "interrupt":
 		return a.cmdInterrupt(rest)
 	case "answer":
@@ -302,7 +306,12 @@ func (a *app) failOn(cmd, target string, err error) int {
 		code = "ended"
 	}
 	if a.json {
-		a.emit(map[string]any{"error": map[string]string{"code": code, "message": err.Error()}})
+		doc := map[string]any{"error": map[string]string{"code": code, "message": err.Error()}}
+		var started *query.StartedError
+		if errors.As(err, &started) {
+			doc["started"] = started.Session // the agent runs: starting it again starts another
+		}
+		a.emit(doc)
 	}
 	fmt.Fprintf(a.stderr, "tmag %s: %v\n", cmd, err)
 	if n := next(cmd, target, err); n != "" {

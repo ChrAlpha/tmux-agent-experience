@@ -41,6 +41,10 @@ func next(cmd, target string, err error) string {
 	if target == "" {
 		target = "ID"
 	}
+	var started *query.StartedError
+	if errors.As(err, &started) {
+		return afterStart(started)
+	}
 	var notTaken *query.NotTakenError
 	if errors.As(err, &notTaken) {
 		return fmt.Sprintf("nothing was delivered: run the same tmag %s again", cmd)
@@ -64,6 +68,10 @@ func next(cmd, target string, err error) string {
 	switch {
 	case errors.Is(err, errUnshown):
 		return fmt.Sprintf("tmag wait %s --for idle waits until it shows its session", target)
+	case errors.As(err, new(notShownStart)):
+		return fmt.Sprintf("its window stays: see what holds it with tmag read %s --lines 40. An agent at a trust dialog or a login waits for the person; Codex in its shared daemon shows its session only with the thread-id title item", target)
+	case errors.Is(err, query.ErrNoWindow):
+		return "run tmag start in a tmux pane: the agent's window opens beside it"
 	case errors.As(err, new(notShown)):
 		return "it still shows no session: tmag list shows what runs there. An agent at a trust dialog waits for the person; Codex shows its session from its first prompt, and in its shared daemon only with the thread-id title item"
 	case cmd == "wait" && (errors.Is(err, errTimeout) || errors.Is(err, context.DeadlineExceeded)):
@@ -76,6 +84,21 @@ func next(cmd, target string, err error) string {
 		return fmt.Sprintf("see what its pane shows with tmag read %s", target)
 	}
 	return ""
+}
+
+// afterStart says what to do after a start whose agent started and whose
+// prompt then failed: never start it again, which starts another.
+func afterStart(e *query.StartedError) string {
+	id := shortID(e.Session.ID)
+	var notTaken *query.NotTakenError
+	var refused *query.RefusedError
+	switch {
+	case errors.Is(e.Err, query.ErrNotGiven) || errors.As(e.Err, &notTaken) || errors.As(e.Err, &refused):
+		return fmt.Sprintf("it runs as %s, and has not been given the prompt: give it with tmag send %s -, asking as you did", id, id)
+	case errors.Is(e.Err, query.ErrUnlogged):
+		return fmt.Sprintf("it runs as %s: tmag list shows it", id)
+	}
+	return fmt.Sprintf("it runs as %s, and what became of the prompt is unknown: run tmag wait %s --for idle,blocked, then tmag read %s --last; do not send the prompt again", id, id, id)
 }
 
 // nextAfterRefusal says what to do after a refusal, which delivers nothing:
