@@ -13,7 +13,8 @@ const stream = (chunks: string[]) =>
 afterEach(() => vi.unstubAllGlobals())
 
 describe('watch', () => {
-  // tmag serve's frames, as they arrive in chunks that split lines anywhere.
+  // tmag serve's frames, as they arrive in chunks that split lines anywhere,
+  // from a computer the page reaches at a path of its own.
   it('reads documents and cursors from frames in any chunks', async () => {
     const text =
       ': watching\n\nid: 18\nevent: doc\ndata: {"type":"panes","panes":[]}\n\nevent: ping\ndata: 1\n\n' +
@@ -25,7 +26,7 @@ describe('watch', () => {
       vi.stubGlobal('fetch', fetch)
       const docs: [WatchDoc, string | undefined][] = []
       let alive = 0
-      await watch('secret', {
+      await watch('/two', 'secret', {
         since: '17',
         signal: new AbortController().signal,
         onDoc: (d, c) => docs.push([d, c]),
@@ -37,7 +38,7 @@ describe('watch', () => {
       ])
       expect(alive).toBe(3)
       expect(fetch).toHaveBeenCalledWith(
-        '/v2/watch?since=17',
+        '/two/v2/watch?since=17',
         expect.objectContaining({ headers: { Authorization: 'Bearer secret' } }),
       )
     }
@@ -49,20 +50,20 @@ describe('act', () => {
     vi.stubGlobal('fetch', async () =>
       Response.json({ schema: 'tmag/v2', error: { code: 'refused:busy', message: 'it works' } }, { status: 409 }),
     )
-    await expect(act('t', { verb: 'interrupt', target: 'a' })).rejects.toMatchObject({
+    await expect(act('', 't', { verb: 'interrupt', target: 'a' })).rejects.toMatchObject({
       status: 409,
       code: 'refused:busy',
     })
 
     vi.stubGlobal('fetch', async () => new Response('not found', { status: 404 }))
-    await expect(act('t', { verb: 'interrupt', target: 'a' })).rejects.toThrow(
+    await expect(act('', 't', { verb: 'interrupt', target: 'a' })).rejects.toThrow(
       'no tmag serve answered /v2/act (HTTP 404)',
     )
 
     vi.stubGlobal('fetch', async () => {
       throw new TypeError('Load failed')
     })
-    const lost = await act('t', { verb: 'interrupt', target: 'a' }).catch((e: unknown) => e)
+    const lost = await act('', 't', { verb: 'interrupt', target: 'a' }).catch((e: unknown) => e)
     expect(lost).toBeInstanceOf(Failure)
     expect(lost).toMatchObject({ status: 0, code: 'network' })
   })

@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'preact/hooks'
+import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks'
+import type { Computer } from '../computer'
 import type { Request, Session } from '../contract'
-import { act, answered, loadRequest, requestOf } from '../store'
 import { can } from '../view'
 import { cls, explain, outcome } from './explain'
 import { Markdown } from './Markdown'
@@ -10,23 +10,53 @@ type Decide = (decision: 'allow' | 'deny', extra?: { message?: string; answers?:
 
 // Requests shows a card for each request the session waits on that this page
 // has not answered. A card keeps what is typed in it while the watch reports
-// the session again.
-export function Requests({ s, say }: { s: Session; say: Say }) {
-  const done = answered.value
+// the session again. The request a link named comes into view, marked; one
+// no longer open says so.
+export function Requests({ c, s, focus, say }: { c: Computer; s: Session; focus?: string; say: Say }) {
+  const done = c.answered.value
   const open = s.state === 'blocked' ? s.requests.filter((r) => !done.has(r.id)) : []
-  if (!open.length) return null
+  const gone = !!focus && !open.some((r) => r.id === focus)
+  // The request a link named stays in view as the cards before it read
+  // what they ask and grow, until the person scrolls them.
+  const cards = useRef<HTMLDivElement>(null)
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the cards it watches come and go with the open requests
+  useLayoutEffect(() => {
+    const el = cards.current
+    if (!el || !focus) return
+    let moved = false
+    const keep = () => moved || el.querySelector('.card.focus')?.scrollIntoView({ block: 'nearest' })
+    const grown = new ResizeObserver(keep)
+    for (const card of el.children) grown.observe(card)
+    const scrolled = () => {
+      moved = true
+    }
+    el.addEventListener('touchmove', scrolled, { passive: true })
+    el.addEventListener('wheel', scrolled, { passive: true })
+    keep()
+    return () => {
+      grown.disconnect()
+      el.removeEventListener('touchmove', scrolled)
+      el.removeEventListener('wheel', scrolled)
+    }
+  }, [focus, open.length])
+  if (!open.length && !gone) return null
   return (
-    <div class="cards">
+    <div class="cards" ref={cards}>
+      {gone && <p class="card muted">The request this link names is no longer open.</p>}
       {open.map((r) => (
-        <Card key={r.id} s={s} r={r} say={say} />
+        <Card key={r.id} c={c} s={s} r={r} focus={r.id === focus} say={say} />
       ))}
     </div>
   )
 }
 
-function Card({ s, r, say }: { s: Session; r: Request; say: Say }) {
-  useEffect(() => loadRequest(s.id, r.id), [s.id, r.id])
-  const doc = requestOf(r.id).value
+function Card({ c, s, r, focus, say }: { c: Computer; s: Session; r: Request; focus: boolean; say: Say }) {
+  // A request is read again whenever the watch reports its session, where
+  // its computer serves requests.
+  useEffect(() => {
+    if (c.can('request')) c.loadRequest(s.id, r.id)
+  }, [c, s, r.id])
+  const doc = c.requestOf(r.id).value
   const input = doc.value?.input
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -35,7 +65,7 @@ function Card({ s, r, say }: { s: Session; r: Request; say: Say }) {
     setBusy(true)
     setError('')
     try {
-      await act({ verb: 'answer', target: s.id, request: r.id, decision, ...extra })
+      await c.act({ verb: 'answer', target: s.id, request: r.id, decision, ...extra })
       say('Answered')
     } catch (e) {
       setError(outcome(e, 'answer'))
@@ -45,7 +75,7 @@ function Card({ s, r, say }: { s: Session; r: Request; say: Say }) {
 
   const heading =
     r.kind === 'question' ? 'Question' : r.kind === 'plan' ? 'Approve the plan?' : `Allow ${r.tool || 'this'}?`
-  const answerable = can(s, 'answer')
+  const answerable = can(s, 'answer') && c.can('answer')
   const questions = r.kind === 'question' ? asked(input) : undefined
   let body = null
   if (r.kind === 'question' && answerable) {
@@ -68,7 +98,7 @@ function Card({ s, r, say }: { s: Session; r: Request; say: Say }) {
   }
 
   return (
-    <section class="card">
+    <section class={cls('card', focus && 'focus')}>
       <h2>
         {heading}
         {r.agent && <small> · subagent</small>}

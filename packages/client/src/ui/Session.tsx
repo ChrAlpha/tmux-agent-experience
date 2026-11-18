@@ -1,36 +1,50 @@
 import type { ComponentChildren } from 'preact'
 import { createContext } from 'preact'
 import { useCallback, useContext, useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks'
+import type { Computer } from '../computer'
 import type { Prompt, Session as S } from '../contract'
-import { act, back, loaded, loadScreen, loadTurns, now, screenOf, sentTo, turnsOf, view } from '../store'
-import { ago, can, find, follows, helpers, paneOf, place, status, stoppable, unwritten } from '../view'
+import { hash } from '../route'
+import { back, now } from '../store'
+import { ago, can, find, follows, helpers, paneOf, place, shared, status, stoppable, ties, unwritten } from '../view'
 import { cls, explain, outcome } from './explain'
 import { Markdown } from './Markdown'
 import { Requests } from './Requests'
 
 export type Say = (text: string, error?: boolean) => void
 
-export function Session({ id }: { id: string }) {
-  const v = view.value
-  const s = find(v, id)
-  const pane = s && paneOf(v, s)
+export function Session({ c, id, request }: { c: Computer; id: string; request?: string }) {
+  const v = c.view.value
+  const ambiguous = shared(v, id)
+  const s = ambiguous ? undefined : find(v, id)
+  const pane = s && c.can('read') ? paneOf(v, s) : undefined
   const [screen, setScreen] = useState(false)
   const showScreen = screen && !!pane
-  const gone = loaded.value && !s
+  const gone = c.loaded.value && !s
   const [toast, say] = useToast()
 
   // What the session shows is read again whenever the watch reports it: the
   // view makes a new object of each session an event or a snapshot reports.
   useEffect(() => {
-    if (s) (showScreen ? loadScreen : loadTurns)(id)
-  }, [id, s, showScreen])
+    if (s && c.can('read')) showScreen ? c.loadScreen(id) : c.loadTurns(id)
+  }, [c, id, s, showScreen])
   // A screen also changes with nothing to report, as an agent writes: it is
   // read again every two seconds while it shows.
   useEffect(() => {
     if (!showScreen) return
-    const again = setInterval(() => document.hidden || loadScreen(id), 2000)
+    const again = setInterval(() => document.hidden || c.loadScreen(id), 2000)
     return () => clearInterval(again)
-  }, [id, showScreen])
+  }, [c, id, showScreen])
+  // The person sees the turn it ended, and one that ends while they look,
+  // while the page shows: a turn that ends while it is hidden is seen once
+  // it shows again.
+  const seen = c.seen.value
+  useEffect(() => {
+    if (!s || !seen) return
+    const look = () => document.hidden || c.looked(id)
+    look()
+    document.addEventListener('visibilitychange', look)
+    return () => document.removeEventListener('visibilitychange', look)
+  }, [c, id, s, seen])
 
   return (
     <div class="screen session">
@@ -47,6 +61,7 @@ export function Session({ id }: { id: string }) {
                 ? 'not running'
                 : ''}
           </div>
+          {s && <Ties c={c} s={s} />}
         </div>
         {pane && (
           <button class="mode" type="button" onClick={() => setScreen(!showScreen)}>
@@ -55,19 +70,39 @@ export function Session({ id }: { id: string }) {
         )}
       </header>
       <Scroller key={showScreen ? 'screen' : 'turns'}>
-        {gone ? (
+        {ambiguous ? (
+          <p class="empty">More than one agent runs a session by this id, and tmag names none of them by it.</p>
+        ) : gone ? (
           <p class="empty">This session is not running.</p>
+        ) : !c.can('read') ? (
+          <p class="empty">tmag on this computer does not read a session's turns.</p>
         ) : showScreen ? (
-          <Screen id={id} />
+          <Screen c={c} id={id} />
         ) : (
-          <Turns id={id} s={s} />
+          <Turns c={c} id={id} s={s} />
         )}
       </Scroller>
-      {s && <Requests s={s} say={say} />}
+      {s && <Requests c={c} s={s} focus={request} say={say} />}
       <p class={cls('toast', toast.error && 'error')} role="status">
         {toast.text}
       </p>
-      {!gone && <Composer id={id} s={s} screen={showScreen} say={say} />}
+      {!gone && !ambiguous && <Composer c={c} id={id} s={s} screen={showScreen} say={say} />}
+    </div>
+  )
+}
+
+// Ties are the sessions this one works for, and those it waits on, each a
+// link to it.
+function Ties({ c, s }: { c: Computer; s: S }) {
+  const all = ties(c.view.value, s)
+  if (!all.length) return null
+  return (
+    <div class="ties">
+      {all.map((t) => (
+        <a key={`${t.text}/${t.s.id}`} href={hash({ name: 'session', at: c.name, id: t.s.id })}>
+          {t.text} {place(t.s)}
+        </a>
+      ))}
     </div>
   )
 }
@@ -106,9 +141,9 @@ function Scroller({ children }: { children: ComponentChildren }) {
   )
 }
 
-function Turns({ id, s }: { id: string; s: S | undefined }) {
-  const read = turnsOf(id).value
-  const sent = sentTo(id).value
+function Turns({ c, id, s }: { c: Computer; id: string; s: S | undefined }) {
+  const read = c.turnsOf(id).value
+  const sent = c.sentTo(id).value
   const follow = useContext(Follow)
   const before = useRef(sent.length)
   // biome-ignore lint/correctness/useExhaustiveDependencies: what is read, the state, or what was sent changes what shows; a prompt the person unfolds does not move the scroller
@@ -130,10 +165,10 @@ function Turns({ id, s }: { id: string; s: S | undefined }) {
     if (!lag.current.left) return
     const again = setTimeout(() => {
       lag.current.left--
-      loadTurns(id)
+      c.loadTurns(id)
     }, 1000)
     return () => clearTimeout(again)
-  }, [id, s, turns, sent])
+  }, [c, id, s, turns, sent])
   const shown = sent.map((p) => <PromptText key={`sent-${p.id}`} p={{ text: p.text }} sent />)
   if (!turns) {
     return (
@@ -192,17 +227,17 @@ function PromptText({ p, sent = false }: { p: Prompt; sent?: boolean }) {
   )
 }
 
-function Screen({ id }: { id: string }) {
-  const read = screenOf(id).value
+function Screen({ c, id }: { c: Computer; id: string }) {
+  const read = c.screenOf(id).value
   const follow = useContext(Follow)
   // biome-ignore lint/correctness/useExhaustiveDependencies: the screen read changes what shows
   useLayoutEffect(follow, [follow, read])
-  const text = read.value ?? (read.error ? explain(read.error) : 'Reading its screen…')
+  const text = read.value?.text ?? (read.error ? explain(read.error) : 'Reading its screen…')
   return <pre class="terminal">{text}</pre>
 }
 
-function Composer({ id, s, screen, say }: { id: string; s: S | undefined; screen: boolean; say: Say }) {
-  const draft = `tmag.draft.${id}`
+function Composer({ c, id, s, screen, say }: { c: Computer; id: string; s: S | undefined; screen: boolean; say: Say }) {
+  const draft = `tmag.draft.${c.name}/${id}`
   const [text, setText] = useState(() => sessionStorage.getItem(draft) ?? '')
   const [busy, setBusy] = useState(false)
   const box = useRef<HTMLTextAreaElement>(null)
@@ -221,22 +256,22 @@ function Composer({ id, s, screen, say }: { id: string; s: S | undefined; screen
     if (value) sessionStorage.setItem(draft, value)
     else sessionStorage.removeItem(draft)
   }
-  const prompts = !s || can(s, 'send')
+  const prompts = !s || (can(s, 'send') && c.can('send'))
   // A prompt is told from the same text sent before by what the turns held
   // as it went: it waits for the first read of them.
-  const read = turnsOf(id).value
-  const sendable = !busy && !!s && prompts && !!text.trim() && !!(read.value || read.error)
+  const read = c.turnsOf(id).value
+  const sendable = !busy && !!s && prompts && !!text.trim() && (!c.can('read') || !!(read.value || read.error))
 
   async function run(verb: 'send' | 'interrupt') {
     setBusy(true)
     try {
       if (verb === 'send') {
-        await act({ verb, target: id, text })
+        await c.act({ verb, target: id, text })
         edit('')
         // It shows at the end of the turns, if they show and it starts one.
         if (screen || !follows(text)) say('Sent')
       } else {
-        await act({ verb, target: id })
+        await c.act({ verb, target: id })
         say('Interrupt sent')
       }
     } catch (e) {
@@ -253,7 +288,7 @@ function Composer({ id, s, screen, say }: { id: string; s: S | undefined; screen
         if (sendable) void run('send')
       }}
     >
-      {s && stoppable(s) && (
+      {s && stoppable(s) && c.can('interrupt') && (
         <button class="stop" type="button" disabled={busy} onClick={() => run('interrupt')}>
           Stop
         </button>

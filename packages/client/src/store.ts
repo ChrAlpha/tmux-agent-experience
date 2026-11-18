@@ -1,306 +1,170 @@
-// What the page knows, as signals the screens read: the credential, the route,
-// the view the watch keeps current, what a session shows (its turns, its
-// screen, its requests), read from tmag serve when shown, and what the page
-// sent it until its turns show it. The page keeps only its credential, in
-// this browser's storage, and drafts.
+// What the page knows across the computers it works with, as signals the
+// screens read: the computers, the route, one inbox of their sessions, and
+// the clock. Each computer keeps what it knows of itself (computer.ts); the
+// page keeps the computers, with their credentials, in this browser's
+// storage.
 
-import { batch, computed, effect, type Signal, signal } from '@preact/signals'
+import { batch, computed, effect, signal } from '@preact/signals'
 import * as api from './api'
-import {
-  type Action,
-  type Credential,
-  type InfoDoc,
-  minimum,
-  older,
-  type RequestDoc,
-  type ScreenDoc,
-  type Turn,
-  type TurnsDoc,
-} from './contract'
-import { apply, empty, find, follows, type Sent, sessions, told, unread, type View } from './view'
+import { Computer, type Hooks, type Saved } from './computer'
+import type { InfoDoc, Session } from './contract'
+import { parse, type Route } from './route'
+import { done, sessions } from './view'
 
-const stored = 'tmag.credential'
+const stored = 'tmag.computers'
 
-function saved(): Credential | null {
+// saved is what the page keeps of its computers. A page that kept one
+// credential, before it worked with several computers, kept it for the one
+// that serves it.
+function saved(): Saved[] {
   try {
-    const c = JSON.parse(localStorage.getItem(stored) ?? 'null') as Credential | null
-    return c && typeof c.token === 'string' ? c : null
+    const one = JSON.parse(localStorage.getItem('tmag.credential') ?? 'null') as Saved['credential'] | null
+    if (one && typeof one.token === 'string' && !localStorage.getItem(stored)) {
+      localStorage.setItem(stored, JSON.stringify([{ name: '', credential: one }]))
+    }
+    localStorage.removeItem('tmag.credential')
+    const all = JSON.parse(localStorage.getItem(stored) ?? '[]') as Saved[]
+    return Array.isArray(all)
+      ? all.filter((c) => typeof c?.name === 'string' && typeof c.credential?.token === 'string')
+      : []
   } catch {
-    return null
+    return []
   }
 }
 
-export const credential = signal<Credential | null>(saved())
-/** Why the page asks to pair again, if it does. */
-export const notice = signal('')
+const keep = () => localStorage.setItem(stored, JSON.stringify(computers.value.map((c) => c.saved())))
 
-export type Route = { name: 'list' } | { name: 'session'; id: string }
+// twin is another computer the page works with that is this instance.
+const twin = (c: Computer, instance = c.instance) =>
+  computers.value.find((x) => x !== c && !!instance && x.instance === instance)
 
-const parse = (hash: string): Route => {
-  const id = /^#\/s\/([^/?]+)$/.exec(hash)?.[1]
-  return id ? { name: 'session', id: decodeURIComponent(id) } : { name: 'list' }
+const twice = (c: Computer, same: Computer) =>
+  `That is ${title(same)}, which the page already works with. On it, revoke the credential just made: tmag auth revoke ${c.credential.id}`
+
+const hooks: Hooks = {
+  saved: () => keep(),
+  // A computer that no longer accepts this device is forgotten.
+  lost: (c, why) => forget(c, `The computer${c.name ? ` ${c.name}` : ''} ${why}`),
+  // A computer that says it is one the page already works with, at another
+  // address, is forgotten: the one added last.
+  identified: (c) => {
+    const same = computers.value.includes(c) && twin(c)
+    if (!same) return
+    const later = computers.value.indexOf(c) > computers.value.indexOf(same) ? c : same
+    forget(later, twice(later, later === c ? same : c))
+  },
 }
 
-export const route = signal(parse(location.hash))
+const made = (s: Saved) => new Computer(s, hooks)
 
-// Whether the page came to the session it shows from the agents' list, the
-// entry before it in the browser's history.
+/** The computers the page works with, in the order they were paired. */
+export const computers = signal<readonly Computer[]>(saved().map(made))
+/** Why the page forgot a computer, if it did. */
+export const notice = signal('')
+
+// title names a computer: by the name it is proxied at, or the one that
+// serves the page by the first label of its host.
+export const title = (c: Computer) => c.name || location.hostname.split('.')[0] || 'this computer'
+
+/** The computer a route names, if the page works with one by that name. */
+export const named = (name: string) => computers.value.find((c) => c.name === name)
+
+export const route = signal<Route>(parse(location.hash))
+
+/** Where a link to a computer the page does not work with went: it goes on there once the page does. */
+export const linked = signal<{ hash: string; name: string } | null>(null)
+
+// Whether the page came to what it shows from the agents' list, the entry
+// before it in the browser's history.
 let fromList = false
 
 function follow() {
   const next = parse(location.hash)
-  fromList = next.name === 'session' && route.value.name === 'list'
+  fromList = next.name !== 'list' && route.value.name === 'list'
   route.value = next
 }
 
 // back returns to the agents' list: the entry the page came from, or one in
-// place of a session opened from a link, so that the browser's own back and a
+// place of a page opened from a link, so that the browser's own back and a
 // swipe go where the person expects.
 export function back() {
   if (fromList) history.back()
   else location.replace('#/')
 }
 
-/** What the watch rebuilt. */
-export const view = signal<View>(empty)
-/** Whether a snapshot arrived: until then, no session is known to be gone. */
-export const loaded = signal(false)
-/** Whether the watch delivers. */
-export const live = signal(false)
-/** Why it does not. */
-export const problem = signal<Error | null>(null)
-/** The version of tmag on the computer, when it is older than the page needs. */
-export const outdated = signal('')
 /** The time "ago" counts from, a little behind. */
 export const now = signal(Date.now())
-export const blocked = computed(() => sessions(view.value).filter((s) => s.state === 'blocked').length)
 
-export function paired(c: Credential) {
-  localStorage.setItem(stored, JSON.stringify(c))
+/** A session, with the computer it runs on. */
+export interface Entry {
+  c: Computer
+  s: Session
+}
+
+const rank: Record<string, number> = { blocked: 0, working: 1, idle: 2 }
+const at = (s: Session) => (s.since ? Date.parse(s.since) : 0)
+
+/** Every computer's sessions, blocked, working then idle, the latest first. */
+export const inbox = computed<Entry[]>(() =>
+  computers.value
+    .flatMap((c) => sessions(c.view.value).map((s) => ({ c, s })))
+    .sort((a, b) => (rank[a.s.state] ?? 3) - (rank[b.s.state] ?? 3) || at(b.s) - at(a.s)),
+)
+
+/** How many sessions wait on the person, or ended a turn unseen. */
+export const waiting = computed(() =>
+  inbox.value.reduce((n, { c, s }) => {
+    const seen = c.seen.value
+    return n + (s.state === 'blocked' || (seen && done(s, seen)) ? 1 : 0)
+  }, 0),
+)
+
+// add pairs the page with a computer, by the code `tmag auth pair` printed
+// there, at the name it is proxied at ('' for the one that serves the page).
+// The credential is kept at once: the code is spent. The computer then shows
+// nothing until it said which instance it is; one the page already works
+// with, at another name, is not added twice, and the credential just made is
+// the person's to revoke.
+export async function add(name: string, code: string): Promise<Computer> {
+  if (named(name)) throw new Error(`The page already works with ${name || 'this address'}.`)
+  const base = name ? `/${name}` : ''
+  const credential = await api.pair(base, code)
+  const c = made({ name, credential })
   batch(() => {
     notice.value = ''
-    problem.value = null
-    credential.value = c
+    computers.value = [...computers.value, c]
   })
-  connect()
+  keep()
+  const said = AbortSignal.timeout(5_000)
+  const info = await api.get<InfoDoc>(base, credential.token, 'info', {}, said).catch(() => null)
+  const same = info && twin(c, info.instance)
+  if (same) {
+    forget(c)
+    throw new Error(twice(c, same))
+  }
+  if (info) c.learn(info)
+  void c.connect()
+  return c
 }
 
-// forget drops the credential, and with it all the page read with it.
-export function forget(why = '') {
-  localStorage.removeItem(stored)
-  stop()
-  cursor = null
-  turns.clear()
-  screens.clear()
-  requests.clear()
-  sent.clear()
+// forget drops a computer, and with it all the page read from it.
+export function forget(c: Computer, why = '') {
+  c.forget()
   batch(() => {
-    credential.value = null
+    computers.value = computers.value.filter((x) => x !== c)
     notice.value = why
-    view.value = empty
-    loaded.value = false
-    outdated.value = ''
-    answered.value = new Set()
   })
+  keep()
 }
 
-// authorized runs a request with the credential, and forgets a credential
-// the computer no longer accepts.
-async function authorized<T>(run: (token: string) => Promise<T>): Promise<T> {
-  try {
-    return await run(credential.value?.token ?? '')
-  } catch (e) {
-    if (e instanceof api.Failure && e.status === 401) {
-      forget('The computer no longer accepts this device: its credential was revoked or expired. Pair it again.')
-    }
-    throw e
-  }
-}
-
-// The watch: one stream while the page is paired, resumed from its cursor
-// after it breaks, sooner the less it has failed. tmag pings every 15 s, so
-// a stream quiet for 45 s is gone even if the network did not say so.
-let cursor: string | null = null
-let stream: AbortController | null = null
-let retry: ReturnType<typeof setTimeout> | undefined
-let failures = 0
-let heard = 0
-
-async function connect(): Promise<void> {
-  clearTimeout(retry)
-  if (stream || !credential.value) return
-  const ctl = new AbortController()
-  stream = ctl
-  heard = Date.now()
-  const quiet = setInterval(() => Date.now() - heard > 45_000 && ctl.abort(), 5_000)
-  try {
-    await authorized((token) =>
-      api.watch(token, {
-        since: cursor,
-        signal: ctl.signal,
-        onAlive() {
-          heard = Date.now()
-          failures = 0
-          if (!live.value) {
-            batch(() => {
-              live.value = true
-              problem.value = null
-            })
-            void check()
-          }
-        },
-        onDoc(doc, at) {
-          if (at) cursor = at
-          batch(() => {
-            if (doc.type === 'snapshot') loaded.value = true
-            view.value = apply(view.value, doc)
-          })
-        },
-      }),
-    )
-  } catch (e) {
-    problem.value = e as Error
-  } finally {
-    clearInterval(quiet)
-    if (stream === ctl) stream = null
-    live.value = false
-  }
-  if (!credential.value || stream) return
-  if (ctl.signal.aborted) return connect() // fell quiet, or the page woke: at once
-  failures++
-  retry = setTimeout(connect, Math.min(15_000, 500 * 2 ** failures))
-}
-
-// check reads which tmag answers, each time the watch starts: the computer
-// may have updated it, or gone back to an older one, meanwhile.
-async function check() {
-  const asked = credential.value
-  try {
-    const { version } = await authorized((t) => api.get<InfoDoc>(t, 'info', {}))
-    if (credential.value === asked) outdated.value = older(version, minimum) ? version : ''
-  } catch {
-    // The watch says why the computer does not answer.
-  }
-}
-
-function stop() {
-  clearTimeout(retry)
-  stream?.abort()
-  stream = null
-  live.value = false
-}
-
-// wake resumes the watch at once when the page shows again: a phone may have
-// suspended it in the background without ending it.
+// wake resumes every watch when the page shows again.
 function wake() {
   if (document.hidden) return
   now.value = Date.now()
-  if (stream && Date.now() - heard > 20_000) stream.abort()
-  else void connect()
+  for (const c of computers.value) c.wake()
 }
 
-/** What a read gave, or why it failed; a failed read keeps what came before. */
-export interface Read<T> {
-  value?: T
-  error?: Error
-}
-
-const turns = new Map<string, Signal<Read<Turn[]>>>()
-const screens = new Map<string, Signal<Read<string>>>()
-const requests = new Map<string, Signal<Read<RequestDoc>>>()
-const sent = new Map<string, Signal<readonly Sent[]>>()
-let sends = 0
-/** Requests answered from this page, hidden before the watch says so. */
-export const answered = signal<ReadonlySet<string>>(new Set())
-
-function slot<T>(m: Map<string, Signal<Read<T>>>, key: string): Signal<Read<T>> {
-  const s = m.get(key) ?? signal<Read<T>>({})
-  m.set(key, s)
-  return s
-}
-
-export const turnsOf = (id: string) => slot(turns, id)
-export const screenOf = (id: string) => slot(screens, id)
-export const requestOf = (id: string) => slot(requests, id)
-
-/** What the page sent a session that its turns do not show yet. */
-export function sentTo(id: string): Signal<readonly Sent[]> {
-  const s = sent.get(id) ?? signal<readonly Sent[]>([])
-  sent.set(id, s)
-  return s
-}
-
-// read runs load now, or once more after the run in flight for the same
-// slot, so that what it shows is never older than what asked for it. What
-// it read goes to got as it shows. An unpaired page reads nothing, whatever
-// asked before it forgot its credential.
-const running = new Map<Signal<unknown>, { again: boolean }>()
-function read<T>(into: Signal<Read<T>>, load: (token: string) => Promise<T>, got?: (value: T) => void) {
-  if (!credential.value) return
-  const run = running.get(into)
-  if (run) {
-    run.again = true
-    return
-  }
-  const next = { again: false }
-  running.set(into, next)
-  void (async () => {
-    do {
-      next.again = false
-      if (!credential.value) break
-      try {
-        const value = await authorized(load)
-        batch(() => {
-          into.value = { value }
-          got?.(value)
-        })
-      } catch (e) {
-        into.value = { ...into.value, error: e as Error }
-      }
-    } while (next.again)
-    running.delete(into)
-  })()
-}
-
-export function loadTurns(id: string) {
-  read(
-    turnsOf(id),
-    async (t) => (await api.get<TurnsDoc>(t, 'read', { target: id, turns: 20 })).turns,
-    (turns) => settle(id, turns),
-  )
-}
-
-// settle keeps what was sent to a session that its turns do not show yet.
-function settle(id: string, turns: readonly Turn[]) {
-  const into = sent.get(id)
-  if (into?.value.length) into.value = unread(into.value, turns, find(view.value, id))
-}
-
-export function loadScreen(id: string) {
-  read(screenOf(id), async (t) => (await api.get<ScreenDoc>(t, 'read', { target: id, lines: 120 })).text)
-}
-
-export function loadRequest(session: string, request: string) {
-  const into = requestOf(request)
-  if (!into.value.value) read(into, (t) => api.get<RequestDoc>(t, 'request', { target: session, request }))
-}
-
-export async function act(action: Action) {
-  // A prompt is known by its text and the session's state as it goes, before
-  // the session can start on it.
-  const shown = action.verb === 'send' ? (turnsOf(action.target).value.value ?? []) : []
-  const text = action.verb === 'send' ? action.text.trim() : ''
-  const was = find(view.value, action.target)
-  await authorized((t) => api.act(t, action))
-  if (action.verb === 'answer') answered.value = new Set(answered.value).add(action.request)
-  if (action.verb === 'send' && follows(text)) {
-    const into = sentTo(action.target)
-    into.value = [...into.value, { id: ++sends, text, seen: told(shown, text), since: was?.since }]
-    settle(action.target, turnsOf(action.target).value.value ?? [])
-  }
-}
-
-// start follows the route, the watch and the clock while the page is open.
+// start follows the route, the watches and the clock while the page is open.
 export function start() {
   addEventListener('hashchange', follow)
   document.addEventListener('visibilitychange', wake)
@@ -309,7 +173,7 @@ export function start() {
     if (!document.hidden) now.value = Date.now()
   }, 15_000)
   effect(() => {
-    document.title = `${blocked.value ? `(${blocked.value}) ` : ''}tmag`
+    document.title = `${waiting.value ? `(${waiting.value}) ` : ''}tmag`
   })
-  void connect()
+  for (const c of computers.value) void c.connect()
 }

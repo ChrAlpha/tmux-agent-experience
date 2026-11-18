@@ -2,7 +2,8 @@
 
 This repository is a page for a phone: Preact components in TypeScript that
 Vite builds into static files, which `tailscale serve`, or any server that also
-proxies `/v2/` to `tmag serve`, serves as they are. README.md says what it shows
+proxies `/v2/` to `tmag serve`, serves as they are, and `/NAME/v2/` to the
+`tmag serve` of each other computer it works with. README.md says what it shows
 and how to set it up.
 
 ## Promises
@@ -18,9 +19,11 @@ and how to set it up.
   `src/contract.ts` types what the page reads of them. A field the contract
   does not name is not there; one it may omit is optional. A change the page
   needs from tmag is a change to that contract, made there first.
-- **The watch is the truth.** `src/view.ts` rebuilds sessions and panes from
-  `/v2/watch` as the contract tells a client to, the rules of
-  tmux-agent-experience's e2e follower. What the page reads on demand (turns,
+- **The watch is the truth.** `src/view.ts` rebuilds each computer's sessions
+  and panes from its `/v2/watch` as the contract tells a client to, the rules
+  of tmux-agent-experience's e2e follower. A computer is one instance: its
+  `/v2/info` names it, and says which operations it serves, which are all the
+  page offers there. What the page reads on demand (turns,
   a request, a screen) it reads again when an event reports that session, and
   what changes unreported on its own while it shows: a screen every two
   seconds, and turns every second, three times, while they lag what tmag
@@ -29,13 +32,13 @@ and how to set it up.
 - **What an agent wrote stays text.** Components render strings as text.
   Only `src/ui/Markdown.tsx` sets HTML, from `src/markdown.ts`: markdown-it
   with raw HTML off, links to http and https only, no images.
-- **The page keeps its credential and drafts, nothing else.** The credential
-  lives in the browser's storage, goes only in the `Authorization` header, and
-  never in a URL or a log. Turns, requests and screens are read when shown.
-- **Out of scope, by decision:** starting agents (an agent starts its peers
-  through tmux), browsing files or diffs, several computers, push of its own
-  (`@tmag-notify` and ntfy carry alerts), seen state. Changing that is the
-  owner's decision, not an agent's.
+- **The page keeps its credentials, drafts and what the person saw, nothing
+  else.** A credential lives in the browser's storage, goes only in the
+  `Authorization` header, and never in a URL or a log; what the person saw is
+  the turn each session last ended while they looked. Turns, requests and
+  screens are read when shown.
+- **Out of scope, by decision:** push of its own (`@tmag-notify` and ntfy
+  carry alerts). Changing that is the owner's decision, not an agent's.
 
 ## Layout
 
@@ -45,14 +48,16 @@ and how to set it up.
 | `public/` | tmag's icon, as tmux-agent-experience's landing page has it, and the PNG iOS needs of it |
 | `vite.config.ts` | The build, its Content-Security-Policy, the `/v2/` proxy of `dev` and `preview`, and Vitest |
 | `src/contract.ts` | The documents the page reads and writes |
-| `src/api.ts` | Requests, pairing, and the event stream |
-| `src/view.ts` | The view rebuilt from watch documents, and how a session reads |
-| `src/store.ts` | Signals the screens read: credential, route, the watch's lifecycle, what a session shows |
+| `src/api.ts` | Requests, pairing, and the event stream, at a computer's path |
+| `src/view.ts` | The view rebuilt from watch documents, how a session reads, what the person saw, and how sessions tie |
+| `src/computer.ts` | A computer: its credential, its watch's lifecycle, what a session of it shows, what the person saw of it |
+| `src/route.ts` | The routes the address's hash names |
+| `src/store.ts` | Signals the screens read across computers: the computers, pairing, the route, one inbox |
 | `src/markdown.ts` | Markdown to HTML that holds only Markdown's tags |
 | `src/ui/` | Screens: pairing, agents, a session with its turns, screen, requests and composer |
 | `src/app.css` | Styles, light and dark, for phones first |
 | `src/*.test.ts` | Vitest tests of the modules that need no browser |
-| `e2e/` | Playwright tests against tmag and fake agents in a private tmux server |
+| `e2e/` | Playwright tests against two computers' tmag and fake agents in a private tmux server |
 | `.github/workflows/` | Checks and end-to-end tests; releases from `v*` tags |
 
 ## Checks

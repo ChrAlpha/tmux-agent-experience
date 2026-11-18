@@ -9,6 +9,7 @@
   --blocked: #d97706;
   --working: #2563eb;
   --idle: #a1a1aa;
+  --done: #16a34a;
   --danger: #dc2626;
   --mine: #e8eefc;
   --code: #efefeb;
@@ -26,6 +27,7 @@
     --blocked: #f59e0b;
     --working: #60a5fa;
     --idle: #6b6b74;
+    --done: #4ade80;
     --danger: #f87171;
     --mine: #1f2a44;
     --code: #22262d;
@@ -198,13 +200,36 @@ pre {
 /* Pairing */
 .pair form {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   margin: 12px 0;
 }
-.pair input {
+.pair input[name="code"] {
+  flex: 1;
   font-family: var(--mono);
   letter-spacing: 0.08em;
   text-transform: uppercase;
+}
+.pair input[name="computer"] {
+  flex-basis: 100%;
+}
+.pair .check {
+  flex-basis: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  color: var(--muted);
+  font-size: 15px;
+}
+.pair .check input {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--accent);
 }
 .notice {
   background: var(--code);
@@ -257,14 +282,40 @@ pre {
 .blocked .dot {
   background: var(--blocked);
 }
+/* A turn ended that the person has not seen end. */
+.row.done .dot {
+  background: var(--done);
+}
+.name small {
+  font-weight: 400;
+  color: var(--muted);
+}
 footer {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 13px;
+  padding: 16px 4px;
+}
+footer .device {
   display: flex;
   justify-content: space-between;
   align-items: center;
   gap: 8px;
-  color: var(--muted);
+}
+footer a.link {
+  align-self: flex-start;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+}
+/* The sessions one works for and waits on. */
+.ties {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 12px;
   font-size: 13px;
-  padding: 16px 4px;
 }
 @keyframes pulse {
   50% {
@@ -457,6 +508,13 @@ footer {
   border-radius: 12px;
   padding: 12px;
   margin: 8px 0;
+}
+.card.muted {
+  border-color: var(--line);
+}
+.card.focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
 }
 .card h2 {
   margin: 0 0 6px;
