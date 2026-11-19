@@ -41,6 +41,8 @@ Usage:
                                                recent pane output, the agent's last reply, or its last turns
   tmag changes  <target> [--file PATH] [--json]
                                                what the agent's directory changed against HEAD, or a file's patch
+  tmag dirs     [DIR] [--json]                 where an agent may start: recent directories and
+                                               templates, or a directory's subdirectories
   tmag send     <target> [--wait | --reply] [--timeout D] [--json] [text | -]
                                                deliver a prompt now, or wait for its turn
   tmag reply    <target> [--timeout D] [--json] [text | -]
@@ -218,6 +220,8 @@ func (a *app) run(args []string) int {
 		return a.cmdKeys(rest)
 	case "changes":
 		return a.cmdChanges(rest)
+	case "dirs":
+		return a.cmdDirs(rest)
 	case "answer":
 		return a.cmdAnswer(rest)
 	case "request":
@@ -308,7 +312,7 @@ func (a *app) failOn(cmd, target string, err error) int {
 		code, exit = "usage", ExitUsage
 	case errors.Is(err, query.ErrNoReply):
 		code = "no_reply"
-	case errors.Is(err, query.ErrNotFound):
+	case errors.Is(err, query.ErrNotFound), errors.Is(err, query.ErrNotDir):
 		code = "not_found"
 	case errors.Is(err, query.ErrNoPatch):
 		code = "no_patch"

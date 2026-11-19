@@ -607,6 +607,82 @@ func (a *app) cmdChanges(args []string) int {
 	return ExitOK
 }
 
+// cmdDirs shows where an agent may start: the directories sessions ran in
+// lately and the templates set, or a directory's subdirectories, with the
+// repository it is in. It reads the log, the file system and git, and keeps
+// nothing.
+func (a *app) cmdDirs(args []string) int {
+	fs := flag.NewFlagSet("dirs", flag.ContinueOnError)
+	fs.BoolVar(&a.json, "json", false, "")
+	pos, err := parse(fs, args)
+	if err == nil && len(pos) > 1 {
+		err = errors.New("expected at most one directory")
+	}
+	if err != nil {
+		return a.usageError("dirs", err)
+	}
+	ctx, cancel := a.signalContext()
+	defer cancel()
+	if len(pos) == 1 {
+		d, err := query.ListDir(ctx, pos[0])
+		switch {
+		case query.IsUsage(err):
+			return a.usageError("dirs", err)
+		case err != nil:
+			return a.failOn("dirs", "", err)
+		}
+		if a.json {
+			a.emit(map[string]any{"dir": d})
+			return ExitOK
+		}
+		fmt.Fprintln(a.stdout, d.Path+repoNote(d.Repo))
+		for _, s := range d.Dirs {
+			mark := ""
+			if s.Repo {
+				mark = " (git)"
+			}
+			fmt.Fprintf(a.stdout, "  %s/%s\n", s.Name, mark)
+		}
+		if d.Truncated {
+			fmt.Fprintln(a.stdout, "  (and more)")
+		}
+		return ExitOK
+	}
+	v, w, err := query.Load(ctx, a.store())
+	if err != nil {
+		return a.fail("dirs", err)
+	}
+	p, err := query.ListPlaces(ctx, a.log, v, w)
+	if err != nil {
+		return a.fail("dirs", err)
+	}
+	if a.json {
+		a.emit(map[string]any{"places": p})
+		return ExitOK
+	}
+	if p.Home != "" {
+		fmt.Fprintf(a.stdout, "home %s\n", p.Home)
+	}
+	for _, r := range p.Recent {
+		fmt.Fprintf(a.stdout, "%s%s\n", r.Dir, repoNote(r.Repo))
+	}
+	for _, t := range p.Templates {
+		fmt.Fprintf(a.stdout, "template %s (%s)\n", t.Name, t.Agent)
+	}
+	return ExitOK
+}
+
+// repoNote says which branch of a repository a directory is on, if any.
+func repoNote(r *query.Repo) string {
+	switch {
+	case r == nil:
+		return ""
+	case r.Branch == "":
+		return " (git, detached)"
+	}
+	return " (git " + r.Branch + ")"
+}
+
 func (a *app) cmdInterrupt(args []string) int {
 	fs := flag.NewFlagSet("interrupt", flag.ContinueOnError)
 	fs.BoolVar(&a.json, "json", false, "")
