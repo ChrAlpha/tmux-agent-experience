@@ -41,7 +41,7 @@ export function Changes({ c, id, s, put }: { c: Computer; id: string; s: Session
               aria-expanded={open === f.path}
               onClick={() => setOpen(open === f.path ? null : f.path)}
             >
-              <span class="status">{f.status}</span>
+              <span class={cls('status', kind(f.status))}>{f.status}</span>
               <span class="path">{f.path}</span>
               <span class="count">{count(f)}</span>
             </button>
@@ -52,7 +52,7 @@ export function Changes({ c, id, s, put }: { c: Computer; id: string; s: Session
       {truncated && <p class="muted">tmag lists no more of them.</p>}
       {said.length > 0 && (
         <div class="put">
-          <span>
+          <span class="count">
             {said.length} comment{said.length === 1 ? '' : 's'}
           </span>
           <button class="link" type="button" onClick={() => (comments.value = [])}>
@@ -64,7 +64,8 @@ export function Changes({ c, id, s, put }: { c: Computer; id: string; s: Session
             onClick={() => {
               const draft = c.draftOf(id)
               const rowsOf = (file: string) => lines(c.patchOf(id, file).value.value ?? '')
-              draft.value = [draft.value.trimEnd(), prompt(said, rowsOf)].filter(Boolean).join('\n\n')
+              const note = prompt(said, rowsOf)
+              draft.value = draft.value ? `${draft.value}\n\n${note}` : note
               comments.value = []
               put()
             }}
@@ -75,6 +76,15 @@ export function Changes({ c, id, s, put }: { c: Computer; id: string; s: Session
       )}
     </div>
   )
+}
+
+// kind is how git says a file changed: added, deleted, not known to it, or
+// otherwise modified.
+function kind(status: string): string {
+  if (status.includes('?')) return 'untracked'
+  if (status.includes('A')) return 'added'
+  if (status.includes('D')) return 'deleted'
+  return 'modified'
 }
 
 // count says how a file changed: its lines added and removed, or why tmag

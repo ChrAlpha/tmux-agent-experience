@@ -4,15 +4,33 @@ import type { Request, Session } from '../contract'
 import { can } from '../view'
 import { cls, explain, outcome } from './explain'
 import { Markdown } from './Markdown'
-import type { Say } from './Session'
+import type { Say } from './toast'
+
+// ask says what a request asks, in a few words.
+export const ask = (r: Request) =>
+  r.kind === 'question' ? 'Question' : r.kind === 'plan' ? 'Approve the plan?' : `Allow ${r.tool || 'this'}?`
 
 type Decide = (decision: 'allow' | 'deny', extra?: { message?: string; answers?: Record<string, string> }) => void
 
 // Requests shows a card for each request the session waits on that this page
 // has not answered. A card keeps what is typed in it while the watch reports
 // the session again. The request a link named comes into view, marked; one
-// no longer open says so.
-export function Requests({ c, s, focus, say }: { c: Computer; s: Session; focus?: string; say: Say }) {
+// no longer open says so. Folded, as over a screen or a patch, they take one
+// line until the person shows them.
+export function Requests({
+  c,
+  s,
+  focus,
+  say,
+  folded = false,
+}: {
+  c: Computer
+  s: Session
+  focus?: string
+  say: Say
+  folded?: boolean
+}) {
+  const [shown, setShown] = useState(false)
   const done = c.answered.value
   const open = s.state === 'blocked' ? s.requests.filter((r) => !done.has(r.id)) : []
   const gone = !!focus && !open.some((r) => r.id === focus)
@@ -40,12 +58,22 @@ export function Requests({ c, s, focus, say }: { c: Computer; s: Session; focus?
     }
   }, [focus, open.length])
   if (!open.length && !gone) return null
+  const fold = folded && !!open.length
+  const first = open[0]
   return (
     <div class="cards" ref={cards}>
-      {gone && <p class="card muted">The request this link names is no longer open.</p>}
-      {open.map((r) => (
-        <Card key={r.id} c={c} s={s} r={r} focus={r.id === focus} say={say} />
-      ))}
+      {fold && first && (
+        <button class="fold" type="button" aria-expanded={shown} onClick={() => setShown(!shown)}>
+          <span class="ask">{open.length > 1 ? `${open.length} requests wait` : ask(first)}</span>
+          <span class="go">{shown ? 'Hide' : 'Show'}</span>
+        </button>
+      )}
+      <div hidden={fold && !shown}>
+        {gone && <p class="card muted">The request this link names is no longer open.</p>}
+        {open.map((r) => (
+          <Card key={r.id} c={c} s={s} r={r} focus={r.id === focus} say={say} />
+        ))}
+      </div>
     </div>
   )
 }
@@ -73,8 +101,7 @@ function Card({ c, s, r, focus, say }: { c: Computer; s: Session; r: Request; fo
     }
   }
 
-  const heading =
-    r.kind === 'question' ? 'Question' : r.kind === 'plan' ? 'Approve the plan?' : `Allow ${r.tool || 'this'}?`
+  const heading = ask(r)
   const answerable = can(s, 'answer') && c.can('answer')
   const questions = r.kind === 'question' ? asked(input) : undefined
   let body = null
@@ -148,16 +175,36 @@ function Decision({ plan, busy, decide }: { plan: boolean; busy: boolean; decide
   )
 }
 
+// shown is what a permission request would do, in a line: a command, a
+// file or an address, if its input names one.
+export function shown(input: Record<string, unknown> | undefined): string | undefined {
+  if (!input) return undefined
+  const command = Array.isArray(input.command) ? input.command.join(' ') : input.command
+  const target = input.file_path ?? input.path ?? input.url ?? input.pattern
+  return typeof command === 'string' ? command : typeof target === 'string' ? target : undefined
+}
+
+// The fields of a tool's input that change nothing of what its command does.
+const told = new Set(['command', 'description'])
+
+// whole is the command a permission request would run, when that command,
+// as one string, is all that decides what it does, and short enough to read
+// in a list: a person answers there only what they can read there in full.
+export function whole(input: Record<string, unknown> | undefined): string | undefined {
+  const command = input?.command
+  if (typeof command !== 'string' || !command.trim() || Object.keys(input ?? {}).some((k) => !told.has(k)))
+    return undefined
+  return command.length <= 300 && command.split('\n').length <= 4 ? command : undefined
+}
+
 // Asks shows what a permission request would do: a command, a file or an
 // address first, then all of its input.
 function Asks({ input }: { input: Record<string, unknown> }) {
-  const command = Array.isArray(input.command) ? input.command.join(' ') : input.command
-  const target = input.file_path ?? input.path ?? input.url ?? input.pattern
-  const shown = typeof command === 'string' ? command : typeof target === 'string' ? target : undefined
+  const what = shown(input)
   return (
     <div class="asks">
       {typeof input.description === 'string' && <p>{input.description}</p>}
-      {shown && <pre>{shown}</pre>}
+      {what && <pre>{what}</pre>}
       <details>
         <summary>Input</summary>
         <pre>{JSON.stringify(input, null, 2)}</pre>
@@ -166,7 +213,7 @@ function Asks({ input }: { input: Record<string, unknown> }) {
   )
 }
 
-interface Question {
+export interface Question {
   question: string
   header?: string
   multiSelect?: boolean
@@ -174,7 +221,7 @@ interface Question {
 }
 
 // asked is the questions an AskUserQuestion input holds, if it holds any.
-function asked(input: Record<string, unknown> | undefined): Question[] | undefined {
+export function asked(input: Record<string, unknown> | undefined): Question[] | undefined {
   const qs = input?.questions
   if (!Array.isArray(qs) || !qs.length) return undefined
   return qs.every((q) => typeof q?.question === 'string') ? (qs as Question[]) : undefined

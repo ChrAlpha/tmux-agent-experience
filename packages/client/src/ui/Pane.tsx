@@ -1,10 +1,15 @@
 import { useEffect } from 'preact/hooks'
 import type { Computer } from '../computer'
 import { hash } from '../route'
-import { back, computers, title } from '../store'
+import { computers, title } from '../store'
+import { Surface } from './axiom'
 import { cls } from './explain'
+import { useFrame } from './frame'
+import { Header } from './Header'
 import { KeyBar } from './KeyBar'
-import { Screen, Scroller, useToast } from './Session'
+import { Screen } from './Screen'
+import { Scroller } from './Scroller'
+import { useToast } from './toast'
 
 // PaneScreen is what a pane shows that no session of tmag's does yet, as an
 // agent tmag started shows a trust dialog or a login, with keys to answer
@@ -14,6 +19,7 @@ import { Screen, Scroller, useToast } from './Session'
 // server:%N, or %N on tmag serve's own server.
 export function PaneScreen({ c, pane }: { c: Computer; pane: string }) {
   const [toast, say] = useToast()
+  const frame = useFrame()
   const at = pane.lastIndexOf(':')
   const server = at < 0 ? '' : pane.slice(0, at)
   const id = pane.slice(at + 1)
@@ -32,32 +38,28 @@ export function PaneScreen({ c, pane }: { c: Computer; pane: string }) {
   useEffect(() => {
     if (!session || !held.value) return
     const into = c.draftOf(session)
-    into.value = [into.value.trimEnd(), held.value].filter(Boolean).join('\n\n')
+    into.value = into.value ? `${into.value}\n\n${held.value}` : held.value
     held.value = ''
   }, [c, session, held])
   return (
-    <div class="screen session">
-      <header>
-        <button class="back" type="button" aria-label="Agents" onClick={back}>
-          ‹
-        </button>
-        <div class="what">
-          <h1 class="name">Pane {id}</h1>
-          <div class="meta">
-            {computers.value.length > 1 ? `${title(c)} · ` : ''}an agent tmag started, which shows no session yet
+    <div class="screen session" ref={frame}>
+      <Header
+        title={`Pane ${id}`}
+        meta={`${computers.value.length > 1 ? `${title(c)} · ` : ''}an agent tmag started, which shows no session yet`}
+        below={
+          held.value && (
+            <p class="held" role="status">
+              Its prompt was not given: once the pane shows its session, it waits in that session's message.
+            </p>
+          )
+        }
+      >
+        {session && (
+          <div class="ties">
+            <a href={hash({ name: 'session', at: c.name, id: session })}>Open its session</a>
           </div>
-          {session && (
-            <div class="ties">
-              <a href={hash({ name: 'session', at: c.name, id: session })}>Open its session</a>
-            </div>
-          )}
-        </div>
-      </header>
-      {held.value && (
-        <p class="held" role="status">
-          Its prompt was not given: once the pane shows its session, it waits in that session's message.
-        </p>
-      )}
+        )}
+      </Header>
       <Scroller>
         {reads ? (
           <Screen c={c} target={pane} />
@@ -65,10 +67,14 @@ export function PaneScreen({ c, pane }: { c: Computer; pane: string }) {
           <p class="empty">{known ? 'tmag on this computer does not read a pane.' : 'Reading its screen…'}</p>
         )}
       </Scroller>
-      <p class={cls('toast', toast.error && 'error')} role="status">
-        {toast.text}
-      </p>
-      {reads && c.can('keys') && <KeyBar c={c} target={pane} say={say} />}
+      <Surface class="dock" layers="elevation acrylic">
+        <div class="dock-in">
+          <p class={cls('toast', toast.error && 'error')} role="status">
+            {toast.text}
+          </p>
+          {reads && c.can('keys') && <KeyBar c={c} target={pane} say={say} />}
+        </div>
+      </Surface>
     </div>
   )
 }

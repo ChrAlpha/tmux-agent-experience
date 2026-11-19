@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process'
-import { appendFileSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { expect, type Page, test } from '@playwright/test'
+import { expect, type Page, type Route, test } from '@playwright/test'
 import type { Credential } from '../src/contract'
 import {
   type Agent,
@@ -38,10 +38,37 @@ async function paired(page: Page, ...at: At[]): Promise<Credential[]> {
   return all
 }
 
+// infoAs answers a read of what a computer is with what it says, as doc
+// changes it: the instance it names stays.
+async function infoAs(route: Route, doc: Record<string, unknown>) {
+  const res = await route.fetch()
+  await route.fulfill({ response: res, json: { ...(await res.json()), ...doc } })
+}
+
 const open = (page: Page, a: Agent) => page.goto(`/#/${a.at ? `${a.at}/` : ''}s/${a.session}`)
 
-/** An agent's row in the list, whatever other rows say of it. */
-const row = (page: Page, a: Agent) => page.locator(`.row[href$="s/${a.session}"]`)
+/** An agent's row in a list, whatever other rows say of it. */
+const row = (page: Page, a: Agent) => page.locator('li.row', { has: page.locator(`a[href$="s/${a.session}"]`) })
+
+/** Opens an agent's session from its row. */
+const tap = (page: Page, a: Agent) => row(page, a).locator('.row-link').click()
+
+/** Goes back, as the page's own back does. */
+const back = (page: Page) => page.getByRole('button', { name: 'Back' }).click()
+
+/** The start sheet in the directory of an agent's session. */
+const startIn = (page: Page, a: Agent, at = '') =>
+  page.goto(`/#/${at ? `${at}/` : ''}start/${encodeURIComponent(session(a)?.cwd ?? '')}`)
+
+/** The directory the start sheet chose, which the person may change. */
+const picked = (page: Page) => page.getByRole('button', { name: /^Directory .*, change it$/ })
+
+/** The computers this device works with, on their own page. */
+async function computers(page: Page) {
+  await page.getByRole('link', { name: 'Computers' }).click()
+  await expect(page.getByRole('heading', { name: 'Computers' })).toBeVisible()
+  return page.locator('.computer')
+}
 
 async function idle(a: Agent) {
   await expect.poll(() => session(a)?.state, { timeout: 15_000 }).toBe('idle')
@@ -52,13 +79,25 @@ async function prompt(page: Page, text: string) {
   await page.getByRole('button', { name: 'Send' }).click()
 }
 
-test.afterEach(async () => {
+// What the page's Content-Security-Policy refused while a test ran: a
+// stylesheet of an Axiom element whose version moved from its hash, or
+// anything the page should not load. Every test fails on one.
+const refusals = new WeakMap<Page, string[]>()
+
+test.beforeEach(({ page }) => {
+  const refused: string[] = []
+  refusals.set(page, refused)
+  page.on('console', (m) => m.text().includes('Content Security Policy') && refused.push(m.text()))
+})
+
+test.afterEach(async ({ page }) => {
+  // A read the page polls for may be in a test's route as it ends.
+  await page.unrouteAll({ behavior: 'ignoreErrors' })
   for (const a of Object.values(agents)) await idle(a)
+  expect(refusals.get(page)).toEqual([])
 })
 
 test('pairs with a code and opens the session it was sent to', async ({ page }) => {
-  const refused: string[] = []
-  page.on('console', (m) => m.text().includes('Content Security Policy') && refused.push(m.text()))
   await open(page, api)
   await expect(page.getByRole('heading', { name: 'Pair this device' })).toBeVisible()
   await page.getByRole('textbox', { name: 'Code' }).fill('WRONGCODE')
@@ -68,11 +107,10 @@ test('pairs with a code and opens the session it was sent to', async ({ page }) 
   await page.getByRole('textbox', { name: 'Code' }).fill(pairingCode().toLowerCase())
   await page.getByRole('button', { name: 'Pair' }).click()
   await expect(page.locator('header .name')).toHaveText('api')
-  await page.getByRole('button', { name: 'Agents' }).click()
+  await back(page)
   for (const name of ['api', 'web', 'docs']) await expect(page.locator('.row .name', { hasText: name })).toBeVisible()
-  await expect(page.locator('footer')).toContainText('This device: e2e')
-  // The page loads nothing its policy refuses, and its icons are its own.
-  expect(refused).toEqual([])
+  await expect(await computers(page)).toContainText('This device: e2e')
+  // Its icons are its own.
   for (const icon of ['/favicon.svg', '/apple-touch-icon.png']) expect((await page.request.get(icon)).ok()).toBe(true)
 })
 
@@ -96,25 +134,54 @@ test('says why a first pairing failed after the address changed meanwhile, and p
   await expect(page.getByRole('alert')).toHaveText('That code is wrong, used or expired: run tmag auth pair again.')
   await page.getByRole('textbox', { name: 'Code' }).fill(pairingCode())
   await page.getByRole('button', { name: 'Pair' }).click()
-  await expect(page.locator('footer')).toContainText('This device: e2e')
+  await expect(await computers(page)).toContainText('This device: e2e')
 })
 
-test('goes back to the list as the browser would', async ({ page }) => {
+test('goes back where the person came from, as the browser would', async ({ page }) => {
   await paired(page)
-  // A session opened from a link goes back to the list in its place.
+  // A session opened from a link goes up to the sessions in its place.
   await open(page, web)
   await expect(page.locator('header .name')).toHaveText('web')
   const entries = await page.evaluate(() => history.length)
-  await page.getByRole('button', { name: 'Agents' }).click()
-  await expect(page.getByRole('heading', { name: 'Agents' })).toBeVisible()
+  await back(page)
+  await expect(page.getByRole('heading', { name: 'Inbox' })).toBeVisible()
   expect(await page.evaluate(() => history.length)).toBe(entries)
-  // One opened from the list goes back to it, and forward to it again.
-  await row(page, api).click()
+  // One opened from the projects goes back to them, and forward to it again.
+  await page.getByRole('link', { name: 'Projects' }).click()
+  await expect(page.getByRole('heading', { name: 'Projects' })).toBeVisible()
+  expect(await page.evaluate(() => history.length), 'the views take no entry of their own').toBe(entries)
+  await tap(page, api)
   await expect(page.locator('header .name')).toHaveText('api')
-  await page.getByRole('button', { name: 'Agents' }).click()
-  await expect(page.getByRole('heading', { name: 'Agents' })).toBeVisible()
+  await back(page)
+  await expect(page.getByRole('heading', { name: 'Projects' })).toBeVisible()
   await page.goForward()
   await expect(page.locator('header .name')).toHaveText('api')
+  if (!serves('start')) return
+  // What a session opens goes back to it, and it to the projects, across a reload.
+  await page.getByRole('link', { name: 'New agent here' }).click()
+  await expect(page.getByRole('heading', { name: 'New agent' })).toBeVisible()
+  await page.reload()
+  await back(page)
+  await expect(page.locator('header .name')).toHaveText('api')
+  await back(page)
+  await expect(page.getByRole('heading', { name: 'Projects' })).toBeVisible()
+})
+
+test('finds a view where the person left it', async ({ page }) => {
+  await paired(page)
+  await page.setViewportSize({ width: 393, height: 320 })
+  await page.goto('/#/projects')
+  const list = page.locator('main.scroll')
+  const last = page.locator('li.row .row-link').last()
+  await expect(row(page, docs)).toBeVisible()
+  await last.scrollIntoViewIfNeeded()
+  const at = await list.evaluate((el) => el.scrollTop)
+  expect(at).toBeGreaterThan(0)
+  await last.click()
+  await expect(page).toHaveURL(/#\/(\w+\/)?s\//)
+  await back(page)
+  await expect(page.getByRole('heading', { name: 'Projects' })).toBeVisible()
+  await expect.poll(() => list.evaluate((el) => el.scrollTop)).toBe(at)
 })
 
 test("shows a session's turns, and what agents write as Markdown that stays text", async ({ page }) => {
@@ -236,9 +303,11 @@ test('forgets the device without reading on after it', async ({ page }, info) =>
   )
   await prompt(page, text)
   await expect(page.locator('.turn').last().locator('.muted')).toHaveText('No reply', { timeout: 15_000 })
-  page.on('dialog', (d) => void d.accept())
-  await page.getByRole('button', { name: 'Agents' }).click()
-  await page.getByRole('button', { name: 'Forget' }).click()
+  await back(page)
+  await computers(page)
+  await page.getByRole('button', { name: 'Forget this computer' }).click()
+  await expect(page.locator('.confirm')).toContainText(`tmag auth revoke`)
+  await page.getByRole('button', { name: 'Forget', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'Pair this device' })).toBeVisible()
   await page.waitForTimeout(3500)
   await expect(page.locator('.notice')).toHaveCount(0)
@@ -355,7 +424,7 @@ test('says when tmag on the computer is older than the page needs', async ({ pag
   await paired(page)
   await page.route(
     (url) => url.pathname === '/v2/info',
-    (route) => route.fulfill({ json: { schema: 'tmag/http/v2', version: '0.6.0' } }),
+    (route) => infoAs(route, { version: '0.6.0', operations: undefined }),
   )
   await page.goto('/')
   await expect(page.locator('.row').first()).toBeVisible()
@@ -389,16 +458,19 @@ test('works with several computers as one inbox, each by a credential of its own
   await expect(page.locator('.row .name', { hasText: 'api' })).toBeVisible()
   await expect(row(page, ops)).toHaveCount(0)
 
+  await computers(page)
   await page.getByRole('link', { name: 'Add a computer' }).click()
   await page.getByRole('checkbox').check()
   await page.getByRole('textbox', { name: 'Name' }).fill('two')
   await page.getByRole('textbox', { name: 'Code' }).fill(pairingCode('two'))
   await page.getByRole('button', { name: 'Pair' }).click()
-  await expect(row(page, ops).locator('.name small')).toHaveText(' · two')
-  await expect(row(page, api).locator('.name small')).toHaveText(' · localhost')
-  await expect(page.locator('footer .device')).toHaveCount(2)
+  // Paired, it goes back to the computers, and they to the inbox.
+  await expect(page.locator('.computer')).toHaveCount(2)
+  await back(page)
+  await expect(row(page, ops).locator('.meta')).toContainText('· two')
+  await expect(row(page, api).locator('.meta')).toContainText('· localhost')
 
-  await row(page, ops).click()
+  await tap(page, ops)
   await expect(page).toHaveURL(new RegExp(`#/two/s/${ops.session}$`))
   await prompt(page, 'from the other computer')
   await expect(page.locator('.reply').last()).toHaveText('answered: from the other computer', { timeout: 15_000 })
@@ -414,9 +486,12 @@ test('works with several computers as one inbox, each by a credential of its own
     'That is localhost, which the page already works with. On it, revoke the credential just made: tmag auth revoke ',
   )
 
-  page.on('dialog', (d) => void d.accept())
   await page.goto('/')
-  await page.locator('footer .device', { hasText: 'two:' }).getByRole('button', { name: 'Forget' }).click()
+  const two = (await computers(page)).filter({ hasText: '/two/' })
+  await two.getByRole('button', { name: 'Forget this computer' }).click()
+  await two.getByRole('button', { name: 'Forget', exact: true }).click()
+  await expect(page.locator('.computer')).toHaveCount(1)
+  await back(page)
   await expect(row(page, ops)).toHaveCount(0)
   await expect(row(page, api)).toBeVisible()
 })
@@ -429,11 +504,11 @@ test('marks a turn that ended unseen until the session is opened', async ({ page
   await expect(apiRow).not.toHaveClass(/done/)
   person(`tmag send ${api.session} 'done while away'`)
   await expect(apiRow).toHaveClass(/done/, { timeout: 15_000 })
-  await expect(apiRow.locator('.meta')).toContainText('claude · done')
+  await expect(apiRow.locator('.meta')).toContainText('Claude Code · done')
   await expect(page).toHaveTitle('(1) tmag')
   await apiRow.click()
   await expect(page.locator('.reply').last()).toHaveText('answered: done while away')
-  await page.getByRole('button', { name: 'Agents' }).click()
+  await back(page)
   await expect(apiRow).not.toHaveClass(/done/)
   await expect(page).toHaveTitle('tmag')
   await page.reload()
@@ -451,7 +526,10 @@ test('shows whom an agent works for and whom it waits on', async ({ page }) => {
   await ties.getByRole('link').click()
   await expect(page.locator('header .name')).toHaveText('api')
   await expect(ties.getByRole('link')).toHaveText('asked web')
-  await page.getByRole('button', { name: 'Agents' }).click()
+  // Back goes to the session it came from, and from there to the inbox.
+  await back(page)
+  await expect(page.locator('header .name')).toHaveText('web')
+  await back(page)
   await expect(row(page, web).locator('.meta')).toContainText('owes a reply to api')
   await idle(web)
   tmux('send-keys', '-t', `main:${web.name}`, `tmag reply ${api.session} done`, 'Enter')
@@ -466,7 +544,14 @@ test('opens the request a link names, and says when it is no longer open', async
   await prompt(page, 'block')
   await expect(page.locator('.card')).toHaveCount(1)
   const request = session(api)?.requests[0]?.id ?? ''
+  // Over what the directory changed, the request takes one line; the link
+  // that names it shows it with the turns.
+  if (serves('changes')) {
+    await page.getByRole('button', { name: 'Changes' }).click()
+    await expect(page.getByRole('button', { name: /Allow Bash\?/ })).toHaveAttribute('aria-expanded', 'false')
+  }
   await page.goto(`/#/s/${api.session}/r/${request}`)
+  await expect(page.getByRole('button', { name: 'Turns' })).toHaveAttribute('aria-pressed', 'true')
   await expect(page.locator('.card.focus').getByRole('heading')).toHaveText('Allow Bash?')
   await page.goto(`/#/s/${api.session}/r/answered-before`)
   await expect(page.locator('.card.muted')).toHaveText('The request this link names is no longer open.')
@@ -491,7 +576,7 @@ test('keeps what was seen of the other sessions while the computer is slow to sa
   )
   await open(page, api)
   await expect(page.locator('.reply').last()).toHaveText('answered: first unseen')
-  await page.getByRole('button', { name: 'Agents' }).click()
+  await back(page)
   await expect(row(page, api)).not.toHaveClass(/done/)
   await expect(row(page, web)).toHaveClass(/done/)
 })
@@ -508,14 +593,14 @@ test('sees a turn that ended while the page was hidden only once it shows', asyn
   await hide(true)
   person(`tmag send ${web.session} 'while away'`)
   await expect(page.locator('.reply').last()).toHaveText('answered: while away', { timeout: 15_000 })
-  await page.getByRole('button', { name: 'Agents' }).click()
+  await back(page)
   await expect(row(page, web)).toHaveClass(/done/)
 
-  await row(page, web).click()
+  await tap(page, web)
   await person(`tmag send ${web.session} 'while away again'`)
   await expect(page.locator('.reply').last()).toHaveText('answered: while away again', { timeout: 15_000 })
   await hide(false)
-  await page.getByRole('button', { name: 'Agents' }).click()
+  await back(page)
   await expect(row(page, web)).not.toHaveClass(/done/)
 })
 
@@ -552,17 +637,14 @@ test('keeps a credential the computer issued when it does not say at once which 
   await page.getByRole('button', { name: 'Pair' }).click()
   await expect(row(page, ops)).toBeVisible({ timeout: 15_000 })
   expect(failed).toBe(true)
-  await expect(page.locator('footer .device')).toHaveCount(2)
+  await expect(await computers(page)).toHaveCount(2)
 })
 
 test('offers only what the computer serves', async ({ page }) => {
   await paired(page)
   await page.route(
     (url) => url.pathname === '/v2/info',
-    (route) =>
-      route.fulfill({
-        json: { schema: 'tmag/http/v2', version: '0.7.0', operations: ['list', 'inspect', 'watch', 'read', 'request'] },
-      }),
+    (route) => infoAs(route, { version: '0.7.0', operations: ['list', 'inspect', 'watch', 'read', 'request'] }),
   )
   await open(page, api)
   await expect(page.locator('.composer')).toHaveText('tmag has no way to prompt this session.')
@@ -609,8 +691,9 @@ test('works with a computer once, though it said which it is only after another 
     'That is localhost, which the page already works with. On it, revoke the credential just made: tmag auth revoke ',
     { timeout: 20_000 },
   )
-  await expect(page.locator('footer .device')).toHaveCount(1)
+  await page.goto('/')
   await expect(row(page, api)).toHaveCount(1)
+  await expect(await computers(page)).toHaveCount(1)
 })
 
 test('keeps a credential just issued while the computer has not said which it is, across a reload', async ({
@@ -654,8 +737,8 @@ test('works once with a computer it kept twice', async ({ page }) => {
   )
   await page.goto('/')
   await expect(page.getByRole('alert')).toContainText('That is localhost, which the page already works with.')
-  await expect(page.locator('footer .device')).toHaveCount(1)
   await expect(row(page, api)).toHaveCount(1)
+  await expect(await computers(page)).toHaveCount(1)
 })
 
 test('reads nothing of a session its computer does not serve', async ({ page }) => {
@@ -664,7 +747,7 @@ test('reads nothing of a session its computer does not serve', async ({ page }) 
   page.on('request', (r) => new URL(r.url()).pathname === '/v2/read' && reads.push(r.url()))
   await page.route(
     (url) => url.pathname === '/v2/info',
-    (route) => route.fulfill({ json: { schema: 'tmag/http/v2', version: '0.7.0', operations: ['list', 'watch'] } }),
+    (route) => infoAs(route, { version: '0.7.0', operations: ['list', 'watch'] }),
   )
   await open(page, api)
   await expect(page.locator('main .empty')).toHaveText("tmag on this computer does not read a session's turns.")
@@ -676,7 +759,11 @@ test('forgets where a link went once the person leaves adding its computer', asy
   await page.goto(`/#/two/s/${ops.session}`)
   await page.getByRole('button', { name: 'Add it' }).click()
   await expect(page.getByRole('textbox', { name: 'Name' })).toHaveValue('two')
-  await page.getByRole('button', { name: 'Agents' }).click()
+  // Back goes to the link it came from, and on to the sessions.
+  await back(page)
+  await expect(page.getByRole('button', { name: 'Add it' })).toBeVisible()
+  await back(page)
+  await computers(page)
   await page.getByRole('link', { name: 'Add a computer' }).click()
   await page.getByRole('checkbox').check()
   await expect(page.getByRole('textbox', { name: 'Name' })).toHaveValue('')
@@ -708,8 +795,7 @@ test('sends to a session of a computer that serves sends but not reads', async (
   page.on('request', (r) => new URL(r.url()).pathname === '/v2/read' && reads.push(r.url()))
   await page.route(
     (url) => url.pathname === '/v2/info',
-    (route) =>
-      route.fulfill({ json: { schema: 'tmag/http/v2', version: '0.7.0', operations: ['list', 'watch', 'send'] } }),
+    (route) => infoAs(route, { version: '0.7.0', operations: ['list', 'watch', 'send'] }),
   )
   await open(page, api)
   await prompt(page, 'sent without reading')
@@ -734,8 +820,11 @@ test('leaves the person where they went while a pairing they left ends', async (
   await expect
     .poll(() => page.evaluate(() => JSON.parse(localStorage.getItem('tmag.computers') ?? '[]').length))
     .toBe(2)
-  await page.getByRole('button', { name: 'Agents' }).click()
-  await row(page, api).click()
+  await back(page)
+  await expect(page).toHaveURL(new RegExp(`#/two/s/${ops.session}$`))
+  await back(page)
+  await expect(page.getByRole('heading', { name: 'Inbox' })).toBeVisible()
+  await tap(page, api)
   // The pairing ends once the computer it added is watched.
   const watched = page.waitForRequest((r) => new URL(r.url()).pathname === '/two/v2/watch')
   hold = false
@@ -750,11 +839,12 @@ test('starts an agent from the page, and opens it', async ({ page }) => {
   try {
     await paired(page)
     await page.goto('/')
-    await page.getByRole('link', { name: 'Start' }).click()
-    await expect(page.getByRole('heading', { name: 'Start an agent' })).toBeVisible()
-    await page.getByRole('combobox', { name: 'Directory' }).selectOption(session(api)?.cwd ?? '')
+    await page.getByRole('link', { name: 'New agent', exact: true }).click()
+    await expect(page.getByRole('heading', { name: 'New agent' })).toBeVisible()
+    await picked(page).click()
+    await page.getByRole('textbox', { name: 'Directory' }).fill(session(api)?.cwd ?? '')
     await page.getByRole('textbox', { name: 'Prompt' }).fill('from the start sheet')
-    await page.getByRole('button', { name: 'Start' }).click()
+    await page.getByRole('button', { name: 'Start', exact: true }).click()
     await expect(page).toHaveURL(new RegExp(`#/s/${sid}$`), { timeout: 30_000 })
     await expect(page.locator('.reply').last()).toHaveText('answered: from the start sheet', { timeout: 15_000 })
   } finally {
@@ -798,11 +888,12 @@ test('opens the pane of an agent that shows no session yet, with keys to answer 
   const pane = paneOf(docs)
   stalled(page, pane)()
   await page.goto('/#/start')
-  // Opened before the page knows its sessions, it starts in their first directory once it does.
-  await expect(page.getByRole('combobox', { name: 'Directory' })).toHaveValue(/^\//)
-  await page.getByRole('combobox', { name: 'Directory' }).selectOption(session(docs)?.cwd ?? '')
+  // Opened before the page knows its sessions, it chooses where they run once it does.
+  await expect(picked(page)).toContainText('/')
+  await picked(page).click()
+  await page.getByRole('textbox', { name: 'Directory' }).fill(session(docs)?.cwd ?? '')
   await page.getByRole('textbox', { name: 'Prompt' }).fill('held for its session')
-  await page.getByRole('button', { name: 'Start' }).click()
+  await page.getByRole('button', { name: 'Start', exact: true }).click()
   await expect(page.getByRole('heading', { name: `Pane ${pane.id}` })).toBeVisible()
   await expect(page.locator('.terminal')).toBeVisible()
   await expect(page.getByRole('button', { name: 'Escape' })).toBeVisible()
@@ -817,11 +908,10 @@ test('leaves the person where they went while a start they left ends', async ({ 
   await paired(page)
   const pane = paneOf(docs)
   const go = stalled(page, pane)
-  await page.goto('/#/start')
-  await page.getByRole('combobox', { name: 'Directory' }).selectOption(session(docs)?.cwd ?? '')
-  await page.getByRole('button', { name: 'Start' }).click()
-  await page.getByRole('button', { name: 'Agents' }).click()
-  await row(page, api).click()
+  await startIn(page, docs)
+  await page.getByRole('button', { name: 'Start', exact: true }).click()
+  await back(page)
+  await tap(page, api)
   go()
   await page.getByRole('link', { name: 'Open its pane' }).click()
   await expect(page.getByRole('heading', { name: `Pane ${pane.id}` })).toBeVisible()
@@ -836,12 +926,11 @@ test('leaves the person on the start sheet of another computer while a start the
   await paired(page, '', 'two')
   const pane = paneOf(docs)
   const go = stalled(page, pane)
-  await page.goto('/#/start')
-  await expect(page.getByRole('combobox', { name: 'Computer' })).toHaveValue('')
-  await page.getByRole('combobox', { name: 'Directory' }).selectOption(session(docs)?.cwd ?? '')
-  await page.getByRole('button', { name: 'Start' }).click()
+  await startIn(page, docs)
+  await expect(page.getByRole('radio', { name: 'localhost' })).toBeChecked()
+  await page.getByRole('button', { name: 'Start', exact: true }).click()
   await page.goto('/#/two/start')
-  await expect(page.getByRole('combobox', { name: 'Computer' })).toHaveValue('two')
+  await expect(page.getByRole('radio', { name: 'two' })).toBeChecked()
   go()
   await expect(page.getByRole('link', { name: 'Open its pane' })).toBeVisible()
   await expect(page).toHaveURL(/#\/two\/start$/)
@@ -851,7 +940,7 @@ test('starts on the computer its link names, once that computer says it starts a
   test.skip(!serves('start'), 'tmag starts agents after 0.7.0')
   await paired(page, '', 'two')
   await page.goto('/#/two/start')
-  await expect(page.getByRole('combobox', { name: 'Computer' })).toHaveValue('two')
+  await expect(page.getByRole('radio', { name: 'two' })).toBeChecked()
 })
 
 // startFailed answers a start with an agent that started and a prompt that
@@ -868,10 +957,9 @@ test('says when a started agent did not get its prompt, and keeps the prompt for
   test.skip(!serves('start'), 'tmag starts agents after 0.7.0')
   await paired(page)
   await startFailed(page, 409, { code: 'refused:busy', message: 'it works' })
-  await page.goto('/#/start')
-  await page.getByRole('combobox', { name: 'Directory' }).selectOption(session(api)?.cwd ?? '')
+  await startIn(page, api)
   await page.getByRole('textbox', { name: 'Prompt' }).fill('never given')
-  await page.getByRole('button', { name: 'Start' }).click()
+  await page.getByRole('button', { name: 'Start', exact: true }).click()
   await expect(page.getByRole('alert')).toContainText(
     'It started, but tmag did not give it the prompt, which waits in its message: it cannot take a prompt while it works',
   )
@@ -880,19 +968,21 @@ test('says when a started agent did not get its prompt, and keeps the prompt for
   await expect(page.getByRole('textbox', { name: 'Message' })).toHaveValue('never given')
 })
 
-test('says when it is unknown whether a started agent got its prompt, and keeps no copy to send again', async ({
+test('says when it is unknown whether a started agent got its prompt, and keeps no copy in its message', async ({
   page,
 }) => {
   test.skip(!serves('start'), 'tmag starts agents after 0.7.0')
   await paired(page)
   await startFailed(page, 500, { code: 'error', message: 'delivered but not logged; do not repeat it' })
-  await page.goto('/#/start')
-  await page.getByRole('combobox', { name: 'Directory' }).selectOption(session(api)?.cwd ?? '')
+  await startIn(page, api)
   await page.getByRole('textbox', { name: 'Prompt' }).fill('maybe given')
-  await page.getByRole('button', { name: 'Start' }).click()
+  await page.getByRole('button', { name: 'Start', exact: true }).click()
   await expect(page.getByRole('alert')).toContainText('It started, and whether it got the prompt is unknown')
   await page.getByRole('link', { name: 'Open it' }).click()
   await expect(page.getByRole('textbox', { name: 'Message' })).toHaveValue('')
+  // The sheet still holds it, for the person to see what it was.
+  await back(page)
+  await expect(page.getByRole('textbox', { name: 'Prompt' })).toHaveValue('maybe given')
 })
 
 test('shows no screen of a pane tmag no longer finds', async ({ page }) => {
@@ -921,8 +1011,7 @@ test('reads no pane on a computer that serves no reads', async ({ page }) => {
   page.on('request', (r) => new URL(r.url()).pathname === '/v2/read' && reads.push(r.url()))
   await page.route(
     (url) => url.pathname === '/v2/info',
-    (route) =>
-      route.fulfill({ json: { schema: 'tmag/http/v2', version: '0.7.0', operations: ['list', 'watch', 'keys'] } }),
+    (route) => infoAs(route, { version: '0.7.0', operations: ['list', 'watch', 'keys'] }),
   )
   await page.goto(`/#/p/${encodeURIComponent(paneOf(api).id)}`)
   await expect(page.locator('.empty')).toHaveText('tmag on this computer does not read a pane.')
@@ -1108,4 +1197,368 @@ test('says when what a directory changed could not be read again, and takes no c
     await page.locator('.patch .stale').getByRole('button', { name: 'Read again' }).click()
     await expect(page.locator('.patch button.line.added')).toHaveCount(2)
   })
+})
+
+test('goes on to what waits on the person, and answers a permission from the inbox', async ({ page }) => {
+  await paired(page)
+  await page.goto('/')
+  await expect(page.getByText('Nothing waits on you.')).toBeVisible()
+  person(`tmag send ${web.session} 'ended unseen'`)
+  await expect(row(page, web)).toHaveClass(/done/, { timeout: 15_000 })
+  await expect(page.getByRole('region', { name: 'Needs you' })).toContainText('web')
+  await expect(row(page, web).locator('.said')).toHaveText('answered: ended unseen')
+  await tap(page, api)
+  await prompt(page, 'block')
+  await expect(page.locator('.card')).toBeVisible()
+  // The session that waits next opens in place of this one: back still goes to the inbox.
+  await page.getByRole('link', { name: 'Next that waits on you, of 1' }).click()
+  await expect(page.locator('header .name')).toHaveText('web')
+  await expect(page.locator('.reply').last()).toHaveText('answered: ended unseen')
+  await back(page)
+  await expect(page.getByRole('heading', { name: 'Inbox' })).toBeVisible()
+  await expect(row(page, web)).not.toHaveClass(/done/)
+  // A permission shows what it would do, and takes its answer there.
+  const asks = row(page, api)
+  await expect(asks.locator('.ask')).toHaveText('Allow Bash?')
+  await expect(asks.locator('.asks code')).toHaveText('date')
+  await expect(page).toHaveTitle('(1) tmag')
+  await asks.getByRole('button', { name: 'Allow' }).click()
+  await expect.poll(() => said(api).at(-1)).toBe('hook:allow')
+  await expect(asks.locator('.asks')).toHaveCount(0)
+  await expect(page).toHaveTitle(/^(\(1\) )?tmag$/)
+})
+
+test('shows sessions by project, and starts another agent in one', async ({ page }) => {
+  await paired(page, '', 'two')
+  await page.goto('/#/projects')
+  const project = page.getByRole('region', { name: 'api' })
+  await expect(project.locator('li.row')).toHaveCount(1)
+  await expect(project.locator('.row .name')).toHaveText('Claude Code')
+  await expect(page.getByRole('region', { name: 'ops' })).toContainText('two')
+  if (!serves('start')) return
+  await project.getByRole('link', { name: 'New agent in api' }).click()
+  await expect(page.getByRole('heading', { name: 'New agent' })).toBeVisible()
+  await expect(picked(page)).toContainText(session(api)?.cwd ?? '')
+  await expect(page.getByRole('radio', { name: 'Claude Code' })).toBeChecked()
+  await back(page)
+  await expect(page.getByRole('heading', { name: 'Projects' })).toBeVisible()
+})
+
+test('starts an agent again from the tile of a place where none runs now', async ({ page }) => {
+  test.skip(!serves('dirs'), 'tmag lists directories after 0.8.0')
+  // A place outside the agents' directories, which other tests list.
+  const lab = join(process.env.TMAG_E2E_DIR ?? '', 'lab')
+  mkdirSync(lab, { recursive: true })
+  const sid = '0f000000-0000-7000-8000-00000000000f'
+  const started = startable({ FAKE_SESSION: sid, FAKE_HOOKS: '1' })
+  try {
+    await paired(page)
+    await page.goto(`/#/start/${encodeURIComponent(lab)}`)
+    await page.getByRole('button', { name: 'Start', exact: true }).click()
+    await expect(page).toHaveURL(new RegExp(`#/s/${sid}$`), { timeout: 30_000 })
+  } finally {
+    started.stop()
+  }
+  await page.goto('/#/projects')
+  const tile = page.getByRole('region', { name: 'Recent' }).getByRole('link', { name: /^lab: new agent in .*\/lab$/ })
+  await expect(tile).toHaveText('lab', { timeout: 15_000 })
+  await tile.click()
+  await expect(page.getByRole('heading', { name: 'New agent' })).toBeVisible()
+  await expect(picked(page)).toContainText(lab)
+})
+
+test('chooses where to start from where agents ran and the directories a path completes in', async ({ page }) => {
+  test.skip(!serves('dirs'), 'tmag lists directories after 0.8.0')
+  await paired(page)
+  const cwd = session(api)?.cwd ?? ''
+  const work = cwd.slice(0, cwd.lastIndexOf('/'))
+  await page.goto('/#/start')
+  await picked(page).click()
+  // What it offers first is where agents ran lately.
+  await expect(page.locator('.recent')).toContainText(cwd)
+  const box = page.getByRole('textbox', { name: 'Directory' })
+  await box.fill(`${work}/d`)
+  const listed = page.locator('.browse .dir')
+  await expect(listed).toHaveText(['docs'])
+  await box.fill(`${work}/`)
+  await expect(listed).toHaveText(['api', 'docs', 'ops', 'web'])
+  await page.locator('.browse').getByRole('button', { name: 'api', exact: true }).click()
+  await expect(box).toHaveValue(`${cwd}/`)
+  await page.getByRole('button', { name: 'Up one level' }).click()
+  await expect(box).toHaveValue(`${work}/`)
+  await box.fill(cwd)
+  await page.getByRole('button', { name: 'Use this directory' }).click()
+  await expect(picked(page)).toContainText('api')
+  // A directory tmag lists only part of may hold what it does not list.
+  await page.route(
+    (url) => url.pathname === '/v2/dirs' && url.searchParams.get('dir') === '/big',
+    (route) =>
+      route.fulfill({ json: { schema: 'tmag/v2', dir: { path: '/big', parent: '/', dirs: [], truncated: true } } }),
+  )
+  await picked(page).click()
+  await box.fill('/big/x')
+  await expect(page.locator('.browse .none')).toContainText('it lists only part of a directory this large')
+  // A path that names no directory starts nothing.
+  await box.fill(`${work}/nowhere`)
+  await expect(page.locator('.browse .none')).toHaveText('No directory here starts so.')
+  await expect(page.locator('.picker')).toContainText('No directory has this path.')
+  await expect(page.getByRole('button', { name: 'Use this directory' })).toHaveCount(0)
+  await page.getByRole('button', { name: 'Start', exact: true }).click()
+  await expect(page.getByRole('alert')).toContainText(`${work}/nowhere`)
+  await expect(page.getByRole('alert')).toContainText('is no')
+})
+
+test('answers in the list only a command it shows in full, and opens anything else to answer there', async ({
+  page,
+}) => {
+  await paired(page)
+  // What the request asks besides a command the row does not show: the
+  // change to a file, a time limit, a command's arguments one by one.
+  let input: Record<string, unknown> = { file_path: '/src/parse.go', old_string: 'a', new_string: 'b' }
+  await page.route(
+    (url) => url.pathname === '/v2/request',
+    async (route) => {
+      const res = await route.fetch()
+      const doc = await res.json()
+      doc.input = input
+      await route.fulfill({ response: res, json: doc })
+    },
+  )
+  await page.goto('/')
+  person(`tmag send ${api.session} block`)
+  const asks = row(page, api)
+  await expect(asks.locator('.asks code')).toHaveText('/src/parse.go')
+  await expect(asks.getByRole('button', { name: 'Allow' })).toHaveCount(0)
+  for (const other of [{ command: 'date', timeout: 600000 }, { command: ['date'] }]) {
+    input = other
+    await page.reload()
+    await expect(asks.getByRole('link', { name: 'Review' })).toBeVisible()
+    await expect(asks.getByRole('button', { name: 'Allow' })).toHaveCount(0)
+  }
+  await asks.getByRole('link', { name: 'Review' }).click()
+  await expect(page).toHaveURL(new RegExp(`#/s/${api.session}/r/`))
+  await page.locator('.card.focus').getByRole('button', { name: 'Allow' }).click()
+  await expect.poll(() => said(api).at(-1)).toBe('hook:allow')
+})
+
+test('starts nothing on another computer than the one a link names', async ({ page }) => {
+  await paired(page)
+  await page.goto(`/#/lab/start/${encodeURIComponent(session(api)?.cwd ?? '')}`)
+  await expect(page.locator('main .empty')).toContainText('This page does not work with a computer named lab.')
+  await expect(page.getByRole('button', { name: 'Start', exact: true })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Add it' })).toBeVisible()
+})
+
+test('starts in the very directory its link names', async ({ page }) => {
+  test.skip(!serves('start'), 'tmag starts agents after 0.7.0')
+  await paired(page)
+  // A sibling whose name ends in a space is another directory.
+  const dir = `${session(api)?.cwd ?? ''} `
+  mkdirSync(dir)
+  try {
+    let asked = ''
+    await page.route(
+      (url) => url.pathname === '/v2/act',
+      (route) => {
+        asked = route.request().postDataJSON().dir
+        return route.fulfill({
+          status: 409,
+          json: { schema: 'tmag/v2', error: { code: 'refused:busy', message: 'not now' } },
+        })
+      },
+    )
+    await page.goto(`/#/start/${encodeURIComponent(dir)}`)
+    await page.getByRole('textbox', { name: 'Prompt' }).fill('in the one with a space')
+    await page.getByRole('button', { name: 'Start', exact: true }).click()
+    await expect(page.getByRole('alert')).toBeVisible()
+    expect(asked).toBe(dir)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('keeps the directory it showed once the person acts on it, though the places come later', async ({ page }) => {
+  test.skip(!serves('dirs'), 'tmag lists directories after 0.8.0')
+  await paired(page)
+  // The person writes a prompt for it, or says to use it.
+  for (const act of [
+    () => page.getByRole('textbox', { name: 'Prompt' }).fill('for the directory it showed'),
+    async () => {
+      await picked(page).click()
+      await page.getByRole('button', { name: 'Use this directory' }).click()
+    },
+  ]) {
+    let release = () => {}
+    const held = new Promise<void>((r) => {
+      release = r
+    })
+    await page.unrouteAll({ behavior: 'ignoreErrors' })
+    await page.route(
+      (url) => url.pathname === '/v2/dirs' && !url.searchParams.has('dir'),
+      async (route) => {
+        await held
+        await route.fulfill({
+          json: {
+            schema: 'tmag/v2',
+            places: {
+              home: '/home/me',
+              recent: [{ dir: '/elsewhere', at: '2026-11-18T00:00:00Z' }],
+              templates: [{ name: 'later', agent: 'claude' }],
+            },
+          },
+        })
+      },
+    )
+    await page.goto('/#/start')
+    await page.reload()
+    // Until the computer says where its agents ran, it starts nothing.
+    await expect(page.getByRole('button', { name: 'Start', exact: true })).toBeDisabled()
+    await expect(picked(page)).toBeVisible()
+    const shown = (await picked(page).getAttribute('aria-label')) ?? ''
+    await act()
+    release()
+    // The places came: the template they name shows.
+    await expect(page.getByRole('radio', { name: 'later · Claude Code' })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Start', exact: true })).toBeEnabled()
+    await expect(picked(page)).toHaveAttribute('aria-label', shown)
+    expect(shown).not.toContain('/elsewhere')
+  }
+})
+
+test('keeps the computer it first showed, though another answers later', async ({ page }) => {
+  test.skip(!serves('start'), 'tmag starts agents after 0.7.0')
+  await paired(page, '', 'two')
+  let release = () => {}
+  const held = new Promise<void>((r) => {
+    release = r
+  })
+  await page.route(
+    (url) => url.pathname === '/v2/info',
+    async (route) => {
+      await held
+      await route.continue()
+    },
+  )
+  const asked: { path: string; dir: string }[] = []
+  await page.route(
+    (url) => url.pathname.endsWith('/v2/act'),
+    (route) => {
+      asked.push({ path: new URL(route.request().url()).pathname, dir: route.request().postDataJSON().dir })
+      return route.fulfill({
+        status: 409,
+        json: { schema: 'tmag/v2', error: { code: 'refused:busy', message: 'not now' } },
+      })
+    },
+  )
+  await page.goto('/#/start')
+  await expect(page.getByRole('radio', { name: 'two' })).toBeChecked()
+  await picked(page).click()
+  await page.getByRole('textbox', { name: 'Directory' }).fill(session(ops)?.cwd ?? '')
+  release()
+  await expect(page.getByRole('radio', { name: 'localhost' })).toBeVisible()
+  await expect(page.getByRole('radio', { name: 'two' })).toBeChecked()
+  await page.getByRole('button', { name: 'Start', exact: true }).click()
+  await expect(page.getByRole('alert')).toBeVisible()
+  expect(asked).toEqual([{ path: '/two/v2/act', dir: session(ops)?.cwd ?? '' }])
+})
+
+test('shows at the address it keeps what a link showed at another address of the same computer', async ({ page }) => {
+  await paired(page)
+  let release = () => {}
+  const held = new Promise<void>((r) => {
+    release = r
+  })
+  await page.route(
+    (url) => url.pathname === '/v2/info',
+    async (route) => {
+      await held
+      await route.continue()
+    },
+  )
+  await page.goto('/#/add')
+  await page.getByRole('checkbox').check()
+  await page.getByRole('textbox', { name: 'Name' }).fill('again')
+  await page.getByRole('textbox', { name: 'Code' }).fill(pairingCode())
+  await page.getByRole('button', { name: 'Pair' }).click()
+  await page.goto(`/#/again/s/${api.session}`)
+  await expect(page.locator('header .name')).toHaveText('api')
+  await page.getByRole('textbox', { name: 'Message' }).fill('written at the other address')
+  // The first address says which computer it is: the same one.
+  release()
+  await expect(page.getByRole('alert')).toContainText('That is localhost, which the page already works with.')
+  await expect(page).toHaveURL(new RegExp(`#/s/${api.session}$`))
+  await expect(page.locator('header .name')).toHaveText('api')
+  await expect(page.getByRole('textbox', { name: 'Message' })).toHaveValue('written at the other address')
+})
+
+test('starts nothing once the computers change under the sheet, until the person starts over', async ({ page }) => {
+  test.skip(!serves('start'), 'tmag starts agents after 0.7.0')
+  await paired(page)
+  let release = () => {}
+  const held = new Promise<void>((r) => {
+    release = r
+  })
+  await page.route(
+    (url) => url.pathname === '/v2/info',
+    async (route) => {
+      await held
+      await route.continue()
+    },
+  )
+  await page.goto('/#/add')
+  await page.getByRole('checkbox').check()
+  await page.getByRole('textbox', { name: 'Name' }).fill('again')
+  await page.getByRole('textbox', { name: 'Code' }).fill(pairingCode())
+  await page.getByRole('button', { name: 'Pair' }).click()
+  const dir = encodeURIComponent(session(api)?.cwd ?? '')
+  await page.goto(`/#/again/start/${dir}`)
+  await page.getByRole('textbox', { name: 'Prompt' }).fill('for the computer it showed')
+  // The first address says which computer it is: the one at again.
+  release()
+  await expect(page.getByText('The computers changed while this sheet was open.')).toBeVisible()
+  await expect(page).toHaveURL(new RegExp(`#/start/${dir}$`))
+  await expect(page.getByRole('button', { name: 'Start', exact: true })).toHaveCount(0)
+  await page.getByRole('button', { name: 'Start over' }).click()
+  await expect(picked(page)).toContainText(session(api)?.cwd ?? '')
+  await expect(page.getByRole('textbox', { name: 'Prompt' })).toHaveValue('for the computer it showed')
+})
+
+test('works with no computer that does not say which it is', async ({ page }) => {
+  await paired(page)
+  await page.route(
+    (url) => url.pathname === '/v2/info',
+    (route) => infoAs(route, { instance: undefined }),
+  )
+  await page.goto('/')
+  await expect(page.locator('.bar')).toContainText('does not say which computer it is')
+  await expect(page.locator('li.row:not(.skeleton)')).toHaveCount(0)
+  await expect(page.getByRole('link', { name: 'New agent', exact: true })).toHaveCount(0)
+  await open(page, api)
+  await expect(page.locator('main .empty')).toContainText('does not say which computer it is')
+  await expect(page.getByRole('textbox', { name: 'Message' })).toHaveCount(0)
+})
+
+test('holds the next prompt while one is on its way, from whichever screen it went', async ({ page }) => {
+  await paired(page)
+  let release = () => {}
+  const held = new Promise<void>((r) => {
+    release = r
+  })
+  await page.route(
+    (url) => url.pathname === '/v2/act',
+    async (route) => {
+      await held
+      await route.continue()
+    },
+  )
+  await page.goto('/')
+  await tap(page, docs)
+  await prompt(page, 'on its way')
+  await back(page)
+  await tap(page, docs)
+  await page.getByRole('textbox', { name: 'Message' }).fill('the next one')
+  await expect(page.getByRole('button', { name: 'Send' })).toBeDisabled()
+  release()
+  await expect(page.getByRole('button', { name: 'Send' })).toBeEnabled()
+  await expect.poll(() => said(docs)).toContain('on its way')
 })

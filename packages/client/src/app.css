@@ -1,21 +1,41 @@
+/* The page in the Axiom Design System: type before chrome, square
+   corners, the press and light of Windows, in the colours of classic
+   Material Design: indigo for what the person does and has to see, pink for
+   what waits on them, a colour for each other state a session is in, on
+   Material's greys. White text reads on each of them. Light and dark. */
 :root {
-  --bg: #f6f6f3;
-  --card: #fff;
-  --fg: #1c1c1e;
-  --muted: #6e6e73;
-  --line: #e2e2dd;
-  --accent: #2563eb;
-  --on-accent: #fff;
-  --blocked: #d97706;
-  --working: #2563eb;
-  --idle: #a1a1aa;
-  --done: #16a34a;
-  --danger: #dc2626;
-  --mine: #e8eefc;
-  --code: #efefeb;
+  --paper: #fafafa;
+  /* What stands on the paper: a box to type in, a card. */
+  --sheet: #ffffff;
+  --ink: #212121;
+  --ink-2: #424242;
+  --muted: #6b6b6b;
+  --rule: rgb(0 0 0 / 0.12);
+  /* A row as the person presses it, a standard button, and one pressed. */
+  --wash: rgb(0 0 0 / 0.05);
+  --control: rgb(0 0 0 / 0.1);
+  --control-down: rgb(0 0 0 / 0.2);
+  /* The border of a box to type in, and of a control the pointer is over. */
+  --edge: rgb(0 0 0 / 0.42);
+  --code: #eeeeee;
+  /* Indigo 500, Pink 600, Cyan 800, Blue Grey 600 and Red 700. */
+  --accent: #3f51b5;
+  --accent-ink: #3f51b5;
+  --blocked: #d81b60;
+  --blocked-ink: #d81b60;
+  --working: #00838f;
+  --working-ink: #00838f;
+  --idle: #546e7a;
+  --danger: #d32f2f;
+  --danger-ink: #d32f2f;
+  /* What a patch adds and removes, and a file git adds: Green 800. */
+  --add: #2e7d32;
+  --added: rgb(67 160 71 / 0.16);
+  --removed: rgb(211 47 47 / 0.12);
+  --lamp: rgb(33 33 33);
   /* A terminal's 16 colours, as a light theme draws them. */
-  --term-fg: #1c1c1e;
-  --term-bg: #efefeb;
+  --term-fg: #212121;
+  --term-bg: #eeeeee;
   --t0: #1c1c1e;
   --t1: #c0362c;
   --t2: #2f8a3a;
@@ -32,26 +52,37 @@
   --t13: #b653cc;
   --t14: #2b97a5;
   --t15: #2c2c2e;
-  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --sans: "Segoe UI", Selawik, system-ui, -apple-system, "Helvetica Neue", sans-serif;
+  --mono: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, Consolas, monospace;
+  --pad: max(20px, env(safe-area-inset-left));
+  --pad-end: max(20px, env(safe-area-inset-right));
+  /* Windows' curve for what enters: fast, then settling. */
+  --enter: cubic-bezier(0.1, 0.9, 0.2, 1);
+  color-scheme: light dark;
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #111317;
-    --card: #1a1d23;
-    --fg: #e7e7ea;
-    --muted: #9b9ba3;
-    --line: #2a2e36;
-    --accent: #5b8def;
-    --on-accent: #0b1220;
-    --blocked: #f59e0b;
-    --working: #60a5fa;
-    --idle: #6b6b74;
-    --done: #4ade80;
-    --danger: #f87171;
-    --mine: #1f2a44;
-    --code: #22262d;
-    --term-fg: #e7e7ea;
-    --term-bg: #22262d;
+    --paper: #121212;
+    --sheet: #1e1e1e;
+    --ink: #e8e8e8;
+    --ink-2: #c7c7c7;
+    --muted: #a3a3a3;
+    --rule: rgb(255 255 255 / 0.14);
+    --wash: rgb(255 255 255 / 0.06);
+    --control: rgb(255 255 255 / 0.14);
+    --control-down: rgb(255 255 255 / 0.26);
+    --edge: rgb(255 255 255 / 0.5);
+    --code: #262626;
+    /* Indigo 200, Pink 200, Cyan 300 and Red 300, for what reads on the dark. */
+    --accent-ink: #9fa8da;
+    --blocked-ink: #f48fb1;
+    --working-ink: #4dd0e1;
+    --danger-ink: #e57373;
+    --added: rgb(129 199 132 / 0.16);
+    --removed: rgb(229 115 115 / 0.15);
+    --lamp: rgb(232 232 232);
+    --term-fg: #e8e8e8;
+    --term-bg: #0a0a0a;
     --t0: #3a3f47;
     --t1: #f2777a;
     --t2: #8fd18a;
@@ -80,28 +111,48 @@ body {
   height: 100%;
 }
 body {
-  background: var(--bg);
-  color: var(--fg);
-  font:
-    16px / 1.45 system-ui,
-    -apple-system,
-    "Segoe UI",
-    sans-serif;
+  background: var(--paper);
+  color: var(--ink);
+  font: 15px / 1.45 var(--sans);
   -webkit-text-size-adjust: 100%;
   -webkit-tap-highlight-color: transparent;
 }
 button,
 input,
-textarea {
+textarea,
+select {
   font: inherit;
   color: inherit;
 }
 a {
-  color: var(--accent);
+  color: var(--accent-ink);
+  text-decoration: none;
+}
+h1,
+h2,
+p {
+  margin: 0;
+}
+.mono {
+  font-family: var(--mono);
+}
+/* What assistive technology reads that the screen shows otherwise. */
+.hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
 }
 
-/* The page: a status bar over one screen, a header, what scrolls, and what
-   stays at the foot. */
+/* The page: status bars over one screen. A screen's bar and what stays at
+   its foot are acrylic over what scrolls, which passes under them: the
+   screen keeps their heights in --head and --foot. */
 .app {
   position: fixed;
   inset-inline: 0;
@@ -111,52 +162,29 @@ a {
   flex-direction: column;
 }
 .screen {
+  position: relative;
   flex: 1;
   min-height: 0;
-  display: flex;
-  flex-direction: column;
+  overflow: hidden;
 }
 .scroll {
-  flex: 1;
+  position: absolute;
+  inset: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 12px max(12px, env(safe-area-inset-right)) 12px max(12px, env(safe-area-inset-left));
+  padding: calc(var(--head, 0px) + 12px) var(--pad-end) calc(var(--foot, 0px) + 28px) var(--pad);
+  scroll-padding: calc(var(--head, 0px) + 8px) 0 calc(var(--foot, 0px) + 8px);
+  animation: enter 360ms var(--enter) 40ms backwards;
 }
-header {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: max(10px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) 10px
-    max(12px, env(safe-area-inset-left));
-  border-bottom: 1px solid var(--line);
-}
-.bar + .screen header {
-  padding-top: 10px;
-}
-header h1 {
-  margin: 0;
-  font-size: 20px;
-}
-header .what {
-  flex: 1;
-  min-width: 0;
-}
-.back {
-  border: 0;
-  background: none;
-  color: var(--accent);
-  font-size: 30px;
-  line-height: 1;
-  width: 44px;
-  height: 44px;
-  margin: -6px 0 -6px -10px;
-  padding: 0 0 4px;
+/* A screen enters as Windows 8 brings in a page: from a little to the right. */
+@keyframes enter {
+  from {
+    opacity: 0;
+    transform: translateX(40px);
+  }
 }
 .name {
-  font-weight: 600;
-}
-.name,
-.meta {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -164,200 +192,811 @@ header .what {
 .meta {
   color: var(--muted);
   font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-header .what .name {
-  font-size: 17px;
+.bar-top,
+.dock {
+  position: absolute;
+  inset-inline: 0;
+  z-index: 2;
+  display: block;
+  --acrylic-tint-color: var(--paper);
+  --acrylic-tint-opacity: 0.74;
+  --acrylic-blur: 24px;
+  --acrylic-fallback-color: var(--paper);
 }
-.bar {
-  padding: max(6px, env(safe-area-inset-top)) 12px 6px;
-  font-size: 13px;
-  background: var(--code);
-  color: var(--muted);
+.bar-top {
+  top: 0;
+  z-index: 3;
 }
-
-button {
-  border: 1px solid var(--line);
-  background: var(--card);
-  border-radius: 10px;
-  padding: 8px 14px;
-  min-height: 44px;
-  cursor: pointer;
+/* What a bar and the dock show can be selected, and their links keep the
+   long press of iOS, as anywhere. */
+.bar-top,
+.dock {
+  -webkit-user-select: text;
+  user-select: text;
+  -webkit-touch-callout: default;
 }
-button:disabled {
-  opacity: 0.45;
-  cursor: default;
+/* What stays at the foot never grows over the bar: what it asks gives way
+   first, scrolling in itself. */
+.dock {
+  bottom: 0;
+  --elevation-depth: 10;
 }
-button.primary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--on-accent);
-  font-weight: 600;
+.dock-in {
+  display: flex;
+  flex-direction: column;
+  max-height: var(--room, none);
+  overflow-y: auto;
 }
-button.link {
-  border: 0;
-  background: none;
-  color: var(--accent);
-  padding: 4px 8px;
+.head {
+  padding: max(8px, env(safe-area-inset-top)) var(--pad-end) 8px max(10px, env(safe-area-inset-left));
 }
-button.mode,
-a.mode {
-  font-size: 14px;
-  padding: 6px 12px;
+.home .head {
+  padding-left: var(--pad);
 }
-a.mode {
-  margin-left: auto;
+.bar + .screen .head {
+  padding-top: 8px;
+}
+.head-row {
   display: flex;
   align-items: center;
+  gap: 8px;
+  min-height: 48px;
+}
+.head .what {
+  flex: 1;
+  min-width: 0;
+}
+.head h1 {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 24px;
+  font-weight: 300;
+  line-height: 1.2;
+}
+.head .meta {
+  margin-top: 1px;
+}
+.actions-top {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+}
+
+/* Controls, as Modern UI draws them: flat and square, a border of 2px
+   that the pointer brings out, the accent for what the person goes on
+   with. */
+button,
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   min-height: 44px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--card);
-  color: var(--fg);
+  margin: 0;
+  padding: 0 18px;
+  border: 2px solid transparent;
+  border-radius: 0;
+  background: var(--control);
+  color: var(--ink);
+  font-size: 15px;
+  line-height: 1.2;
   text-decoration: none;
+  cursor: pointer;
+  transition: background-color 100ms linear;
+}
+button:active:not(:disabled),
+.button:active {
+  background: var(--control-down);
+}
+@media (hover: hover) {
+  button:hover:not(:disabled),
+  .button:hover {
+    border-color: var(--edge);
+  }
+}
+button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+button.primary,
+.button.primary {
+  background: var(--accent);
+  color: #fff;
+}
+button.primary:active:not(:disabled),
+.button.primary:active {
+  background: color-mix(in srgb, var(--accent) 78%, #000);
+}
+button.danger {
+  background: var(--danger);
+  color: #fff;
+}
+button.wide {
+  width: 100%;
+}
+button.link {
+  min-height: 36px;
+  padding: 4px 0;
+  border: 0;
+  background: none;
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+button.link.danger {
+  color: var(--danger-ink);
+}
+/* Bars over the screen: what a computer's watch or the page says. */
+.bar {
+  padding: max(8px, env(safe-area-inset-top)) var(--pad-end) 8px var(--pad);
+  font-size: 13px;
+  background: var(--code);
+  color: var(--ink-2);
+}
+.bar.error {
+  background: var(--danger);
+  color: #fff;
+}
+.bar.error a,
+.bar.error button.link {
+  color: #fff;
+  text-decoration: underline;
+}
+.bar + .bar {
+  padding-top: 6px;
+}
+/* The round buttons of a bar, as Windows draws an app bar's: a glyph in a
+   ring, which leans as it is pressed. */
+.press {
+  display: block;
+  flex: none;
+  width: 44px;
+  height: 44px;
+  --pressure-tilt-mode: absolute;
+  --pressure-tilt-depth: 1px;
+  --pressure-tilt-factor: 2;
+  --pressure-perspective: 25px;
+  --pressure-zoom: 0.8px;
+}
+.round {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  color: var(--ink);
+}
+.round:active:not(:disabled),
+a.round:active {
+  background: none;
+}
+.round .ring {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border: 2px solid currentColor;
+  border-radius: 50%;
+}
+.round:active .ring {
+  background: var(--control);
+}
+@media (hover: hover) {
+  .round:hover .ring {
+    background: var(--wash);
+  }
+  .round:hover:not(:disabled) {
+    border-color: transparent;
+  }
+}
+.round.back {
+  color: var(--ink);
+}
+.icon {
+  flex: none;
+  display: block;
+}
+/* A small glyph button inside what scrolls. */
+.icon-button {
+  display: inline-grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--muted);
+}
+/* A link in what leans as it is pressed keeps the long press of iOS (open
+   it apart, copy it), and what a session's row says can be selected, as
+   anywhere. */
+.press,
+.row-press,
+.tile {
+  -webkit-touch-callout: default;
+}
+.row-press {
+  -webkit-user-select: text;
+  user-select: text;
+}
+/* Reveal's light over what the person presses, in the ink of the page. */
+.lamp {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  --ax-border-width: 1px;
+  --reveal-color: var(--lamp);
+  --reveal-opacity: 0.2;
+}
+.press .lamp {
+  inset: 4px;
+  --ax-radius: 50%;
+}
+/* A row is wide: its light reaches a row or so, not the list. */
+.row-press .lamp {
+  --reveal-border-fill-radius: 0.6;
+}
+/* How the computers answer, on the way to them. */
+.health {
+  position: relative;
+}
+.health.wait::after,
+.health.bad::after {
+  content: "";
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--paper);
+  background: var(--blocked);
+}
+.health.bad::after {
+  background: var(--danger);
 }
 input,
 textarea {
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--card);
-  padding: 8px 10px;
-  min-height: 44px;
   width: 100%;
+  min-height: 44px;
+  margin: 0;
+  padding: 8px 10px;
+  border: 2px solid var(--edge);
+  border-radius: 0;
+  background: var(--sheet);
+  font-size: 16px;
+}
+input:focus,
+textarea:focus {
+  outline: none;
+  border-color: var(--accent-ink);
+}
+input::placeholder,
+textarea::placeholder {
+  color: var(--muted);
 }
 pre {
-  font: 13px / 1.4 var(--mono);
+  font: 13px / 1.5 var(--mono);
   background: var(--code);
-  border-radius: 8px;
-  padding: 8px 10px;
+  border-left: 3px solid var(--accent);
+  padding: 8px 12px;
   overflow-x: auto;
   margin: 6px 0;
 }
 .error {
-  color: var(--danger);
+  color: var(--danger-ink);
 }
 .muted {
   color: var(--muted);
   font-size: 14px;
 }
 .empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0;
+  padding: 32px 0;
   color: var(--muted);
-  text-align: center;
-  padding: 32px 12px;
+  font-size: 15px;
   list-style: none;
 }
-
-/* Pairing */
-.pair form {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin: 12px 0;
+p.empty,
+.empty > p:first-child {
+  color: var(--ink);
+  font-size: 20px;
+  font-weight: 300;
+  line-height: 1.3;
 }
-.pair input[name="code"] {
+/* A branch, or where in its project a session runs: words in the margin,
+   not a box. */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex: none;
+  max-width: 55%;
+  color: var(--muted);
+  font: 12px / 1.4 var(--mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.chip.tree {
+  color: var(--accent-ink);
+}
+.go {
+  flex: none;
+  color: var(--accent-ink);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+/* A count of what waits on the person, as a tile counts what is new. */
+.badge {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  background: var(--blocked);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+/* Home: the app's name over the inbox and the projects, a choice between
+   them in the large light type of a pivot. */
+.app-name {
   flex: 1;
-  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
-.pair input[name="computer"] {
-  flex-basis: 100%;
+.navigation {
+  display: block;
+  --navigation-indicator-color: var(--accent-ink);
+  --navigation-indicator-width: 3px;
 }
-.pair .check {
-  flex-basis: 100%;
+.navigation ax-navigation-item {
+  margin: 0 24px 0 0;
+  padding: 0;
+}
+.pivot {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding-bottom: 4px;
+  color: var(--muted);
+  font-size: 32px;
+  font-weight: 300;
+  line-height: 1.15;
+}
+.pivot[aria-current="page"] {
+  color: var(--ink);
+}
+.pivot .badge {
+  margin-top: 7px;
+}
+.section + .section,
+.clear + .section,
+.project + .project,
+.project + .section {
+  margin-top: 24px;
+}
+.label {
   display: flex;
-  align-items: center;
-  gap: 10px;
-  min-height: 44px;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0 0 6px;
+  font-size: 20px;
+  font-weight: 300;
+}
+.label .n {
   color: var(--muted);
   font-size: 15px;
 }
-.pair .check input {
-  flex: none;
-  width: 22px;
-  height: 22px;
-  min-height: 0;
-  margin: 0;
-  padding: 0;
-  accent-color: var(--accent);
-}
-.notice {
-  background: var(--code);
-  border-radius: 10px;
-  padding: 10px;
+.clear {
+  margin: 0 0 20px;
+  color: var(--muted);
+  font-size: 20px;
+  font-weight: 300;
 }
 
-/* Agents */
-.sessions {
+/* A list of rows: text on the paper, each led by the square of its state. */
+.rows {
   list-style: none;
   margin: 0;
   padding: 0;
 }
-.row {
+.row-press {
+  display: block;
+  --pressure-tilt-mode: absolute;
+  --pressure-tilt-depth: 2px;
+  --pressure-tilt-factor: 2;
+  --pressure-perspective: 400px;
+  --pressure-zoom: 1px;
+}
+.row-link {
   display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 12px;
-  margin-bottom: 8px;
-  background: var(--card);
-  border: 1px solid var(--line);
-  border-radius: 12px;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 9px 0;
   color: inherit;
-  text-decoration: none;
 }
-.row.blocked {
-  border-color: var(--blocked);
+.row-link:active {
+  background: var(--wash);
 }
-.row .what {
+.mark {
+  position: relative;
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 44px;
+  height: 44px;
+  overflow: hidden;
+  background: var(--idle);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.working .mark {
+  background: var(--working);
+}
+/* What works sweeps a light along its foot. */
+.working .mark::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 100%;
+  height: 3px;
+  background: linear-gradient(90deg, transparent, rgb(255 255 255 / 0.85), transparent);
+  animation: sweep 1.6s linear infinite;
+}
+@keyframes sweep {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(100%);
+  }
+}
+.blocked .mark {
+  background: var(--blocked);
+}
+/* A turn ended that the person has not seen end. */
+.row.done .mark {
+  background: var(--accent);
+}
+.row.skeleton .mark {
+  background: var(--control);
+}
+.row .body {
   flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
+  gap: 1px;
 }
-.row .when {
+.line1 {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+.line1 .name {
+  font-size: 17px;
+  line-height: 1.3;
+}
+.when {
+  margin-left: auto;
+  flex: none;
   color: var(--muted);
   font-size: 13px;
+  font-variant-numeric: tabular-nums;
 }
-.dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  flex: none;
-  background: var(--idle);
+.said {
+  color: var(--ink-2);
+  font-size: 14px;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 1;
+  line-clamp: 1;
+  overflow-wrap: anywhere;
 }
-.working .dot {
-  background: var(--working);
-  animation: pulse 1.6s ease-in-out infinite;
+.said.full {
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  color: var(--ink);
 }
-.blocked .dot {
-  background: var(--blocked);
-}
-/* A turn ended that the person has not seen end. */
-.row.done .dot {
-  background: var(--done);
-}
-.name small {
-  font-weight: 400;
+.said.asked::before {
+  content: "↳ ";
   color: var(--muted);
 }
-footer {
+.asks {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  color: var(--muted);
-  font-size: 13px;
-  padding: 16px 4px;
+  margin-top: 3px;
 }
-footer .device {
+.asks .ask {
+  color: var(--blocked-ink);
+  font-size: 16px;
+}
+.asks code {
+  padding: 5px 10px;
+  border-left: 3px solid var(--blocked);
+  background: var(--code);
+  font: 13px / 1.45 var(--mono);
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow-wrap: anywhere;
+}
+/* A command the person may answer in the list shows in full. */
+.asks code.whole {
+  display: block;
+  white-space: pre-wrap;
+}
+.quick {
   display: flex;
-  justify-content: space-between;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 2px 0 14px 58px;
+}
+.quick button,
+.quick .button {
+  min-width: 100px;
+}
+.quick .error {
+  flex-basis: 100%;
+  font-size: 13px;
+}
+.bone {
+  display: block;
+  height: 12px;
+  margin: 5px 0;
+  width: 60%;
+  background: var(--control);
+  animation: pulse 1.6s ease-in-out infinite;
+}
+.bone.short {
+  width: 35%;
+}
+.row.skeleton {
+  display: flex;
+  gap: 14px;
+  padding: 9px 0;
+}
+@keyframes pulse {
+  50% {
+    opacity: 0.4;
+  }
+}
+/* Windows Phone's progress: dots that fly in, slow down and fly on. */
+.dots {
+  position: relative;
+  display: block;
+  width: 100%;
+  max-width: 220px;
+  height: 4px;
+  overflow: hidden;
+}
+.dots i {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 4px;
+  height: 4px;
+  background: var(--working-ink);
+  opacity: 0;
+  animation: fly 2.4s infinite;
+}
+.dots i:nth-child(2) {
+  animation-delay: 0.16s;
+}
+.dots i:nth-child(3) {
+  animation-delay: 0.32s;
+}
+.dots i:nth-child(4) {
+  animation-delay: 0.48s;
+}
+.dots i:nth-child(5) {
+  animation-delay: 0.64s;
+}
+@keyframes fly {
+  0% {
+    left: 0;
+    opacity: 0;
+    animation-timing-function: cubic-bezier(0.1, 0.9, 0.2, 1);
+  }
+  8% {
+    opacity: 1;
+  }
+  36% {
+    left: 42%;
+    animation-timing-function: linear;
+  }
+  64% {
+    left: 58%;
+    opacity: 1;
+    animation-timing-function: cubic-bezier(0.8, 0, 0.9, 0.1);
+  }
+  88%,
+  100% {
+    left: 100%;
+    opacity: 0;
+  }
+}
+
+/* Projects: each with its sessions; then tiles of the places that run none
+   now, each starting an agent there. */
+.project-head {
+  display: flex;
   align-items: center;
   gap: 8px;
+  margin: 0 0 4px;
 }
-footer a.link {
-  align-self: flex-start;
-  min-height: 44px;
+.project-head .what {
+  flex: 1;
+  min-width: 0;
+}
+.project-head h2 {
   display: flex;
   align-items: center;
+  gap: 10px;
+  font-size: 20px;
+  font-weight: 300;
+  line-height: 1.3;
+}
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
+  gap: 8px;
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.tile {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1;
+  color: #fff;
+  font-size: 14px;
+  line-height: 1.25;
+  --ax-fill-color: var(--accent);
+  --ax-border-width: 2px;
+  --ax-border-color: transparent;
+  --ax-radius: 0px;
+  /* Pressed as a tile of the Start screen is, leaning from the press. */
+  --ax-tilt-mode: absolute;
+  --reveal-color: rgb(255 255 255);
+  --reveal-opacity: 0.3;
+}
+.tile [slot="action"] {
+  color: inherit;
+}
+/* The name of a tile is on one line at its foot; what else it says runs
+   from its top, never as far down. */
+.tile .face {
+  position: absolute;
+  inset: 0 0 26px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 8px 0;
+  font-size: 11px;
+  line-height: 1.3;
+  opacity: 0.85;
+  overflow: hidden;
+}
+.tile .face > .icon {
+  margin-bottom: 4px;
+}
+.tile .face > span {
+  flex: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tile .chip {
+  display: block;
+  max-width: 100%;
+  color: inherit;
+  font-size: inherit;
+}
+.tile .chip .icon {
+  display: inline-block;
+  margin: 0 3px -2px 0;
+}
+/* A path keeps its end in sight: the name of the directory. One that tells
+   a tile from another of the same name fills two lines from its start, the
+   two dozen letters in which it differs (see apart in places.ts). Its
+   spaces show as they are. */
+.tile .face > .at {
+  direction: rtl;
+  text-align: left;
+  font-family: var(--mono);
+  white-space: pre;
+}
+.tile .face > .at.apart {
+  direction: ltr;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.empty > .tile {
+  margin-top: 18px;
+}
+/* The tile that starts an agent where nothing runs yet. */
+.tile.wide {
+  width: min(100%, 264px);
+  aspect-ratio: 2;
+  font-size: 15px;
+}
+.tile.wide .face {
+  bottom: 28px;
+  padding: 12px;
+}
+
+/* A session */
+.tabs {
+  margin-top: 4px;
+  padding-left: calc(var(--pad) - max(10px, env(safe-area-inset-left)));
+}
+.tab {
+  min-height: 0;
+  padding: 0 0 6px;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font-size: 17px;
+}
+.tab:active:not(:disabled) {
+  background: none;
+}
+.tab[aria-pressed="true"] {
+  color: var(--ink);
+}
+@media (hover: hover) {
+  .tab:hover:not(:disabled) {
+    border-color: transparent;
+    color: var(--ink);
+  }
+}
+.onward {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 32px;
+  padding: 0 4px 0 10px;
+  background: var(--blocked);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
 }
 /* The sessions one works for and waits on. */
 .ties {
@@ -366,35 +1005,53 @@ footer a.link {
   gap: 2px 12px;
   font-size: 13px;
 }
-@keyframes pulse {
-  50% {
-    opacity: 0.35;
-  }
-}
-
-/* A session's turns */
 .turn {
-  margin-bottom: 20px;
+  margin-bottom: 28px;
 }
+/* A prompt is a message as Windows Phone drew one: a square of colour with
+   a tail, the person's on the right in the accent, pointing down to them,
+   another's on the left, pointing up to where it came from. Its text can
+   be selected like any. */
 .prompt {
-  margin: 0 0 8px auto;
-  max-width: 88%;
+  display: block;
   width: fit-content;
+  max-width: 86%;
+  margin: 0 0 22px auto;
+  color: #fff;
+  -webkit-user-select: text;
+  user-select: text;
+  -webkit-touch-callout: default;
+  --ax-fill-color: var(--accent);
+  --ax-border-width: 0px;
+  --ax-radius: 0px;
+  --ax-edge-bottom-kind: triangle;
+  --ax-edge-bottom-at: 18px;
+  --ax-edge-bottom-span: 16px;
+  --ax-edge-bottom-depth: 10px;
+}
+.prompt .text {
+  padding: 8px 12px 9px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  background: var(--mine);
-  border-radius: 14px 14px 4px 14px;
-  padding: 8px 12px;
 }
 .prompt.from {
-  background: var(--code);
-  margin-left: 0;
-  border-radius: 14px 14px 14px 4px;
+  margin: 20px auto 12px 0;
+  color: var(--ink);
+  --ax-fill-color: var(--code);
+  --ax-edge-bottom-kind: none;
+  --ax-edge-top-kind: triangle;
+  --ax-edge-top-at: 18px;
+  --ax-edge-top-span: 16px;
+  --ax-edge-top-depth: 10px;
 }
+/* A prompt on its way, which no turn shows yet: drawn in outline. */
 .prompt.sent {
-  opacity: 0.6;
+  color: var(--accent-ink);
+  --ax-fill-color: var(--paper);
+  --ax-border-width: 2px;
+  --ax-border-color: var(--accent-ink);
 }
-.prompt.folded {
+.prompt.folded .text {
   max-height: 12em;
   overflow: hidden;
   mask-image: linear-gradient(#000 calc(100% - 3.5em), transparent);
@@ -402,38 +1059,50 @@ footer a.link {
 .prompt .who {
   display: block;
   font-size: 12px;
-  color: var(--muted);
 }
 .prompt .more {
-  display: block;
-  position: sticky;
-  bottom: 0;
-  margin: 4px 0 0 auto;
+  display: flex;
+  margin: 0 8px 8px auto;
   min-height: 32px;
-  padding: 4px 12px;
+  padding: 0 12px;
+  background: color-mix(in srgb, currentColor 16%, transparent);
+  color: inherit;
   font-size: 13px;
 }
+.prompt .more:active:not(:disabled) {
+  border-color: currentColor;
+  background: color-mix(in srgb, currentColor 16%, transparent);
+}
+.reply {
+  position: relative;
+}
+.reply .copy {
+  display: flex;
+  margin: 2px 0 0 -8px;
+}
 .running {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
   color: var(--muted);
   font-size: 14px;
 }
-.running::before {
-  content: "";
-  display: inline-block;
-  width: 8px;
-  height: 8px;
-  margin-right: 8px;
-  border-radius: 50%;
-  background: var(--working);
-  animation: pulse 1.6s ease-in-out infinite;
+.running.blocked {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
 }
 .running.blocked::before {
+  content: "";
+  width: 8px;
+  height: 8px;
   background: var(--blocked);
-  animation: none;
 }
 .terminal {
   margin: 0;
   min-height: 100%;
+  border: 0;
+  padding: 8px 10px;
   font-size: 11.5px;
   color: var(--term-fg);
   background: var(--term-bg);
@@ -450,24 +1119,202 @@ footer a.link {
 .terminal .u {
   text-decoration: underline;
 }
+.toast {
+  margin: 0;
+  padding: 6px var(--pad-end) 0 var(--pad);
+  font-size: 13px;
+  color: var(--muted);
+}
+.toast:empty {
+  display: none;
+}
+.toast.error {
+  color: var(--danger-ink);
+}
+/* A note above what a screen shows: a reread that failed, a prompt a pane holds. */
+.stale,
+.held {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.stale {
+  color: var(--danger-ink);
+}
+.composer {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 8px var(--pad-end) max(8px, env(safe-area-inset-bottom)) var(--pad);
+}
+.composer textarea {
+  flex: 1;
+  max-height: calc(var(--room, 100dvh) * 0.4);
+  resize: none;
+  line-height: 1.35;
+}
+.composer .send,
+.composer .stop {
+  flex: none;
+  width: 44px;
+  padding: 0;
+}
+.composer .send:disabled {
+  opacity: 1;
+  background: var(--control);
+  color: var(--muted);
+}
+.composer .stop {
+  border-color: var(--danger);
+  background: none;
+  color: var(--danger-ink);
+}
+.composer > .muted {
+  flex: 1;
+  margin: 0;
+  align-self: center;
+}
 
-/* The keys a person types into a pane with. */
+/* Requests: what a session asks, under a band in the colour of asking. */
+.cards {
+  max-height: calc(var(--app-height, 100dvh) * 0.5);
+  overflow-y: auto;
+  padding: 8px var(--pad-end) 0 var(--pad);
+}
+.option {
+  display: block;
+  width: 100%;
+  min-height: 0;
+  margin-bottom: 4px;
+  padding: 8px 12px;
+  text-align: left;
+}
+.option strong {
+  font-weight: 600;
+}
+.option small {
+  display: block;
+  color: var(--muted);
+  font-size: 13px;
+}
+.option.on {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+.dock-in > * {
+  flex: none;
+}
+.dock-in > .cards {
+  flex: 0 1 auto;
+  min-height: 52px;
+}
+.card {
+  margin: 0 0 8px;
+  padding: 0 14px 14px;
+  border: 2px solid var(--blocked);
+  background: var(--sheet);
+}
+.card h2 {
+  margin: 0 -14px 12px;
+  padding: 7px 14px 8px;
+  background: var(--blocked);
+  color: #fff;
+  font-size: 17px;
+  font-weight: 400;
+}
+.card h2 small {
+  font-size: 13px;
+}
+.card.focus {
+  border-width: 3px;
+}
+.card.muted {
+  padding: 12px 14px;
+  border-color: var(--rule);
+}
+.card pre {
+  border-left-color: var(--blocked);
+}
+.card .plan {
+  max-height: 30vh;
+  overflow-y: auto;
+  padding: 10px 12px;
+  background: var(--code);
+}
+.card details summary {
+  margin: 4px 0;
+  color: var(--muted);
+  font-size: 13px;
+  cursor: pointer;
+}
+.card fieldset {
+  border: 0;
+  padding: 0;
+  margin: 0 0 12px;
+}
+.card legend {
+  padding: 0;
+  margin-bottom: 8px;
+}
+.fold {
+  display: flex;
+  justify-content: space-between;
+  width: 100%;
+  margin: 0 0 8px;
+  padding: 0 14px;
+  background: var(--blocked);
+  color: #fff;
+}
+.fold:active:not(:disabled) {
+  background: color-mix(in srgb, var(--blocked) 80%, #000);
+}
+.fold .ask {
+  font-size: 17px;
+}
+.fold .go {
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.tag {
+  margin-right: 6px;
+  padding: 0 5px;
+  background: var(--control);
+  color: var(--ink-2);
+  font-size: 12px;
+}
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+.actions button {
+  min-width: 100px;
+}
+.actions .reason {
+  flex-basis: 100%;
+}
+.actions .muted {
+  margin: 0;
+}
+
+/* The keys a person types into a pane with, all of them in sight. */
 .keybar {
-  border-top: 1px solid var(--line);
-  padding: 8px max(12px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom))
-    max(12px, env(safe-area-inset-left));
+  padding: 8px var(--pad-end) max(8px, env(safe-area-inset-bottom)) var(--pad);
 }
 .keybar .keys {
-  display: flex;
-  gap: 6px;
-  overflow-x: auto;
-  padding-bottom: 8px;
-  scrollbar-width: none;
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 4px;
+  margin-bottom: 8px;
 }
 .keybar .keys button {
-  flex: none;
-  min-width: 44px;
-  padding: 6px 10px;
+  min-height: 40px;
+  padding: 0;
   font-family: var(--mono);
   font-size: 14px;
 }
@@ -479,64 +1326,353 @@ footer a.link {
   flex: 1;
   font-family: var(--mono);
 }
+.keybar .enter {
+  width: 44px;
+  padding: 0;
+}
 
-/* The start sheet. */
-.start {
+/* Starting an agent: choices that scroll, Start at the foot. */
+.sheet .scroll {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 26px;
 }
-.start label,
-.start fieldset {
+.choices {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  font-size: 14px;
-  color: var(--muted);
-}
-.start fieldset {
-  border: 0;
+  gap: 8px;
+  min-width: 0;
   margin: 0;
   padding: 0;
+  border: 0;
 }
-.start legend {
+/* The name of a group of choices, in the small capitals Windows puts over one. */
+.choices legend,
+.choices .legend {
   padding: 0;
-  margin-bottom: 6px;
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
-.start .field {
-  color: var(--fg);
-  font-size: 16px;
-  resize: vertical;
+.choices .legend {
+  margin-bottom: 0;
 }
-.start fieldset label.choice {
-  flex-direction: row;
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.choice {
+  position: relative;
+  display: inline-flex;
   align-items: center;
-  gap: 10px;
-  min-height: 40px;
-  font-size: 16px;
-  color: var(--fg);
+  min-height: 44px;
+  padding: 0 16px;
+  border: 2px solid transparent;
+  background: var(--control);
+  font-size: 15px;
+  cursor: pointer;
 }
-.start .choice input {
-  width: 20px;
-  height: 20px;
+.choice input {
+  position: absolute;
+  opacity: 0;
+  width: 1px;
+  height: 1px;
   min-height: 0;
   margin: 0;
   padding: 0;
-  accent-color: var(--accent);
 }
-.start select {
-  font: inherit;
-  color: var(--fg);
+.choice.on {
+  background: var(--accent);
+  color: #fff;
+}
+.choice:has(:focus-visible) {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+@media (hover: hover) {
+  .choice:hover {
+    border-color: var(--edge);
+  }
+}
+@media (forced-colors: active) {
+  .choice.on {
+    border-color: Highlight;
+  }
+}
+.check {
+  display: flex;
+  align-items: center;
+  gap: 12px;
   min-height: 44px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--card);
-  padding: 8px 10px;
+  color: var(--ink-2);
+  font-size: 15px;
 }
+.check input {
+  appearance: none;
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: 2px solid var(--ink);
+  background: var(--sheet);
+}
+.check input:checked {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+.check input:checked::after {
+  content: "";
+  width: 6px;
+  height: 11px;
+  border: solid #fff;
+  border-width: 0 2px 2px 0;
+  transform: translateY(-1px) rotate(45deg);
+}
+.check input:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+.check input:disabled {
+  opacity: 0.4;
+}
+.field {
+  resize: vertical;
+}
+.picked {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 12px;
+  width: 100%;
+  padding: 8px 12px;
+  background: var(--control);
+  text-align: left;
+  color: var(--muted);
+}
+.picked .body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.picked .name {
+  color: var(--ink);
+  font-size: 17px;
+}
+.picker {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.picker .path {
+  font-family: var(--mono);
+}
+.browse .where,
+.recent .label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 36px;
+  margin: 0;
+  padding: 0 0 2px;
+  border-bottom: 2px solid var(--rule);
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 400;
+}
+.browse .where .mono {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dirs {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 264px;
+  overflow-y: auto;
+}
+.dir {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 10px;
+  width: 100%;
+  border: 0;
+  background: none;
+  padding: 8px 2px;
+  text-align: left;
+  color: var(--muted);
+}
+.dir:active:not(:disabled) {
+  background: var(--wash);
+}
+.dir .name {
+  flex: none;
+  max-width: 70%;
+  color: var(--ink);
+}
+.dir .meta {
+  flex: 1;
+  min-width: 0;
+  text-align: right;
+}
+.dir .chip {
+  margin-left: auto;
+}
+.dirs .none {
+  padding: 8px 2px;
+}
+.picker .done {
+  align-self: flex-start;
+}
+.foot {
+  padding: 10px var(--pad-end) max(10px, env(safe-area-inset-bottom)) var(--pad);
+}
+
+/* The computers this device works with. */
+.computers {
+  list-style: none;
+  margin: 0 0 20px;
+  padding: 0;
+}
+.computer {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  padding: 12px 0;
+}
+.computer + .computer {
+  border-top: 1px solid var(--rule);
+}
+.computer .line1 {
+  width: 100%;
+  align-items: center;
+  gap: 12px;
+}
+.computer .line1 .name {
+  font-size: 20px;
+  font-weight: 300;
+}
+.computer .meta {
+  margin-left: auto;
+}
+.computer .state {
+  font-size: 14px;
+  color: var(--ink-2);
+}
+/* How a computer answers, as the square of its state. */
+.light {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  background: var(--accent);
+}
+.light.wait {
+  background: var(--blocked);
+}
+.light.bad {
+  background: var(--danger);
+}
+.confirm {
+  width: 100%;
+  margin-top: 8px;
+  padding: 12px;
+  border-left: 3px solid var(--danger);
+  background: var(--code);
+  font-size: 14px;
+}
+.confirm code {
+  font: 13px var(--mono);
+}
+.about {
+  margin-top: 28px;
+  font-size: 13px;
+}
+
+/* Pairing */
+.lead {
+  margin: 4px 0 20px;
+  font-size: 20px;
+  font-weight: 300;
+  line-height: 1.35;
+}
+.steps {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: step;
+  color: var(--ink-2);
+}
+.steps li {
+  position: relative;
+  padding-left: 40px;
+  counter-increment: step;
+}
+.steps li::before {
+  content: counter(step);
+  position: absolute;
+  left: 0;
+  top: -6px;
+  color: var(--accent-ink);
+  font-size: 28px;
+  font-weight: 300;
+  line-height: 1.2;
+}
+.steps li + li {
+  margin-top: 14px;
+}
+.pair form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 24px 0 16px;
+}
+.pair input[name="code"] {
+  flex: 1;
+  font-family: var(--mono);
+  font-size: 18px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.pair input[name="computer"] {
+  flex-basis: 100%;
+}
+.pair .check {
+  flex-basis: 100%;
+}
+.notice {
+  margin-bottom: 16px;
+  padding: 10px 12px;
+  border-left: 3px solid var(--blocked);
+  background: var(--code);
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .working .dot,
-  .running::before {
+  .scroll,
+  .working .mark::after,
+  .dots i,
+  .bone {
     animation: none;
+  }
+  .dots i:first-child {
+    left: 0;
+    opacity: 1;
+  }
+  button,
+  .button {
+    transition: none;
   }
 }
 
@@ -563,12 +1699,14 @@ footer a.link {
 .md h4,
 .md h5,
 .md h6 {
-  margin: 14px 0 6px;
+  margin: 18px 0 6px;
   font-size: 16px;
+  font-weight: 600;
 }
 .md h1,
 .md h2 {
-  font-size: 18px;
+  font-size: 20px;
+  font-weight: 300;
 }
 .md ul,
 .md ol {
@@ -580,9 +1718,8 @@ footer a.link {
   margin: 4px 0;
 }
 .md code {
-  font: 0.9em var(--mono);
+  font: 0.88em var(--mono);
   background: var(--code);
-  border-radius: 4px;
   padding: 1px 4px;
 }
 .md pre code {
@@ -591,13 +1728,13 @@ footer a.link {
   font-size: inherit;
 }
 .md blockquote {
-  border-left: 3px solid var(--line);
+  border-left: 3px solid var(--rule);
   padding-left: 10px;
   color: var(--muted);
 }
 .md hr {
   border: 0;
-  border-top: 1px solid var(--line);
+  border-top: 1px solid var(--rule);
 }
 .md .table {
   overflow-x: auto;
@@ -614,167 +1751,20 @@ footer a.link {
 }
 .md th,
 .md td {
-  border: 1px solid var(--line);
-  padding: 4px 8px;
+  border-bottom: 1px solid var(--rule);
+  padding: 4px 12px 4px 0;
   text-align: left;
   vertical-align: top;
 }
-
-/* Requests */
-.cards {
-  max-height: 60%;
-  overflow-y: auto;
-  padding: 0 max(12px, env(safe-area-inset-right)) 0 max(12px, env(safe-area-inset-left));
-}
-.tag {
-  font-size: 12px;
-  color: var(--muted);
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  padding: 0 5px;
-  margin-right: 6px;
-}
-.option {
-  display: block;
-  width: 100%;
-  text-align: left;
-  margin-bottom: 6px;
-}
-.option small {
-  display: block;
-  color: var(--muted);
-}
-.option.on {
-  border-color: var(--accent);
-  box-shadow: inset 0 0 0 1px var(--accent);
-}
-.card {
-  background: var(--card);
-  border: 1px solid var(--blocked);
-  border-radius: 12px;
-  padding: 12px;
-  margin: 8px 0;
-}
-.card.muted {
-  border-color: var(--line);
-}
-.card.focus {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 1px var(--accent);
-}
-.card h2 {
-  margin: 0 0 6px;
-  font-size: 16px;
-}
-.card h2 small {
-  color: var(--muted);
-  font-weight: normal;
-}
-.card .plan {
-  max-height: 30vh;
-  overflow-y: auto;
-  background: var(--bg);
-  border-radius: 8px;
-  padding: 8px;
-}
-.card details summary {
-  color: var(--muted);
-  font-size: 13px;
-  cursor: pointer;
-}
-.card fieldset {
-  border: 0;
-  padding: 0;
-  margin: 0 0 10px;
-}
-.card legend {
-  padding: 0;
-  margin-bottom: 6px;
-}
-.actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  justify-content: flex-end;
-  margin-top: 8px;
-}
-.actions .reason {
-  flex-basis: 100%;
-}
-.actions .muted {
-  margin: 0;
-}
-
-/* Composing */
-.toast {
-  margin: 0;
-  padding: 0 12px 4px;
-  font-size: 13px;
-  color: var(--muted);
-}
-.toast:empty {
-  display: none;
-}
-.toast.error {
-  color: var(--danger);
-}
-/* A note above what a screen shows: a reread that failed, a prompt a pane holds. */
-.stale,
-.held {
-  margin: 0;
-  padding: 6px 16px;
-  font-size: 13px;
-  color: var(--muted);
-}
-.stale {
-  color: var(--danger);
-}
-.composer {
-  display: flex;
-  align-items: flex-end;
-  gap: 8px;
-  border-top: 1px solid var(--line);
-  padding: 8px max(12px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom))
-    max(12px, env(safe-area-inset-left));
-}
-.composer textarea {
-  flex: 1;
-  resize: none;
-  line-height: 1.35;
-}
-.composer .stop {
-  color: var(--danger);
-  border-color: var(--danger);
-}
-.composer > .muted {
-  flex: 1;
-  margin: 0;
-  align-self: center;
-}
-
-/* What a session shows: its turns, its screen, what its directory changed. */
-.modes {
-  display: flex;
-  gap: 6px;
-  padding: 6px max(12px, env(safe-area-inset-right)) 6px max(12px, env(safe-area-inset-left));
-  border-bottom: 1px solid var(--line);
-}
-.modes .tab {
-  flex: 1;
-  min-height: 36px;
-  padding: 4px 8px;
-  font-size: 14px;
-}
-.modes .tab[aria-pressed="true"] {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--on-accent);
+.md th {
+  font-weight: 600;
 }
 
 /* What a session's directory changed, and what the person says of it. */
 .changes .top {
   font: 12px / 1.4 var(--mono);
   word-break: break-all;
+  margin-bottom: 10px;
 }
 .files {
   list-style: none;
@@ -784,15 +1774,45 @@ footer a.link {
 .file {
   display: flex;
   align-items: center;
-  gap: 8px;
+  justify-content: flex-start;
+  gap: 12px;
   width: 100%;
-  margin: 4px 0;
+  min-height: 44px;
+  margin: 0;
+  padding: 6px 0;
+  border: 0;
+  background: none;
   text-align: left;
 }
+.file:active:not(:disabled) {
+  background: var(--wash);
+}
+@media (hover: hover) {
+  .file:hover:not(:disabled) {
+    border-color: transparent;
+  }
+}
+/* How a file changed, as a square of colour: added, deleted, modified, or
+   not known to git. */
 .file .status {
-  font-family: var(--mono);
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  background: var(--working);
+  color: #fff;
+  font: 600 12px / 1 var(--mono);
   white-space: pre;
-  color: var(--muted);
+}
+.file .status.added {
+  background: var(--add);
+}
+.file .status.deleted {
+  background: var(--danger);
+}
+.file .status.untracked {
+  background: var(--idle);
 }
 .file .path {
   flex: 1;
@@ -805,25 +1825,35 @@ footer a.link {
   white-space: nowrap;
 }
 .patch {
-  font: 12px / 1.45 var(--mono);
+  font: 12px / 1.5 var(--mono);
   background: var(--code);
-  border-radius: 10px;
+  border-left: 3px solid var(--working);
   overflow-x: auto;
-  margin: 4px 0 10px;
+  margin: 2px 0 12px;
   padding: 6px 0;
 }
 .patch .line {
   display: flex;
+  justify-content: flex-start;
   width: 100%;
   min-height: 0;
   margin: 0;
   padding: 0 8px;
   border: 0;
-  border-radius: 0;
   background: none;
   font: inherit;
   text-align: left;
   white-space: pre;
+  overflow: visible;
+}
+.patch button.line:active:not(:disabled) {
+  background: var(--control);
+}
+@media (hover: hover) {
+  .patch button.line:hover:not(:disabled) {
+    border-color: transparent;
+    background: var(--wash);
+  }
 }
 .patch .no {
   flex: none;
@@ -833,30 +1863,28 @@ footer a.link {
   color: var(--muted);
 }
 .patch .added {
-  background: color-mix(in srgb, var(--done) 18%, transparent);
+  background: var(--added);
 }
 .patch .removed {
-  background: color-mix(in srgb, var(--danger) 16%, transparent);
+  background: var(--removed);
 }
 .patch .hunk,
 .patch .meta,
 .patch .note {
   color: var(--muted);
+  font-size: inherit;
 }
 .patch .comment {
   margin: 2px 8px 6px calc(8ch + 20px);
-  padding: 6px 8px;
+  padding: 6px 10px;
   border-left: 3px solid var(--accent);
-  background: var(--card);
-  font:
-    14px / 1.4 system-ui,
-    -apple-system,
-    sans-serif;
+  background: var(--sheet);
+  font: 14px / 1.4 var(--sans);
   white-space: pre-wrap;
 }
 /* Comments whose line is no longer in the patch, each with the line quoted. */
 .patch .moved {
-  border-top: 1px solid var(--line);
+  border-top: 1px solid var(--rule);
   padding-top: 6px;
 }
 .patch .moved > .muted {
@@ -876,24 +1904,21 @@ footer a.link {
   justify-content: flex-end;
   gap: 6px;
   margin: 4px 8px 8px;
-  font:
-    15px / 1.4 system-ui,
-    -apple-system,
-    sans-serif;
+  font: 15px / 1.4 var(--sans);
 }
 .say textarea {
   flex-basis: 100%;
 }
 .put {
   position: sticky;
-  bottom: 0;
+  bottom: var(--foot, 0px);
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
   padding: 8px 0;
-  background: var(--bg);
+  background: var(--paper);
 }
-.put span {
+.put .count {
   flex: 1;
   color: var(--muted);
 }
