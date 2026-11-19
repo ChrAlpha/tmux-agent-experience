@@ -12,14 +12,23 @@ contract, on its own origin under `/v2/`, and loads nothing from anywhere else.
 
 ## What it shows
 
-- **Agents**: every session tmag knows on each computer the page works with,
-  blocked first, then working, then idle, kept current by each computer's
-  `/v2/watch`. A session that ended a turn since you last looked at it is
-  marked done; the title counts those and the blocked ones. A session that
-  works for another agent, or waits on one, says so.
+- **Inbox**: every session tmag knows on each computer the page works with,
+  kept current by each computer's `/v2/watch`: first those that need you
+  (that ask something, or ended a turn since you last looked at them), then
+  those that work, then the rest. Each says where it runs, what it does, and
+  what it was last asked or last answered. A permission to run a short
+  command, given as one string and nothing else, shows it whole, with Allow
+  and Deny right there; anything else it asks opens where you answer it. The title counts
+  what needs you. A session that works for another agent, or waits
+  on one, says so.
+- **Projects**: the same sessions by the project they run in, the main
+  worktree of their repository (every worktree and directory of a
+  repository is one project), each with a way to start another agent
+  there; then the places agents ran in lately that none runs in now.
 - **A session**: its last 20 turns, each the prompts it was given (including
   those from other agents and background tasks) and its reply, rendered as
-  Markdown. Below them:
+  Markdown, with a way to copy it. Its header goes on to the next session
+  that needs you, and starts another agent where it runs. Below them:
   - a box to prompt it, and Stop while a turn runs;
   - a card for each request it waits on: a permission (Allow, or Deny with a
     reason), a question (pick an option or write your own answer), a plan
@@ -34,15 +43,19 @@ contract, on its own origin under `/v2/`, and loads nothing from anywhere else.
     the agent as `path:LINE: comment` with the line quoted;
   - links to the sessions it works for, and to those it waits on, as tmag
     records an agent's asks.
-- **Start**: an agent (Claude Code, Codex, Pi or oh-my-pi, or a template
-  you set as `@tmag-start-NAME` in tmux) in a directory its computer's
-  sessions run in, or another, optionally in a worktree of its own, with a
-  first prompt. It opens in a window beside `tmag serve`'s. One that shows no
-  session in time, at a trust dialog say, opens on its pane's screen, with
-  its keys.
+- **New agent**: an agent (Claude Code, Codex, Pi or oh-my-pi, or a
+  template you set as `@tmag-start-NAME` in tmux) in a directory you choose
+  from where agents ran lately, or type with the directories it completes
+  in, optionally in a worktree of its own, with a first prompt. It opens in
+  a window beside `tmag serve`'s. One that shows no session in time, at a
+  trust dialog say, opens on its pane's screen, with its keys.
+- **Computers**: those the page works with, how each answers, and the
+  credential this device holds on each, to forget; and the way to add one.
 
-Start, keys, changes, and an agent's asks need a tmag newer than 0.7.0; on
-an older one the page leaves them out.
+Start, keys, changes, and an agent's asks need a tmag newer than 0.7.0, and
+the directories, repositories and templates the page offers one newer than
+0.8.0; on an older one the page leaves them out, and takes a directory as a
+path, among those its sessions run in.
 
 ## Set up with Tailscale
 
@@ -98,8 +111,8 @@ with the computer's name in your tailnet: `Self.DNSName` in
 
    then open `https://box.tail1234.ts.net` on the phone and enter the code it
    printed. A code works once, for ten minutes, and gives the phone a credential
-   of its own. The page names it at the foot of the agents' list; `tmag auth
-   revoke ID` on the computer takes it back.
+   of its own. The page names it under Computers; `tmag auth revoke ID` on the
+   computer takes it back.
 
    The page keeps the credential in the browser's storage. On iOS, Safari and a
    Home Screen web app each have their own, and links from notifications open in
@@ -129,8 +142,8 @@ origin. For a computer `mini` that `box` reaches over SSH:
 
    Each other computer takes a port of its own on `box`: 7780 for the next.
 
-3. On the page, choose **Add a computer** at the foot of the agents' list, name
-   it `mini`, and enter the code `tmag auth pair phone` prints on `mini`.
+3. On the page, open **Computers**, choose **Add a computer**, name it
+   `mini`, and enter the code `tmag auth pair phone` prints on `mini`.
 
 A name is lowercase letters, digits and `-`. The page will not add a computer
 it already works with at another name; it tells you which credential to revoke.

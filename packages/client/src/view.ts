@@ -247,3 +247,8 @@ export function ties(view: View, s: Session): { text: string; s: Session }[] {
     ...waitsFor(view, s).map((t) => ({ text: t.kind === 'final' ? 'waits for' : 'asked', s: t.s })),
   ]
 }
+
+const agentNames: Record<string, string> = { claude: 'Claude Code', codex: 'Codex', pi: 'Pi', omp: 'oh-my-pi' }
+
+// agentName names an agent as its makers do.
+export const agentName = (agent: string) => agentNames[agent] ?? agent

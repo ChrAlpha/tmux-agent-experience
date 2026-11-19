@@ -2,7 +2,7 @@ import { useState } from 'preact/hooks'
 import type { Computer } from '../computer'
 import type { Key } from '../contract'
 import { outcome } from './explain'
-import type { Say } from './Session'
+import type { Say } from './toast'
 
 // The keys a person answers an agent's dialog with, as the bar shows them.
 const keys: { label: string; key: Key; name?: string }[] = [
@@ -12,7 +12,7 @@ const keys: { label: string; key: Key; name?: string }[] = [
   { label: '↓', key: 'Down', name: 'Down' },
   { label: '←', key: 'Left', name: 'Left' },
   { label: '→', key: 'Right', name: 'Right' },
-  { label: 'Space', key: 'Space' },
+  { label: '␣', key: 'Space', name: 'Space' },
   { label: '⌫', key: 'BSpace', name: 'Backspace' },
   { label: 'y', key: 'y' },
   { label: 'n', key: 'n' },
@@ -84,7 +84,7 @@ export function KeyBar({ c, target, say }: { c: Computer; target: string; say: S
           value={text}
           onInput={(e) => setText(e.currentTarget.value)}
         />
-        <button class="primary" type="submit" aria-label="Enter" disabled={waiting}>
+        <button class="primary enter" type="submit" aria-label="Enter" disabled={waiting}>
           ⏎
         </button>
       </form>

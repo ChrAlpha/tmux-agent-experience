@@ -23,12 +23,15 @@ and how to set it up.
   and panes from its `/v2/watch` as the contract tells a client to, the rules
   of tmux-agent-experience's e2e follower. A computer is one instance: its
   `/v2/info` names it, and says which operations it serves, which are all the
-  page offers there. What the page reads on demand (turns,
-  a request, a screen) it reads again when an event reports that session, and
-  what changes unreported on its own while it shows: a screen every two
-  seconds, and turns every second, three times, while they lag what tmag
-  reported. A control action whose answer is lost is an unknown outcome: the
-  page says so and never tries again by itself.
+  page offers there. What the page reads on demand (turns, a request, a
+  screen) it reads again when an event reports that session; a session's
+  last turn, for the lists, when its state or turn changes; where agents may
+  start, at each snapshot and once a session runs in a directory it did not
+  name; and what changes unreported on its own while it shows: a screen
+  every two seconds, and turns, or a list's last turn, every second, three
+  times, while they lag what tmag reported. A control action whose answer
+  is lost is an unknown outcome: the page says so and never tries again by
+  itself.
 - **What an agent wrote stays text.** Components render strings as text,
   a screen's in the colours its SGR escapes name and no other escape.
   Only `src/ui/Markdown.tsx` sets HTML, from `src/markdown.ts`: markdown-it
@@ -36,9 +39,10 @@ and how to set it up.
 - **The page keeps its credentials, drafts and what the person saw, nothing
   else.** A credential lives in the browser's storage, goes only in the
   `Authorization` header, and never in a URL or a log; drafts (a prompt,
-  comments on a patch's lines with the line each quotes) live in the tab's
-  storage; what the person saw is the turn each session last ended while
-  they looked. Turns, requests and screens are read when shown.
+  the first prompt of an agent to start, comments on a patch's lines with
+  the line each quotes) live in the tab's storage; what the person saw is
+  the turn each session last ended while they looked. Turns, requests,
+  screens and directories are read when shown.
 - **Out of scope, by decision:** push of its own (`@tmag-notify` and ntfy
   carry alerts). Changing that is the owner's decision, not an agent's.
 
@@ -54,11 +58,12 @@ and how to set it up.
 | `src/view.ts` | The view rebuilt from watch documents, how a session reads, what the person saw, and how sessions tie |
 | `src/computer.ts` | A computer: its credential, its watch's lifecycle, what a session of it shows, what the person saw of it |
 | `src/route.ts` | The routes the address's hash names |
-| `src/store.ts` | Signals the screens read across computers: the computers, pairing, the route, one inbox |
+| `src/store.ts` | Signals the screens read across computers: the computers, pairing, the route and the way back, one inbox, its projects |
+| `src/places.ts` | Where a directory is: its project, branch and place in it; paths from `~`; a reply as a line of text |
 | `src/markdown.ts` | Markdown to HTML that holds only Markdown's tags |
 | `src/ansi.ts` | A terminal's SGR escapes read into runs of styled text |
 | `src/patch.ts` | A file's patch read into numbered lines, and comments on them written as a prompt |
-| `src/ui/` | Screens: pairing, agents, a session with its turns, screen and keys, requests and composer, a pane, the start sheet |
+| `src/ui/` | Screens: pairing, the inbox and projects, a session with its turns, screen and keys, requests and composer, a pane, the start sheet with its directories, the computers |
 | `src/app.css` | Styles, light and dark, for phones first |
 | `src/*.test.ts` | Vitest tests of the modules that need no browser |
 | `e2e/` | Playwright tests against two computers' tmag and fake agents in a private tmux server |

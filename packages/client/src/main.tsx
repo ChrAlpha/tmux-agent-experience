@@ -2,6 +2,7 @@ import { render } from 'preact'
 import './app.css'
 import { start } from './store'
 import { App } from './ui/App'
+import { registerAxiom } from './ui/axiom'
 
 // The page fills the visual viewport, which a phone's keyboard shrinks while
 // its layout viewport stays: the header and the composer stay on screen. A
@@ -18,5 +19,6 @@ if (fit) {
   follow()
 }
 
+registerAxiom()
 render(<App />, document.body)
 start()

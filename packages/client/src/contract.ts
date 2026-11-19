@@ -175,6 +175,45 @@ export interface PatchDoc {
   patch: string
 }
 
+/**
+ * The git repository a directory is in: its work tree's top, the main
+ * worktree, and the branch its work tree has checked out, none when detached.
+ */
+export interface Repo {
+  top: string
+  main?: string
+  branch?: string
+}
+
+/** A directory sessions ran in, when one last did, and its repository. */
+export interface Place {
+  dir: string
+  at: string
+  repo?: Repo
+}
+
+/** A template the person set as `@tmag-start-NAME`, and the agent it runs. */
+export interface Template {
+  name: string
+  agent: string
+}
+
+/** `dirs --json`: where an agent may start. */
+export interface PlacesDoc {
+  places: { home?: string; recent: Place[]; templates: Template[] }
+}
+
+/** `dirs --json DIR`: a directory's subdirectories and its repository. */
+export interface DirDoc {
+  dir: {
+    path: string
+    parent?: string
+    repo?: Repo
+    dirs: { name: string; repo?: boolean }[]
+    truncated?: boolean
+  }
+}
+
 /** A pane: on which tmux server, and which. */
 export interface PaneRef {
   server: string
