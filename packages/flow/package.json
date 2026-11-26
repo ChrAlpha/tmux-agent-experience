@@ -1,0 +1,56 @@
+{
+  "name": "tmag-flow",
+  "version": "0.1.0",
+  "description": "Plans written as code, run over tmag: roles bound to coding agents in tmux panes, gates, retries and decisions, in a journal that survives every restart",
+  "license": "MIT",
+  "author": "ChrAlpha",
+  "homepage": "https://github.com/ChrAlpha/tmag-flow",
+  "repository": "github:ChrAlpha/tmag-flow",
+  "keywords": [
+    "tmux",
+    "agents",
+    "orchestration",
+    "workflow",
+    "claude-code",
+    "codex"
+  ],
+  "type": "module",
+  "packageManager": "pnpm@12.21.0",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "bin": {
+    "tmag-flow": "dist/src/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "default": "./dist/src/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "skills",
+    "README.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "skills": [
+      "./skills"
+    ]
+  },
+  "omp": {},
+  "scripts": {
+    "check": "biome ci . && tsc --noEmit && node --test 'test/unit/*.test.ts'",
+    "test": "node --test 'test/unit/*.test.ts'",
+    "e2e": "node --test --test-concurrency=1 'test/e2e/*.test.ts'",
+    "build": "rm -rf dist && tsc -p tsconfig.build.json && chmod +x dist/src/cli.js",
+    "prepack": "pnpm build",
+    "format": "biome check --write ."
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.6.9",
+    "@types/node": "^26.6.6",
+    "typescript": "^7.0.2"
+  }
+}
