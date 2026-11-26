@@ -218,7 +218,7 @@ first line, obligation and gates. The agent replaces the window's shell, as
 it does a person's, and stays tmux's: tmag keeps of it the `Start` event,
 which names who started it, in which pane and directory, and by which
 template, and the session's `started_by` when an agent's proven session
-brought it up.
+ran the first start to launch an agent showing it.
 
 - **What a start runs is the person's.** A start names one of the agents,
   or a template the person set as `@tmag-start-NAME`, whose command starts
@@ -270,11 +270,17 @@ caller, without tying any relation to another:
   `started_by`; a `StartedBy` event after the `Start` reports the session
   in full with it, so a client follows it as it follows any change, and the
   `Start` keeps the meaning it was published with. The start's own result
-  is the session as recorded. It is written once, for a session the start
-  brought up: one tmag knew right before the window opened, as a template
-  that resumes a session shows, or whose record it could not read then, or
-  that it logged while tmux opened the window, keeps whatever it had. A person's start, an owner client's and that
-  of an agent whose session tmag cannot prove name none. It grants nothing:
+  is the session as recorded. It is written once: the first start that
+  launches an agent showing the session sets it, and no later start
+  replaces it. That is what a start proves. Whether the session ran before
+  its window opened, as one a template resumes did, no start can tell
+  without a race: each way review tried, from the records read before the
+  window opened and the events logged while it opened, dropped the starter
+  of a fresh peer whose first hook came early, or kept one when history
+  rotated away. So a session that a template resumes takes, as its starter,
+  the agent whose start first launched it through tmag. A person's start,
+  an owner client's and that of an agent whose session tmag cannot prove
+  name none. It grants nothing:
   who may direct a session, whom it answers and whether it runs are decided
   as before.
 - **A list marks ties.** `tmag list` marks the caller's own row `(you)` and
