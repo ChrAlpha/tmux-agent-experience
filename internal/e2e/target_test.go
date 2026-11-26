@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -50,7 +51,8 @@ func TestANameNamesOneWindowExactly(t *testing.T) {
 	window("-n", "dup")
 	window("-n", "dup")
 	other := window("-n", "other")
-	window("-n", "line1\nh-a")         // tmux keeps a newline in a name
+	// tmux 3.2a and 3.3a keep a newline in a name; newer releases refuse one.
+	_ = exec.Command("tmux", "-L", h.name, "new-window", "-d", "-t", "=main:", "-n", "line1\nh-a", "sleep 600").Run()
 	semi := window("-n", `ends in \;`) // tmux takes the name as "ends in ;"
 	h.tmux("new-session", "-d", "-s", "other", "sleep 600")
 	h.tmux("new-session", "-d", "-s", "dup", "sleep 600") // two windows share its name
