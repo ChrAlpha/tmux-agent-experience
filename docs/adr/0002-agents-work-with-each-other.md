@@ -216,9 +216,10 @@ in a directory (`--dir`, by default that pane's) or a git worktree of its own
 the agent's session, and delivers the first prompt as `send` does, with its
 first line, obligation and gates. The agent replaces the window's shell, as
 it does a person's, and stays tmux's: tmag keeps of it the `Start` event,
-which names who started it, in which pane and directory, and by which
-template, and the session's `started_by` when an agent's proven session
-started it.
+which names who started it, in which pane and by which template, and
+reports the session in full, its directory as the session's hooks report
+it; and the session's `started_by` when an agent's proven session brought
+it up.
 
 - **What a start runs is the person's.** A start names one of the agents,
   or a template the person set as `@tmag-start-NAME`, whose command starts
@@ -240,29 +241,36 @@ started it.
   of the client that asks for it, so a start finds the agent the caller
   would.
 - **A start may name its window.** `--name NAME` names the window tmux
-  opens, which tmux otherwise names after the agent; up to 32 letters,
-  digits, `-` and `_`, not digits alone. A name a window of the session has
-  already is refused before a window opens: a name addresses one window.
+  opens, which tmux otherwise names after the agent: up to 32 letters,
+  digits, `-` and `_`, starting with a letter or digit, and not only `0-9`,
+  `a-f` and `-`, which a session id is made of and whose prefix resolves
+  first. tmux checks that no window of the session has the name and opens
+  the window in one command (`if-shell -F`), so two starts at once cannot
+  both take it: a taken name is refused, and opens no window.
 
 ### Structure is legible to the caller
 
 One agent may run many. A person's supervisor agent that ran about twenty
 agents over six parts of one task held the map of which agent did which part
 only in its own context: it carried the map across summaries, made it again
-by hand when a reviewer was restarted, and spent its context on it. Studies
-and tools that run many agents agree that the coordinator's context is what
-gives out first, and every one that scales bounds whom an agent addresses
-and keeps structure outside messages. tmag keeps relations flat and makes
-what it proves of them legible, scoped to the caller, without tying any
-relation to another:
+by hand when a reviewer was restarted, and spent its context on it. The
+studies and tools reviewed for this amendment (controlled studies of agent
+topologies, and the tools that run twenty or more coding agents) found the
+coordinator's context giving out first, and each of those tools bounds whom
+an agent addresses and keeps structure outside messages. tmag keeps
+relations flat and makes what it proves of them legible, scoped to the
+caller, without tying any relation to another:
 
 - **Who started a session is kept.** A start by an agent whose session tmag
-  proves writes that session to the started session's record as
-  `started_by`, under its lock, before the `Start` event, which carries it
-  too; every report of the session includes it, so a client follows it from
-  the watch. A person's start, an owner client's and that of an agent whose
-  session tmag cannot prove name none. It grants nothing: who may direct a
-  session, whom it answers and whether it runs are decided as before.
+  proves writes that session, under the started session's lock, as its
+  `started_by`, and the `Start` event reports the session in full, as a
+  delivery's event does; the start's own result is the session as recorded.
+  It is written once, for a session the start brought up: one the view
+  showed before the window opened, as a template that resumes a session
+  shows, keeps whatever it had. A person's start, an owner client's and that
+  of an agent whose session tmag cannot prove name none. It grants nothing:
+  who may direct a session, whom it answers and whether it runs are decided
+  as before.
 - **A list marks ties.** `tmag list` marks the caller's own row `(you)` and
   every other with the session that started it and how it is tied to the
   caller, with the parts that hold: `(started by you, owes you, you owe
@@ -270,26 +278,34 @@ relation to another:
   caller's session, those it started, owes or is owed an answer by, and the
   panes that show them, as text and JSON; a caller tmag proves no session of
   gets a usage error. `tmag inspect` names who started a session and each
-  answer it owes.
+  answer it owes. Each pane shows tmux's current name of its window, as
+  `window` in JSON and the WINDOW column of the text, so an agent matches
+  the parts it named to the sessions it finds.
 - **A name addresses one window.** A target that is a plain name is the
   exact name of a window in the tmux session of the pane the caller's
-  process tree runs in, whatever `$TMUX_PANE` it inherited, or else of a
-  session, as tmux prefers a window; never a prefix or pattern of one, which
-  tmux alone takes: tmux 3.3a took `w-1` for `w-10`, so a name whose window
-  closed reached another agent. A name two windows share is ambiguous.
-  tmux's own syntax (`work:1.0`, `{last}`) resolves as before.
+  process tree runs in, whatever `$TMUX_PANE` it inherited; when no window
+  has it, of a session; never a prefix or pattern of one, which tmux alone
+  takes: tmux 3.3a took `w-1` for `w-10`, so a name whose window closed
+  reached another agent. tmux counts the windows of the name itself, newlines
+  in names included, and a name several windows share is ambiguous, whatever
+  session shares it too. Session ids and their prefixes resolve first, and
+  tmux's own syntax (`work:1.0`, `{last}`) as before.
 - **The skill teaches the discipline.** Each peer gets a named window, a
-  worktree when it writes, and a whole part asked with `--reply`; it answers
-  with what it found and where, not all of it; peers answer the agent that
-  started them, not each other; one message to each says what to do; and a
-  part coordinated by a peer keeps an agent's context for its own work.
+  worktree when it writes, and a whole part the coordinating agent asks of
+  it with `--reply`, so it answers that agent: an answer goes to whoever
+  asked, never by who started a session. It answers with what it found and
+  where, not all of it; peers do not ask each other unless the person wants
+  it; one message to each says what to do; and a part coordinated by a peer
+  keeps an agent's context for its own work.
 
-Checked with fake agents end to end: one agent started 20 peers in named
-windows, found them with `list --mine` beside an agent that was not its, and
-the peers answered at once while it waited with `wait --asked --all`; in
-three runs on two CPUs with the race detector and three on sixteen without,
-each ask settled once, every answer reached it, no hook failed or took
-longer than `hook.SlowAfter`, and the watch agreed with the list.
+Checked with fake agents end to end at a1d33d8, as `TestAnAgentRunsManyPeers`
+runs with 20 peers in place of its 8: one agent started them in named
+windows, found them with `list --mine` beside an agent that was not its, by
+their windows' names, and they answered at once while it waited with `wait
+--asked --all`. In three runs on two CPUs with the race detector, three on
+sixteen without and one on tmux 3.2a, each ask settled once, every answer
+reached it, no hook failed or took longer than `hook.SlowAfter`, and the
+watch agreed with the list.
 
 ### Answers are read from the transcript
 
