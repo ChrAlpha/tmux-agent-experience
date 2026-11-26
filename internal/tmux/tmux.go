@@ -41,6 +41,8 @@ type Pane struct {
 	Window  int
 	Index   int
 	Title   string
+	// WindowName is the name of the pane's window, as tmux shows it.
+	WindowName string
 	// TTY is the pane's terminal device.
 	TTY string
 	// Watched is true when an attached session shows this pane as its active pane.
@@ -81,7 +83,7 @@ var PaneFormat = func() string {
 	fields := []string{
 		"#{pane_id}", "#{pane_pid}", clean("pane_current_command"), clean("pane_current_path"),
 		clean("session_name"), "#{window_index}", "#{pane_index}", "#{pane_tty}",
-		"#{&&:#{session_attached},#{&&:#{window_active},#{pane_active}}}",
+		"#{&&:#{session_attached},#{&&:#{window_active},#{pane_active}}}", clean("window_name"),
 	}
 	for _, k := range OptionKeys {
 		fields = append(fields, clean(OptionPrefix+k))
@@ -210,7 +212,7 @@ func (s Server) Pane(ctx context.Context, id string) (Pane, error) {
 
 // ParsePane reads a line PaneFormat printed for a pane of s.
 func (s Server) ParsePane(line string) (Pane, bool) {
-	const fixed = 9
+	const fixed = 10
 	f := strings.Split(line, sep)
 	if len(f) != fixed+len(OptionKeys)+1 || !paneIDRE.MatchString(f[0]) {
 		return Pane{}, false
@@ -220,7 +222,7 @@ func (s Server) ParsePane(line string) (Pane, bool) {
 	idx, _ := strconv.Atoi(f[6])
 	p := Pane{
 		Server: s.Socket, ID: f[0], PID: pid, Command: f[2], Path: f[3],
-		Session: f[4], Window: win, Index: idx, TTY: f[7], Watched: f[8] == "1",
+		Session: f[4], Window: win, Index: idx, TTY: f[7], Watched: f[8] == "1", WindowName: f[9],
 		Title: f[len(f)-1], Options: map[string]string{},
 	}
 	for i, k := range OptionKeys {

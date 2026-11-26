@@ -62,9 +62,12 @@ type Session struct {
 
 // Pane is an agent client in a tmux pane and the session it shows, if any.
 type Pane struct {
-	Server  string `json:"server"`
-	ID      string `json:"id"`
-	Target  string `json:"target"`
+	Server string `json:"server"`
+	ID     string `json:"id"`
+	Target string `json:"target"`
+	// Window is the name of the pane's window, as tmux shows it: a label the
+	// person or a start gave it, or else what tmux named it after.
+	Window  string `json:"window,omitempty"`
 	Cwd     string `json:"cwd"`
 	Command string `json:"command"`
 	Agent   string `json:"agent"`
@@ -96,7 +99,7 @@ func Build(w *attach.World, recs []session.Record) View {
 	shown := map[[2]string][]Shown{}
 	for _, l := range v.links {
 		p := l.Client.Pane
-		pane := Pane{Server: p.Server, ID: p.ID, Target: p.Target(), Cwd: p.Path, Command: p.Command, Agent: l.Client.Agent}
+		pane := Pane{Server: p.Server, ID: p.ID, Target: p.Target(), Window: p.WindowName, Cwd: p.Path, Command: p.Command, Agent: l.Client.Agent}
 		if l.Session != nil {
 			pane.Session, pane.Evidence, pane.View = l.Session.ID, l.Evidence, l.View
 			key := [2]string{l.Session.Agent, l.Session.ID}

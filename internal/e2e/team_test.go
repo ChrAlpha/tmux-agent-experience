@@ -1,7 +1,9 @@
 package e2e
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -474,11 +476,12 @@ func TestAnAgentRunsManyPeers(t *testing.T) {
 	f.agrees(h)
 
 	typed(t, h, hub, sidA, "tmag list --mine")
+	readEventually(t, hubOut, "tool 0 TARGET")
 	b, _ := os.ReadFile(hubOut)
 	mine := string(b)[strings.LastIndex(string(b), "tool 0 TARGET"):]
-	for _, sid := range sids {
-		if !strings.Contains(mine, sid[:8]+" (started by you, owes you)") {
-			t.Fatalf("list --mine does not mark %s as the hub's:\n%s", sid[:8], mine)
+	for i, sid := range sids {
+		if !strings.Contains(mine, fmt.Sprintf(" w-%d ", i)) || !strings.Contains(mine, sid[:8]+" (started by you, owes you)") {
+			t.Fatalf("list --mine does not show w-%d as the hub's %s:\n%s", i, sid[:8], mine)
 		}
 	}
 	if !strings.Contains(mine, sidA[:8]+" (you)") || strings.Contains(mine, sidB[:8]) {
@@ -529,7 +532,10 @@ func TestAnAgentRunsManyPeers(t *testing.T) {
 	}
 	f.agrees(h)
 
-	data, _ := os.ReadFile(filepath.Join(h.state, "hook.log"))
+	data, err := os.ReadFile(filepath.Join(h.state, "hook.log"))
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		t.Fatal(err)
+	}
 	slow := 0
 	for line := range strings.Lines(string(data)) {
 		if strings.HasSuffix(line, " slow\n") {

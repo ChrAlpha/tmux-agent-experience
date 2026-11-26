@@ -30,7 +30,7 @@ func TestListMarksTies(t *testing.T) {
 		got := map[string]string{}
 		for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n")[1:] {
 			f := strings.Fields(line)
-			got[f[5]] = strings.Join(f[6:], " ")
+			got[f[6]] = strings.Join(f[7:], " ")
 		}
 		return got
 	}

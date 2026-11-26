@@ -126,7 +126,7 @@ func (a *app) printView(v query.View, caller query.Caller) {
 		return shortID(s.ID) + " (" + strings.Join(marks, ", ") + ")"
 	}
 	tw := tabwriter.NewWriter(a.stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "TARGET\tPANE\tAGENT\tSTATE\tFOR\tID\tCWD")
+	fmt.Fprintln(tw, "TARGET\tWINDOW\tPANE\tAGENT\tSTATE\tFOR\tID\tCWD")
 	for _, p := range v.Panes {
 		target := p.Target
 		if p.Server != here {
@@ -140,11 +140,15 @@ func (a *app) printView(v query.View, caller query.Caller) {
 				state += " [subagent]"
 			}
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", target, pane, p.Agent, state, age(since), id, short(p.Cwd))
+		window := p.Window
+		if window == "" {
+			window = "-"
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", target, window, pane, p.Agent, state, age(since), id, short(p.Cwd))
 	}
 	for _, s := range v.Sessions {
 		if len(s.Panes) == 0 {
-			fmt.Fprintf(tw, "-\t-\t%s\t%s\t%s\t%s\t%s\n", s.Agent, describe(s.State, s.Kind), age(s.Since), own(s), short(s.Cwd))
+			fmt.Fprintf(tw, "-\t-\t-\t%s\t%s\t%s\t%s\t%s\n", s.Agent, describe(s.State, s.Kind), age(s.Since), own(s), short(s.Cwd))
 		}
 	}
 	tw.Flush()
