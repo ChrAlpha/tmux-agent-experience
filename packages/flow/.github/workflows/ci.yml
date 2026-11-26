@@ -1,0 +1,84 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # tmag's main moves without tmag-flow: each day tells whether they still
+  # work together.
+  schedule:
+    - cron: '41 5 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # The oldest tmag tmag-flow works with, the release README.md names.
+  TMAG_REF: v0.8.0
+
+jobs:
+  check:
+    name: check (node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The oldest Node that strips types by default, and the latest.
+        node: ['22.18', '26']
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm check
+      - run: pnpm build
+
+  e2e:
+    name: e2e (${{ matrix.os }}, tmag ${{ matrix.tmag }}${{ matrix.packaged && ', packaged' || '' }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-26.04, macos-26]
+        tmag: [oldest, main]
+        include:
+          - os: ubuntu-26.04
+            tmag: main
+            packaged: true
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          repository: ChrAlpha/tmux-agent-experience
+          ref: ${{ matrix.tmag == 'oldest' && env.TMAG_REF || 'main' }}
+          path: tmag-src
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+          cache: false
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+          cache: pnpm
+      # Ubuntu images come with tmux; macOS images do not.
+      - if: runner.os == 'macOS'
+        run: brew install tmux
+      - run: pnpm install --frozen-lockfile
+      - if: matrix.packaged
+        name: Install the package
+        run: |
+          pnpm pack
+          npm install -g --prefix "$RUNNER_TEMP/pkg" ./tmag-flow-*.tgz
+          echo "TMAG_FLOW_CLI=$RUNNER_TEMP/pkg/bin/tmag-flow" >> "$GITHUB_ENV"
+      - run: pnpm e2e
+        env:
+          TMAG_SRC: ${{ github.workspace }}/tmag-src
