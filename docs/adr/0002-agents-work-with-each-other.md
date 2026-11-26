@@ -272,7 +272,8 @@ caller, without tying any relation to another:
   `Start` keeps the meaning it was published with. The start's own result
   is the session as recorded. It is written once, for a session the start
   brought up: one tmag knew right before the window opened, as a template
-  that resumes a session shows, keeps whatever it had. A person's start, an owner client's and that
+  that resumes a session shows, or whose record it could not read then, or
+  that it logged while tmux opened the window, keeps whatever it had. A person's start, an owner client's and that
   of an agent whose session tmag cannot prove name none. It grants nothing:
   who may direct a session, whom it answers and whether it runs are decided
   as before.
