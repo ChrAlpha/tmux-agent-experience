@@ -53,3 +53,27 @@ func TestListMarksTies(t *testing.T) {
 		}
 	}
 }
+
+// Ids that share their first 8 characters, as Codex's do when started within
+// a minute, are listed by as many as tell them apart, here and in marks.
+func TestListCutsIdsWhereTheyDiffer(t *testing.T) {
+	t.Setenv("TMUX", "")
+	t.Setenv("TMUX_TMPDIR", t.TempDir())
+	a, b := "01a218ba-bdcd-7e83-861b-602aeb7d5f1e", "01a218ba-c97f-7830-8126-10d0a894cf82"
+	hub := eventlog.Actor{Agent: "codex", Session: a}
+	v := query.View{Sessions: []query.Session{
+		{Agent: "codex", ID: a, State: "idle"},
+		{Agent: "codex", ID: b, State: "idle", StartedBy: &hub},
+		{Agent: "claude", ID: "1787a44e-0000-7000-8000-000000000001", State: "idle"},
+	}}
+	var out bytes.Buffer
+	(&app{stdout: &out}).printView(v, query.Caller{})
+	for _, want := range []string{" 01a218ba-b ", " 01a218ba-c (started by 01a218ba-b)", " 1787a44e "} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("list does not hold %q:\n%s", want, out.String())
+		}
+	}
+	if got := uniquePrefix("abc", []string{"abc", "abd"}); got != "abc" {
+		t.Errorf("a short id is cut to %q", got)
+	}
+}

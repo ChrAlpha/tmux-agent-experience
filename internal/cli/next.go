@@ -103,7 +103,7 @@ func next(cmd, target string, err error) string {
 // afterStart says what to do after a start whose agent started and whose
 // prompt then failed: never start it again, which starts another.
 func afterStart(e *query.StartedError) string {
-	id := shortID(e.Session.ID)
+	id := e.Session.ID // a command to run names the session whole
 	var notTaken *query.NotTakenError
 	var refused *query.RefusedError
 	switch {

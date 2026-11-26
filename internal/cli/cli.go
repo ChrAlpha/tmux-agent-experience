@@ -354,6 +354,24 @@ func (a *app) emit(fields map[string]any) {
 	_ = enc.Encode(doc)
 }
 
+// uniquePrefix cuts id to its shortest prefix of at least 8 characters that
+// none of ids shares: a Codex id begins with its time, so the ids of Codex
+// sessions started within a minute share their first 8.
+func uniquePrefix(id string, ids []string) string {
+	n := min(8, len(id))
+	for _, other := range ids {
+		if other == id {
+			continue
+		}
+		common := 0
+		for common < len(id) && common < len(other) && id[common] == other[common] {
+			common++
+		}
+		n = max(n, min(common+1, len(id)))
+	}
+	return id[:n]
+}
+
 func shortID(id string) string {
 	if len(id) > 8 {
 		return id[:8]

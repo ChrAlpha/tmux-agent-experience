@@ -102,17 +102,23 @@ func (a *app) printView(v query.View, caller query.Caller) {
 		}
 		return path
 	}
+	// An id is cut where no other listed session's begins the same.
+	ids := make([]string, 0, len(v.Sessions))
+	for _, s := range v.Sessions {
+		ids = append(ids, s.ID)
+	}
+	cut := func(id string) string { return uniquePrefix(id, ids) }
 	own := func(s query.Session) string {
 		ties := v.TiesOf(caller, s)
 		if ties.Own {
-			return shortID(s.ID) + " (you)"
+			return cut(s.ID) + " (you)"
 		}
 		var marks []string
 		switch {
 		case ties.Started:
 			marks = append(marks, "started by you")
 		case s.StartedBy != nil:
-			marks = append(marks, "started by "+shortID(s.StartedBy.Session))
+			marks = append(marks, "started by "+cut(s.StartedBy.Session))
 		}
 		if ties.OwesYou {
 			marks = append(marks, "owes you")
@@ -121,9 +127,9 @@ func (a *app) printView(v query.View, caller query.Caller) {
 			marks = append(marks, "you owe it")
 		}
 		if len(marks) == 0 {
-			return shortID(s.ID)
+			return cut(s.ID)
 		}
-		return shortID(s.ID) + " (" + strings.Join(marks, ", ") + ")"
+		return cut(s.ID) + " (" + strings.Join(marks, ", ") + ")"
 	}
 	tw := tabwriter.NewWriter(a.stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(tw, "TARGET\tWINDOW\tPANE\tAGENT\tSTATE\tFOR\tID\tCWD")
