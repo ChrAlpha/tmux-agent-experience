@@ -257,7 +257,18 @@ func TestCodexStartsOnAFirstPromptOfTmagsThenTakesItsTask(t *testing.T) {
 	if got := owes(t, h, sidC); got != nil {
 		t.Fatalf("Codex still owes %+v after its reply", got)
 	}
-	readEventually(t, outs[0], "message [tmag] Reply from codex "+sidC+", another agent, to your prompt. Do not reply to it.\nat once")
+	// The reply reaches A through its inbox, while its start's turn still
+	// runs or, on a slower machine, once it has ended and the reply starts a
+	// turn of its own.
+	readEventually(t, outs[0], "inbox codex "+sidC[:8]+" via tmag")
+	h.eventually("A takes Codex's reply", func() bool {
+		b, _ := os.ReadFile(outs[0])
+		if strings.Contains(string(b), "message [tmag] Reply from codex "+sidC+", another agent, to your prompt. Do not reply to it.\nat once") {
+			return true
+		}
+		r := h.tmag("", "read", sidA[:8], "--last")
+		return r.code == 0 && r.out == "answered: at once\n"
+	})
 	f.agrees(h)
 }
 
