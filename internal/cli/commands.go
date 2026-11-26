@@ -815,7 +815,7 @@ func (a *app) shown(ctx context.Context, target string, timeout time.Duration) (
 	case errors.Is(err, query.ErrNotFound):
 		// A pane whose agent does not run yet.
 		var perr error
-		if ref, perr = query.PaneOf(ctx, target); perr != nil {
+		if ref, perr = query.PaneOf(ctx, v, target); perr != nil {
 			return query.Session{}, err
 		}
 	default:

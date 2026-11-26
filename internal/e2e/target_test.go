@@ -35,6 +35,53 @@ func TestTmuxTargetsNameAgents(t *testing.T) {
 	}
 }
 
+// A name names one window, or else one session, exactly: tmux alone would take
+// a prefix of one, so a name whose window closed would reach another agent. An
+// agent's names resolve in the tmux session of the pane its process tree runs
+// in, whatever $TMUX_PANE it inherited; a person's in the session tmux takes
+// as theirs.
+func TestANameNamesOneWindowExactly(t *testing.T) {
+	h := start(t)
+	elsewhere := h.tmux("new-session", "-d", "-s", "solo", "-n", "uniq", "-P", "-F", "#{pane_id}", "sleep 600")
+	window := func(args ...string) string {
+		return h.tmux(append([]string{"new-window", "-d", "-t", "=main:", "-P", "-F", "#{pane_id}"}, append(args, "sleep 600")...)...)
+	}
+	uniq := window("-n", "uniq")
+	window("-n", "dup")
+	window("-n", "dup")
+	other := window("-n", "other")
+	h.tmux("new-session", "-d", "-s", "other", "sleep 600")
+	out := filepath.Join(h.dir, "agent")
+	agent := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_HOOKS": "1", "FAKE_OUT": out},
+		"env", "TMUX_PANE="+elsewhere, filepath.Join(bin, "claude"))
+	h.waitPane(agent, "idle", "process")
+	h.tmux("move-window", "-s", agent, "-t", "=main:") // spawn opened it in the newest session
+	h.tmux("rename-window", "-t", agent, "w-10")
+	t.Setenv("TMUX", h.tmux("display-message", "-p", "#{socket_path}")+",0,0")
+	t.Setenv("TMUX_PANE", h.tmux("display-message", "-p", "-t", "=main:0", "#{pane_id}"))
+
+	if r := h.tmag("", "inspect", "w-10", "--json"); r.code != 0 || !strings.Contains(r.out, `"id":"`+agent+`"`) {
+		t.Fatalf("inspect w-10: %d %s", r.code, r.out)
+	}
+	for name, pane := range map[string]string{"uniq": uniq, "other": other, "solo": elsewhere} {
+		if r := h.tmag("", "inspect", name); r.code != 1 || !strings.Contains(r.out, "in pane "+name+" ("+pane+")") {
+			t.Fatalf("inspect %s, a window's or session's name: %d %s", name, r.code, r.out)
+		}
+	}
+	for _, prefix := range []string{"w-1", "un", "oth", "sol"} {
+		if r := h.tmag("", "inspect", prefix); r.code != 1 || !strings.Contains(r.out, "no window of your tmux session or session has that exact name") {
+			t.Fatalf("inspect %s, a prefix: %d %s", prefix, r.code, r.out)
+		}
+	}
+	r := h.tmag("", "send", "dup", "hello", "--json")
+	if r.code != 1 || !strings.Contains(r.out, `"code":"ambiguous"`) || !strings.Contains(r.out, "dup names 2 windows of your tmux session") {
+		t.Fatalf("send to a name two windows share: %d %s", r.code, r.out)
+	}
+
+	typed(t, h, agent, sidA, "tmag inspect uniq")
+	readEventually(t, out, "tool 1 tmag inspect: no such agent in pane uniq ("+uniq+")")
+}
+
 // An agent started in a pane a moment ago, by a person or by another agent
 // with tmux, shows its session from its first hook: until then verbs are
 // refused and say to wait, and a wait on the pane lasts until it shows it.

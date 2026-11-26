@@ -78,10 +78,11 @@ Usage:
   tmag answer-hook <claude>                    Claude's PermissionRequest hook: waits for answer
   tmag version
 
-Targets: an agent id or unique prefix (>= 4 chars); any target-pane tmux takes
-on the current server (%N, work:1.0, a window name, {last}); or SERVER:%N where
-SERVER is a tmux socket name or path. wait on a pane lasts until its agent
-shows a session, as one started there a moment ago does from its first hook.
+Targets: an agent id or unique prefix (>= 4 chars); the exact name of a window
+in your tmux session, or of a session; any target-pane tmux takes on the
+current server (%N, work:1.0, {last}); or SERVER:%N where SERVER is a tmux
+socket name or path. wait on a pane lasts until its agent shows a session, as
+one started there a moment ago does from its first hook.
 
 Exit codes: 0 ok, 1 error, 2 usage, 3 refused by the safety gate, 4 timeout.
 `

@@ -172,6 +172,26 @@ func (s Server) PaneID(ctx context.Context, target string) (string, error) {
 	return id, nil
 }
 
+// WindowsNamed counts the windows of session whose name is name; with no
+// session, of the current session as tmux takes it for the caller.
+func (s Server) WindowsNamed(ctx context.Context, session, name string) (int, error) {
+	args := []string{"list-windows", "-F", "#{window_name}"}
+	if session != "" {
+		args = append(args, "-t", session)
+	}
+	out, err := s.Run(ctx, args...)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for line := range strings.Lines(string(out)) {
+		if strings.TrimSuffix(line, "\n") == name {
+			n++
+		}
+	}
+	return n, nil
+}
+
 // Pane reads one pane afresh.
 func (s Server) Pane(ctx context.Context, id string) (Pane, error) {
 	out, err := s.Run(ctx, "display-message", "-p", "-t", id, PaneFormat)

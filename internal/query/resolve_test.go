@@ -54,3 +54,17 @@ func TestResolve(t *testing.T) {
 		}
 	}
 }
+
+// A name is what has none of tmux's syntax: tmag matches it exactly, and
+// leaves the rest to tmux.
+func TestIsName(t *testing.T) {
+	for target, want := range map[string]bool{
+		"w-1": true, "reviewer": true, "ws6_pi": true, "a b": true, "2nd": true,
+		"": false, "7": false, "main:1": false, "main:w-1.0": false, "%3": false, "@2": false,
+		"$1": false, "=w-1": false, "{last}": false, "!": false, "^": false, "+": false, "-": false, "~": false,
+	} {
+		if got := isName(target); got != want {
+			t.Errorf("isName(%q) = %v, want %v", target, got, want)
+		}
+	}
+}
