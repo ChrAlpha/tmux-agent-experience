@@ -160,10 +160,10 @@ one of them, and keep their work out of your own context:
 - `tmag list --mine` shows you and the sessions tmag records as tied to
   you: started by you, owing you an answer, or owed one by you, with their
   windows' names. Run it when you lost track of them, as after your context
-  was summarized. A session you resumed shows there with any other window
-  it has, and a start of yours that another start of the same session
-  overtook may be missing: what tmag records is a relation, not who owns
-  the work.
+  was summarized. A session shows as started by you when your start of it
+  was the first agent's to be recorded, with any other window it has, as a
+  session you resumed may; one another agent's start recorded first does
+  not: what tmag records is a relation, not who owns the work.
 - When there are more of them than you can follow, have one coordinate a
   part of the work: tmag refuses an ask that passes work on more than three
   times, unless the user changed that bound.

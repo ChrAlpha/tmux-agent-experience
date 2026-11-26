@@ -107,6 +107,8 @@ func afterStart(e *query.StartedError) string {
 	var notTaken *query.NotTakenError
 	var refused *query.RefusedError
 	switch {
+	case errors.Is(e.Err, query.ErrEnded):
+		return fmt.Sprintf("it ended as %s before tmag recorded its start: its window, if it stays, shows why, and tmag list shows the agents that run", id)
 	case errors.Is(e.Err, query.ErrNotGiven) || errors.As(e.Err, &notTaken) || errors.As(e.Err, &refused):
 		return fmt.Sprintf("it runs as %s, and has not been given the prompt: give it with tmag send %s -, asking as you did", id, id)
 	case errors.Is(e.Err, query.ErrUnlogged):

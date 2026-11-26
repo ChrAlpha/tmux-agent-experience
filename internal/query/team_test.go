@@ -444,3 +444,19 @@ func TestTiesAndMine(t *testing.T) {
 		t.Fatal("Mine changed the view it was given")
 	}
 }
+
+// A session that ended before its start was recorded has its Start logged,
+// and the start says it ended rather than returning it as it was seen.
+func TestLogStartOfAnEndedSession(t *testing.T) {
+	log := eventlog.Open(t.TempDir())
+	s := Session{Agent: "claude", ID: "0c000000-0000-7000-8000-00000000000c", State: "idle"}
+	pane := eventlog.PaneRef{Server: "/tmp/tmux-1/work", ID: "%3"}
+	seq, err := logStart(context.Background(), log, &s, pane, "/src", "", agentCaller("claude", "0a000000-0000-7000-8000-00000000000a"))
+	if !errors.Is(err, ErrEnded) {
+		t.Fatalf("logStart of an ended session: %v", err)
+	}
+	events, err := log.Since(context.Background(), 0)
+	if err != nil || len(events) != 1 || events[0].Event != eventlog.Start || events[0].Seq != seq || events[0].StartedBy != nil {
+		t.Fatalf("logged %+v (%v), want one Start at %d", events, err, seq)
+	}
+}

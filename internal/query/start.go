@@ -154,7 +154,9 @@ func Start(ctx context.Context, log *eventlog.Log, o StartOptions) (Started, err
 		return st, err
 	}
 	if st.Seq, err = logStart(ctx, log, &st.Session, pane, dir, o.Template, caller); err != nil {
-		err = fmt.Errorf("%w: %w", ErrUnlogged, err)
+		if !errors.Is(err, ErrEnded) {
+			err = fmt.Errorf("%w: %w", ErrUnlogged, err)
+		}
 		if text != "" {
 			err = errors.Join(ErrNotGiven, err)
 		}
@@ -367,7 +369,10 @@ func logStart(ctx context.Context, log *eventlog.Log, s *Session, pane eventlog.
 			return err
 		}
 		if !ok {
-			return log.Append(ctx, &ev) // it ended meanwhile
+			if err := log.Append(ctx, &ev); err != nil {
+				return err
+			}
+			return fmt.Errorf("%w: %s ended before its start was recorded", ErrEnded, s.ID)
 		}
 		if rec.StartedBy != nil || c.By == nil || c.By.Session == "" {
 			*s = sessionOf(rec, s.Panes)
