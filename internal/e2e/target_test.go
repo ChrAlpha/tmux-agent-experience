@@ -52,7 +52,9 @@ func TestANameNamesOneWindowExactly(t *testing.T) {
 	window("-n", "dup")
 	other := window("-n", "other")
 	// tmux 3.2a and 3.3a keep a newline in a name; newer releases refuse one.
-	_ = exec.Command("tmux", "-L", h.name, "new-window", "-d", "-t", "=main:", "-n", "line1\nh-a", "sleep 600").Run()
+	if out, err := exec.Command("tmux", "-L", h.name, "new-window", "-d", "-t", "=main:", "-n", "line1\nh-a", "sleep 600").CombinedOutput(); err != nil && !strings.Contains(string(out), "invalid window name") {
+		t.Fatalf("a window named with a newline: %v %s", err, out)
+	}
 	semi := window("-n", `ends in \;`) // tmux takes the name as "ends in ;"
 	h.tmux("new-session", "-d", "-s", "other", "sleep 600")
 	h.tmux("new-session", "-d", "-s", "dup", "sleep 600") // two windows share its name
