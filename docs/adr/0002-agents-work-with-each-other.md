@@ -216,10 +216,9 @@ in a directory (`--dir`, by default that pane's) or a git worktree of its own
 the agent's session, and delivers the first prompt as `send` does, with its
 first line, obligation and gates. The agent replaces the window's shell, as
 it does a person's, and stays tmux's: tmag keeps of it the `Start` event,
-which names who started it, in which pane and by which template, and
-reports the session in full, its directory as the session's hooks report
-it; and the session's `started_by` when an agent's proven session brought
-it up.
+which names who started it, in which pane and directory, and by which
+template, and the session's `started_by` when an agent's proven session
+brought it up.
 
 - **What a start runs is the person's.** A start names one of the agents,
   or a template the person set as `@tmag-start-NAME`, whose command starts
@@ -246,7 +245,12 @@ it up.
   `a-f` and `-`, which a session id is made of and whose prefix resolves
   first. tmux checks that no window of the session has the name and opens
   the window in one command (`if-shell -F`), so two starts at once cannot
-  both take it: a taken name is refused, and opens no window.
+  both take it: a taken name is refused and opens no window, and one taken
+  before the start adds no worktree for it.
+- **The directory and names reach tmux literally.** tmux expands a start
+  directory as a format, so a path holding `#{session_name}` or `#S` would
+  name another directory, and ends a command at an argument that ends in
+  `;`; tmag escapes both wherever it calls tmux.
 
 ### Structure is legible to the caller
 
@@ -263,11 +267,12 @@ caller, without tying any relation to another:
 
 - **Who started a session is kept.** A start by an agent whose session tmag
   proves writes that session, under the started session's lock, as its
-  `started_by`, and the `Start` event reports the session in full, as a
-  delivery's event does; the start's own result is the session as recorded.
-  It is written once, for a session the start brought up: one the view
-  showed before the window opened, as a template that resumes a session
-  shows, keeps whatever it had. A person's start, an owner client's and that
+  `started_by`; a `StartedBy` event after the `Start` reports the session
+  in full with it, so a client follows it as it follows any change, and the
+  `Start` keeps the meaning it was published with. The start's own result
+  is the session as recorded. It is written once, for a session the start
+  brought up: one tmag knew right before the window opened, as a template
+  that resumes a session shows, keeps whatever it had. A person's start, an owner client's and that
   of an agent whose session tmag cannot prove name none. It grants nothing:
   who may direct a session, whom it answers and whether it runs are decided
   as before.
@@ -298,7 +303,7 @@ caller, without tying any relation to another:
   it; one message to each says what to do; and a part coordinated by a peer
   keeps an agent's context for its own work.
 
-Checked with fake agents end to end at a1d33d8, as `TestAnAgentRunsManyPeers`
+Checked with fake agents end to end at 540afbf, as `TestAnAgentRunsManyPeers`
 runs with 20 peers in place of its 8: one agent started them in named
 windows, found them with `list --mine` beside an agent that was not its, by
 their windows' names, and they answered at once while it waited with `wait
