@@ -133,15 +133,19 @@ func Start(ctx context.Context, log *eventlog.Log, o StartOptions) (Started, err
 			return Started{}, err
 		}
 	}
-	// The sessions tmag knows right before the window opens: one of them that
-	// the window shows, as a template that resumes a session shows, was not
-	// brought up by this start. Unread, none was.
+	// The sessions tmag knows right before the window opens, those whose
+	// record it could not read included, and those it logged while the window
+	// opened: one of them that the window shows, as a template that resumes a
+	// session shows, was not brought up by this start. Unread, none was.
 	store := session.Store{Dir: log.Dir}
-	known, _, err := store.All(ctx)
-	brought := err == nil
+	head, err := log.Head(ctx)
+	known, faults, err2 := store.All(ctx)
+	brought := err == nil && err2 == nil
 	// The agent replaces the shell tmux runs its command with, as it does a
 	// person's shell, so it holds the pane's foreground.
 	id, err := srv.NewWindow(ctx, here, dir, o.Name, "exec "+command)
+	opened, err2 := log.Head(ctx)
+	brought = brought && err2 == nil
 	switch {
 	case errors.Is(err, tmux.ErrNameTaken) && o.Worktree != "":
 		return Started{}, fmt.Errorf("%w; the worktree %s stays", taken, dir)
@@ -159,7 +163,11 @@ func Start(ctx context.Context, log *eventlog.Log, o StartOptions) (Started, err
 		}
 		return st, err
 	}
-	brought = brought && !slices.ContainsFunc(known, func(r session.Record) bool { return r.Agent == st.Session.Agent && r.ID == st.Session.ID })
+	s := st.Session
+	brought = brought && !slices.ContainsFunc(known, func(r session.Record) bool { return r.Agent == s.Agent && r.ID == s.ID }) &&
+		!slices.ContainsFunc(faults, func(f *session.RecordError) bool {
+			return (f.Agent == "" || f.Agent == s.Agent) && (f.ID == "" || f.ID == s.ID)
+		}) && !loggedBetween(ctx, log, head, opened, s)
 	if st.Seq, err = logStart(ctx, log, &st.Session, pane, dir, o.Template, caller, brought); err != nil {
 		err = fmt.Errorf("%w: %w", ErrUnlogged, err)
 		if text != "" {
@@ -354,6 +362,18 @@ func gitOutput(ctx context.Context, dir string, args ...string) (string, error) 
 		return "", fmt.Errorf("git %s: %w", args[0], err)
 	}
 	return string(out), nil
+}
+
+// loggedBetween reports whether tmag logged an event of s after seq head and
+// up to seq opened, or cannot tell.
+func loggedBetween(ctx context.Context, log *eventlog.Log, head, opened int64, s Session) bool {
+	events, err := log.Since(ctx, head)
+	if err != nil {
+		return true
+	}
+	return slices.ContainsFunc(events, func(e eventlog.Event) bool {
+		return e.Seq <= opened && e.Agent == s.Agent && e.Session == s.ID
+	})
 }
 
 // logStart logs the Start event of a session tmag started: who started it,

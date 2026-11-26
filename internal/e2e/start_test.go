@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/tmux"
 )
 
 // startable gives the windows tmag start opens in the private server env
@@ -62,7 +64,7 @@ func TestAnAgentStartsAPeerAndAsksIt(t *testing.T) {
 	}
 	// The StartedBy event after it reports the session with its starter.
 	if !slices.ContainsFunc(h.events(sidC), func(e eventlog.Event) bool {
-		return e.Event == eventlog.StartedBy && e.Seq == ev.Seq+1 && e.State != "" && e.StartedBy != nil && *e.StartedBy == starter
+		return e.Event == eventlog.StartedBy && e.Seq > ev.Seq && e.State != "" && e.StartedBy != nil && *e.StartedBy == starter
 	}) {
 		t.Fatalf("no StartedBy event reports the starter after the Start: %+v", h.events(sidC))
 	}
@@ -213,6 +215,82 @@ func TestAStartOfAShownSessionKeepsItsStarter(t *testing.T) {
 	s, _ := h.sessionOf(sidC)
 	if s.StartedBy == nil || s.StartedBy.Session != sidA {
 		t.Fatalf("a second start of %s made its starter %+v", sidC[:8], s.StartedBy)
+	}
+	f.agrees(h)
+}
+
+// A session whose record tmag cannot read right before a start opens its
+// window may still run, as this one does, its record spoiled while the
+// start adds its worktree: a window that then shows it was not brought up
+// by the start, which claims nothing.
+func TestAStartOfAnUnreadableSessionClaimsNothing(t *testing.T) {
+	h := start(t)
+	f := h.follow()
+	panes, outs := team(t, h, sidA, sidB)
+	repo := filepath.Join(h.dir, "repo")
+	hooks := filepath.Join(h.dir, "hooks")
+	if err := os.MkdirAll(hooks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	spoil := "#!/bin/sh\nprintf '{' >" + tmux.Quote(filepath.Join(h.state, "sessions", "claude", sidB+".json")) + "\n"
+	if err := os.WriteFile(filepath.Join(hooks, "post-checkout"), []byte(spoil), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"init", "-q", repo},
+		{"-C", repo, "config", "core.hooksPath", hooks},
+		{"-C", repo, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", "init"},
+	} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	startable(h, map[string]string{"FAKE_SESSION": sidB, "FAKE_HOOKS": "1", "FAKE_TURN_MS": "300"})
+	typed(t, h, panes[0], sidA, "tmag start claude --dir "+repo+" --worktree spoiled --timeout 20s")
+	readEventually(t, outs[0], "tool 0 started claude "+sidB[:8]+" in %")
+	if s, _ := h.sessionOf(sidB); s.StartedBy != nil {
+		t.Fatalf("a start claimed a session that ran before it: started by %+v", s.StartedBy)
+	}
+	f.agrees(h)
+}
+
+// A session another pane shows while tmux opens a start's window, the start
+// held there as a busy machine may hold it, ran before the window: when the
+// window then shows it, the start claims nothing.
+func TestAStartOfASessionShownWhileItsWindowOpensClaimsNothing(t *testing.T) {
+	h := start(t)
+	f := h.follow()
+	real, err := exec.LookPath("tmux")
+	if err != nil {
+		t.Fatal(err)
+	}
+	held, go_ := filepath.Join(h.dir, "held"), filepath.Join(h.dir, "go")
+	wrap := filepath.Join(h.dir, "wrap")
+	if err := os.Mkdir(wrap, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The hub's tmux waits, at the command that opens a named window, until
+	// the test lets it go.
+	script := fmt.Sprintf("#!/bin/sh\nif [ \"$4\" = if-shell ]; then\n echo held >%s\n while [ ! -e %s ]; do sleep .01; done\nfi\nexec %s \"$@\"\n",
+		tmux.Quote(held), tmux.Quote(go_), tmux.Quote(real))
+	if err := os.WriteFile(filepath.Join(wrap, "tmux"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(h.dir, "hub")
+	hub := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_HOOKS": "1", "FAKE_OUT": out},
+		"sh", "-c", `PATH="$1:$PATH" exec "$2"`, "sh", wrap, filepath.Join(bin, "claude"))
+	h.waitPane(hub, "idle", "process")
+	startable(h, map[string]string{"FAKE_SESSION": sidB, "FAKE_HOOKS": "1"})
+	h.tmux("send-keys", "-t", hub, "tmag start claude --name late --timeout 20s", "Enter")
+	readEventually(t, held, "held")
+	older := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidB, "FAKE_HOOKS": "1"}, filepath.Join(bin, "claude"))
+	h.waitPane(older, "idle", "process")
+	if err := os.WriteFile(go_, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	readEventually(t, out, "tool 0 started claude "+sidB[:8]+" in %")
+	if s, _ := h.sessionOf(sidB); s.StartedBy != nil || slices.ContainsFunc(h.events(sidB), func(e eventlog.Event) bool { return e.Event == eventlog.StartedBy }) {
+		t.Fatalf("a start claimed a session another pane showed while its window opened: %+v", s.StartedBy)
 	}
 	f.agrees(h)
 }
