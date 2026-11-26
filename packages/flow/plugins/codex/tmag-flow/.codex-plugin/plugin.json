@@ -1,0 +1,14 @@
+{
+  "name": "tmag-flow",
+  "version": "0.1.0",
+  "description": "Teaches Codex to run coding agents in tmux panes through a plan written as code: reviews whose findings are fixed and re-checked, units their commands accept, and decisions, in a journal that survives restarts. Uses the tmag-flow command and the tmag tmux plugin.",
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "tmag flow",
+    "shortDescription": "Run agents through a plan",
+    "developerName": "ChrAlpha",
+    "category": "Productivity",
+    "capabilities": ["Read", "Write"],
+    "websiteURL": "https://github.com/ChrAlpha/tmag-flow"
+  }
+}

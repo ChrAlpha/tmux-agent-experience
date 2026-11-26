@@ -1,0 +1,20 @@
+{
+  "name": "tmag-flow",
+  "interface": {
+    "displayName": "tmag flow"
+  },
+  "plugins": [
+    {
+      "name": "tmag-flow",
+      "source": {
+        "source": "local",
+        "path": "./plugins/codex/tmag-flow"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}
