@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/adapter"
@@ -119,33 +120,47 @@ func Start(ctx context.Context, log *eventlog.Log, o StartOptions) (Started, err
 	if agent == proc.Codex {
 		command += " -- " + tmux.Quote(codexFirst)
 	}
+	taken := fmt.Errorf("%w: a window of tmux session %s is named %s already, and a name names one window", errUsage, here.Session, o.Name)
+	if o.Name != "" && o.Worktree != "" {
+		// A name taken now is refused before a worktree is added for nothing;
+		// the window's opening decides.
+		if n, err := srv.WindowsNamed(ctx, "="+here.Session+":", o.Name); err == nil && n > 0 {
+			return Started{}, taken
+		}
+	}
 	if o.Worktree != "" {
 		if dir, err = worktree(ctx, srv, dir, o.Worktree); err != nil {
 			return Started{}, err
 		}
 	}
+	// The sessions tmag knows right before the window opens: one of them that
+	// the window shows, as a template that resumes a session shows, was not
+	// brought up by this start. Unread, none was.
+	store := session.Store{Dir: log.Dir}
+	known, _, err := store.All(ctx)
+	brought := err == nil
 	// The agent replaces the shell tmux runs its command with, as it does a
 	// person's shell, so it holds the pane's foreground.
 	id, err := srv.NewWindow(ctx, here, dir, o.Name, "exec "+command)
-	if errors.Is(err, tmux.ErrNameTaken) {
-		return Started{}, fmt.Errorf("%w: a window of tmux session %s is named %s already, and a name names one window", errUsage, here.Session, o.Name)
+	switch {
+	case errors.Is(err, tmux.ErrNameTaken) && o.Worktree != "":
+		return Started{}, fmt.Errorf("%w; the worktree %s stays", taken, dir)
+	case errors.Is(err, tmux.ErrNameTaken):
+		return Started{}, taken
 	}
 	if err != nil {
 		return Started{}, fmt.Errorf("opening a window for %s: %w", agent, err)
 	}
 	pane := eventlog.PaneRef{Server: here.Server, ID: id}
 	st := Started{Pane: pane, Dir: dir}
-	store := session.Store{Dir: log.Dir}
 	if st.Session, err = WaitShown(ctx, store, pane); err != nil {
 		if ctx.Err() != nil {
 			err = &NotShownError{Pane: pane, Err: ctx.Err()}
 		}
 		return st, err
 	}
-	// A session the view showed before the window opened, as a template that
-	// resumes one shows, was not brought up by this start.
-	_, before := v.Session(st.Session.Agent, st.Session.ID)
-	if st.Seq, err = logStart(ctx, log, &st.Session, pane, dir, o.Template, caller, !before); err != nil {
+	brought = brought && !slices.ContainsFunc(known, func(r session.Record) bool { return r.Agent == st.Session.Agent && r.ID == st.Session.ID })
+	if st.Seq, err = logStart(ctx, log, &st.Session, pane, dir, o.Template, caller, brought); err != nil {
 		err = fmt.Errorf("%w: %w", ErrUnlogged, err)
 		if text != "" {
 			err = errors.Join(ErrNotGiven, err)
@@ -342,10 +357,10 @@ func gitOutput(ctx context.Context, dir string, args ...string) (string, error) 
 }
 
 // logStart logs the Start event of a session tmag started: who started it,
-// in which pane, from which directory and by which template, reporting the
-// session in full. A session the start brought up keeps, as started_by,
-// the proven agent session that started it, unless one was kept already.
-// s becomes the session as recorded.
+// in which pane and directory, and by which template. A session the start
+// brought up keeps, as started_by, the proven agent session that started
+// it, unless one was kept already; the StartedBy event that follows the
+// Start reports the session with it. s becomes the session as recorded.
 func logStart(ctx context.Context, log *eventlog.Log, s *Session, pane eventlog.PaneRef, dir, template string, c Caller, brought bool) (int64, error) {
 	store := session.Store{Dir: log.Dir}
 	ev := eventlog.Event{Event: eventlog.Start, Agent: s.Agent, Session: s.ID, Cwd: dir, Pane: &pane, Template: template}
@@ -355,18 +370,21 @@ func logStart(ctx context.Context, log *eventlog.Log, s *Session, pane eventlog.
 		if err != nil {
 			return err
 		}
-		if !ok {
-			return log.Append(ctx, &ev) // it ended meanwhile
+		if !ok || !brought || rec.StartedBy != nil || c.By == nil || c.By.Session == "" {
+			return log.Append(ctx, &ev)
 		}
-		if brought && rec.StartedBy == nil && c.By != nil && c.By.Session != "" {
-			by := asker(c)
-			rec.StartedBy = &by
-		}
-		if err := store.Report(ctx, log, rec, &ev); err != nil {
+		by := asker(c)
+		rec.StartedBy = &by
+		if err := store.Put(ctx, rec); err != nil {
 			return err
 		}
 		*s = sessionOf(rec, s.Panes)
-		return nil
+		if err := log.Append(ctx, &ev); err != nil {
+			return err
+		}
+		report := eventlog.Event{Event: eventlog.StartedBy}
+		rec.Report(&report)
+		return log.Append(ctx, &report)
 	})
 	return ev.Seq, err
 }

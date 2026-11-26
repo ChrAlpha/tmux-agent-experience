@@ -158,8 +158,11 @@ const (
 	Idle   = "Idle"   // a native status file ended a turn no hook reported
 	Owes   = "Owes"   // what the session owes changed outside its hooks and a prompt to it
 	Start  = "Start"  // tmag started the session's agent in a window
-	Keys   = "Keys"   // the person typed into a pane through tmag keys
-	End    = "SessionEnd"
+	// StartedBy reports, after a Start, the agent session that started the
+	// session, which its record keeps from then on.
+	StartedBy = "StartedBy"
+	Keys      = "Keys" // the person typed into a pane through tmag keys
+	End       = "SessionEnd"
 )
 
 // Ended reports whether e ends its session.
