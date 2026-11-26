@@ -407,7 +407,8 @@ func TestAStartTakesItsDirectoryLiterally(t *testing.T) {
 		}
 		out := person(h, `"$TMAG_BIN" start claude `+name+` --dir "$(cat "$1")" >"$OUT" 2>&1`, at)
 		readEventually(t, out, sid[:8], "exit 0")
-		if s := h.waitSession(sid, "idle"); s.Cwd != resolved(t, literal) {
+		// On macOS the agent may report the temporary directory unresolved.
+		if s := h.waitSession(sid, "idle"); resolved(t, s.Cwd) != resolved(t, literal) {
 			t.Fatalf("start %s runs its agent in %q, not %q", name, s.Cwd, literal)
 		}
 		if ev := startEvent(t, h, sid); ev.Cwd != literal {
