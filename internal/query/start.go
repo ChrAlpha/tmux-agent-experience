@@ -31,8 +31,12 @@ const TemplateOption = "@tmag-start-"
 // adds worktrees in.
 const WorktreesOption = "@tmag-worktrees"
 
-// templateName is what a template may be called.
-var templateName = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
+// templateName is what a template may be called, and windowName what a
+// started agent's window may be, so that the name is a target tmag takes.
+var (
+	templateName = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
+	windowName   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$`)
+)
 
 // ErrNoWindow reports a start from no tmux pane: tmag opens the agent's
 // window beside the pane it runs in.
@@ -44,6 +48,7 @@ type StartOptions struct {
 	Template string // the NAME of @tmag-start-NAME
 	Dir      string // the directory; "" for that of the pane tmag runs in
 	Worktree string // a branch to start in a worktree of its own
+	Name     string // the window's name; "" for the one tmux gives it
 	Text     string // the first prompt; "" for none
 	Ask      Ask
 }
@@ -75,6 +80,8 @@ func Start(ctx context.Context, log *eventlog.Log, o StartOptions) (Started, err
 		return Started{}, fmt.Errorf("%w: the prompt is empty", errUsage)
 	case strings.HasPrefix(strings.ToLower(first), Marker):
 		return Started{}, ErrMarker
+	case o.Name != "" && (!windowName.MatchString(o.Name) || !isName(o.Name)):
+		return Started{}, fmt.Errorf("%w: a window is named by up to 32 letters, digits, - and _, starting with a letter or digit, and not by digits alone", errUsage)
 	}
 	v, w, caller, err := prepareWorld(ctx, log)
 	if err != nil {
@@ -88,6 +95,14 @@ func Start(ctx context.Context, log *eventlog.Log, o StartOptions) (Started, err
 	agent, command, err := startCommand(ctx, srv, o)
 	if err != nil {
 		return Started{}, err
+	}
+	if o.Name != "" {
+		// A name names one window of the session, or none at all.
+		if n, err := srv.WindowsNamed(ctx, "="+here.Session, o.Name); err != nil {
+			return Started{}, fmt.Errorf("reading the windows of %s: %w", here.Session, err)
+		} else if n > 0 {
+			return Started{}, fmt.Errorf("%w: a window of tmux session %s is named %s already, and a name names one window", errUsage, here.Session, o.Name)
+		}
 	}
 	dir := o.Dir
 	if dir == "" {
@@ -116,7 +131,7 @@ func Start(ctx context.Context, log *eventlog.Log, o StartOptions) (Started, err
 	}
 	// The agent replaces the shell tmux runs its command with, as it does a
 	// person's shell, so it holds the pane's foreground.
-	id, err := srv.NewWindow(ctx, here, dir, "exec "+command)
+	id, err := srv.NewWindow(ctx, here, dir, o.Name, "exec "+command)
 	if err != nil {
 		return Started{}, fmt.Errorf("opening a window for %s: %w", agent, err)
 	}

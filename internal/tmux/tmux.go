@@ -295,10 +295,15 @@ func Quote(s string) string {
 
 // NewWindow opens a window after the one pane p is in, in p's session,
 // running command in dir with the server's shell, and returns its pane's id.
-// The window stays in the background, where the person finds it.
-func (s Server) NewWindow(ctx context.Context, p Pane, dir, command string) (string, error) {
+// A name, if given, names the window; otherwise tmux names it after what it
+// runs. The window stays in the background, where the person finds it.
+func (s Server) NewWindow(ctx context.Context, p Pane, dir, name, command string) (string, error) {
 	window := fmt.Sprintf("=%s:%d", p.Session, p.Window) // = matches the session's name exactly
-	out, err := s.Run(ctx, "new-window", "-a", "-d", "-t", window, "-c", dir, "-P", "-F", "#{pane_id}", command)
+	args := []string{"new-window", "-a", "-d", "-t", window, "-c", dir, "-P", "-F", "#{pane_id}"}
+	if name != "" {
+		args = append(args, "-n", name)
+	}
+	out, err := s.Run(ctx, append(args, command)...)
 	if err != nil {
 		return "", err
 	}

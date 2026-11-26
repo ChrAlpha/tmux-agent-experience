@@ -47,7 +47,7 @@ Usage:
                                                deliver a prompt now, or wait for its turn
   tmag reply    <target> [--timeout D] [--json] [text | -]
                                                answer an agent that asked for a reply
-  tmag start    <agent|template> [--dir D] [--worktree BRANCH] [--wait | --reply] [--timeout D] [--json] [text | -]
+  tmag start    <agent|template> [--dir D] [--worktree BRANCH] [--name NAME] [--wait | --reply] [--timeout D] [--json] [text | -]
                                                start an agent in a window beside this pane
   tmag interrupt <target> [--json]             stop the agent's running turn
   tmag keys     <target> --screen DIGEST [--text TEXT] [KEY...] [--json]

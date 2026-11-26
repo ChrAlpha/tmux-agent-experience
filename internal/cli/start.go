@@ -23,6 +23,7 @@ func (a *app) cmdStart(args []string) int {
 	fs.BoolVar(&a.json, "json", false, "")
 	dir := fs.String("dir", "", "")
 	branch := fs.String("worktree", "", "")
+	name := fs.String("name", "", "")
 	wait := fs.Bool("wait", false, "")
 	reply := fs.Bool("reply", false, "")
 	timeout := fs.Duration("timeout", 2*time.Minute, "")
@@ -39,7 +40,7 @@ func (a *app) cmdStart(args []string) int {
 	if err != nil {
 		return a.usageError("start", err)
 	}
-	o := query.StartOptions{Dir: *dir, Worktree: *branch, Ask: query.AskNoAnswer}
+	o := query.StartOptions{Dir: *dir, Worktree: *branch, Name: *name, Ask: query.AskNoAnswer}
 	if slices.Contains(proc.Agents, pos[0]) {
 		o.Agent = pos[0]
 	} else {

@@ -116,6 +116,46 @@ func TestAPersonStartsATemplateInAWorktree(t *testing.T) {
 	f.agrees(h)
 }
 
+// A start names the window it opens, so the person and the agent that
+// started it tell many peers apart, and the agent addresses one by name; a
+// name that would not address one window is refused before a window opens.
+func TestAStartNamesItsWindow(t *testing.T) {
+	h := start(t)
+	f := h.follow()
+	panes, outs := team(t, h, sidA)
+	outC := filepath.Join(h.dir, "c")
+	startable(h, map[string]string{"FAKE_SESSION": sidC, "FAKE_HOOKS": "1", "FAKE_INBOX": "1", "FAKE_TURN_MS": "500", "FAKE_OUT": outC})
+
+	typed(t, h, panes[0], sidA, "tmag start claude --name rev-1 --reply --timeout 20s -- stand by")
+	readEventually(t, outs[0], "tool 0 started claude "+sidC[:8]+" in %")
+	s := h.waitSession(sidC, "idle")
+	if len(s.Panes) != 1 {
+		t.Fatalf("the started session shows in %+v", s.Panes)
+	}
+	// After a turn of the agent's, so tmux would have renamed it by now.
+	if got := h.tmux("display-message", "-p", "-t", s.Panes[0].ID, "#{window_name}"); got != "rev-1" {
+		t.Fatalf("the started agent's window is named %q", got)
+	}
+	windows := func() int { return strings.Count(h.tmux("list-windows", "-a", "-F", "#{window_id}"), "@") }
+	before := windows()
+	for name, why := range map[string]string{
+		"rev-1": "a window of tmux session main is named rev-1 already, and a name names one window",
+		"7":     "a window is named by up to 32 letters, digits, - and _, starting with a letter or digit, and not by digits alone",
+		"a.b":   "a window is named by up to 32 letters",
+		"-x":    "a window is named by up to 32 letters",
+	} {
+		typed(t, h, panes[0], sidA, "tmag start claude --name "+name+" -- hi")
+		readEventually(t, outs[0], "tool 2 tmag start: usage: "+why)
+	}
+	if got := windows(); got != before {
+		t.Fatalf("refused starts opened %d windows", got-before)
+	}
+	typed(t, h, panes[0], sidA, "tmag send rev-1 -- hello there")
+	readEventually(t, outs[0], "tool 0 sent to "+sidC[:8])
+	lastReply(t, h, sidC, "hello there")
+	f.agrees(h)
+}
+
 // An agent whose pane shows no session in time is left in its window, and
 // tmag says where to look.
 func TestAStartThatShowsNoSessionLeavesItsWindow(t *testing.T) {
