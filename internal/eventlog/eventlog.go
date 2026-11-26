@@ -118,8 +118,8 @@ type Event struct {
 	// Owes are the answers the session owes other sessions, oldest first;
 	// on SessionEnd and Exit, those it ended owing.
 	Owes []Obligation `json:"owes,omitempty"`
-	// StartedBy is the agent session whose tmag start started the session,
-	// on a Start event and in every report of the session.
+	// StartedBy is the agent session whose tmag start brought the session up,
+	// in every report of the session.
 	StartedBy *Actor `json:"started_by,omitempty"`
 	// Pane is the pane an Attach, Detach, Send or Halt is about.
 	Pane *PaneRef `json:"pane,omitempty"`

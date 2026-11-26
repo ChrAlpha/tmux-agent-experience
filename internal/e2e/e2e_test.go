@@ -1223,9 +1223,8 @@ func eventOf(doc map[string]any) map[string]any {
 
 // follower rebuilds every session and agent pane from `tmag watch` alone, as
 // the contract tells a remote client to: the snapshot, then every event (one
-// with a state reports its session in full, a Start names the agent session
-// that started it, SessionEnd and Exit remove it), and the pane list of the
-// latest panes document.
+// with a state reports its session in full, SessionEnd and Exit remove it),
+// and the pane list of the latest panes document.
 type follower struct {
 	t         *testing.T
 	lines     chan []byte
@@ -1304,11 +1303,6 @@ func (f *follower) apply(line []byte) {
 				LastHookAt: e.LastHookAt, ID: e.Session, Agent: e.Agent, State: e.State, Kind: e.Kind, Reason: e.Reason, Turn: e.Turn, Since: since,
 				Cwd: e.Cwd, Runtime: e.Runtime, Transcript: e.Transcript, Subagents: e.Subagents,
 				Capabilities: e.Capabilities, Requests: e.Requests, Owes: e.Owes, StartedBy: e.StartedBy,
-			}
-		case e.Event == eventlog.Start && e.StartedBy != nil:
-			if s, known := f.sessions[key]; known {
-				s.StartedBy = e.StartedBy
-				f.sessions[key] = s
 			}
 		}
 	default:

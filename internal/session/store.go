@@ -134,8 +134,8 @@ func (s Store) Save(ctx context.Context, log *eventlog.Log, prev, rec Record, ev
 	return log.Append(ctx, &ev)
 }
 
-// Report stores rec and logs ev reporting it: ev is a delivery of tmag's (a
-// prompt, an interrupt, an answer) and rec what it made of the session,
+// Report stores rec and logs ev reporting it: ev is something tmag did (a
+// prompt, an interrupt, an answer, a start) and rec what it made of the session,
 // which the agent may not report itself. ev receives the event as logged,
 // with its sequence number. The caller holds the session's lock.
 func (s Store) Report(ctx context.Context, log *eventlog.Log, rec Record, ev *eventlog.Event) error {

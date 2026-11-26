@@ -37,6 +37,9 @@ func (a *app) cmdStart(args []string) int {
 	if err == nil && len(pos) == 1 && (*wait || *reply) {
 		err = errors.New("--wait and --reply ask about a prompt: give one, or - for stdin")
 	}
+	if err == nil && *name == "" && flagSet(fs, "name") {
+		err = errors.New("--name names the window: give a name, or leave --name out")
+	}
 	if err != nil {
 		return a.usageError("start", err)
 	}

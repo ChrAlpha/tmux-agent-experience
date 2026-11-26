@@ -298,22 +298,45 @@ func Quote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
+// ErrNameTaken reports a window name another window of the session has.
+var ErrNameTaken = errors.New("a window of the session has that name")
+
 // NewWindow opens a window after the one pane p is in, in p's session,
 // running command in dir with the server's shell, and returns its pane's id.
 // A name, if given, names the window; otherwise tmux names it after what it
-// runs. The window stays in the background, where the person finds it.
+// runs. tmux opens a named window only while no window of the session has
+// the name, deciding both in one command, so two windows of one session are
+// never opened under one name at once: ErrNameTaken reports a taken name.
+// The window stays in the background, where the person finds it.
 func (s Server) NewWindow(ctx context.Context, p Pane, dir, name, command string) (string, error) {
 	window := fmt.Sprintf("=%s:%d", p.Session, p.Window) // = matches the session's name exactly
 	args := []string{"new-window", "-a", "-d", "-t", window, "-c", dir, "-P", "-F", "#{pane_id}"}
-	if name != "" {
-		args = append(args, "-n", name)
+	if name == "" {
+		args = append(args, command)
+	} else {
+		quoted := make([]string, 0, len(args)+3)
+		for _, a := range append(args, "-n", name, command) {
+			quoted = append(quoted, Quote(a))
+		}
+		free := "#{==:#{W:" + windowNamed(name, "x") + "},}"
+		args = []string{"if-shell", "-F", "-t", window, free, strings.Join(quoted, " "), "display-message -p " + nameTaken}
 	}
-	out, err := s.Run(ctx, append(args, command)...)
+	out, err := s.Run(ctx, args...)
 	if err != nil {
 		return "", err
 	}
-	return strings.TrimSpace(string(out)), nil
+	id := strings.TrimSpace(string(out))
+	if id == nameTaken {
+		return "", ErrNameTaken
+	}
+	if !paneIDRE.MatchString(id) {
+		return "", fmt.Errorf("new window: unexpected tmux output %q", id)
+	}
+	return id, nil
 }
+
+// nameTaken is what a guarded NewWindow prints when the name is taken.
+const nameTaken = "tmag-name-taken"
 
 // Shot is what a pane shows at one moment: its last lines as text, the same
 // lines with tmux's escapes for their colours and attributes, where the
