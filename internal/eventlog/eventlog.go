@@ -86,8 +86,9 @@ type Obligation struct {
 // ended.
 //
 // An event that carries State reports the session in full: State, Kind,
-// Reason, Turn, Cwd, Runtime, Transcript, Subagents, Capabilities, Requests
-// and Owes are then what the session is, and a field left out is empty.
+// Reason, Turn, Cwd, Runtime, Transcript, Subagents, Capabilities, Requests,
+// Owes and StartedBy are then what the session is, and a field left out is
+// empty.
 type Event struct {
 	// LastHookAt is the session's last hook contact when the event was
 	// logged.

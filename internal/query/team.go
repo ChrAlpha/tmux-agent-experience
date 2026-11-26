@@ -67,6 +67,53 @@ func peerDepth(ctx context.Context) int {
 	return limit
 }
 
+// Ties is how a session relates to the agent session that runs a command,
+// from what tmag keeps of each relation; none makes one the other's parent.
+type Ties struct {
+	Own     bool // it is the caller's own session
+	Started bool // the caller started it
+	OwesYou bool // it owes the caller an answer
+	YouOwe  bool // the caller owes it an answer
+}
+
+// Any reports whether s is tied to the caller at all.
+func (t Ties) Any() bool { return t.Own || t.Started || t.OwesYou || t.YouOwe }
+
+// TiesOf is how s relates to the caller c, as the sessions of v report it; a
+// caller tmag proves no session of has none.
+func (v View) TiesOf(c Caller, s Session) Ties {
+	if c.By == nil || c.By.Session == "" {
+		return Ties{}
+	}
+	me := asker(c)
+	t := Ties{Own: c.Is(s), Started: s.StartedBy != nil && *s.StartedBy == me}
+	t.OwesYou = slices.ContainsFunc(s.Owes, func(o eventlog.Obligation) bool { return o.To == me })
+	if mine, ok := v.Session(me.Agent, me.Session); ok {
+		t.YouOwe = slices.ContainsFunc(mine.Owes, func(o eventlog.Obligation) bool { return o.To == actorOf(s) })
+	}
+	return t
+}
+
+// Mine is what of v is tied to the caller c: its own session, the sessions
+// it started, owes an answer or is owed one by, and the panes that show them.
+func (v View) Mine(c Caller) View {
+	out := v
+	out.Sessions, out.Panes = []Session{}, []Pane{}
+	kept := map[[2]string]bool{}
+	for _, s := range v.Sessions {
+		if v.TiesOf(c, s).Any() {
+			out.Sessions = append(out.Sessions, s)
+			kept[[2]string{s.Agent, s.ID}] = true
+		}
+	}
+	for _, p := range v.Panes {
+		if p.Session != "" && kept[[2]string{p.Agent, p.Session}] {
+			out.Panes = append(out.Panes, p)
+		}
+	}
+	return out
+}
+
 // asker is the session that asks, as an obligation names it.
 func asker(c Caller) eventlog.Actor { return eventlog.Actor{Agent: c.By.Agent, Session: c.By.Session} }
 

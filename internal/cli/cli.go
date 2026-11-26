@@ -34,7 +34,7 @@ const (
 const usage = `tmag — agent awareness for tmux
 
 Usage:
-  tmag list     [--json]                       agents in all tmux panes
+  tmag list     [--mine] [--json]              agents in all tmux panes, or those tied to you
   tmag inspect  <target> [--json] [--events N] one agent, its open requests and recent events
   tmag watch    [--since SEQ]                  JSON lines: snapshot, then events
   tmag read     <target> [--lines N | --last | --turns N] [--json]

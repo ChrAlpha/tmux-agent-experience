@@ -53,6 +53,7 @@ func (a *app) cmdHook(args []string) (code int) {
 func (a *app) cmdList(args []string) int {
 	fs := flag.NewFlagSet("list", flag.ContinueOnError)
 	fs.BoolVar(&a.json, "json", false, "")
+	mine := fs.Bool("mine", false, "")
 	pos, err := parse(fs, args)
 	if err == nil && len(pos) > 0 {
 		err = fmt.Errorf("unexpected argument %q", pos[0])
@@ -66,6 +67,12 @@ func (a *app) cmdList(args []string) int {
 	if err != nil {
 		return a.fail("list", err)
 	}
+	if *mine {
+		if snap.Caller.By == nil || snap.Caller.By.Session == "" {
+			return a.usageError("list", errors.New("--mine lists the agents tied to the agent session running it, and tmag proves none of yours"))
+		}
+		snap.View = snap.Mine(snap.Caller)
+	}
 	if a.json {
 		a.emit(map[string]any{"seq": snap.Seq, "caller": snap.Caller, "sessions": snap.Sessions, "panes": snap.Panes})
 		return ExitOK
@@ -78,7 +85,8 @@ func (a *app) cmdList(args []string) int {
 }
 
 // printView lists every agent pane, then every session no pane shows,
-// marking the caller's own session.
+// marking the caller's own session, and for the others the agent session
+// that started each and how it is tied to the caller.
 func (a *app) printView(v query.View, caller query.Caller) {
 	if len(v.Panes) == 0 && len(v.Sessions) == 0 {
 		fmt.Fprintln(a.stdout, "no agents")
@@ -95,10 +103,27 @@ func (a *app) printView(v query.View, caller query.Caller) {
 		return path
 	}
 	own := func(s query.Session) string {
-		if caller.Is(s) {
+		ties := v.TiesOf(caller, s)
+		if ties.Own {
 			return shortID(s.ID) + " (you)"
 		}
-		return shortID(s.ID)
+		var marks []string
+		switch {
+		case ties.Started:
+			marks = append(marks, "started by you")
+		case s.StartedBy != nil:
+			marks = append(marks, "started by "+shortID(s.StartedBy.Session))
+		}
+		if ties.OwesYou {
+			marks = append(marks, "owes you")
+		}
+		if ties.YouOwe {
+			marks = append(marks, "you owe it")
+		}
+		if len(marks) == 0 {
+			return shortID(s.ID)
+		}
+		return shortID(s.ID) + " (" + strings.Join(marks, ", ") + ")"
 	}
 	tw := tabwriter.NewWriter(a.stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(tw, "TARGET\tPANE\tAGENT\tSTATE\tFOR\tID\tCWD")
@@ -259,6 +284,12 @@ func (a *app) cmdInspect(args []string) int {
 		}
 		if s.Reason != "" {
 			fmt.Fprintf(a.stdout, "reason: %s\n", s.Reason)
+		}
+		if b := s.StartedBy; b != nil {
+			fmt.Fprintf(a.stdout, "started by: %s %s\n", b.Agent, b.Session)
+		}
+		for _, o := range s.Owes {
+			fmt.Fprintf(a.stdout, "owes: %s %s (%s, depth %d)\n", o.To.Agent, o.To.Session, o.Kind, o.Depth)
 		}
 		here := tmux.DefaultServer().Socket
 		for _, p := range s.Panes {
