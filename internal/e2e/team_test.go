@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -435,4 +436,107 @@ func TestPeerDepthOffAndUnreadable(t *testing.T) {
 			f.agrees(h)
 		})
 	}
+}
+
+// One agent runs many peers, as a person's supervisor of a dozen agents
+// does: it starts each in a named window of its own, finds them again with
+// list --mine among agents that are not its, and their answers, given all
+// at once while it waits for them, each settle its ask once and reach it.
+func TestAnAgentRunsManyPeers(t *testing.T) {
+	const n = 8
+	h := start(t)
+	f := h.follow()
+	panes, outs := team(t, h, sidA, sidB) // sidB is no peer of sidA's
+	hub, hubOut := panes[0], outs[0]
+	sids, wouts := make([]string, n), make([]string, n)
+	for i := range n {
+		sids[i] = fmt.Sprintf("%08x-0000-7000-8000-%012x", 0xd0+i, 0xd0+i)
+		wouts[i] = filepath.Join(h.dir, fmt.Sprintf("w%d", i))
+		startable(h, map[string]string{"FAKE_SESSION": sids[i], "FAKE_HOOKS": "1", "FAKE_INBOX": "1", "FAKE_TURN_MS": "300", "FAKE_OUT": wouts[i]})
+		line := fmt.Sprintf("tmag start claude --name w-%d --reply --timeout 20s -- stand by", i)
+		if i == 0 {
+			line = "tmag start claude --name w-0 --timeout 20s" // no prompt: only the Start event says who started it
+		}
+		typed(t, h, hub, sidA, line)
+		readEventually(t, hubOut, "tool 0 started claude "+sids[i][:8]+" in %")
+		if i == 0 {
+			h.waitSession(sids[0], "idle")
+			f.agrees(h)
+			typed(t, h, hub, sidA, "tmag send w-0 --reply -- stand by")
+		}
+	}
+	for _, sid := range sids {
+		h.waitSession(sid, "idle")
+		if got := owes(t, h, sid); len(got) != 1 || got[0].To.Session != sidA {
+			t.Fatalf("%s owes %+v", sid, got)
+		}
+	}
+	f.agrees(h)
+
+	typed(t, h, hub, sidA, "tmag list --mine")
+	b, _ := os.ReadFile(hubOut)
+	mine := string(b)[strings.LastIndex(string(b), "tool 0 TARGET"):]
+	for _, sid := range sids {
+		if !strings.Contains(mine, sid[:8]+" (started by you, owes you)") {
+			t.Fatalf("list --mine does not mark %s as the hub's:\n%s", sid[:8], mine)
+		}
+	}
+	if !strings.Contains(mine, sidA[:8]+" (you)") || strings.Contains(mine, sidB[:8]) {
+		t.Fatalf("list --mine is not the hub's own part:\n%s", mine)
+	}
+	if r := h.tmag("", "list"); r.code != 0 || strings.Count(r.out, "(started by "+sidA[:8]+")") != n {
+		t.Fatalf("a person's list does not say who started the peers: %d %s", r.code, r.out)
+	}
+	if r := h.tmag("", "list", "--mine"); r.code != 2 || !strings.Contains(r.out, "tmag proves none of yours") {
+		t.Fatalf("a person's list --mine: %d %s", r.code, r.out)
+	}
+	if r := h.tmag("", "inspect", sids[3][:8]); r.code != 0 || !strings.Contains(r.out, "started by: claude "+sidA+"\nowes: claude "+sidA+" (reply, depth 1)\n") {
+		t.Fatalf("inspect of a peer: %d %s", r.code, r.out)
+	}
+
+	// The hub waits; every peer answers at once.
+	h.tmux("send-keys", "-t", hub, "tmag wait --asked --all --timeout 60s", "Enter")
+	h.waitSession(sidA, "working")
+	for i := range n {
+		h.tmux("send-keys", "-t", h.tmux("display-message", "-p", "-t", "w-"+strconv.Itoa(i), "#{pane_id}"), "tmag reply "+sidA+" done-"+strconv.Itoa(i), "Enter")
+	}
+	h.waitSession(sidA, "idle")
+	for i, sid := range sids {
+		readEventually(t, wouts[i], "tool 0 replied to "+sidA[:8])
+		readEventually(t, hubOut, "message [tmag] Reply from claude "+sid+", another agent, to your prompt. Do not reply to it.\ndone-"+strconv.Itoa(i))
+		if o := owes(t, h, sid); o != nil {
+			t.Fatalf("%s still owes %+v after its reply", sid, o)
+		}
+		closed := 0
+		for _, e := range h.events(sid) {
+			if e.Event == eventlog.Owes && e.By != nil && e.By.Session == sid {
+				closed++
+			}
+		}
+		if closed != 1 {
+			t.Fatalf("%s settled its ask %d times", sid, closed)
+		}
+	}
+	// Each settled as it replied, in a turn of its own that may still run.
+	readEventually(t, hubOut, "tool 0 "+sids[0][:8]+" settled")
+	b, _ = os.ReadFile(hubOut)
+	waited := string(b)[strings.LastIndex(string(b), "tool 0 "+sids[0][:8]+" settled"):]
+	waited, _, _ = strings.Cut(waited, "\n")
+	for _, sid := range sids {
+		if !strings.Contains(waited, sid[:8]+" settled, ") {
+			t.Fatalf("wait --asked --all ended before %s settled: %s", sid[:8], waited)
+		}
+	}
+	f.agrees(h)
+
+	data, _ := os.ReadFile(filepath.Join(h.state, "hook.log"))
+	slow := 0
+	for line := range strings.Lines(string(data)) {
+		if strings.HasSuffix(line, " slow\n") {
+			slow++
+			continue
+		}
+		t.Errorf("a hook failed: %s", line)
+	}
+	t.Logf("%d agents, %d slow hooks", n+2, slow)
 }
