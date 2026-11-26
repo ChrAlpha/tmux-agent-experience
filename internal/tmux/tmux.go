@@ -172,24 +172,27 @@ func (s Server) PaneID(ctx context.Context, target string) (string, error) {
 	return id, nil
 }
 
-// WindowsNamed counts the windows of session whose name is name; with no
-// session, of the current session as tmux takes it for the caller.
+// WindowsNamed counts the windows of session (a target such as =work:)
+// whose name is name; with no session, of the current session as tmux takes
+// it for the caller. tmux
+// compares the names itself: a name may hold any character, a newline too.
 func (s Server) WindowsNamed(ctx context.Context, session, name string) (int, error) {
-	args := []string{"list-windows", "-F", "#{window_name}"}
+	args := []string{"display-message", "-p"}
 	if session != "" {
 		args = append(args, "-t", session)
 	}
-	out, err := s.Run(ctx, args...)
+	out, err := s.Run(ctx, append(args, "#{W:"+windowNamed(name, "x")+"}")...)
 	if err != nil {
 		return 0, err
 	}
-	n := 0
-	for line := range strings.Lines(string(out)) {
-		if strings.TrimSuffix(line, "\n") == name {
-			n++
-		}
-	}
-	return n, nil
+	return strings.Count(string(out), "x"), nil
+}
+
+// windowNamed is a format that is mark for a window whose name is name, and
+// empty for any other: name is a literal, whatever characters it holds.
+func windowNamed(name, mark string) string {
+	literal := strings.NewReplacer("#", "##", ",", "#,", "}", "#}").Replace(name)
+	return "#{?#{==:#{window_name}," + literal + "}," + mark + ",}"
 }
 
 // Pane reads one pane afresh.

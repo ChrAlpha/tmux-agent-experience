@@ -302,37 +302,47 @@ func paneServer(name string) string {
 	return tmux.ServerByName(name).Socket
 }
 
-// tmuxTarget asks tmux which pane target names. A name is matched exactly,
-// in the tmux session of the pane the caller runs in (here), or else in the
-// session tmux takes as the caller's: tmux alone would also take a prefix or
-// a pattern of one, so a name whose window closed would reach another agent.
+// tmuxTarget asks tmux which pane target names. A name is matched exactly:
+// a window of the tmux session of the pane the caller runs in (here), or else
+// of the session tmux takes as the caller's, and only when no window has it,
+// a session. tmux alone would also take a prefix or a pattern of a name, so a
+// name whose window closed would reach another agent.
 func tmuxTarget(ctx context.Context, here *tmux.Pane, target string) (eventlog.PaneRef, error) {
 	srv := tmux.DefaultServer()
-	tries := []string{target}
-	session := "" // tmux's current session
-	if isName(target) {
-		if here != nil {
-			srv, session = tmux.Server{Socket: here.Server}, "="+here.Session
-		}
-		// A window of that session first, as tmux takes a name.
-		tries = []string{session + ":=" + target, "=" + target + ":"}
-	}
-	for _, t := range tries {
-		id, err := srv.PaneID(ctx, t)
-		if err == nil {
+	if !isName(target) {
+		id, err := srv.PaneID(ctx, target)
+		switch {
+		case err == nil:
 			return eventlog.PaneRef{Server: srv.Socket, ID: id}, nil
-		}
-		if ctx.Err() != nil {
+		case ctx.Err() != nil:
 			return eventlog.PaneRef{}, ctx.Err()
 		}
+		return eventlog.PaneRef{}, fmt.Errorf("%w: %s is no session id, and tmux finds no pane by that target", ErrNotFound, target)
 	}
-	if isName(target) {
-		if n, _ := srv.WindowsNamed(ctx, session, target); n > 1 {
-			return eventlog.PaneRef{}, fmt.Errorf("%w: %s names %d windows of your tmux session", ErrAmbiguous, target, n)
-		}
-		return eventlog.PaneRef{}, fmt.Errorf("%w: %s is no session id, and no window of your tmux session or session has that exact name", ErrNotFound, target)
+	session := "" // tmux's current session
+	if here != nil {
+		srv, session = tmux.Server{Socket: here.Server}, "="+here.Session+":"
 	}
-	return eventlog.PaneRef{}, fmt.Errorf("%w: %s is no session id, and tmux finds no pane by that target", ErrNotFound, target)
+	n, err := srv.WindowsNamed(ctx, session, target)
+	exact := "=" + target + ":" // the session of that name
+	switch {
+	case err != nil && ctx.Err() != nil:
+		return eventlog.PaneRef{}, ctx.Err()
+	case err != nil:
+		// No tmux session to have windows: a session of the name, if any.
+	case n > 1:
+		return eventlog.PaneRef{}, fmt.Errorf("%w: %s names %d windows of your tmux session", ErrAmbiguous, target, n)
+	case n == 1:
+		exact = strings.TrimSuffix(session, ":") + ":=" + target
+	}
+	id, err := srv.PaneID(ctx, exact)
+	switch {
+	case err == nil:
+		return eventlog.PaneRef{Server: srv.Socket, ID: id}, nil
+	case ctx.Err() != nil:
+		return eventlog.PaneRef{}, ctx.Err()
+	}
+	return eventlog.PaneRef{}, fmt.Errorf("%w: %s is no session id, and no window of your tmux session or session has that exact name", ErrNotFound, target)
 }
 
 // isName reports whether target is a window's or session's name rather than

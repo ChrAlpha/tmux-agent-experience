@@ -50,7 +50,9 @@ func TestANameNamesOneWindowExactly(t *testing.T) {
 	window("-n", "dup")
 	window("-n", "dup")
 	other := window("-n", "other")
+	window("-n", "line1\nh-a") // tmux keeps a newline in a name
 	h.tmux("new-session", "-d", "-s", "other", "sleep 600")
+	h.tmux("new-session", "-d", "-s", "dup", "sleep 600") // two windows share its name
 	out := filepath.Join(h.dir, "agent")
 	agent := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_HOOKS": "1", "FAKE_OUT": out},
 		"env", "TMUX_PANE="+elsewhere, filepath.Join(bin, "claude"))
@@ -68,14 +70,14 @@ func TestANameNamesOneWindowExactly(t *testing.T) {
 			t.Fatalf("inspect %s, a window's or session's name: %d %s", name, r.code, r.out)
 		}
 	}
-	for _, prefix := range []string{"w-1", "un", "oth", "sol"} {
+	for _, prefix := range []string{"w-1", "un", "oth", "sol", "h-a"} {
 		if r := h.tmag("", "inspect", prefix); r.code != 1 || !strings.Contains(r.out, "no window of your tmux session or session has that exact name") {
 			t.Fatalf("inspect %s, a prefix: %d %s", prefix, r.code, r.out)
 		}
 	}
 	r := h.tmag("", "send", "dup", "hello", "--json")
 	if r.code != 1 || !strings.Contains(r.out, `"code":"ambiguous"`) || !strings.Contains(r.out, "dup names 2 windows of your tmux session") {
-		t.Fatalf("send to a name two windows share: %d %s", r.code, r.out)
+		t.Fatalf("send to a name two windows and a session share: %d %s", r.code, r.out)
 	}
 
 	typed(t, h, agent, sidA, "tmag inspect uniq")
