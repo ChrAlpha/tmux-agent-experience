@@ -55,11 +55,12 @@ func TestAnAgentStartsAPeerAndAsksIt(t *testing.T) {
 		t.Fatalf("the started peer owes %+v", got)
 	}
 	ev := startEvent(t, h, sidC)
-	if ev.By == nil || ev.By.Session != sidA || ev.Pane == nil || ev.Cwd != resolved(t, h.dir) || ev.Template != "" {
+	starter := eventlog.Actor{Agent: "claude", Session: sidA}
+	if ev.By == nil || ev.By.Session != sidA || ev.Pane == nil || ev.Cwd != resolved(t, h.dir) || ev.Template != "" || ev.StartedBy == nil || *ev.StartedBy != starter {
 		t.Fatalf("Start event = %+v", ev)
 	}
-	if s, _ := h.sessionOf(sidC); len(s.Panes) != 1 || s.Panes[0].ID != ev.Pane.ID {
-		t.Fatalf("the started session shows in %+v, Start names %+v", s.Panes, ev.Pane)
+	if s, _ := h.sessionOf(sidC); len(s.Panes) != 1 || s.Panes[0].ID != ev.Pane.ID || s.StartedBy == nil || *s.StartedBy != starter {
+		t.Fatalf("the started session shows in %+v, started by %+v; Start names %+v", s.Panes, s.StartedBy, ev.Pane)
 	}
 	lastReply(t, h, sidC, "review the parser")
 	f.agrees(h)
@@ -102,8 +103,11 @@ func TestAPersonStartsATemplateInAWorktree(t *testing.T) {
 	if s := h.waitSession(sidC, "idle"); s.Cwd != tree {
 		t.Fatalf("the started session runs in %s, not its worktree", s.Cwd)
 	}
-	if ev := startEvent(t, h, sidC); ev.By != nil || ev.Template != "fake" || ev.Cwd != tree {
+	if ev := startEvent(t, h, sidC); ev.By != nil || ev.StartedBy != nil || ev.Template != "fake" || ev.Cwd != tree {
 		t.Fatalf("Start event = %+v", ev)
+	}
+	if s, _ := h.sessionOf(sidC); s.StartedBy != nil {
+		t.Fatalf("a person's start names %+v as the starter", s.StartedBy)
 	}
 	lastReply(t, h, sidC, "hello")
 	if got := owes(t, h, sidC); got != nil {

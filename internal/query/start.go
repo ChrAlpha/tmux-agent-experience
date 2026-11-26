@@ -325,12 +325,29 @@ func gitOutput(ctx context.Context, dir string, args ...string) (string, error) 
 	return string(out), nil
 }
 
-// logStart logs the Start event of a session tmag started: who started it,
-// in which pane and directory, and by which template.
+// logStart keeps in the session's record the agent session that started it,
+// if an agent's proven session did, and logs the Start event: who started
+// it, in which pane and directory, and by which template.
 func logStart(ctx context.Context, log *eventlog.Log, s Session, pane eventlog.PaneRef, dir, template string, c Caller) (int64, error) {
 	store := session.Store{Dir: log.Dir}
 	ev := eventlog.Event{Event: eventlog.Start, Agent: s.Agent, Session: s.ID, Cwd: dir, Pane: &pane, Template: template}
 	c.stamp(&ev)
-	err := store.Lock(ctx, s.Agent, s.ID, func() error { return log.Append(ctx, &ev) })
+	if c.By != nil && c.By.Session != "" {
+		by := asker(c)
+		ev.StartedBy = &by
+	}
+	err := store.Lock(ctx, s.Agent, s.ID, func() error {
+		rec, ok, err := store.Get(ctx, s.Agent, s.ID)
+		if err != nil {
+			return err
+		}
+		if ok && ev.StartedBy != nil {
+			rec.StartedBy = ev.StartedBy
+			if err := store.Put(ctx, rec); err != nil {
+				return err
+			}
+		}
+		return log.Append(ctx, &ev)
+	})
 	return ev.Seq, err
 }

@@ -54,6 +54,8 @@ type Session struct {
 	// Owes are the answers the session owes the agents that asked it, oldest
 	// first.
 	Owes []eventlog.Obligation `json:"owes,omitempty"`
+	// StartedBy is the agent session whose tmag start started the session.
+	StartedBy *eventlog.Actor `json:"started_by,omitempty"`
 	// Panes are the panes that show the session.
 	Panes []Shown `json:"panes"`
 }
@@ -128,7 +130,7 @@ func sessionOf(r session.Record, panes []Shown) Session {
 		LastHookAt: r.LastHookAt,
 		ID:         r.ID, Agent: r.Agent, State: r.State(), Kind: r.Kind(), Reason: r.Reason, Turn: r.Turn,
 		Cwd: r.Cwd, Runtime: string(r.Host.Role), Transcript: r.TranscriptRef(), Subagents: r.RunningSubagents(),
-		Capabilities: r.Capabilities(), Requests: r.RequestRefs(), Owes: r.Owes, Panes: panes,
+		Capabilities: r.Capabilities(), Requests: r.RequestRefs(), Owes: r.Owes, StartedBy: r.StartedBy, Panes: panes,
 	}
 	if s.Panes == nil {
 		s.Panes = []Shown{}

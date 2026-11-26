@@ -194,7 +194,9 @@ gh workflow run stress.yml --ref BRANCH -f run='^TestA$' -f count=20   # the sam
   to it renames the layout, which gives it a default directory of its own:
   tmag never reads or migrates another layout's state. An optional record
   field an older tmag ignores, and drops when it rewrites a record, is not a
-  layout change; the next hook writes it again.
+  layout change: the next hook writes again what hooks keep, and what a verb
+  wrote once, such as an obligation or the session that started another, is
+  lost only to a downgrade.
 - The version lives in `internal/version/version.go` and the eight plugin
   manifests; `TestManifestVersions` keeps them equal.
 - The launchers are `binpath.Launcher()`, the other copies of the skill are
