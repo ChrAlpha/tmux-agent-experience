@@ -50,7 +50,8 @@ func TestANameNamesOneWindowExactly(t *testing.T) {
 	window("-n", "dup")
 	window("-n", "dup")
 	other := window("-n", "other")
-	window("-n", "line1\nh-a") // tmux keeps a newline in a name
+	window("-n", "line1\nh-a")         // tmux keeps a newline in a name
+	semi := window("-n", `ends in \;`) // tmux takes the name as "ends in ;"
 	h.tmux("new-session", "-d", "-s", "other", "sleep 600")
 	h.tmux("new-session", "-d", "-s", "dup", "sleep 600") // two windows share its name
 	out := filepath.Join(h.dir, "agent")
@@ -65,7 +66,7 @@ func TestANameNamesOneWindowExactly(t *testing.T) {
 	if r := h.tmag("", "inspect", "w-10", "--json"); r.code != 0 || !strings.Contains(r.out, `"id":"`+agent+`"`) {
 		t.Fatalf("inspect w-10: %d %s", r.code, r.out)
 	}
-	for name, pane := range map[string]string{"uniq": uniq, "other": other, "solo": elsewhere} {
+	for name, pane := range map[string]string{"uniq": uniq, "other": other, "solo": elsewhere, "ends in ;": semi} {
 		if r := h.tmag("", "inspect", name); r.code != 1 || !strings.Contains(r.out, "in pane "+name+" ("+pane+")") {
 			t.Fatalf("inspect %s, a window's or session's name: %d %s", name, r.code, r.out)
 		}
