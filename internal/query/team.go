@@ -18,11 +18,13 @@ import (
 	"github.com/ChrAlpha/tmux-agent-experience/internal/tmux"
 )
 
-// Agents work as a flat team: any agent may ask any other, and what a tree
+// Agents' relations are flat: any agent may ask any other, and what a tree
 // of parents and children would give is kept per ask. An ask an agent makes
 // with send --wait or send --reply opens an obligation on the receiver,
 // which the answer closes; tmag refuses a wait that would close a cycle of
-// waits, and an ask that passes work on further than @tmag-peer-depth.
+// waits, and an ask that passes work on further than @tmag-peer-depth. Who
+// started a session, and how each is tied to the caller, are legible to it
+// without making either the other's parent.
 
 // PeerDepthOption is the tmux option that bounds how many times agents pass
 // work on: a person's prompt starts at 0, and each ask an agent makes while

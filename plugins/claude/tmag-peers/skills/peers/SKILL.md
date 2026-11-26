@@ -54,8 +54,8 @@ command again with the permissions it needs.
 
 | Command | Does |
 | --- | --- |
-| `tmag list` | every agent: target, pane, agent, state, for how long, id, directory; `--json` for all fields |
-| `tmag inspect ID` | one agent, the title it set for what it works on, its open requests and its recent events |
+| `tmag list` | every agent: target, pane, agent, state, for how long, id and who started it, directory; `--mine` for only those tied to you; `--json` for all fields |
+| `tmag inspect ID` | one agent, the title it set for what it works on, who started it, what it owes, its open requests and its recent events |
 | `tmag send ID -` | deliver a message now: an idle agent starts a turn, a working one reads it at its next step; no answer is asked |
 | `tmag send ID --reply -` | deliver now and ask it to answer with `tmag reply` when done |
 | `tmag send ID --wait --timeout 8m -` | a turn of its own, then wait until it is idle or blocked |
@@ -71,7 +71,8 @@ command again with the permissions it needs.
 | `tmag answer ID REQ allow` | decide an open request, or `deny --message M` (rule 6) |
 
 `ID` is a session id or a unique prefix of at least 4 characters, as `tmag
-list` shows it; a pane works too, as tmux names it (`%N`, `work:1.0`). States: `idle` takes a prompt;
+list` shows it; a pane works too, as tmux names it (`%N`, `work:1.0`), and
+the exact name of a window in your tmux session. States: `idle` takes a prompt;
 `working` runs a turn; `blocked` waits on a request, whose id `inspect`
 shows; `unknown` means tmag cannot prove what the pane shows, so it cannot be
 prompted.
@@ -135,10 +136,34 @@ EOF
 `tmag start` opens the window, waits until the agent shows its session, and
 delivers the prompt as `tmag send` does, `--reply` or `--wait` included.
 `--worktree BRANCH` starts it in a git worktree of its own, on that branch,
-so it changes none of your files; `--dir` names another directory. The user
+so it changes none of your files; `--dir` names another directory; `--name
+NAME` names its window, which the user then tells apart from others in tmux
+and you can use as its `ID`. The user
 may have set templates, their own command for an agent, which `tmag start
 NAME` runs; use one when the user names it. If `tmag start` fails, never run
 it again: the agent may already run, and its `next:` line says what to do.
+
+## Working with many agents
+
+When the user has you run several agents, keep each line between you and
+one of them, and keep their work out of your own context:
+
+- Start each with `--name` for its part and, when it changes files, a
+  `--worktree` of its own: one agent writes in each worktree.
+- Give each a whole part it owns, asked with `--reply`. Have it put long
+  results in files or commits and answer with what it found and where, so
+  its answer stays short.
+- The agents you started answer you, not each other: have one involve
+  another only when the user wants it.
+- To tell several the same, send it to each, and say what to do (keep
+  going, stop and wait), not only that no answer is needed.
+- `tmag list --mine` shows you, the agents you started (`started by you`),
+  those that owe you an answer and those you owe one. Run it when you lost
+  track of them, as after your context was summarized; a row started by
+  another session is another agent's work.
+- When there are more of them than you can follow, have one coordinate a
+  part of the work: tmag refuses an ask that passes work on more than three
+  times, unless the user changed that bound.
 
 ## Receiving
 
