@@ -197,25 +197,26 @@ func TestStartsAtOnceTakeANameOnce(t *testing.T) {
 	}
 }
 
-// A session keeps as its starter the agent session whose start first
-// launched an agent showing it, whether the session ran before, as one a
-// template resumes did; a later start never replaces it.
-func TestAStartKeepsTheFirstLauncherAsStarter(t *testing.T) {
+// A session's starter is the first proven agent session whose start of it
+// records itself: a person's start records none and leaves the place, a
+// session a template resumes takes it as one that never ran does, and a
+// later start never replaces it, its own result naming the one recorded.
+func TestTheFirstAgentStartToRecordItselfIsTheStarter(t *testing.T) {
 	h := start(t)
 	f := h.follow()
 	panes, outs := team(t, h, sidA, sidB)
-	env := map[string]string{"FAKE_SESSION": sidC, "FAKE_HOOKS": "1", "FAKE_TURN_MS": "300"}
-	h.waitPane(h.spawn(h.dir, env, filepath.Join(bin, "claude")), "idle", "process") // as the person launched it
+	startable(h, map[string]string{"FAKE_SESSION": sidC, "FAKE_HOOKS": "1", "FAKE_TURN_MS": "300"})
+	out := person(h, `"$TMAG_BIN" start claude --timeout 20s >"$OUT" 2>&1`)
+	readEventually(t, out, "started claude "+sidC[:8], "exit 0")
 	if s := h.waitSession(sidC, "idle"); s.StartedBy != nil {
-		t.Fatalf("a session the person launched names %+v as its starter", s.StartedBy)
+		t.Fatalf("a person's start names %+v as the starter", s.StartedBy)
 	}
-	startable(h, env)
-	for i, sid := range []string{sidA, sidB} {
-		typed(t, h, panes[i], sid, "tmag start claude --timeout 20s")
-		readEventually(t, outs[i], "tool 0 started claude "+sidC[:8]+" in %")
-		if s, _ := h.sessionOf(sidC); s.StartedBy == nil || s.StartedBy.Session != sidA {
-			t.Fatalf("after %s's start, %s names %+v as its starter", sid[:8], sidC[:8], s.StartedBy)
-		}
+	typed(t, h, panes[0], sidA, "tmag start claude --timeout 20s")
+	readEventually(t, outs[0], "tool 0 started claude "+sidC[:8]+" in %")
+	typed(t, h, panes[1], sidB, "tmag start claude --timeout 20s --json")
+	readEventually(t, outs[1], `"id":"`+sidC+`"`, `"started_by":{"agent":"claude","session":"`+sidA+`"}`)
+	if s, _ := h.sessionOf(sidC); s.StartedBy == nil || s.StartedBy.Session != sidA {
+		t.Fatalf("after the agents' starts, %s names %+v as its starter", sidC[:8], s.StartedBy)
 	}
 	f.agrees(h)
 }

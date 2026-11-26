@@ -350,12 +350,13 @@ func gitOutput(ctx context.Context, dir string, args ...string) (string, error) 
 }
 
 // logStart logs the Start event of a session tmag started: who started it,
-// in which pane and directory, and by which template. The session keeps, as
-// started_by, the proven agent session whose start was the first to launch
-// an agent showing it, which is what a start proves: whether the session
-// ran before, a template resuming it, no start can tell without a race. The
-// StartedBy event that follows the Start reports the session with it. s
-// becomes the session as recorded.
+// in which pane and directory, and by which template. The first start of a
+// proven agent session to record itself under the session's lock becomes
+// its started_by, which no later start replaces: what a start proves is
+// that it launched an agent showing the session, not whether the session
+// ran before, as one a template resumes did, nor which of two starts at
+// once launched first. The StartedBy event that follows the Start reports
+// the session with it. s becomes the session as recorded.
 func logStart(ctx context.Context, log *eventlog.Log, s *Session, pane eventlog.PaneRef, dir, template string, c Caller) (int64, error) {
 	store := session.Store{Dir: log.Dir}
 	ev := eventlog.Event{Event: eventlog.Start, Agent: s.Agent, Session: s.ID, Cwd: dir, Pane: &pane, Template: template}
@@ -365,7 +366,11 @@ func logStart(ctx context.Context, log *eventlog.Log, s *Session, pane eventlog.
 		if err != nil {
 			return err
 		}
-		if !ok || rec.StartedBy != nil || c.By == nil || c.By.Session == "" {
+		if !ok {
+			return log.Append(ctx, &ev) // it ended meanwhile
+		}
+		if rec.StartedBy != nil || c.By == nil || c.By.Session == "" {
+			*s = sessionOf(rec, s.Panes)
 			return log.Append(ctx, &ev)
 		}
 		by := asker(c)

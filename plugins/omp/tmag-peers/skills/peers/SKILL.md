@@ -157,10 +157,13 @@ one of them, and keep their work out of your own context:
 - Do not have them ask each other unless the user wants it.
 - To tell several the same, send it to each, and say what to do (keep
   going, stop and wait), not only that no answer is needed.
-- `tmag list --mine` shows you, the agents you started (`started by you`),
-  those that owe you an answer and those you owe one, with their windows'
-  names. Run it when you lost track of them, as after your context was
-  summarized; the agents it leaves out are other agents' work.
+- `tmag list --mine` shows you and the sessions tmag records as tied to
+  you: started by you, owing you an answer, or owed one by you, with their
+  windows' names. Run it when you lost track of them, as after your context
+  was summarized. A session you resumed shows there with any other window
+  it has, and a start of yours that another start of the same session
+  overtook may be missing: what tmag records is a relation, not who owns
+  the work.
 - When there are more of them than you can follow, have one coordinate a
   part of the work: tmag refuses an ask that passes work on more than three
   times, unless the user changed that bound.

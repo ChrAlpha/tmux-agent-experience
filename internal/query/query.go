@@ -54,7 +54,8 @@ type Session struct {
 	// Owes are the answers the session owes the agents that asked it, oldest
 	// first.
 	Owes []eventlog.Obligation `json:"owes,omitempty"`
-	// StartedBy is the agent session whose tmag start started the session.
+	// StartedBy is the first proven agent session whose tmag start of the
+	// session recorded itself.
 	StartedBy *eventlog.Actor `json:"started_by,omitempty"`
 	// Panes are the panes that show the session.
 	Panes []Shown `json:"panes"`

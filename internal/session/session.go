@@ -73,10 +73,10 @@ type Record struct {
 	// first: a final one closes when the turn the ask started ends, a reply
 	// one when the session replies.
 	Owes []eventlog.Obligation `json:"owes,omitempty"`
-	// StartedBy is the agent session whose tmag start started this one: who
-	// started a session, kept apart from who asks it, waits for it or keeps
-	// it running. A person's start, or an agent's whose session tmag cannot
-	// prove, names none.
+	// StartedBy is the first proven agent session whose tmag start of this
+	// one recorded itself: who started a session, kept apart from who asks
+	// it, waits for it or keeps it running. A person's start, or an agent's
+	// whose session tmag cannot prove, records none.
 	StartedBy *eventlog.Actor `json:"started_by,omitempty"`
 	// Replying are the reply obligations a reply of the session's is being
 	// delivered for, each by the tmag process delivering it: no other reply
