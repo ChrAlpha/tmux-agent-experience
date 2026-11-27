@@ -86,7 +86,7 @@ a design problem.
 ```sh
 pnpm install
 pnpm check                                          # Biome, TypeScript, unit tests
-TMAG_SRC=/path/to/tmux-agent-experience pnpm e2e    # needs Go, tmux and git
+pnpm e2e                                            # needs Go, tmux and git
 pnpm build                                          # dist/, what the package ships
 (cd ../.. && claude plugin validate .)              # tmag's marketplace, the plugins included
 ```
@@ -102,10 +102,10 @@ pnpm build                                          # dist/, what the package sh
 
 ## Testing
 
-- `test/e2e/world.ts` builds tmag and tmux-agent-experience's fake agent from
-  `TMAG_SRC`, runs a tmux server of its own under a temporary `TMUX_TMPDIR`,
-  and runs `tmag-flow` as a person in its windows. Never point a test at the
-  developer's tmux server, agents or tmag state.
+- `test/e2e/world.ts` builds tmag and its fake agent from this repository, or
+  the checkout `TMAG_SRC` names, runs a tmux server of its own under a
+  temporary `TMUX_TMPDIR`, and runs `tmag-flow` as a person in its windows.
+  Never point a test at the developer's tmux server, agents or tmag state.
 - The fake agent answers each prompt with `answered: ` and the prompt's last
   line. Its templates give each start a session id of its own; `FAKE_SLOW`
   names the agents whose turns last a minute, which `/end` typed into their

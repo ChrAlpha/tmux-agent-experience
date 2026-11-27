@@ -1,5 +1,5 @@
-// The world the end-to-end tests run in: tmag and tmux-agent-experience's
-// fake agents, built from the checkout TMAG_SRC names, in a private tmux
+// The world the end-to-end tests run in: tmag and its fake agents, built
+// from this repository or the checkout TMAG_SRC names, in a private tmux
 // server under a temporary TMUX_TMPDIR, with tmag serve in a window of it,
 // and the built page served by `vite preview`, which proxies /v2/ to serve as
 // tailscale serve does. A second computer is a tmux server of its own, with
@@ -13,6 +13,7 @@ import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, 
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import type { Credential, Session } from '../src/contract'
 
 /** Where the page is served; tmag serve accepts only this address. */
@@ -201,8 +202,7 @@ const freePort = () =>
 
 // setup builds the world before the tests and returns its teardown.
 export default async function setup() {
-  const src = process.env.TMAG_SRC
-  if (!src) throw new Error('TMAG_SRC must name a checkout of tmux-agent-experience to test against')
+  const src = process.env.TMAG_SRC || fileURLToPath(new URL('../../..', import.meta.url))
   const d = mkdtempSync(join(tmpdir(), 'tmag-client-e2e-'))
   process.env.TMAG_E2E_DIR = d
   process.env.TMAG_E2E_SERVE_PORT = String(await freePort())

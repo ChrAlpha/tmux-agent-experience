@@ -1,7 +1,7 @@
 // A world for end-to-end tests: a private tmux server under a temporary
-// TMUX_TMPDIR, tmag and tmux-agent-experience's fake agent built from
-// TMAG_SRC, and a git repository to run plans in. Nothing reaches the
-// developer's own tmux server, agents or tmag state.
+// TMUX_TMPDIR, tmag and its fake agent built from this repository or the
+// checkout TMAG_SRC names, and a git repository to run plans in. Nothing
+// reaches the developer's own tmux server, agents or tmag state.
 
 import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
@@ -9,12 +9,11 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-export const repoRoot = resolve(fileURLToPath(new URL('../..', import.meta.url)))
-const src = process.env.TMAG_SRC
+export const packageRoot = resolve(fileURLToPath(new URL('../..', import.meta.url)))
+const src = process.env.TMAG_SRC || resolve(packageRoot, '../..')
 
 // skip says why the end-to-end tests cannot run here, if they cannot.
 export function skip(): string | false {
-  if (!src) return 'TMAG_SRC names no tmux-agent-experience checkout'
   for (const tool of ['go', 'tmux', 'git']) {
     if (spawnSync('sh', ['-c', `command -v ${tool}`]).status !== 0) return `${tool} is not installed`
   }
@@ -53,7 +52,7 @@ exec ${join(bin, agent)} "$@"
   }
   // TMAG_FLOW_CLI runs another tmag-flow, as the package installs it.
   const flow = join(bin, 'tmag-flow')
-  const cli = process.env.TMAG_FLOW_CLI ?? `node ${join(repoRoot, 'src/cli.ts')}`
+  const cli = process.env.TMAG_FLOW_CLI ?? `node ${join(packageRoot, 'src/cli.ts')}`
   writeFileSync(flow, `#!/bin/sh\nexec ${cli} "$@"\n`, { mode: 0o755 })
   built = bin
   return bin
@@ -214,5 +213,5 @@ export async function waitFor(ok: () => boolean, timeout: number, what: string):
 }
 
 export function plan(name: string): string {
-  return join(repoRoot, 'test', 'plans', `${name}.ts`)
+  return join(packageRoot, 'test', 'plans', `${name}.ts`)
 }
