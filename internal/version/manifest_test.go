@@ -44,9 +44,9 @@ func TestManifestVersions(t *testing.T) {
 	}
 }
 
-// Each marketplace lists both plugins of its host, from a directory named
-// after the plugin whose manifest carries that name, inside the paths
-// tmag setup checks out (plugins/claude, plugins/codex).
+// Each marketplace lists tmag's two plugins of its host and tmag-flow's, from
+// a directory named after the plugin whose manifest carries that name, inside
+// the paths tmag setup checks out (plugins/claude, plugins/codex).
 func TestMarketplaces(t *testing.T) {
 	read := func(path string, v any) {
 		t.Helper()
@@ -77,11 +77,11 @@ func TestMarketplaces(t *testing.T) {
 		sources["codex"] = append(sources["codex"], p.Name+" "+p.Source.Path)
 	}
 	for host, manifest := range map[string]string{"claude": ".claude-plugin/plugin.json", "codex": ".codex-plugin/plugin.json"} {
-		want := []string{"tmag ./plugins/" + host + "/tmag", "tmag-peers ./plugins/" + host + "/tmag-peers"}
+		want := []string{"tmag ./plugins/" + host + "/tmag", "tmag-peers ./plugins/" + host + "/tmag-peers", "tmag-flow ./plugins/" + host + "/tmag-flow"}
 		if !reflect.DeepEqual(sources[host], want) {
 			t.Errorf("%s marketplace lists %v, want %v", host, sources[host], want)
 		}
-		for _, name := range []string{"tmag", "tmag-peers"} {
+		for _, name := range []string{"tmag", "tmag-peers", "tmag-flow"} {
 			var m struct{ Name string }
 			read(filepath.Join("plugins", host, name, manifest), &m)
 			if m.Name != name {

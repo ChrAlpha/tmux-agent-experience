@@ -59,7 +59,7 @@ a design problem.
   everything is on the `Flow`. No runtime dependencies at all.
 - **The skill teaches the CLI as it is.** `skills/flow/SKILL.md` names only
   commands, flags, exit codes, plan arguments and flow calls that exist
-  (`test/unit/skill.test.ts`); its copies under `plugins/` are the same
+  (`test/unit/skill.test.ts`); its copies in the plugins are the same
   bytes, and every manifest has the package's version.
 - **Every failure says what next.** An error or halt prints a `next:` line.
 
@@ -77,7 +77,7 @@ a design problem.
 | `src/types.ts`, `src/index.ts` | The types plans import |
 | `plans/` | The plans that ship (`review`, `units`) and what they share |
 | `skills/flow/` | The skill, as the npm package (and Pi, oh-my-pi) ships it |
-| `plugins/claude`, `plugins/codex` | The skill as Claude Code and Codex plugins; marketplaces in `.claude-plugin/` and `.agents/plugins/` |
+| `../../plugins/claude/tmag-flow`, `../../plugins/codex/tmag-flow` | The skill as Claude Code and Codex plugins, in tmag's marketplaces, where `tmag setup`'s checkouts find them |
 | `test/unit/` | Tests that need no tmux |
 | `test/e2e/` | Plans run over tmag and fake agents in a private tmux server |
 
@@ -88,7 +88,7 @@ pnpm install
 pnpm check                                          # Biome, TypeScript, unit tests
 TMAG_SRC=/path/to/tmux-agent-experience pnpm e2e    # needs Go, tmux and git
 pnpm build                                          # dist/, what the package ships
-claude plugin validate .                            # the marketplace
+(cd ../.. && claude plugin validate .)              # tmag's marketplace, the plugins included
 ```
 
 ## Conventions

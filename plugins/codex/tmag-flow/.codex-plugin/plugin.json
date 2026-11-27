@@ -9,6 +9,6 @@
     "developerName": "ChrAlpha",
     "category": "Productivity",
     "capabilities": ["Read", "Write"],
-    "websiteURL": "https://github.com/ChrAlpha/tmag-flow"
+    "websiteURL": "https://github.com/ChrAlpha/tmux-agent-experience/tree/main/packages/flow"
   }
 }
