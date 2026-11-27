@@ -5,7 +5,6 @@
   "description": "A page for your phone that works with the coding agents tmag knows on a computer at home",
   "license": "MIT",
   "type": "module",
-  "packageManager": "pnpm@11.24.0",
   "engines": {
     "node": ">=22"
   },
