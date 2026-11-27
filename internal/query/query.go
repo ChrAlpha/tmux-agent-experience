@@ -14,6 +14,7 @@ import (
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/attach"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/tmux"
 )
@@ -187,6 +188,26 @@ func Load(ctx context.Context, store session.Store) (View, *attach.World, error)
 		v.here = &p
 	}
 	return v, w, nil
+}
+
+// SessionIDs are the ids of the sessions a target resolves among, as Load's
+// view holds them: every stored session but those whose host exited without
+// SessionEnd. It reads the process table, not tmux.
+func SessionIDs(ctx context.Context, store session.Store) ([]string, error) {
+	recs, _, err := store.All(ctx)
+	if err != nil {
+		return nil, err
+	}
+	pt, err := proc.Snapshot(ctx)
+	if err != nil {
+		return nil, err
+	}
+	live, _ := attach.Live(&attach.World{Proc: pt}, recs)
+	ids := make([]string, len(live))
+	for i, r := range live {
+		ids[i] = r.ID
+	}
+	return ids, nil
 }
 
 // Snapshot is every session and pane as they are, after the event Seq: a

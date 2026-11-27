@@ -40,17 +40,23 @@ func TestDeliveryNamesThePaneWithItsServer(t *testing.T) {
 	}
 }
 
-// A receipt names its session as a target resolves it, among every session
-// tmag has: by more than 8 characters where another's id begins the same,
-// also when the session it names has ended and has no record left.
+// A receipt names its session as a target resolves it, among the sessions
+// that run: by more than 8 characters where another's id begins the same,
+// also when the session it names has ended and has no record left, and by
+// no more for a record whose host exited without SessionEnd.
 func TestReceiptsNameSessionsAsTargetsResolveThem(t *testing.T) {
 	t.Setenv("TMUX", "")
 	t.Setenv("TMUX_PANE", "")
 	t.Setenv("TMUX_TMPDIR", t.TempDir())
 	log := eventlog.Open(t.TempDir())
-	hub, worker := "01a218ba-bdcd-7e83-861b-602aeb7d5f1e", "01a218ba-c97f-7830-8126-10d0a894cf82"
-	if err := (session.Store{Dir: log.Dir}).Put(context.Background(), session.Record{Agent: "codex", ID: hub}); err != nil {
-		t.Fatal(err)
+	hub, worker, gone := "01a218ba-bdcd-7e83-861b-602aeb7d5f1e", "01a218ba-c97f-7830-8126-10d0a894cf82", "01a218ba-c98f-7830-8126-10d0a894cf82"
+	for _, rec := range []session.Record{
+		{Agent: "codex", ID: hub},
+		{Agent: "codex", ID: gone, Host: session.Host{PID: 1 << 30}}, // no system has this pid
+	} {
+		if err := (session.Store{Dir: log.Dir}).Put(context.Background(), rec); err != nil {
+			t.Fatal(err)
+		}
 	}
 	var stdout bytes.Buffer
 	a := app{ctx: context.Background(), log: log, stdout: &stdout}

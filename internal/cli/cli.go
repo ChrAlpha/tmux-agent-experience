@@ -375,18 +375,14 @@ func idNames(ids []string) func(string) string {
 	}
 }
 
-// names is idNames among the sessions tmag has now, which targets resolve
+// names is idNames among the sessions that run now, which targets resolve
 // among; it names each session whole when it cannot read them.
 func (a *app) names() func(string) string {
 	ctx, cancel := a.signalContext()
 	defer cancel()
-	recs, _, err := a.store().All(ctx)
+	ids, err := query.SessionIDs(ctx, a.store())
 	if err != nil {
 		return func(id string) string { return id }
-	}
-	ids := make([]string, len(recs))
-	for i, r := range recs {
-		ids[i] = r.ID
 	}
 	return idNames(ids)
 }
