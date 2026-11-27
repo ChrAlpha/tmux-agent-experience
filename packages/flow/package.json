@@ -4,8 +4,12 @@
   "description": "Plans written as code, run over tmag: roles bound to coding agents in tmux panes, gates, retries and decisions, in a journal that survives every restart",
   "license": "MIT",
   "author": "ChrAlpha",
-  "homepage": "https://github.com/ChrAlpha/tmag-flow",
-  "repository": "github:ChrAlpha/tmag-flow",
+  "homepage": "https://github.com/ChrAlpha/tmux-agent-experience/tree/main/packages/flow#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ChrAlpha/tmux-agent-experience.git",
+    "directory": "packages/flow"
+  },
   "keywords": [
     "tmux",
     "agents",

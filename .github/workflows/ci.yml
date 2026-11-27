@@ -14,6 +14,12 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# The oldest tmag each package works with, the release its README.md names:
+# its end-to-end tests run against that release and against this commit.
+env:
+  CLIENT_TMAG_REF: v0.7.0
+  FLOW_TMAG_REF: v0.8.0
+
 defaults:
   run:
     shell: bash
@@ -23,16 +29,22 @@ jobs:
     runs-on: ubuntu-26.04
     outputs:
       code: ${{ steps.changes.outputs.code }}
+      client: ${{ steps.changes.outputs.client }}
+      flow: ${{ steps.changes.outputs.flow }}
       go: ${{ steps.go.outputs.version }}
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 2
-      # Documentation outside the plugins and the READMEs, whose install
-      # prompt the landing page repeats, feeds no check, so a change to it
-      # alone skips every job but ci, which still reports.
+      # code is tmag's: documentation outside the plugins and the READMEs,
+      # whose install prompt the landing page repeats, feeds none of its
+      # checks, and neither do the copies of tmag-flow's skill, which flow's
+      # checks compare; its plugins' manifests are tmag's to check against
+      # the marketplaces. A package's checks read every file of the package,
+      # and run tmag's code too, so code changes them. A change to
+      # documentation alone skips every job but ci, which still reports.
       - id: changes
-        name: Detect code changes
+        name: Detect changes
         env:
           BEFORE: ${{ github.event.before }}
         run: |
@@ -41,13 +53,24 @@ jobs:
             base=$BEFORE
             git fetch --quiet --depth=1 origin "$base" || base=
           fi
-          if [ -n "$base" ] &&
-            git diff --quiet "$base" HEAD -- . ':!*.md' ':!docs/' ':!LICENSE' ':!.github/ISSUE_TEMPLATE/' &&
-            git diff --quiet "$base" HEAD -- plugins/ README.md README.zh-CN.md; then
-            echo code=false >> "$GITHUB_OUTPUT"
-          else
-            echo code=true >> "$GITHUB_OUTPUT"
+          # Without a base, everything changed.
+          changed() { [ -z "$base" ] || ! git diff --quiet "$base" HEAD -- "$@"; }
+          flow_plugins=':(glob)plugins/*/tmag-flow/**'
+          not_flow_skills=':(exclude,glob)plugins/*/tmag-flow/skills/**'
+          workspace=(packages/package.json packages/pnpm-workspace.yaml packages/pnpm-lock.yaml)
+          code=false client=false flow=false
+          if changed . ':!*.md' ':!docs/' ':!LICENSE' ':!.github/ISSUE_TEMPLATE/' ':!packages/' "$not_flow_skills" ||
+            changed plugins/ README.md README.zh-CN.md "$not_flow_skills"; then
+            code=true
           fi
+          if [ $code = true ] || changed packages/client/ "${workspace[@]}"; then
+            client=true
+          fi
+          if [ $code = true ] || changed packages/flow/ "$flow_plugins" "${workspace[@]}"; then
+            flow=true
+          fi
+          echo "code=$code client=$client flow=$flow"
+          printf 'code=%s\nclient=%s\nflow=%s\n' $code $client $flow >> "$GITHUB_OUTPUT"
       # Every job of a run uses the same release, the latest one.
       - id: go
         uses: ./.github/actions/go-release
@@ -116,22 +139,132 @@ jobs:
             jq empty "$f" || { echo "invalid JSON: $f"; exit 1; }
           done
 
-  # The one check to require: it passes when every job passed, or when only
-  # documentation changed and the plan skipped them, whatever the matrix. It
-  # runs in a cancelled run too, failing there: a skipped check would pass.
-  ci:
-    if: always()
-    needs: [plan, test, lint, vulncheck, manifests]
+  client-check:
+    needs: plan
+    if: needs.plan.outputs.client == 'true'
     runs-on: ubuntu-26.04
     steps:
-      - env:
-          CODE: ${{ needs.plan.outputs.code }}
-          RESULTS: ${{ join(needs.*.result, ' ') }}
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-packages
+        with:
+          node-version: 24
+      - working-directory: packages/client
+        run: pnpm check && pnpm build
+
+  client-e2e:
+    needs: plan
+    if: needs.plan.outputs.client == 'true'
+    name: client-e2e (tmag ${{ matrix.tmag }})
+    runs-on: ubuntu-26.04
+    strategy:
+      fail-fast: false
+      matrix:
+        tmag: [commit, oldest]
+    steps:
+      - uses: actions/checkout@v7
+      - if: matrix.tmag == 'oldest'
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.CLIENT_TMAG_REF }}
+          path: oldest
+      - uses: ./.github/actions/setup-go
+        with:
+          go-version: ${{ needs.plan.outputs.go }}
+      - uses: ./.github/actions/setup-tmux
+      - uses: ./.github/actions/setup-packages
+        with:
+          node-version: 24
+      - working-directory: packages/client
+        run: pnpm exec playwright install --with-deps chromium webkit
+      - working-directory: packages/client
+        env:
+          TMAG_SRC: ${{ matrix.tmag == 'oldest' && format('{0}/oldest', github.workspace) || '' }}
+        run: pnpm e2e
+      - if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: client-test-results-${{ matrix.tmag }}
+          path: packages/client/test-results/
+
+  flow-check:
+    needs: plan
+    if: needs.plan.outputs.flow == 'true'
+    name: flow-check (node ${{ matrix.node }})
+    runs-on: ubuntu-26.04
+    strategy:
+      fail-fast: false
+      matrix:
+        # The oldest Node that strips types by default, and the latest.
+        node: ['22.18', '26']
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-packages
+        with:
+          node-version: ${{ matrix.node }}
+      - working-directory: packages/flow
+        run: pnpm check && pnpm build
+
+  flow-e2e:
+    needs: plan
+    if: needs.plan.outputs.flow == 'true'
+    name: flow-e2e (${{ matrix.os }}, tmag ${{ matrix.tmag }}${{ matrix.packaged && ', packaged' || '' }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-26.04, macos-26]
+        tmag: [commit, oldest]
+        include:
+          - os: ubuntu-26.04
+            tmag: commit
+            packaged: true
+    steps:
+      - uses: actions/checkout@v7
+      - if: matrix.tmag == 'oldest'
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.FLOW_TMAG_REF }}
+          path: oldest
+      - uses: ./.github/actions/setup-go
+        with:
+          go-version: ${{ needs.plan.outputs.go }}
+      - uses: ./.github/actions/setup-tmux
+      - uses: ./.github/actions/setup-packages
+        with:
+          node-version: 26
+      - if: matrix.packaged
+        name: Install the package
+        working-directory: packages/flow
         run: |
-          for result in $RESULTS; do
+          pnpm pack
+          npm install -g --prefix "$RUNNER_TEMP/pkg" ./tmag-flow-*.tgz
+          echo "TMAG_FLOW_CLI=$RUNNER_TEMP/pkg/bin/tmag-flow" >> "$GITHUB_ENV"
+      - working-directory: packages/flow
+        env:
+          TMAG_SRC: ${{ matrix.tmag == 'oldest' && format('{0}/oldest', github.workspace) || '' }}
+        run: pnpm e2e
+
+  # The one check to require: it passes when every job passed, or when the
+  # plan skipped a job because nothing it checks changed, whatever the
+  # matrix. It runs in a cancelled run too, failing there: a skipped check
+  # would pass.
+  ci:
+    if: always()
+    needs: [plan, test, lint, vulncheck, manifests, client-check, client-e2e, flow-check, flow-e2e]
+    runs-on: ubuntu-26.04
+    steps:
+      # A package's jobs are named after it and follow its output of the
+      # plan; the others follow code.
+      - env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          jq -r '.plan.outputs as $plan | to_entries[]
+            | [.key, .value.result, ($plan[.key | capture("^(?<p>client|flow)-").p // "code"] // "")]
+            | @tsv' <<< "$NEEDS" |
+          while IFS=$'\t' read -r job result changed; do
             case "$result" in
               success) ;;
-              skipped) [ "$CODE" = false ] || { echo "::error::a job was skipped although code changed"; exit 1; } ;;
-              *) echo "::error::a job ended $result"; exit 1 ;;
+              skipped) [ "$changed" = false ] || { echo "::error::$job was skipped although what it checks changed"; exit 1; } ;;
+              *) echo "::error::$job ended $result"; exit 1 ;;
             esac
           done

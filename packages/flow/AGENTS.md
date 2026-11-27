@@ -98,7 +98,9 @@ pnpm build                                          # dist/, what the package sh
   relative imports with their `.ts` extension, which the build rewrites.
 - Biome formats and lints; `pnpm format` applies it.
 - Commits follow Conventional Commits. Code comments and docs are in English.
-- The version lives in `package.json` and the two plugin manifests.
+- The version lives in `package.json` and the two plugin manifests; a
+  `flow/vX.Y.Z` tag that matches it publishes the package
+  (`flow-release.yml`), never as the repository's latest release.
 
 ## Testing
 
@@ -113,5 +115,6 @@ pnpm build                                          # dist/, what the package sh
 - A run started by an agent is tested with a fake agent whose tool runs
   tmag-flow (`is the agent whose tool runs it`).
 - `TMAG_FLOW_CLI` runs the end-to-end tests against an installed package.
-- CI runs the end-to-end tests on Linux and macOS against the oldest tmag
-  README names and tmag's main, and once against the packed package.
+- CI (`ci.yml`'s flow jobs) runs the end-to-end tests on Linux and macOS
+  against the oldest tmag README names and tmag of the same commit, and once
+  against the packed package.

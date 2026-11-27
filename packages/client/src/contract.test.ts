@@ -16,6 +16,8 @@ describe('older', () => {
 describe('minimum', () => {
   it('is the tmag README.md asks for and CI tests against', () => {
     expect(readFileSync('README.md', 'utf8')).toContain(`You need tmag ${minimum} or later`)
-    expect(readFileSync('.github/workflows/ci.yml', 'utf8')).toMatch(new RegExp(`TMAG_REF: v${minimum}\\n`))
+    expect(readFileSync('../../.github/workflows/ci.yml', 'utf8')).toMatch(
+      new RegExp(`CLIENT_TMAG_REF: v${minimum}\\n`),
+    )
   })
 })
