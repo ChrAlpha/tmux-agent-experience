@@ -222,11 +222,12 @@ the commands' output) in the run's directory, which git ignores.
 ```sh
 pnpm install
 pnpm check                                          # Biome, TypeScript, unit tests
-TMAG_SRC=/path/to/tmux-agent-experience pnpm e2e    # tmag and fake agents in a private tmux server
+pnpm e2e                                            # tmag and fake agents in a private tmux server
 pnpm build                                          # dist/, as the package ships it
 ```
 
-The end-to-end tests build tmag and its fake agent from `TMAG_SRC` and run
-plans in a tmux server of their own; nothing reaches your own sessions.
+The end-to-end tests build tmag and its fake agent from this repository, or
+the checkout `TMAG_SRC` names, and run plans in a tmux server of their own;
+nothing reaches your own sessions.
 `TMAG_FLOW_CLI` runs them against an installed `tmag-flow` instead of the
 sources.

@@ -73,10 +73,11 @@ and how to set it up.
 
 ```sh
 pnpm check
-TMAG_SRC=/path/to/tmux-agent-experience pnpm e2e
+pnpm e2e
 ```
 
-`pnpm e2e` runs every test in WebKit and Chromium at a phone's size. A change
+`pnpm e2e` runs every test in WebKit and Chromium at a phone's size, against
+tmag built from this repository, or from the checkout `TMAG_SRC` names. A change
 to what the page shows comes with a test there; look at it in a browser too,
 light and dark. Never point a test at the developer's tmux server or
 credentials: `e2e/world.ts` builds its own.

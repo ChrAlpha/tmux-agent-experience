@@ -188,10 +188,10 @@ to each `NAME=URL` in `TMAG_COMPUTERS`, separated by commas; a tmag serve they
 reach needs `--host localhost:5173 --origin http://localhost:5173` (4173 for
 `preview`).
 
-`TMAG_SRC=/path/to/tmux-agent-experience pnpm e2e` builds the page and runs
-the end-to-end tests in WebKit and Chromium, at a phone's size, against tmag
-and the fake agents built from that checkout, in private tmux servers, one for
-each of two computers: nothing touches your own sessions. They need Go, tmux and
+`pnpm e2e` builds the page and runs the end-to-end tests in WebKit and
+Chromium, at a phone's size, against tmag and the fake agents built from this
+repository, or from the checkout `TMAG_SRC` names, in private tmux servers, one
+for each of two computers: nothing touches your own sessions. They need Go, tmux and
 `pnpm exec playwright install chromium webkit`.
 
 ## History
