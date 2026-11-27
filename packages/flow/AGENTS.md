@@ -100,7 +100,9 @@ pnpm build                                          # dist/, what the package sh
 - Commits follow Conventional Commits. Code comments and docs are in English.
 - The version lives in `package.json` and the two plugin manifests; a
   `flow/vX.Y.Z` tag that matches it publishes the package
-  (`flow-release.yml`), never as the repository's latest release.
+  (`flow-release.yml`), never as the repository's latest release. npm takes
+  it through trusted publishing, from that workflow file by name: renaming
+  it needs the same change in the package's trusted publisher on npmjs.com.
 
 ## Testing
 
