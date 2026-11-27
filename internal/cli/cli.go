@@ -354,29 +354,41 @@ func (a *app) emit(fields map[string]any) {
 	_ = enc.Encode(doc)
 }
 
-// uniquePrefix cuts id to its shortest prefix of at least 8 characters that
-// none of ids shares: a Codex id begins with its time, so the ids of Codex
-// sessions started within a minute share their first 8.
-func uniquePrefix(id string, ids []string) string {
-	n := min(8, len(id))
-	for _, other := range ids {
-		if other == id {
-			continue
+// idNames names sessions in text output as a target resolves them, among
+// the sessions of ids: each by the shortest prefix of at least 8 characters
+// that no other of them shares. A Codex id begins with its time, so the ids
+// of Codex sessions started within a minute share their first 8.
+func idNames(ids []string) func(string) string {
+	return func(id string) string {
+		n := min(8, len(id))
+		for _, other := range ids {
+			if other == id {
+				continue
+			}
+			common := 0
+			for common < len(id) && common < len(other) && id[common] == other[common] {
+				common++
+			}
+			n = max(n, min(common+1, len(id)))
 		}
-		common := 0
-		for common < len(id) && common < len(other) && id[common] == other[common] {
-			common++
-		}
-		n = max(n, min(common+1, len(id)))
+		return id[:n]
 	}
-	return id[:n]
 }
 
-func shortID(id string) string {
-	if len(id) > 8 {
-		return id[:8]
+// names is idNames among the sessions tmag has now, which targets resolve
+// among; it names each session whole when it cannot read them.
+func (a *app) names() func(string) string {
+	ctx, cancel := a.signalContext()
+	defer cancel()
+	recs, _, err := a.store().All(ctx)
+	if err != nil {
+		return func(id string) string { return id }
 	}
-	return id
+	ids := make([]string, len(recs))
+	for i, r := range recs {
+		ids[i] = r.ID
+	}
+	return idNames(ids)
 }
 
 func splitList(s string) []string {

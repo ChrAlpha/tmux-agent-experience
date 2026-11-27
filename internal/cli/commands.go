@@ -67,6 +67,12 @@ func (a *app) cmdList(args []string) int {
 	if err != nil {
 		return a.fail("list", err)
 	}
+	// Ids are cut among every session, which targets resolve among, also
+	// where --mine lists only some of them.
+	ids := make([]string, len(snap.Sessions))
+	for i, s := range snap.Sessions {
+		ids[i] = s.ID
+	}
 	if *mine {
 		if snap.Caller.By == nil || snap.Caller.By.Session == "" {
 			return a.usageError("list", errors.New("--mine lists the agents tied to the agent session running it, and tmag proves none of yours"))
@@ -77,7 +83,7 @@ func (a *app) cmdList(args []string) int {
 		a.emit(map[string]any{"seq": snap.Seq, "caller": snap.Caller, "sessions": snap.Sessions, "panes": snap.Panes})
 		return ExitOK
 	}
-	a.printView(snap.View, snap.Caller)
+	a.printView(snap.View, snap.Caller, idNames(ids))
 	if hint := codexHint(snap.View); hint != "" {
 		fmt.Fprintln(a.stderr, "\n"+hint)
 	}
@@ -86,8 +92,8 @@ func (a *app) cmdList(args []string) int {
 
 // printView lists every agent pane, then every session no pane shows,
 // marking the caller's own session, and for the others the agent session
-// that started each and how it is tied to the caller.
-func (a *app) printView(v query.View, caller query.Caller) {
+// that started each and how it is tied to the caller; name names a session.
+func (a *app) printView(v query.View, caller query.Caller, name func(string) string) {
 	if len(v.Panes) == 0 && len(v.Sessions) == 0 {
 		fmt.Fprintln(a.stdout, "no agents")
 		return
@@ -102,23 +108,17 @@ func (a *app) printView(v query.View, caller query.Caller) {
 		}
 		return path
 	}
-	// An id is cut where no other listed session's begins the same.
-	ids := make([]string, 0, len(v.Sessions))
-	for _, s := range v.Sessions {
-		ids = append(ids, s.ID)
-	}
-	cut := func(id string) string { return uniquePrefix(id, ids) }
 	own := func(s query.Session) string {
 		ties := v.TiesOf(caller, s)
 		if ties.Own {
-			return cut(s.ID) + " (you)"
+			return name(s.ID) + " (you)"
 		}
 		var marks []string
 		switch {
 		case ties.Started:
 			marks = append(marks, "started by you")
 		case s.StartedBy != nil:
-			marks = append(marks, "started by "+cut(s.StartedBy.Session))
+			marks = append(marks, "started by "+name(s.StartedBy.Session))
 		}
 		if ties.OwesYou {
 			marks = append(marks, "owes you")
@@ -127,9 +127,9 @@ func (a *app) printView(v query.View, caller query.Caller) {
 			marks = append(marks, "you owe it")
 		}
 		if len(marks) == 0 {
-			return cut(s.ID)
+			return name(s.ID)
 		}
-		return cut(s.ID) + " (" + strings.Join(marks, ", ") + ")"
+		return name(s.ID) + " (" + strings.Join(marks, ", ") + ")"
 	}
 	tw := tabwriter.NewWriter(a.stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(tw, "TARGET\tWINDOW\tPANE\tAGENT\tSTATE\tFOR\tID\tCWD")
@@ -283,7 +283,7 @@ func (a *app) cmdInspect(args []string) int {
 			v.Sessions[0].Panes = nil // list it on its own row
 		}
 	}
-	a.printView(v, query.Caller{})
+	a.printView(v, query.Caller{}, a.names())
 	if title != "" {
 		fmt.Fprintf(a.stdout, "\ntitle: %s\n", title)
 	}
@@ -818,6 +818,7 @@ func (a *app) waitMany(ctx context.Context, pos, want []string, asked, all bool,
 		a.emit(map[string]any{"reached": reached})
 		return ExitOK
 	}
+	name := a.names()
 	for _, r := range reached {
 		state := describe(r.State, r.Kind)
 		switch {
@@ -826,7 +827,7 @@ func (a *app) waitMany(ctx context.Context, pos, want []string, asked, all bool,
 		case r.Settled:
 			state = "settled, " + state
 		}
-		fmt.Fprintf(a.stdout, "%s %s\n", shortID(r.Session.ID), state)
+		fmt.Fprintf(a.stdout, "%s %s\n", name(r.Session.ID), state)
 	}
 	return ExitOK
 }
@@ -909,7 +910,7 @@ func (a *app) reportWait(s query.Session, state, kind, turn string, started bool
 	if !started {
 		state += " (no turn started)"
 	}
-	fmt.Fprintf(a.stdout, "%s %s\n", shortID(s.ID), state)
+	fmt.Fprintf(a.stdout, "%s %s\n", a.names()(s.ID), state)
 }
 
 // reportDelivery prints where a verb went.
@@ -925,8 +926,11 @@ func (a *app) reportDelivery(what string, d query.Delivery) {
 		if d.Pane != nil {
 			where = paneName(tmux.DefaultServer().Socket, d.Pane.Server, d.Pane.ID)
 		}
-		who := shortID(d.Session.ID)
-		if who == "" && d.Pane != nil {
+		who := d.Session.ID
+		switch {
+		case who != "":
+			who = a.names()(who)
+		case d.Pane != nil:
 			who = d.Pane.Agent
 		}
 		fmt.Fprintf(a.stdout, "%s %s (%s) seq %d\n", what, who, where, d.Seq)

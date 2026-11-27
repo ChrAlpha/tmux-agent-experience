@@ -26,7 +26,7 @@ func TestListMarksTies(t *testing.T) {
 	}}
 	rows := func(c query.Caller) map[string]string {
 		var out bytes.Buffer
-		(&app{stdout: &out}).printView(v, c)
+		(&app{stdout: &out}).printView(v, c, idNames(nil))
 		got := map[string]string{}
 		for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n")[1:] {
 			f := strings.Fields(line)
@@ -55,7 +55,8 @@ func TestListMarksTies(t *testing.T) {
 }
 
 // Ids that share their first 8 characters, as Codex's do when started within
-// a minute, are listed by as many as tell them apart, here and in marks.
+// a minute, are listed by as many as tell them apart among the sessions
+// named, here and in marks.
 func TestListCutsIdsWhereTheyDiffer(t *testing.T) {
 	t.Setenv("TMUX", "")
 	t.Setenv("TMUX_TMPDIR", t.TempDir())
@@ -66,14 +67,18 @@ func TestListCutsIdsWhereTheyDiffer(t *testing.T) {
 		{Agent: "codex", ID: b, State: "idle", StartedBy: &hub},
 		{Agent: "claude", ID: "1787a44e-0000-7000-8000-000000000001", State: "idle"},
 	}}
+	var ids []string
+	for _, s := range v.Sessions {
+		ids = append(ids, s.ID)
+	}
 	var out bytes.Buffer
-	(&app{stdout: &out}).printView(v, query.Caller{})
+	(&app{stdout: &out}).printView(v, query.Caller{}, idNames(ids))
 	for _, want := range []string{" 01a218ba-b ", " 01a218ba-c (started by 01a218ba-b)", " 1787a44e "} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("list does not hold %q:\n%s", want, out.String())
 		}
 	}
-	if got := uniquePrefix("abc", []string{"abc", "abd"}); got != "abc" {
+	if got := idNames([]string{"abc", "abd"})("abc"); got != "abc" {
 		t.Errorf("a short id is cut to %q", got)
 	}
 }

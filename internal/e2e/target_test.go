@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -102,5 +103,47 @@ func TestWaitFollowsAPaneUntilItShowsASession(t *testing.T) {
 	r = h.tmag("", "wait", h.target(pane), "--for", "idle", "--json")
 	if r.code != 0 || !strings.Contains(r.out, `"id":"`+sidA+`"`) || !strings.Contains(r.out, `"state":"idle"`) {
 		t.Fatalf("wait on the pane: %d %s", r.code, r.out)
+	}
+}
+
+// Every id tmag prints for a caller to copy names the session it shows:
+// Codex sessions started within a minute share their first 8 characters,
+// and a start's receipt, a hub's list --mine and a wait for several cut an
+// id among all of tmag's sessions, which targets resolve among.
+func TestEveryPrintedIdResolves(t *testing.T) {
+	const (
+		hub      = "01a218ba-bdcd-7e83-861b-602aeb7d5f1e"
+		worker   = "01a218ba-c97f-7830-8126-10d0a894cf82"
+		outsider = "01a218ba-c98f-7830-8126-10d0a894cf82"
+	)
+	h := start(t)
+	spawn := func(sid, out string) string {
+		pane := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sid, "FAKE_OUT": out, "FAKE_HOOKS": "1", "FAKE_TURN_MS": "300"}, filepath.Join(bin, "claude"))
+		h.waitPane(pane, "idle", "process")
+		h.waitSession(sid, "idle")
+		return pane
+	}
+	hubOut := filepath.Join(h.dir, "hub")
+	hubPane := spawn(hub, hubOut)
+	spawn(outsider, filepath.Join(h.dir, "outsider"))
+	startable(h, map[string]string{"FAKE_SESSION": worker, "FAKE_HOOKS": "1", "FAKE_TURN_MS": "300"})
+	typed(t, h, hubPane, hub, "tmag start claude --name worker --timeout 20s")
+	readEventually(t, hubOut, "tool 0 started claude 01a218ba-c97 in %")
+	h.waitSession(worker, "idle")
+
+	typed(t, h, hubPane, hub, "tmag list --mine")
+	readEventually(t, hubOut, "tool 0 TARGET")
+	b, _ := os.ReadFile(hubOut)
+	mine := string(b)[strings.LastIndex(string(b), "tool 0 TARGET"):]
+	if !strings.Contains(mine, " 01a218ba-b (you) ") || !strings.Contains(mine, " 01a218ba-c97 (started by you) ") || strings.Contains(mine, "01a218ba-c98") {
+		t.Fatalf("list --mine cuts ids among the sessions it shows:\n%s", mine)
+	}
+	if r := h.tmag("", "wait", worker, outsider, "--for", "idle", "--all"); r.code != 0 || r.out != "01a218ba-c97 idle\n01a218ba-c98 idle\n" {
+		t.Fatalf("a wait for several: %d %q", r.code, r.out)
+	}
+	for prefix, sid := range map[string]string{"01a218ba-b": hub, "01a218ba-c97": worker, "01a218ba-c98": outsider} {
+		if r := h.tmag("", "inspect", prefix, "--json"); r.code != 0 || !strings.Contains(r.out, `"id":"`+sid+`"`) {
+			t.Errorf("inspect %s: %d %s", prefix, r.code, r.out)
+		}
 	}
 }

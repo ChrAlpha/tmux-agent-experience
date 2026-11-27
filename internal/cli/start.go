@@ -103,9 +103,10 @@ func (a *app) reportStart(st query.Started) {
 		}
 		a.emit(doc)
 	} else {
-		fmt.Fprintf(a.stdout, "started %s %s in %s (%s) seq %d\n", st.Session.Agent, shortID(st.Session.ID), where, st.Dir, st.Seq)
+		name := a.names()
+		fmt.Fprintf(a.stdout, "started %s %s in %s (%s) seq %d\n", st.Session.Agent, name(st.Session.ID), where, st.Dir, st.Seq)
 		if d := st.Delivery; d != nil {
-			fmt.Fprintf(a.stdout, "sent to %s (%s) seq %d\n", shortID(d.Session.ID), d.Via, d.Seq)
+			fmt.Fprintf(a.stdout, "sent to %s (%s) seq %d\n", name(d.Session.ID), d.Via, d.Seq)
 		}
 	}
 	if d := st.Delivery; d != nil {
