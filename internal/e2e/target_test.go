@@ -96,6 +96,11 @@ func TestANameNamesOneWindowExactly(t *testing.T) {
 func TestWaitFollowsAPaneUntilItShowsASession(t *testing.T) {
 	h := start(t)
 	pane := h.spawn(h.dir, map[string]string{"FAKE_SESSION": sidA, "FAKE_HOOKS": "1", "FAKE_START_MS": "3000"}, filepath.Join(bin, "claude"))
+	// tmux opens the pane before its shell runs the agent, which is there
+	// only once its process is.
+	h.eventually("the pane runs claude", func() bool {
+		return h.tmux("display-message", "-p", "-t", pane, "#{pane_current_command}") == "claude"
+	})
 	r := h.tmag("", "send", h.target(pane), "hello")
 	if r.code != 3 || !strings.Contains(r.out, "refused (unbound)") || !strings.Contains(r.out, "next: an agent shows its session from its first hook: tmag wait "+h.target(pane)+" --for idle") {
 		t.Fatalf("send before the first hook: %d %s", r.code, r.out)
