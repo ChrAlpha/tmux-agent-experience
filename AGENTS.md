@@ -14,7 +14,8 @@ layers, in order of importance:
    TPM, it keeps the `tmag` binary in its own directory and gives tmux users
    alerts, key bindings and status placeholders by default.
 2. **Agent plugins** (`plugins/<host>/`), two for each of Claude Code,
-   Codex, Pi and oh-my-pi. `tmag` is the sensor: hooks that report state by
+   Codex, Pi and oh-my-pi, beside tmag-flow's skill (`packages/flow`) for
+   Claude Code and Codex. `tmag` is the sensor: hooks that report state by
    calling `tmag hook` (in Pi and oh-my-pi, which have no hooks, an
    extension that runs it), and for Claude Code's permission prompts
    `tmag answer-hook`, which also carries a decision made with `tmag answer`.
@@ -157,6 +158,7 @@ promise is documented in the package, and changes with it.
 | `internal/e2e` | End-to-end tests with real tmux and a fake agent |
 | `plugins/<host>/tmag` | Agent plugins: hooks for Claude Code and Codex, where Claude's `PermissionRequest` runs `tmag answer-hook`; for Pi and oh-my-pi a package whose extension runs `tmag hook` and serves the session's inbox, interrupts included for Pi |
 | `plugins/<host>/tmag-peers` | The `peers` skill and the `tmag` launcher (`bin/` in Claude Code, which puts it on `PATH`; the skill's `scripts/` elsewhere) |
+| `plugins/{claude,codex}/tmag-flow` | tmag-flow's `flow` skill, which `packages/flow` keeps; `tmag setup` installs it nowhere |
 | `.claude-plugin/`, `.agents/plugins/` | Marketplace manifests |
 | `SKILL.md` | Install and update procedure that agents follow from its raw URL |
 | `site/` | The landing page, in English and `zh-CN/`: static files that `.github/workflows/pages.yml` publishes from each release |
@@ -195,8 +197,8 @@ gh workflow run stress.yml --ref BRANCH -f run='^TestA$' -f count=20   # the sam
   tmag never reads or migrates another layout's state. An optional record
   field an older tmag ignores, and drops when it rewrites a record, is not a
   layout change; the next hook writes it again.
-- The version lives in `internal/version/version.go` and the eight plugin
-  manifests; `TestManifestVersions` keeps them equal.
+- The version lives in `internal/version/version.go` and the manifests of
+  tmag's eight plugins; `TestManifestVersions` keeps them equal.
 - The launchers are `binpath.Launcher()`, the other copies of the skill are
   the Claude copy, and oh-my-pi's `report.ts` is Pi's; tests compare them
   byte for byte, so change the generator or the first copy and copy it

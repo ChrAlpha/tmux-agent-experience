@@ -36,16 +36,17 @@ npm install -g tmag-flow
 tmag-flow version
 ```
 
-Agents learn tmag-flow from a skill, `flow`. Install it for each agent that
-should run plans:
+Agents learn tmag-flow from a skill, `flow`. Claude Code and Codex get it
+from a plugin in tmag's marketplace, which `tmag setup` added. Install it for
+each agent that should run plans:
 
 ```sh
 # Claude Code
-claude plugin marketplace add ChrAlpha/tmag-flow --sparse .claude-plugin plugins/claude
-claude plugin install tmag-flow@tmag-flow
+claude plugin marketplace update tmux-agent-experience
+claude plugin install tmag-flow@tmux-agent-experience
 # Codex
-codex plugin marketplace add ChrAlpha/tmag-flow --sparse .agents --sparse plugins/codex
-codex plugin add tmag-flow@tmag-flow
+codex plugin marketplace upgrade tmux-agent-experience
+codex plugin add tmag-flow@tmux-agent-experience
 # Pi and oh-my-pi: the npm package is their package
 pi install "$(npm root -g)/tmag-flow"
 omp plugin install "$(npm root -g)/tmag-flow"

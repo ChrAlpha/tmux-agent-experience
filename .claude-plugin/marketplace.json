@@ -14,6 +14,11 @@
       "name": "tmag-peers",
       "source": "./plugins/claude/tmag-peers",
       "description": "Lets Claude Code work with the other coding agents in your tmux panes through tmag."
+    },
+    {
+      "name": "tmag-flow",
+      "source": "./plugins/claude/tmag-flow",
+      "description": "Teaches Claude Code to run coding agents in tmux panes through a plan with tmag-flow."
     }
   ]
 }

@@ -53,8 +53,8 @@ describe('the skill', () => {
 
   it('is the same for every host', () => {
     for (const copy of [
-      'plugins/claude/tmag-flow/skills/flow/SKILL.md',
-      'plugins/codex/tmag-flow/skills/flow/SKILL.md',
+      '../../plugins/claude/tmag-flow/skills/flow/SKILL.md',
+      '../../plugins/codex/tmag-flow/skills/flow/SKILL.md',
     ]) {
       assert.equal(read(copy), skill, `${copy} is a copy of skills/flow/SKILL.md`)
     }
@@ -65,8 +65,8 @@ describe('versions', () => {
   it('are the same in the package and every plugin', () => {
     const version = (JSON.parse(read('package.json')) as { version: string }).version
     for (const manifest of [
-      'plugins/claude/tmag-flow/.claude-plugin/plugin.json',
-      'plugins/codex/tmag-flow/.codex-plugin/plugin.json',
+      '../../plugins/claude/tmag-flow/.claude-plugin/plugin.json',
+      '../../plugins/codex/tmag-flow/.codex-plugin/plugin.json',
     ]) {
       assert.equal((JSON.parse(read(manifest)) as { version: string }).version, version, manifest)
     }

@@ -3,8 +3,8 @@
   "version": "0.1.0",
   "description": "Teaches Claude Code to run coding agents in tmux panes through a plan written as code: reviews whose findings are fixed and re-checked, units their commands accept, and decisions, in a journal that survives restarts. Uses the tmag-flow command and the tmag tmux plugin.",
   "author": { "name": "ChrAlpha" },
-  "homepage": "https://github.com/ChrAlpha/tmag-flow",
-  "repository": "https://github.com/ChrAlpha/tmag-flow",
+  "homepage": "https://github.com/ChrAlpha/tmux-agent-experience/tree/main/packages/flow",
+  "repository": "https://github.com/ChrAlpha/tmux-agent-experience",
   "license": "MIT",
   "keywords": ["tmux", "agents", "orchestration"]
 }
