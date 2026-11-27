@@ -1,5 +1,5 @@
 // The documents of tmag/http/v2 and the tmag/v2 documents it relays, as far as
-// the page reads them. tmux-agent-experience's docs/http-api.md and its wiki's
+// the page reads them. The repository's docs/http-api.md and its wiki's
 // Architecture and Contracts page are the source; a field either may omit is
 // optional here.
 

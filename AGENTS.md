@@ -26,6 +26,13 @@ layers, in order of importance:
    panes show them, the event log and a versioned JSON contract (`tmag/v2`)
    for agents, scripts and remote clients.
 
+`packages/` holds products of their own built on those contracts
+([ADR 0004](docs/adr/0004-one-repository.md)): `client`, a page for a phone
+over `tmag/http/v2`, and `flow`, a runner of plans written as code over the
+CLI. They reach tmag only as its contracts let any client, and tmag imports
+nothing of them. Each keeps its promises, commands and conventions in its own
+AGENTS.md; the invariants below are tmag's.
+
 ## Invariants
 
 Every change must keep these promises. Tests guard most of them; treat a
@@ -162,6 +169,7 @@ promise is documented in the package, and changes with it.
 | `.claude-plugin/`, `.agents/plugins/` | Marketplace manifests |
 | `SKILL.md` | Install and update procedure that agents follow from its raw URL |
 | `site/` | The landing page, in English and `zh-CN/`: static files that `.github/workflows/pages.yml` publishes from each release |
+| `packages/` | The pnpm workspace of `client` and `flow`, which release on tags of their own (`client/v*`, `flow/v*`), never as the latest release |
 
 ## Commands
 

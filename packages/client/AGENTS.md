@@ -1,6 +1,6 @@
 # AGENTS.md
 
-This repository is a page for a phone: Preact components in TypeScript that
+This package is a page for a phone: Preact components in TypeScript that
 Vite builds into static files, which `tailscale serve`, or any server that also
 proxies `/v2/` to `tmag serve`, serves as they are, and `/NAME/v2/` to the
 `tmag serve` of each other computer it works with. README.md says what it shows
@@ -14,14 +14,15 @@ and how to set it up.
   can make agents run commands on the owner's computer: one is added only for
   what the page cannot do well without it, and the list in `package.json`
   stays short.
-- **It speaks one contract.** Only `tmag/http/v2`, as tmux-agent-experience's
+- **It speaks one contract.** Only `tmag/http/v2`, as the repository's
   `docs/http-api.md` documents it, and the `tmag/v2` documents it relays;
   `src/contract.ts` types what the page reads of them. A field the contract
   does not name is not there; one it may omit is optional. A change the page
-  needs from tmag is a change to that contract, made there first.
+  needs from tmag is a change to that contract, in tmag and its
+  documentation.
 - **The watch is the truth.** `src/view.ts` rebuilds each computer's sessions
   and panes from its `/v2/watch` as the contract tells a client to, the rules
-  of tmux-agent-experience's e2e follower. A computer is one instance: its
+  of tmag's end-to-end follower (`internal/e2e`). A computer is one instance: its
   `/v2/info` names it, and says which operations it serves, which are all the
   page offers there. What the page reads on demand (turns, a request, a
   screen) it reads again when an event reports that session; a session's
@@ -51,7 +52,7 @@ and how to set it up.
 | Path | Role |
 | --- | --- |
 | `index.html`, `src/main.tsx` | The document, and the page fitted to the visual viewport |
-| `public/` | tmag's icon, as tmux-agent-experience's landing page has it, and the PNG iOS needs of it |
+| `public/` | tmag's icon, as the landing page (`site/`) has it, and the PNG iOS needs of it |
 | `vite.config.ts` | The build, its Content-Security-Policy, the `/v2/` proxy of `dev` and `preview`, and Vitest |
 | `src/contract.ts` | The documents the page reads and writes |
 | `src/api.ts` | Requests, pairing, and the event stream, at a computer's path |

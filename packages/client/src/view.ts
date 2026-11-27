@@ -1,8 +1,8 @@
 // The view of one tmag instance that the page rebuilds from /v2/watch, as
 // tmag/http/v2 tells a client to: a snapshot replaces sessions and panes, an
 // event with a state reports its session in full, SessionEnd and Exit remove
-// it, and a panes document replaces the panes. tmux-agent-experience's e2e
-// follower keeps the same rules.
+// it, and a panes document replaces the panes. tmag's end-to-end follower
+// (internal/e2e) keeps the same rules.
 
 import type { Event, Pane, Session, Turn, WatchDoc } from './contract'
 
