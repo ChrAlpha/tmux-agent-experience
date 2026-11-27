@@ -1,0 +1,48 @@
+name: client release
+
+# A client/vX.Y.Z tag releases the page packages/client builds at that
+# version. Its release is never marked latest: latest is tmag's, which
+# installers and the pages workflow look up.
+on:
+  push:
+    tags: ['client/v*']
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  release:
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The notes are the package's commits since its previous release.
+          fetch-depth: 0
+      - name: Check version
+        run: |
+          want="${GITHUB_REF_NAME#client/v}"
+          [ "$(jq -r .version packages/client/package.json)" = "$want" ] || { echo "tag $GITHUB_REF_NAME does not match packages/client/package.json"; exit 1; }
+      - uses: ./.github/actions/setup-packages
+        with:
+          node-version: 24
+      - working-directory: packages/client
+        run: pnpm check && pnpm build
+      # The archive holds the page at its root, under a name that stays the
+      # same from release to release.
+      - name: Archive
+        run: |
+          mkdir release
+          tar -C packages/client/dist -czf release/tmag-client.tar.gz .
+          (cd release && sha256sum -- tmag-client.tar.gz > checksums.txt)
+      - uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: release/tmag-client.tar.gz
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          previous=$(git describe --tags --abbrev=0 --match 'client/v*' "$GITHUB_REF_NAME^" 2>/dev/null) || previous=
+          git log --format='- %s' ${previous:+"$previous.."}"$GITHUB_REF_NAME" -- packages/client > notes.md
+          gh release create "$GITHUB_REF_NAME" release/* --title "$GITHUB_REF_NAME" --notes-file notes.md --latest=false

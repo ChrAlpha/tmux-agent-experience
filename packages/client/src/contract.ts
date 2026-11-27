@@ -5,7 +5,7 @@
 
 /**
  * The oldest tmag whose contract the page needs: `read --turns` came in
- * 0.7.0. README.md and TMAG_REF in .github/workflows/ci.yml name it too.
+ * 0.7.0. README.md and CLIENT_TMAG_REF in .github/workflows/ci.yml name it too.
  */
 export const minimum = '0.7.0'
 

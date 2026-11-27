@@ -1,0 +1,28 @@
+name: Set up the packages
+description: Install pnpm and one Node.js release, then the packages' workspace from its lockfile.
+
+inputs:
+  node-version:
+    description: The Node.js release, such as 24.
+    required: true
+  registry-url:
+    description: The npm registry a job publishes to; empty for a job that publishes nothing.
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    # The workspace's package.json names the pnpm release.
+    - uses: pnpm/action-setup@v6
+      with:
+        package_json_file: packages/package.json
+    - uses: actions/setup-node@v7
+      with:
+        node-version: ${{ inputs.node-version }}
+        cache: pnpm
+        cache-dependency-path: packages/pnpm-lock.yaml
+        registry-url: ${{ inputs.registry-url }}
+    - shell: bash
+      working-directory: packages
+      run: pnpm install --frozen-lockfile

@@ -74,20 +74,21 @@ with the computer's name in your tailnet: `Self.DNSName` in
    Reload the configuration and press `prefix + M-r`: tmag serve runs in a
    window of its own, on `127.0.0.1:7777`, until you close that window.
 
-2. Get the latest release, check it, and unpack it in a directory of its own,
-   here `~/tmag-client/web`:
+2. Get the latest release, which this README names, check it, and unpack it
+   in a directory of its own, here `~/tmag-client/web`:
 
    ```sh
    mkdir -p ~/tmag-client && cd ~/tmag-client
-   curl -fsSLO https://github.com/ChrAlpha/tmag-client/releases/latest/download/tmag-client.tar.gz
-   curl -fsSLO https://github.com/ChrAlpha/tmag-client/releases/latest/download/checksums.txt
+   release=https://github.com/ChrAlpha/tmux-agent-experience/releases/download/client/v0.1.0
+   curl -fsSLO "$release/tmag-client.tar.gz"
+   curl -fsSLO "$release/checksums.txt"
    sha256sum -c checksums.txt
    rm -rf web && mkdir web && tar -xzf tmag-client.tar.gz -C web
    ```
 
    On macOS, check it with `shasum -a 256 -c checksums.txt`. Each archive is
    also attested to the workflow that built it: `gh attestation verify
-   tmag-client.tar.gz --repo ChrAlpha/tmag-client` shows that.
+   tmag-client.tar.gz --repo ChrAlpha/tmux-agent-experience` shows that.
 
 3. Serve the page and the API on the tailnet:
 
@@ -169,8 +170,8 @@ computer's name. `tmag notify` sends a test alert.
 
 ## Updating
 
-Run step 2 again, then reload the page. `tailscale serve` keeps serving the
-same directory.
+Run step 2 again with the release this README names, then reload the page.
+`tailscale serve` keeps serving the same directory.
 
 ## Developing
 

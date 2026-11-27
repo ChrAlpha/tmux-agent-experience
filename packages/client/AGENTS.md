@@ -67,7 +67,7 @@ and how to set it up.
 | `src/app.css` | Styles, light and dark, for phones first |
 | `src/*.test.ts` | Vitest tests of the modules that need no browser |
 | `e2e/` | Playwright tests against two computers' tmag and fake agents in a private tmux server |
-| `.github/workflows/` | Checks and end-to-end tests; releases from `v*` tags |
+| `../../.github/workflows/` | `ci.yml`'s client jobs, the checks and end-to-end tests; `client-release.yml`, releases from `client/v*` tags |
 
 ## Checks
 
@@ -86,7 +86,9 @@ credentials: `e2e/world.ts` builds its own.
 
 Commits follow Conventional Commits. Code comments and docs are in English.
 Biome formats and lints; `pnpm format` applies it. The version lives in
-`package.json`, and a `vX.Y.Z` tag that matches it releases the built page.
-README.md's minimum tmag, `TMAG_REF` in `.github/workflows/ci.yml` and
-`minimum` in `src/contract.ts` move together; a test keeps them so. Keep the
+`package.json`, and a `client/vX.Y.Z` tag that matches it releases the built
+page, never as the repository's latest release; README.md names that
+release. README.md's minimum tmag, `CLIENT_TMAG_REF` in the repository's
+`.github/workflows/ci.yml` and `minimum` in `src/contract.ts` move together.
+Tests keep both so. Keep the
 MIT license and its copyright.

@@ -1,0 +1,52 @@
+name: flow release
+
+# A flow/vX.Y.Z tag publishes the tmag-flow package packages/flow packs at
+# that version to npm, and releases it here. Its release is never marked
+# latest: latest is tmag's, which installers and the pages workflow look up.
+on:
+  push:
+    tags: ['flow/v*']
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  release:
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The notes are the package's commits since its previous release.
+          fetch-depth: 0
+      - name: Check version
+        run: |
+          want="${GITHUB_REF_NAME#flow/v}"
+          [ "$(jq -r .version packages/flow/package.json)" = "$want" ] || { echo "tag $GITHUB_REF_NAME does not match packages/flow/package.json"; exit 1; }
+      - uses: ./.github/actions/setup-packages
+        with:
+          node-version: 26
+          registry-url: https://registry.npmjs.org
+      - working-directory: packages/flow
+        run: pnpm check
+      - name: Pack
+        run: |
+          mkdir release
+          (cd packages/flow && pnpm pack --pack-destination ../../release)
+          (cd release && sha256sum -- tmag-flow-*.tgz > checksums.txt)
+      - uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: release/tmag-flow-*.tgz
+      - name: Publish to npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        # A path npm reads as a file, not as a GitHub repository.
+        run: npm publish ./release/tmag-flow-*.tgz --provenance --access public
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          previous=$(git describe --tags --abbrev=0 --match 'flow/v*' "$GITHUB_REF_NAME^" 2>/dev/null) || previous=
+          git log --format='- %s' ${previous:+"$previous.."}"$GITHUB_REF_NAME" -- packages/flow plugins/claude/tmag-flow plugins/codex/tmag-flow > notes.md
+          gh release create "$GITHUB_REF_NAME" release/* --title "$GITHUB_REF_NAME" --notes-file notes.md --latest=false
