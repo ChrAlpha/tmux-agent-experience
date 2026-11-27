@@ -18,11 +18,13 @@ import (
 	"github.com/ChrAlpha/tmux-agent-experience/internal/tmux"
 )
 
-// Agents work as a flat team: any agent may ask any other, and what a tree
+// Agents' relations are flat: any agent may ask any other, and what a tree
 // of parents and children would give is kept per ask. An ask an agent makes
 // with send --wait or send --reply opens an obligation on the receiver,
 // which the answer closes; tmag refuses a wait that would close a cycle of
-// waits, and an ask that passes work on further than @tmag-peer-depth.
+// waits, and an ask that passes work on further than @tmag-peer-depth. Who
+// started a session, and how each is tied to the caller, are legible to it
+// without making either the other's parent.
 
 // PeerDepthOption is the tmux option that bounds how many times agents pass
 // work on: a person's prompt starts at 0, and each ask an agent makes while
@@ -65,6 +67,53 @@ func peerDepth(ctx context.Context) int {
 		return DefaultPeerDepth
 	}
 	return limit
+}
+
+// Ties is how a session relates to the agent session that runs a command,
+// from what tmag keeps of each relation; none makes one the other's parent.
+type Ties struct {
+	Own     bool // it is the caller's own session
+	Started bool // the caller started it
+	OwesYou bool // it owes the caller an answer
+	YouOwe  bool // the caller owes it an answer
+}
+
+// Any reports whether s is tied to the caller at all.
+func (t Ties) Any() bool { return t.Own || t.Started || t.OwesYou || t.YouOwe }
+
+// TiesOf is how s relates to the caller c, as the sessions of v report it; a
+// caller tmag proves no session of has none.
+func (v View) TiesOf(c Caller, s Session) Ties {
+	if c.By == nil || c.By.Session == "" {
+		return Ties{}
+	}
+	me := asker(c)
+	t := Ties{Own: c.Is(s), Started: s.StartedBy != nil && *s.StartedBy == me}
+	t.OwesYou = slices.ContainsFunc(s.Owes, func(o eventlog.Obligation) bool { return o.To == me })
+	if mine, ok := v.Session(me.Agent, me.Session); ok {
+		t.YouOwe = slices.ContainsFunc(mine.Owes, func(o eventlog.Obligation) bool { return o.To == actorOf(s) })
+	}
+	return t
+}
+
+// Mine is what of v is tied to the caller c: its own session, the sessions
+// it started, owes an answer or is owed one by, and the panes that show them.
+func (v View) Mine(c Caller) View {
+	out := v
+	out.Sessions, out.Panes = []Session{}, []Pane{}
+	kept := map[[2]string]bool{}
+	for _, s := range v.Sessions {
+		if v.TiesOf(c, s).Any() {
+			out.Sessions = append(out.Sessions, s)
+			kept[[2]string{s.Agent, s.ID}] = true
+		}
+	}
+	for _, p := range v.Panes {
+		if p.Session != "" && kept[[2]string{p.Agent, p.Session}] {
+			out.Panes = append(out.Panes, p)
+		}
+	}
+	return out
 }
 
 // asker is the session that asks, as an obligation names it.

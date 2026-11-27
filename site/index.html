@@ -60,10 +60,10 @@
           <div class="pane active">
             <div class="pane-border"><span> 1 zsh </span></div>
 <pre class="pane-body"><span class="t-prompt">$</span> tmag list
-TARGET    PANE  AGENT   STATE                 FOR  ID        CWD
-work:0.0  %0    claude  blocked (permission)  12s  1787a44e  ~/src/api
-work:1.0  %2    codex   working               1m   019a1fda  ~/src/web
-work:2.0  %3    pi      idle                  3m   5c2e90b1  ~/src/cli
+TARGET    WINDOW  PANE  AGENT   STATE                 FOR  ID        CWD
+work:0.0  api     %0    claude  blocked (permission)  12s  1787a44e  ~/api
+work:1.0  web     %2    codex   working               1m   019a1fda  ~/web
+work:2.0  cli     %3    pi      idle                  3m   5c2e90b1  ~/cli
 <span class="t-prompt">$</span> <span class="t-cursor"> </span></pre>
           </div>
         </div>
@@ -120,7 +120,7 @@ work:2.0  %3    pi      idle                  3m   5c2e90b1  ~/src/cli
     <li>
       <h3>Check, then hand off</h3>
       <p><code>tmag doctor</code> without <code>✗</code> lines means you are done. Press <span class="keys"><kbd>prefix</kbd> <kbd>a</kbd></span> to see your agents, then ask one to bring in another:</p>
-      <p class="ask">Ask the Codex agent in ~/src/web to review my last commit, and wait for its answer.</p>
+      <p class="ask">Ask the Codex agent in ~/web to review my last commit, and wait for its answer.</p>
       <p>Your agent runs <code>tmag send --wait</code>, then <code>tmag read --last</code>. Codex reads who asked on the first line, which tmag writes:</p>
       <pre><samp>[tmag] From claude 1787a44e-…, another agent. Answer in your final message.</samp></pre>
     </li>

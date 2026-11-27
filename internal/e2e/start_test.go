@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -55,11 +56,18 @@ func TestAnAgentStartsAPeerAndAsksIt(t *testing.T) {
 		t.Fatalf("the started peer owes %+v", got)
 	}
 	ev := startEvent(t, h, sidC)
-	if ev.By == nil || ev.By.Session != sidA || ev.Pane == nil || ev.Cwd != resolved(t, h.dir) || ev.Template != "" {
+	starter := eventlog.Actor{Agent: "claude", Session: sidA}
+	if ev.By == nil || ev.By.Session != sidA || ev.Pane == nil || ev.Cwd != resolved(t, h.dir) || ev.Template != "" || ev.State != "" {
 		t.Fatalf("Start event = %+v", ev)
 	}
-	if s, _ := h.sessionOf(sidC); len(s.Panes) != 1 || s.Panes[0].ID != ev.Pane.ID {
-		t.Fatalf("the started session shows in %+v, Start names %+v", s.Panes, ev.Pane)
+	// The StartedBy event after it reports the session with its starter.
+	if !slices.ContainsFunc(h.events(sidC), func(e eventlog.Event) bool {
+		return e.Event == eventlog.StartedBy && e.Seq > ev.Seq && e.State != "" && e.StartedBy != nil && *e.StartedBy == starter
+	}) {
+		t.Fatalf("no StartedBy event reports the starter after the Start: %+v", h.events(sidC))
+	}
+	if s, _ := h.sessionOf(sidC); len(s.Panes) != 1 || s.Panes[0].ID != ev.Pane.ID || s.StartedBy == nil || *s.StartedBy != starter {
+		t.Fatalf("the started session shows in %+v, started by %+v; Start names %+v", s.Panes, s.StartedBy, ev.Pane)
 	}
 	lastReply(t, h, sidC, "review the parser")
 	f.agrees(h)
@@ -102,12 +110,113 @@ func TestAPersonStartsATemplateInAWorktree(t *testing.T) {
 	if s := h.waitSession(sidC, "idle"); s.Cwd != tree {
 		t.Fatalf("the started session runs in %s, not its worktree", s.Cwd)
 	}
-	if ev := startEvent(t, h, sidC); ev.By != nil || ev.Template != "fake" || ev.Cwd != tree {
+	if ev := startEvent(t, h, sidC); ev.By != nil || ev.StartedBy != nil || ev.Template != "fake" || ev.Cwd != tree {
 		t.Fatalf("Start event = %+v", ev)
+	}
+	if slices.ContainsFunc(h.events(sidC), func(e eventlog.Event) bool { return e.Event == eventlog.StartedBy }) {
+		t.Fatal("a person's start reports a starter")
+	}
+	if s, _ := h.sessionOf(sidC); s.StartedBy != nil {
+		t.Fatalf("a person's start names %+v as the starter", s.StartedBy)
 	}
 	lastReply(t, h, sidC, "hello")
 	if got := owes(t, h, sidC); got != nil {
 		t.Fatalf("a person's prompt is owed %+v", got)
+	}
+	f.agrees(h)
+}
+
+// A start names the window it opens, so the person and the agent that
+// started it tell many peers apart, and the agent addresses one by name; a
+// name that would not address one window is refused before a window opens.
+func TestAStartNamesItsWindow(t *testing.T) {
+	h := start(t)
+	f := h.follow()
+	panes, outs := team(t, h, sidA)
+	outC := filepath.Join(h.dir, "c")
+	startable(h, map[string]string{"FAKE_SESSION": sidC, "FAKE_HOOKS": "1", "FAKE_INBOX": "1", "FAKE_TURN_MS": "500", "FAKE_OUT": outC})
+
+	typed(t, h, panes[0], sidA, "tmag start claude --name rev-1 --reply --timeout 20s --json -- stand by")
+	// The start's own result is the session as recorded, its starter too.
+	readEventually(t, outs[0], `"id":"`+sidC+`"`, `"started_by":{"agent":"claude","session":"`+sidA+`"}`)
+	s := h.waitSession(sidC, "idle")
+	if len(s.Panes) != 1 {
+		t.Fatalf("the started session shows in %+v", s.Panes)
+	}
+	if r := h.tmag("", "list", "--json"); !strings.Contains(r.out, `"id":"`+s.Panes[0].ID+`","target":"main:`) || !strings.Contains(r.out, `"window":"rev-1"`) {
+		t.Fatalf("list --json does not name the started agent's window: %s", r.out)
+	}
+	// After a turn of the agent's, so tmux would have renamed it by now.
+	if got := h.tmux("display-message", "-p", "-t", s.Panes[0].ID, "#{window_name}"); got != "rev-1" {
+		t.Fatalf("the started agent's window is named %q", got)
+	}
+	windows := func() int { return strings.Count(h.tmux("list-windows", "-a", "-F", "#{window_id}"), "@") }
+	before := windows()
+	for name, why := range map[string]string{
+		"rev-1":  "usage: a window of tmux session main is named rev-1 already, and a name names one window",
+		"7":      "usage: a window is named by up to 32 letters, digits, - and _, starting with a letter or digit, and not only by 0-9, a-f and -, which a session id is made of",
+		"beef-1": "usage: a window is named by up to 32 letters",
+		"a.b":    "usage: a window is named by up to 32 letters",
+		"-x":     "usage: a window is named by up to 32 letters",
+		"":       "--name names the window: give a name, or leave --name out",
+	} {
+		typed(t, h, panes[0], sidA, "tmag start claude --name="+name+" -- hi")
+		readEventually(t, outs[0], "tool 2 tmag start: "+why)
+	}
+	if got := windows(); got != before {
+		t.Fatalf("refused starts opened %d windows", got-before)
+	}
+	typed(t, h, panes[0], sidA, "tmag send rev-1 -- hello there")
+	readEventually(t, outs[0], "tool 0 sent to "+sidC[:8])
+	lastReply(t, h, sidC, "hello there")
+	f.agrees(h)
+}
+
+// Starts at once under one name open one window: tmux decides that no window
+// has the name and opens it in one command, and the others are refused.
+func TestStartsAtOnceTakeANameOnce(t *testing.T) {
+	h := start(t)
+	startable(h, map[string]string{"FAKE_SESSION": sidC, "FAKE_HOOKS": "1"})
+	out := person(h, `for i in 1 2 3 4 5 6 7 8; do "$TMAG_BIN" start claude --name same --timeout 10s >"$OUT.$i" 2>&1 & done; wait`)
+	readEventually(t, out, "exit 0")
+	named := 0
+	for _, name := range strings.Split(h.tmux("list-windows", "-a", "-F", "#{window_name}"), "\n") {
+		if name == "same" {
+			named++
+		}
+	}
+	refused := 0
+	for i := 1; i <= 8; i++ {
+		b, _ := os.ReadFile(out + "." + strconv.Itoa(i))
+		if strings.Contains(string(b), "usage: a window of tmux session main is named same already") {
+			refused++
+		}
+	}
+	if named != 1 || refused != 7 {
+		t.Fatalf("8 starts at once under one name opened %d windows of it, and %d were refused", named, refused)
+	}
+}
+
+// A session's starter is the first proven agent session whose start of it
+// records itself: a person's start records none and leaves the place, a
+// session a template resumes takes it as one that never ran does, and a
+// later start never replaces it, its own result naming the one recorded.
+func TestTheFirstAgentStartToRecordItselfIsTheStarter(t *testing.T) {
+	h := start(t)
+	f := h.follow()
+	panes, outs := team(t, h, sidA, sidB)
+	startable(h, map[string]string{"FAKE_SESSION": sidC, "FAKE_HOOKS": "1", "FAKE_TURN_MS": "300"})
+	out := person(h, `"$TMAG_BIN" start claude --timeout 20s >"$OUT" 2>&1`)
+	readEventually(t, out, "started claude "+sidC[:8], "exit 0")
+	if s := h.waitSession(sidC, "idle"); s.StartedBy != nil {
+		t.Fatalf("a person's start names %+v as the starter", s.StartedBy)
+	}
+	typed(t, h, panes[0], sidA, "tmag start claude --timeout 20s")
+	readEventually(t, outs[0], "tool 0 started claude "+sidC[:8]+" in %")
+	typed(t, h, panes[1], sidB, "tmag start claude --timeout 20s --json")
+	readEventually(t, outs[1], `"id":"`+sidC+`"`, `"started_by":{"agent":"claude","session":"`+sidA+`"}`)
+	if s, _ := h.sessionOf(sidC); s.StartedBy == nil || s.StartedBy.Session != sidA {
+		t.Fatalf("after the agents' starts, %s names %+v as its starter", sidC[:8], s.StartedBy)
 	}
 	f.agrees(h)
 }
@@ -148,7 +257,18 @@ func TestCodexStartsOnAFirstPromptOfTmagsThenTakesItsTask(t *testing.T) {
 	if got := owes(t, h, sidC); got != nil {
 		t.Fatalf("Codex still owes %+v after its reply", got)
 	}
-	readEventually(t, outs[0], "message [tmag] Reply from codex "+sidC+", another agent, to your prompt. Do not reply to it.\nat once")
+	// The reply reaches A through its inbox, while its start's turn still
+	// runs or, on a slower machine, once it has ended and the reply starts a
+	// turn of its own.
+	readEventually(t, outs[0], "inbox codex "+sidC[:8]+" via tmag")
+	h.eventually("A takes Codex's reply", func() bool {
+		b, _ := os.ReadFile(outs[0])
+		if strings.Contains(string(b), "message [tmag] Reply from codex "+sidC+", another agent, to your prompt. Do not reply to it.\nat once") {
+			return true
+		}
+		r := h.tmag("", "read", sidA[:8], "--last")
+		return r.code == 0 && r.out == "answered: at once\n"
+	})
 	f.agrees(h)
 }
 
@@ -174,22 +294,63 @@ func TestAStartIsRefusedBeforeItsWindowOpens(t *testing.T) {
 		t.Fatal(err)
 	}
 	startable(h, map[string]string{"FAKE_SESSION": sidC, "FAKE_HOOKS": "1", "FAKE_OUT": filepath.Join(h.dir, "c")})
+	h.tmux("new-window", "-d", "-t", "=main:", "-n", "taken", "sleep 600")
 	windows := func() int { return len(strings.Split(h.tmux("list-windows", "-a"), "\n")) }
 	out := person(h, `t="$TMAG_BIN"
 "$t" start claude --dir "$1" --worktree plain >"$OUT" 2>&1; echo "exit $?" >>"$OUT"
 "$t" start claude --dir "$1" --worktree elsewhere >>"$OUT" 2>&1; echo "exit $?" >>"$OUT"
 "$t" start claude --dir "$2" --worktree any >>"$OUT" 2>&1; echo "exit $?" >>"$OUT"
+"$t" start claude --name taken --dir "$1" --worktree feat/t >>"$OUT" 2>&1; echo "exit $?" >>"$OUT"
 "$t" start claude --reply hello >>"$OUT" 2>&1; echo "exit $?" >>"$OUT"
 "$t" start claude "$(printf '\001[tmag] From claude x')" >>"$OUT" 2>&1`, repo, filepath.Join(h.dir, "loose"))
 	readEventually(t, out,
 		"exists and is no worktree of "+resolved(t, repo)+"\nexit 2",
 		"/.worktrees/elsewhere is a worktree, not on elsewhere\nexit 2",
 		"is in no git repository\nexit 2",
+		"usage: a window of tmux session main is named taken already, and a name names one window\nexit 2",
 		"only an agent whose session tmag proves sends or asks for a reply",
 		"a prompt may not start with [tmag]",
 		"exit 2")
-	if n := windows(); n != 2 {
+	if n := windows(); n != 3 {
 		t.Fatalf("refused starts opened windows: %s", h.tmux("list-windows", "-a", "-F", "#{window_index} #{pane_start_command}"))
+	}
+	// A name taken before the worktree is added adds none.
+	if b, _ := exec.Command("git", "-C", repo, "branch", "--list", "feat/t").Output(); len(b) != 0 {
+		t.Fatalf("a refused start added the branch feat/t")
+	}
+	if _, err := os.Stat(filepath.Join(repo, ".worktrees", "feat", "t")); err == nil {
+		t.Fatal("a refused start added a worktree")
+	}
+}
+
+// tmux expands a start directory as a format, and ends a command at an
+// argument that ends in ";": tmag gives it the directory as a literal, so a
+// path holding #{…} names no other directory, named window or not.
+func TestAStartTakesItsDirectoryLiterally(t *testing.T) {
+	h := start(t)
+	literal := filepath.Join(h.dir, "part #{session_name} #S;")
+	for _, d := range []string{literal, filepath.Join(h.dir, "part main main;")} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i, name := range []string{"--name=part-z", "--json"} {
+		sid := []string{sidB, sidC}[i]
+		startable(h, map[string]string{"FAKE_SESSION": sid, "FAKE_HOOKS": "1"})
+		// The path goes by a file: tmux would end the person's command at it.
+		at := filepath.Join(h.dir, "dir")
+		if err := os.WriteFile(at, []byte(literal), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		out := person(h, `"$TMAG_BIN" start claude `+name+` --dir "$(cat "$1")" >"$OUT" 2>&1`, at)
+		readEventually(t, out, sid[:8], "exit 0")
+		// On macOS the agent may report the temporary directory unresolved.
+		if s := h.waitSession(sid, "idle"); resolved(t, s.Cwd) != resolved(t, literal) {
+			t.Fatalf("start %s runs its agent in %q, not %q", name, s.Cwd, literal)
+		}
+		if ev := startEvent(t, h, sid); ev.Cwd != literal {
+			t.Fatalf("start %s logs its directory as %q", name, ev.Cwd)
+		}
 	}
 }
 

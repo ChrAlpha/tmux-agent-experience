@@ -6,7 +6,11 @@
   attests the sender's permission class and names the receiver's session);
   amended 2026-11-17 (agents work as a flat team: an ask is owed until it is
   answered, and tmag bounds waits and how far work is passed on; an agent,
-  or the person, starts a peer with `tmag start`)
+  or the person, starts a peer with `tmag start`); amended 2026-11-26
+  (relations stay flat and become legible to the caller: a session keeps
+  the agent session that started it, a list marks how each session is tied
+  to the caller, a start names its window, and a name addresses one window
+  exactly)
 - Date: 2026-11-04
 - Builds on: [ADR 0001](0001-agent-control-surface.md), whose verbs agents
   use here unchanged.
@@ -123,16 +127,17 @@ delivery is unknown, and the reply is not sent again.
 
 ### Asks are owed until they are answered
 
-Agents work as a flat team: any agent may ask any other, and none is
+Agents' relations are flat: any agent may ask any other, and none is
 another's parent. A tree of parents and children would tie five relations
 to one edge: who started whom, who owes whom an answer, who waits for whom,
 who keeps whom running, and who may direct whom. tmag keeps each apart. Who
-started a session is history, in the events; tmux and the person keep
+started a session is its `started_by` (see [Structure is legible to the
+caller](#structure-is-legible-to-the-caller)); tmux and the person keep
 sessions running, in windows that stay until closed; the person, the proven
 sender and its permission class say who may direct whom. What a tree's edge
 would give for answers and waits, tmag gives per ask. An agent's own
-subagents stay its business: a tree inside one session, a flat team between
-sessions.
+subagents stay its business: a tree inside one session, flat relations
+between sessions.
 
 - **An obligation per ask.** An agent's `send --wait` opens a `final`
   obligation on the receiver, and `send --reply` a `reply` one, in the
@@ -210,9 +215,10 @@ in a directory (`--dir`, by default that pane's) or a git worktree of its own
 `.worktrees`, added on that branch or reused), waits until the pane shows
 the agent's session, and delivers the first prompt as `send` does, with its
 first line, obligation and gates. The agent replaces the window's shell, as
-it does a person's, and stays tmux's: tmag keeps nothing of it but the
-`Start` event, which names who started it, in which pane and directory, and
-by which template. That is all tmag keeps of who started whom.
+it does a person's, and stays tmux's: tmag keeps of it the `Start` event,
+which names who started it, in which pane and directory, and by which
+template, and the session's `started_by`: the first proven agent session
+whose start of the session recorded itself.
 
 - **What a start runs is the person's.** A start names one of the agents,
   or a template the person set as `@tmag-start-NAME`, whose command starts
@@ -233,6 +239,88 @@ by which template. That is all tmag keeps of who started whom.
 - **The window takes the caller's `PATH`.** tmux gives a window the `PATH`
   of the client that asks for it, so a start finds the agent the caller
   would.
+- **A start may name its window.** `--name NAME` names the window tmux
+  opens, which tmux otherwise names after the agent: up to 32 letters,
+  digits, `-` and `_`, starting with a letter or digit, and not only `0-9`,
+  `a-f` and `-`, which a session id is made of and whose prefix resolves
+  first. tmux checks that no window of the session has the name and opens
+  the window in one command (`if-shell -F`), so two starts at once cannot
+  both take it: a taken name is refused and opens no window, and one taken
+  before the start adds no worktree for it.
+- **The directory and names reach tmux literally.** tmux expands a start
+  directory as a format, so a path holding `#{session_name}` or `#S` would
+  name another directory, and ends a command at an argument that ends in
+  `;`; tmag escapes both wherever it calls tmux.
+
+### Structure is legible to the caller
+
+One agent may run many. A person's supervisor agent that ran about twenty
+agents over six parts of one task held the map of which agent did which part
+only in its own context: it carried the map across summaries, made it again
+by hand when a reviewer was restarted, and spent its context on it. The
+studies and tools reviewed for this amendment (controlled studies of agent
+topologies, and the tools that run twenty or more coding agents) found the
+coordinator's context giving out first, and each of those tools bounds whom
+an agent addresses and keeps structure outside messages. tmag keeps
+relations flat and makes what it proves of them legible, scoped to the
+caller, without tying any relation to another:
+
+- **Who started a session is kept.** A start by an agent whose session tmag
+  proves writes that session, under the started session's lock, as its
+  `started_by`; a `StartedBy` event after the `Start` reports the session
+  in full with it, so a client follows it as it follows any change, and the
+  `Start` keeps the meaning it was published with. The start's own result
+  is the session as recorded, its starter whichever start set it. It is
+  written once: the first start of a proven agent session to record itself
+  under the session's lock sets it, and no later start replaces it. That is
+  what a start proves: that it launched an agent showing the session.
+  Whether the session ran before its window opened, as one a template
+  resumes did, and which of two starts at once launched first, no start can
+  tell without a race: each way review tried, from the records read before
+  the window opened and the events logged while it opened, dropped the
+  starter of a fresh peer whose first hook came early, or kept one when
+  history rotated away. So a session a template resumes takes, as its
+  starter, the first agent whose start records itself, and of two starts at
+  once, the one that records first. A person's start, an owner client's and
+  that of an agent whose session tmag cannot prove record none, and leave
+  the place to a later agent's start. It grants nothing:
+  who may direct a session, whom it answers and whether it runs are decided
+  as before.
+- **A list marks ties.** `tmag list` marks the caller's own row `(you)` and
+  every other with the session that started it and how it is tied to the
+  caller, with the parts that hold: `(started by you, owes you, you owe
+  it)`; a row with none prints as before. `tmag list --mine` keeps only the
+  caller's session, those it started, owes or is owed an answer by, and the
+  panes that show them, as text and JSON; a caller tmag proves no session of
+  gets a usage error. `tmag inspect` names who started a session and each
+  answer it owes. Each pane shows tmux's current name of its window, as
+  `window` in JSON and the WINDOW column of the text, so an agent matches
+  the parts it named to the sessions it finds.
+- **A name addresses one window.** A target that is a plain name is the
+  exact name of a window in the tmux session of the pane the caller's
+  process tree runs in, whatever `$TMUX_PANE` it inherited; when no window
+  has it, of a session; never a prefix or pattern of one, which tmux alone
+  takes: tmux 3.3a took `w-1` for `w-10`, so a name whose window closed
+  reached another agent. tmux counts the windows of the name itself, newlines
+  in names included, and a name several windows share is ambiguous, whatever
+  session shares it too. Session ids and their prefixes resolve first, and
+  tmux's own syntax (`work:1.0`, `{last}`) as before.
+- **The skill teaches the discipline.** Each peer gets a named window, a
+  worktree when it writes, and a whole part the coordinating agent asks of
+  it with `--reply`, so it answers that agent: an answer goes to whoever
+  asked, never by who started a session. It answers with what it found and
+  where, not all of it; peers do not ask each other unless the person wants
+  it; one message to each says what to do; and a part coordinated by a peer
+  keeps an agent's context for its own work.
+
+Checked with fake agents end to end at 540afbf, as `TestAnAgentRunsManyPeers`
+runs with 20 peers in place of its 8: one agent started them in named
+windows, found them with `list --mine` beside an agent that was not its, by
+their windows' names, and they answered at once while it waited with `wait
+--asked --all`. In three runs on two CPUs with the race detector, three on
+sixteen without and one on tmux 3.2a, each ask settled once, every answer
+reached it, no hook failed or took longer than `hook.SlowAfter`, and the
+watch agreed with the list.
 
 ### Answers are read from the transcript
 
@@ -270,6 +358,10 @@ This is the one transcript reader. It extends "no content is stored" as
   is busy.
 - What agents owe each other is state, which a client follows from the
   watch and a person sees on a phone: who works for whom, and who waits.
+- An agent that runs many peers finds its own part with `list --mine`, after
+  its context was summarized too, and the person tells them apart by their
+  windows' names; what tmag keeps of that structure is still ids, kinds and
+  times.
   `tmag reply` refuses what no ask invited, which an agent that replied
   unasked meets as a refusal with its next step.
 
@@ -297,6 +389,18 @@ This is the one transcript reader. It extends "no content is stored" as
 - **A shared board of messages or documents**, as Codex's message board and
   herdr-core's documents keep. It stores what agents write, and the
   repository the agents share already holds their work.
+- **Teams, roles or a fixed lead**, as Claude Code's agent teams and
+  role-based orchestrators keep. Each ties membership or authority to the
+  session that formed the team, which a reviewer serving two agents, or a
+  peer the person took over, does not have, and a team planned up front is
+  not what an agent that involves peers as the work unfolds has.
+- **A send to several agents at once.** Tools that run many agents restrict
+  broadcast more than any other primitive; one message to each, saying what
+  to do, costs a shell loop and is gated and recorded per session.
+- **Who works for whom on pane borders.** What a session owes changes on
+  sends, replies, ends and expiry, outside its own hooks: a border would
+  either take a pane write on each of those paths or keep naming an asker
+  that ended. `list`, `inspect` and the watch read it from the records.
 
 ## Checked live
 

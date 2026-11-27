@@ -34,7 +34,7 @@ const (
 const usage = `tmag — agent awareness for tmux
 
 Usage:
-  tmag list     [--json]                       agents in all tmux panes
+  tmag list     [--mine] [--json]              agents in all tmux panes, or those tied to you
   tmag inspect  <target> [--json] [--events N] one agent, its open requests and recent events
   tmag watch    [--since SEQ]                  JSON lines: snapshot, then events
   tmag read     <target> [--lines N | --last | --turns N] [--json]
@@ -47,7 +47,7 @@ Usage:
                                                deliver a prompt now, or wait for its turn
   tmag reply    <target> [--timeout D] [--json] [text | -]
                                                answer an agent that asked for a reply
-  tmag start    <agent|template> [--dir D] [--worktree BRANCH] [--wait | --reply] [--timeout D] [--json] [text | -]
+  tmag start    <agent|template> [--dir D] [--worktree BRANCH] [--name NAME] [--wait | --reply] [--timeout D] [--json] [text | -]
                                                start an agent in a window beside this pane
   tmag interrupt <target> [--json]             stop the agent's running turn
   tmag keys     <target> --screen DIGEST [--text TEXT] [KEY...] [--json]
@@ -78,10 +78,11 @@ Usage:
   tmag answer-hook <claude>                    Claude's PermissionRequest hook: waits for answer
   tmag version
 
-Targets: an agent id or unique prefix (>= 4 chars); any target-pane tmux takes
-on the current server (%N, work:1.0, a window name, {last}); or SERVER:%N where
-SERVER is a tmux socket name or path. wait on a pane lasts until its agent
-shows a session, as one started there a moment ago does from its first hook.
+Targets: an agent id or unique prefix (>= 4 chars); the exact name of a window
+in your tmux session, or of a session; any target-pane tmux takes on the
+current server (%N, work:1.0, {last}); or SERVER:%N where SERVER is a tmux
+socket name or path. wait on a pane lasts until its agent shows a session, as
+one started there a moment ago does from its first hook.
 
 Exit codes: 0 ok, 1 error, 2 usage, 3 refused by the safety gate, 4 timeout.
 `
@@ -353,11 +354,37 @@ func (a *app) emit(fields map[string]any) {
 	_ = enc.Encode(doc)
 }
 
-func shortID(id string) string {
-	if len(id) > 8 {
-		return id[:8]
+// idNames names sessions in text output as a target resolves them, among
+// the sessions of ids: each by the shortest prefix of at least 8 characters
+// that no other of them shares. A Codex id begins with its time, so the ids
+// of Codex sessions started within a minute share their first 8.
+func idNames(ids []string) func(string) string {
+	return func(id string) string {
+		n := min(8, len(id))
+		for _, other := range ids {
+			if other == id {
+				continue
+			}
+			common := 0
+			for common < len(id) && common < len(other) && id[common] == other[common] {
+				common++
+			}
+			n = max(n, min(common+1, len(id)))
+		}
+		return id[:n]
 	}
-	return id
+}
+
+// names is idNames among the sessions that run now, which targets resolve
+// among; it names each session whole when it cannot read them.
+func (a *app) names() func(string) string {
+	ctx, cancel := a.signalContext()
+	defer cancel()
+	ids, err := query.SessionIDs(ctx, a.store())
+	if err != nil {
+		return func(id string) string { return id }
+	}
+	return idNames(ids)
 }
 
 func splitList(s string) []string {

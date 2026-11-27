@@ -53,6 +53,7 @@ func (a *app) cmdHook(args []string) (code int) {
 func (a *app) cmdList(args []string) int {
 	fs := flag.NewFlagSet("list", flag.ContinueOnError)
 	fs.BoolVar(&a.json, "json", false, "")
+	mine := fs.Bool("mine", false, "")
 	pos, err := parse(fs, args)
 	if err == nil && len(pos) > 0 {
 		err = fmt.Errorf("unexpected argument %q", pos[0])
@@ -66,11 +67,23 @@ func (a *app) cmdList(args []string) int {
 	if err != nil {
 		return a.fail("list", err)
 	}
+	// Ids are cut among every session, which targets resolve among, also
+	// where --mine lists only some of them.
+	ids := make([]string, len(snap.Sessions))
+	for i, s := range snap.Sessions {
+		ids[i] = s.ID
+	}
+	if *mine {
+		if snap.Caller.By == nil || snap.Caller.By.Session == "" {
+			return a.usageError("list", errors.New("--mine lists the agents tied to the agent session running it, and tmag proves none of yours"))
+		}
+		snap.View = snap.Mine(snap.Caller)
+	}
 	if a.json {
 		a.emit(map[string]any{"seq": snap.Seq, "caller": snap.Caller, "sessions": snap.Sessions, "panes": snap.Panes})
 		return ExitOK
 	}
-	a.printView(snap.View, snap.Caller)
+	a.printView(snap.View, snap.Caller, idNames(ids))
 	if hint := codexHint(snap.View); hint != "" {
 		fmt.Fprintln(a.stderr, "\n"+hint)
 	}
@@ -78,8 +91,9 @@ func (a *app) cmdList(args []string) int {
 }
 
 // printView lists every agent pane, then every session no pane shows,
-// marking the caller's own session.
-func (a *app) printView(v query.View, caller query.Caller) {
+// marking the caller's own session, and for the others the agent session
+// that started each and how it is tied to the caller; name names a session.
+func (a *app) printView(v query.View, caller query.Caller, name func(string) string) {
 	if len(v.Panes) == 0 && len(v.Sessions) == 0 {
 		fmt.Fprintln(a.stdout, "no agents")
 		return
@@ -95,13 +109,30 @@ func (a *app) printView(v query.View, caller query.Caller) {
 		return path
 	}
 	own := func(s query.Session) string {
-		if caller.Is(s) {
-			return shortID(s.ID) + " (you)"
+		ties := v.TiesOf(caller, s)
+		if ties.Own {
+			return name(s.ID) + " (you)"
 		}
-		return shortID(s.ID)
+		var marks []string
+		switch {
+		case ties.Started:
+			marks = append(marks, "started by you")
+		case s.StartedBy != nil:
+			marks = append(marks, "started by "+name(s.StartedBy.Session))
+		}
+		if ties.OwesYou {
+			marks = append(marks, "owes you")
+		}
+		if ties.YouOwe {
+			marks = append(marks, "you owe it")
+		}
+		if len(marks) == 0 {
+			return name(s.ID)
+		}
+		return name(s.ID) + " (" + strings.Join(marks, ", ") + ")"
 	}
 	tw := tabwriter.NewWriter(a.stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "TARGET\tPANE\tAGENT\tSTATE\tFOR\tID\tCWD")
+	fmt.Fprintln(tw, "TARGET\tWINDOW\tPANE\tAGENT\tSTATE\tFOR\tID\tCWD")
 	for _, p := range v.Panes {
 		target := p.Target
 		if p.Server != here {
@@ -115,11 +146,15 @@ func (a *app) printView(v query.View, caller query.Caller) {
 				state += " [subagent]"
 			}
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", target, pane, p.Agent, state, age(since), id, short(p.Cwd))
+		window := p.Window
+		if window == "" {
+			window = "-"
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", target, window, pane, p.Agent, state, age(since), id, short(p.Cwd))
 	}
 	for _, s := range v.Sessions {
 		if len(s.Panes) == 0 {
-			fmt.Fprintf(tw, "-\t-\t%s\t%s\t%s\t%s\t%s\n", s.Agent, describe(s.State, s.Kind), age(s.Since), own(s), short(s.Cwd))
+			fmt.Fprintf(tw, "-\t-\t-\t%s\t%s\t%s\t%s\t%s\n", s.Agent, describe(s.State, s.Kind), age(s.Since), own(s), short(s.Cwd))
 		}
 	}
 	tw.Flush()
@@ -248,7 +283,7 @@ func (a *app) cmdInspect(args []string) int {
 			v.Sessions[0].Panes = nil // list it on its own row
 		}
 	}
-	a.printView(v, query.Caller{})
+	a.printView(v, query.Caller{}, a.names())
 	if title != "" {
 		fmt.Fprintf(a.stdout, "\ntitle: %s\n", title)
 	}
@@ -259,6 +294,12 @@ func (a *app) cmdInspect(args []string) int {
 		}
 		if s.Reason != "" {
 			fmt.Fprintf(a.stdout, "reason: %s\n", s.Reason)
+		}
+		if b := s.StartedBy; b != nil {
+			fmt.Fprintf(a.stdout, "started by: %s %s\n", b.Agent, b.Session)
+		}
+		for _, o := range s.Owes {
+			fmt.Fprintf(a.stdout, "owes: %s %s (%s, depth %d)\n", o.To.Agent, o.To.Session, o.Kind, o.Depth)
 		}
 		here := tmux.DefaultServer().Socket
 		for _, p := range s.Panes {
@@ -777,6 +818,7 @@ func (a *app) waitMany(ctx context.Context, pos, want []string, asked, all bool,
 		a.emit(map[string]any{"reached": reached})
 		return ExitOK
 	}
+	name := a.names()
 	for _, r := range reached {
 		state := describe(r.State, r.Kind)
 		switch {
@@ -785,7 +827,7 @@ func (a *app) waitMany(ctx context.Context, pos, want []string, asked, all bool,
 		case r.Settled:
 			state = "settled, " + state
 		}
-		fmt.Fprintf(a.stdout, "%s %s\n", shortID(r.Session.ID), state)
+		fmt.Fprintf(a.stdout, "%s %s\n", name(r.Session.ID), state)
 	}
 	return ExitOK
 }
@@ -815,7 +857,7 @@ func (a *app) shown(ctx context.Context, target string, timeout time.Duration) (
 	case errors.Is(err, query.ErrNotFound):
 		// A pane whose agent does not run yet.
 		var perr error
-		if ref, perr = query.PaneOf(ctx, target); perr != nil {
+		if ref, perr = query.PaneOf(ctx, v, target); perr != nil {
 			return query.Session{}, err
 		}
 	default:
@@ -868,7 +910,7 @@ func (a *app) reportWait(s query.Session, state, kind, turn string, started bool
 	if !started {
 		state += " (no turn started)"
 	}
-	fmt.Fprintf(a.stdout, "%s %s\n", shortID(s.ID), state)
+	fmt.Fprintf(a.stdout, "%s %s\n", a.names()(s.ID), state)
 }
 
 // reportDelivery prints where a verb went.
@@ -884,8 +926,11 @@ func (a *app) reportDelivery(what string, d query.Delivery) {
 		if d.Pane != nil {
 			where = paneName(tmux.DefaultServer().Socket, d.Pane.Server, d.Pane.ID)
 		}
-		who := shortID(d.Session.ID)
-		if who == "" && d.Pane != nil {
+		who := d.Session.ID
+		switch {
+		case who != "":
+			who = a.names()(who)
+		case d.Pane != nil:
 			who = d.Pane.Agent
 		}
 		fmt.Fprintf(a.stdout, "%s %s (%s) seq %d\n", what, who, where, d.Seq)
