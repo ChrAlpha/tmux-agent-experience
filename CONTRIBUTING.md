@@ -13,10 +13,12 @@ the design (see the invariants in [AGENTS.md](AGENTS.md)) and will be declined.
 
 You need Go (the version in `go.mod` or newer) and tmux 3.2 or newer. The
 commands, layout and testing conventions are in [AGENTS.md](AGENTS.md); they
-apply to people as much as to agents.
+apply to people as much as to agents. The packages under `packages/` have
+checks of their own, in [packages/client/AGENTS.md](packages/client/AGENTS.md)
+and [packages/flow/AGENTS.md](packages/flow/AGENTS.md).
 
-A change is ready when `go test -race ./...`, `golangci-lint run`, the
-shellcheck command in [AGENTS.md](AGENTS.md#commands) and `claude plugin
+A change to tmag is ready when `go test -race ./...`, `golangci-lint run`,
+the shellcheck command in [AGENTS.md](AGENTS.md#commands) and `claude plugin
 validate .` pass, and behaviour changes are covered by a test. If you change
 how a hook payload or terminal title is read, describe how you checked it
 against the real agent and which version.
@@ -28,6 +30,9 @@ against the real agent and which version.
 - Update README.md when user-visible behaviour or the JSON contract changes.
 
 ## Releasing
+
+These steps release tmag. A package releases on tags of its own,
+`client/vX.Y.Z` and `flow/vX.Y.Z`, as its AGENTS.md says.
 
 1. Set the new version in `internal/version/version.go` and the eight plugin
    manifests, `plugins/{claude,codex,pi,omp}/{tmag,tmag-peers}/`

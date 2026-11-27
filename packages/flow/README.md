@@ -219,6 +219,8 @@ the commands' output) in the run's directory, which git ignores.
 
 ## Developing
 
+In `packages/flow` of tmux-agent-experience:
+
 ```sh
 pnpm install
 pnpm check                                          # Biome, TypeScript, unit tests

@@ -5,7 +5,7 @@ A page for your phone or tablet that shows the coding agents
 you left at home, and lets you work with them: read what they were asked and
 what they answered, prompt them, stop them, and answer what they ask.
 
-A release is a directory of static files, built from this repository, that you
+A release is a directory of static files, built from this package, that you
 serve next to `tmag serve`. There is no server code. The page speaks only the
 [`tmag/http/v2`](https://github.com/ChrAlpha/tmux-agent-experience/blob/main/docs/http-api.md)
 contract, on its own origin under `/v2/`, and loads nothing from anywhere else.
@@ -175,7 +175,8 @@ Run step 2 again with the release this README names, then reload the page.
 
 ## Developing
 
-With Node.js 22 or later and pnpm:
+In `packages/client` of tmux-agent-experience, with Node.js 22 or later and
+pnpm:
 
 ```sh
 pnpm install
@@ -197,8 +198,10 @@ for each of two computers: nothing touches your own sessions. They need Go, tmux
 
 ## History
 
-This repository started on 2026-11-07 as a Go gateway extracted from tmag's
+The client started on 2026-11-07 as a Go gateway extracted from tmag's
 `feat/remote` branch, with its own browser admission, tunnel adapters and
-multi-machine inventory. Once tmag's HTTP API carried owner credentials, pairing
-and every control gate itself, the page replaced the gateway. `docs/research/herdr.md`
-is the research that started the exploration.
+multi-machine inventory, in a repository of its own, ChrAlpha/tmag-client.
+Once tmag's HTTP API carried owner credentials, pairing and every control gate
+itself, the page replaced the gateway. It came to tmag's repository with its
+history on 2026-11-27. `docs/research/herdr.md` is the research that started
+the exploration.

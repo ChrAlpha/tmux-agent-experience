@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Guidance for coding agents working in this repository. README.md introduces
+Guidance for coding agents working in this package. README.md introduces
 the product; this file says how to change it without breaking its promises.
 
 ## What this is
@@ -21,7 +21,7 @@ a design problem.
   `list`. Never tmag's HTTP API, whose every request is the owner; never
   `tmux send-keys`, `paste-buffer` or `capture-pane`; never an agent's own
   CLI. A change that needs more of tmag is a change to tmag's
-  contract, made there first.
+  contract, in tmag and its documentation.
 - **A run is who runs it.** Every tmag call is a process of the runner's
   own, so tmag proves it as the agent whose tool runs tmag-flow, or the
   person. No flag, variable or field names a caller. Each invocation

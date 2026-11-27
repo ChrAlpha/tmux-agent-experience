@@ -35,7 +35,7 @@ const event = (seq: number, name: string, s: string, extra: Partial<Event> = {})
 })
 
 // The page rebuilds what `tmag list --json` reports from the watch alone, as
-// the e2e follower of tmux-agent-experience does.
+// tmag's end-to-end follower does.
 describe('apply', () => {
   it('follows a snapshot, events and a panes document', () => {
     let v = apply(empty, {
