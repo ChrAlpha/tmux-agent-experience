@@ -3,6 +3,9 @@ name: flow release
 # A flow/vX.Y.Z tag publishes the tmag-flow package packages/flow packs at
 # that version to npm, and releases it here. Its release is never marked
 # latest: latest is tmag's, which installers and the pages workflow look up.
+# npm trusts this workflow by its file name: the package's trusted publisher
+# on npmjs.com names ChrAlpha/tmux-agent-experience and flow-release.yml, and
+# no token is involved.
 on:
   push:
     tags: ['flow/v*']
@@ -38,11 +41,11 @@ jobs:
       - uses: actions/attest-build-provenance@v4
         with:
           subject-path: release/tmag-flow-*.tgz
+      # Trusted publishing: npm exchanges the job's OIDC token, which
+      # id-token: write grants, and signs the package's provenance. A path
+      # npm reads as a file, not as a GitHub repository.
       - name: Publish to npm
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        # A path npm reads as a file, not as a GitHub repository.
-        run: npm publish ./release/tmag-flow-*.tgz --provenance --access public
+        run: npm publish ./release/tmag-flow-*.tgz --access public
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
