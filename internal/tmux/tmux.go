@@ -41,6 +41,8 @@ type Pane struct {
 	Window  int
 	Index   int
 	Title   string
+	// WindowName is the name of the pane's window, as tmux shows it.
+	WindowName string
 	// TTY is the pane's terminal device.
 	TTY string
 	// Watched is true when an attached session shows this pane as its active pane.
@@ -81,7 +83,7 @@ var PaneFormat = func() string {
 	fields := []string{
 		"#{pane_id}", "#{pane_pid}", clean("pane_current_command"), clean("pane_current_path"),
 		clean("session_name"), "#{window_index}", "#{pane_index}", "#{pane_tty}",
-		"#{&&:#{session_attached},#{&&:#{window_active},#{pane_active}}}",
+		"#{&&:#{session_attached},#{&&:#{window_active},#{pane_active}}}", clean("window_name"),
 	}
 	for _, k := range OptionKeys {
 		fields = append(fields, clean(OptionPrefix+k))
@@ -91,6 +93,21 @@ var PaneFormat = func() string {
 }()
 
 var paneIDRE = regexp.MustCompile(`^%\d+$`)
+
+// literalArgs are args as tmux takes them from its command line, where an
+// argument that ends in ";" ends a command: one that only ends in it, as a
+// path or a name may, keeps it as "\;", and ";" alone still separates
+// commands.
+func literalArgs(args []string) []string {
+	out := make([]string, len(args))
+	for i, a := range args {
+		if a != ";" && strings.HasSuffix(a, ";") {
+			a = a[:len(a)-1] + `\;`
+		}
+		out[i] = a
+	}
+	return out
+}
 
 // Run executes a tmux command against the server.
 func (s Server) Run(ctx context.Context, args ...string) ([]byte, error) {
@@ -103,7 +120,7 @@ func (s Server) RunInput(ctx context.Context, stdin []byte, args ...string) ([]b
 	defer cancel()
 	// -u: without a UTF-8 locale (hooks often run without one) tmux would
 	// replace the field separator and any non-ASCII text with '_'.
-	cmd := helper.Command(ctx, "tmux", append([]string{"-u", "-S", s.Socket}, args...)...)
+	cmd := helper.Command(ctx, "tmux", append([]string{"-u", "-S", s.Socket}, literalArgs(args)...)...)
 	if stdin != nil {
 		cmd.Stdin = bytes.NewReader(stdin)
 	}
@@ -172,6 +189,29 @@ func (s Server) PaneID(ctx context.Context, target string) (string, error) {
 	return id, nil
 }
 
+// WindowsNamed counts the windows of session (a target such as =work:)
+// whose name is name; with no session, of the current session as tmux takes
+// it for the caller. tmux
+// compares the names itself: a name may hold any character, a newline too.
+func (s Server) WindowsNamed(ctx context.Context, session, name string) (int, error) {
+	args := []string{"display-message", "-p"}
+	if session != "" {
+		args = append(args, "-t", session)
+	}
+	out, err := s.Run(ctx, append(args, "#{W:"+windowNamed(name, "x")+"}")...)
+	if err != nil {
+		return 0, err
+	}
+	return strings.Count(string(out), "x"), nil
+}
+
+// windowNamed is a format that is mark for a window whose name is name, and
+// empty for any other: name is a literal, whatever characters it holds.
+func windowNamed(name, mark string) string {
+	literal := strings.NewReplacer("#", "##", ",", "#,", "}", "#}").Replace(name)
+	return "#{?#{==:#{window_name}," + literal + "}," + mark + ",}"
+}
+
 // Pane reads one pane afresh.
 func (s Server) Pane(ctx context.Context, id string) (Pane, error) {
 	out, err := s.Run(ctx, "display-message", "-p", "-t", id, PaneFormat)
@@ -187,7 +227,7 @@ func (s Server) Pane(ctx context.Context, id string) (Pane, error) {
 
 // ParsePane reads a line PaneFormat printed for a pane of s.
 func (s Server) ParsePane(line string) (Pane, bool) {
-	const fixed = 9
+	const fixed = 10
 	f := strings.Split(line, sep)
 	if len(f) != fixed+len(OptionKeys)+1 || !paneIDRE.MatchString(f[0]) {
 		return Pane{}, false
@@ -197,7 +237,7 @@ func (s Server) ParsePane(line string) (Pane, bool) {
 	idx, _ := strconv.Atoi(f[6])
 	p := Pane{
 		Server: s.Socket, ID: f[0], PID: pid, Command: f[2], Path: f[3],
-		Session: f[4], Window: win, Index: idx, TTY: f[7], Watched: f[8] == "1",
+		Session: f[4], Window: win, Index: idx, TTY: f[7], Watched: f[8] == "1", WindowName: f[9],
 		Title: f[len(f)-1], Options: map[string]string{},
 	}
 	for i, k := range OptionKeys {
@@ -273,17 +313,48 @@ func Quote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
+// ErrNameTaken reports a window name another window of the session has.
+var ErrNameTaken = errors.New("a window of the session has that name")
+
 // NewWindow opens a window after the one pane p is in, in p's session,
 // running command in dir with the server's shell, and returns its pane's id.
+// A name, if given, names the window; otherwise tmux names it after what it
+// runs. tmux opens a named window only while no window of the session has
+// the name, deciding both in one command, so two windows of one session are
+// never opened under one name at once: ErrNameTaken reports a taken name.
 // The window stays in the background, where the person finds it.
-func (s Server) NewWindow(ctx context.Context, p Pane, dir, command string) (string, error) {
+func (s Server) NewWindow(ctx context.Context, p Pane, dir, name, command string) (string, error) {
 	window := fmt.Sprintf("=%s:%d", p.Session, p.Window) // = matches the session's name exactly
-	out, err := s.Run(ctx, "new-window", "-a", "-d", "-t", window, "-c", dir, "-P", "-F", "#{pane_id}", command)
+	// tmux expands a start directory as a format: a literal #{…} or #S in a
+	// path would name another directory.
+	literal := strings.ReplaceAll(dir, "#", "##")
+	args := []string{"new-window", "-a", "-d", "-t", window, "-c", literal, "-P", "-F", "#{pane_id}"}
+	if name == "" {
+		args = append(args, command)
+	} else {
+		quoted := make([]string, 0, len(args)+3)
+		for _, a := range append(args, "-n", name, command) {
+			quoted = append(quoted, Quote(a))
+		}
+		free := "#{==:#{W:" + windowNamed(name, "x") + "},}"
+		args = []string{"if-shell", "-F", "-t", window, free, strings.Join(quoted, " "), "display-message -p " + nameTaken}
+	}
+	out, err := s.Run(ctx, args...)
 	if err != nil {
 		return "", err
 	}
-	return strings.TrimSpace(string(out)), nil
+	id := strings.TrimSpace(string(out))
+	if id == nameTaken {
+		return "", ErrNameTaken
+	}
+	if !paneIDRE.MatchString(id) {
+		return "", fmt.Errorf("new window: unexpected tmux output %q", id)
+	}
+	return id, nil
 }
+
+// nameTaken is what a guarded NewWindow prints when the name is taken.
+const nameTaken = "tmag-name-taken"
 
 // Shot is what a pane shows at one moment: its last lines as text, the same
 // lines with tmux's escapes for their colours and attributes, where the

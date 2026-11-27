@@ -212,7 +212,7 @@ h1 {
   border: 0;
 }
 
-/* The tmux mock. Sized in columns, so 74 of them always fit its width. */
+/* The tmux mock. Sized in columns, so 76 of them always fit its width. */
 
 .tmux {
   margin: 0;
@@ -226,7 +226,7 @@ h1 {
   background: var(--term);
   color: var(--term-ink);
   font-family: var(--mono);
-  font-size: clamp(7px, 2.08cqi, 13.5px);
+  font-size: clamp(6.8px, 2.02cqi, 13.5px);
   line-height: var(--lh);
   box-shadow: 0 1.75rem 3.5rem -1.5rem oklch(22% 0.06 150 / 0.55);
 }

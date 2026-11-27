@@ -61,10 +61,10 @@
           <div class="pane active">
             <div class="pane-border"><span> 1 zsh </span></div>
 <pre class="pane-body"><span class="t-prompt">$</span> tmag list
-TARGET    PANE  AGENT   STATE                 FOR  ID        CWD
-work:0.0  %0    claude  blocked (permission)  12s  1787a44e  ~/src/api
-work:1.0  %2    codex   working               1m   019a1fda  ~/src/web
-work:2.0  %3    pi      idle                  3m   5c2e90b1  ~/src/cli
+TARGET    WINDOW  PANE  AGENT   STATE                 FOR  ID        CWD
+work:0.0  api     %0    claude  blocked (permission)  12s  1787a44e  ~/api
+work:1.0  web     %2    codex   working               1m   019a1fda  ~/web
+work:2.0  cli     %3    pi      idle                  3m   5c2e90b1  ~/cli
 <span class="t-prompt">$</span> <span class="t-cursor"> </span></pre>
           </div>
         </div>
@@ -121,7 +121,7 @@ work:2.0  %3    pi      idle                  3m   5c2e90b1  ~/src/cli
     <li>
       <h3>检查，然后交接</h3>
       <p><code>tmag doctor</code> 没有 <code>✗</code> 行即表示完成。按 <span class="keys"><kbd>prefix</kbd> <kbd>a</kbd></span> 查看你的 agents，然后请其中一个邀请另一个参与：</p>
-      <p class="ask">请 ~/src/web 里的 Codex agent review 我最近一次 commit，并等它回复。</p>
+      <p class="ask">请 ~/web 里的 Codex agent review 我最近一次 commit，并等它回复。</p>
       <p>你的 agent 会运行 <code>tmag send --wait</code>，再运行 <code>tmag read --last</code>。Codex 从第一行看到是谁发来的，这一行由 tmag 写入：</p>
       <pre><samp>[tmag] From claude 1787a44e-…, another agent. Answer in your final message.</samp></pre>
     </li>

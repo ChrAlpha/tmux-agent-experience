@@ -180,7 +180,10 @@ func main() {
 	// short path: the harness keeps $TMUX_TMPDIR short, and a test's temporary
 	// directory can exceed the platform's Unix socket limit.
 	var inbox string
-	messages := make(chan message, 8)
+	// The agent takes messages into a queue of its own while its loop is busy,
+	// as Claude Code's holds up to 50 accepted messages, so a delivery ends
+	// once the message is queued, not once the agent's loop reads it.
+	messages := make(chan message, 50)
 	if os.Getenv("FAKE_INBOX") == "1" {
 		dir, err := os.MkdirTemp(os.Getenv("TMUX_TMPDIR"), "fake-inbox")
 		if err != nil {

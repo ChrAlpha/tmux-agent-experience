@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -389,5 +390,73 @@ func TestADeliveryThatCannotBeLoggedLeavesNoMark(t *testing.T) {
 	}
 	if err := untold(42, invitedGate)(got, time.Now()); err != nil {
 		t.Fatalf("the notice after its log recovers: %v", err)
+	}
+}
+
+// A caller is tied to its own session, the sessions it started, those that
+// owe it an answer and those it owes one; Mine keeps those and their panes.
+func TestTiesAndMine(t *testing.T) {
+	me := eventlog.Actor{Agent: "claude", Session: "aaaa"}
+	other := eventlog.Actor{Agent: "claude", Session: "ffff"}
+	v := View{
+		Sessions: []Session{
+			{Agent: "claude", ID: "aaaa", Owes: []eventlog.Obligation{{To: eventlog.Actor{Agent: "codex", Session: "dddd"}, Kind: eventlog.OweReply, Depth: 1}}},
+			{Agent: "pi", ID: "bbbb", StartedBy: &me, Owes: []eventlog.Obligation{{To: me, Kind: eventlog.OweReply, Depth: 1}}},
+			{Agent: "pi", ID: "cccc", StartedBy: &other},
+			{Agent: "codex", ID: "dddd"},
+			{Agent: "claude", ID: "eeee", Owes: []eventlog.Obligation{{To: other, Kind: eventlog.OweFinal, Depth: 1}}},
+		},
+		Panes: []Pane{
+			{ID: "%1", Agent: "claude", Session: "aaaa"},
+			{ID: "%2", Agent: "pi", Session: "bbbb"},
+			{ID: "%3", Agent: "pi", Session: "cccc"},
+			{ID: "%4", Agent: "codex"},
+		},
+	}
+	c := agentCaller("claude", "aaaa")
+	want := map[string]Ties{
+		"aaaa": {Own: true},
+		"bbbb": {Started: true, OwesYou: true},
+		"cccc": {},
+		"dddd": {YouOwe: true},
+		"eeee": {},
+	}
+	for _, s := range v.Sessions {
+		if got := v.TiesOf(c, s); got != want[s.ID] {
+			t.Errorf("TiesOf(%s) = %+v, want %+v", s.ID, got, want[s.ID])
+		}
+		if got := v.TiesOf(Caller{}, s); got.Any() {
+			t.Errorf("a person is tied to %s: %+v", s.ID, got)
+		}
+	}
+	mine := v.Mine(c)
+	var ids, panes []string
+	for _, s := range mine.Sessions {
+		ids = append(ids, s.ID)
+	}
+	for _, p := range mine.Panes {
+		panes = append(panes, p.ID)
+	}
+	if !slices.Equal(ids, []string{"aaaa", "bbbb", "dddd"}) || !slices.Equal(panes, []string{"%1", "%2"}) {
+		t.Fatalf("Mine kept sessions %v and panes %v", ids, panes)
+	}
+	if len(v.Sessions) != 5 || len(v.Panes) != 4 {
+		t.Fatal("Mine changed the view it was given")
+	}
+}
+
+// A session that ended before its start was recorded has its Start logged,
+// and the start says it ended rather than returning it as it was seen.
+func TestLogStartOfAnEndedSession(t *testing.T) {
+	log := eventlog.Open(t.TempDir())
+	s := Session{Agent: "claude", ID: "0c000000-0000-7000-8000-00000000000c", State: "idle"}
+	pane := eventlog.PaneRef{Server: "/tmp/tmux-1/work", ID: "%3"}
+	seq, err := logStart(context.Background(), log, &s, pane, "/src", "", agentCaller("claude", "0a000000-0000-7000-8000-00000000000a"))
+	if !errors.Is(err, ErrEnded) {
+		t.Fatalf("logStart of an ended session: %v", err)
+	}
+	events, err := log.Since(context.Background(), 0)
+	if err != nil || len(events) != 1 || events[0].Event != eventlog.Start || events[0].Seq != seq || events[0].StartedBy != nil {
+		t.Fatalf("logged %+v (%v), want one Start at %d", events, err, seq)
 	}
 }

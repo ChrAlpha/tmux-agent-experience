@@ -81,9 +81,9 @@ For scripts, add the plugin's `bin/` directory to your `PATH`:
 
 ```console
 $ tmag list
-TARGET     PANE  AGENT   STATE                FOR  ID        CWD
-work:1.0   %3    claude  blocked (permission) 12s  1787a44e  ~/src/api
-work:2.0   %7    codex   idle                 4m   01a19fda  ~/src/web
+TARGET     WINDOW  PANE  AGENT   STATE                FOR  ID        CWD
+work:1.0   api     %3    claude  blocked (permission) 12s  1787a44e  ~/src/api
+work:2.0   web     %7    codex   idle                 4m   01a19fda  ~/src/web
 
 $ tmag send 01a19fda --wait "Review the diff in HEAD and list risky changes"
 01a19fda idle

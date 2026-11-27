@@ -73,6 +73,11 @@ type Record struct {
 	// first: a final one closes when the turn the ask started ends, a reply
 	// one when the session replies.
 	Owes []eventlog.Obligation `json:"owes,omitempty"`
+	// StartedBy is the first proven agent session whose tmag start of this
+	// one recorded itself: who started a session, kept apart from who asks
+	// it, waits for it or keeps it running. A person's start, or an agent's
+	// whose session tmag cannot prove, records none.
+	StartedBy *eventlog.Actor `json:"started_by,omitempty"`
 	// Replying are the reply obligations a reply of the session's is being
 	// delivered for, each by the tmag process delivering it: no other reply
 	// takes one while that process runs. Notified are the ends tmag told
@@ -289,6 +294,7 @@ type Report struct {
 	Subagents  string
 	Requests   string
 	Owes       string
+	StartedBy  eventlog.Actor
 	Since      time.Time
 }
 
@@ -296,11 +302,15 @@ type Report struct {
 // it differs from what the session reported before a change, the change is
 // logged.
 func (r Record) Reports() Report {
-	return Report{
+	rep := Report{
 		State: r.State(), Kind: r.Kind(), Reason: r.Reason, Turn: r.Turn, Cwd: r.Cwd, Runtime: string(r.Host.Role),
 		Transcript: r.Transcript, Subagents: strings.Join(r.RunningSubagents(), "\n"),
 		Requests: strings.Join(r.requestIDs(), "\n"), Owes: strings.Join(r.owedIDs(), "\n"), Since: r.Since.UTC(),
 	}
+	if r.StartedBy != nil {
+		rep.StartedBy = *r.StartedBy
+	}
+	return rep
 }
 
 // owedIDs name the obligations as an event reports them: a bound turn is
@@ -337,6 +347,11 @@ func (r Record) Report(ev *eventlog.Event) {
 	ev.Capabilities = r.Capabilities()
 	ev.Requests = r.RequestRefs()
 	ev.Owes = slices.Clone(r.Owes)
+	ev.StartedBy = nil
+	if r.StartedBy != nil {
+		by := *r.StartedBy
+		ev.StartedBy = &by
+	}
 }
 
 // Capabilities are the verbs some channel carries to the session. They follow

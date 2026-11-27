@@ -103,10 +103,12 @@ func next(cmd, target string, err error) string {
 // afterStart says what to do after a start whose agent started and whose
 // prompt then failed: never start it again, which starts another.
 func afterStart(e *query.StartedError) string {
-	id := shortID(e.Session.ID)
+	id := e.Session.ID // a command to run names the session whole
 	var notTaken *query.NotTakenError
 	var refused *query.RefusedError
 	switch {
+	case errors.Is(e.Err, query.ErrEnded):
+		return fmt.Sprintf("it started as %s and has ended: its window, if it stays, shows why, and tmag list shows the agents that run", id)
 	case errors.Is(e.Err, query.ErrNotGiven) || errors.As(e.Err, &notTaken) || errors.As(e.Err, &refused):
 		return fmt.Sprintf("it runs as %s, and has not been given the prompt: give it with tmag send %s -, asking as you did", id, id)
 	case errors.Is(e.Err, query.ErrUnlogged):

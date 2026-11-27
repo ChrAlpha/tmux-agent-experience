@@ -86,8 +86,9 @@ type Obligation struct {
 // ended.
 //
 // An event that carries State reports the session in full: State, Kind,
-// Reason, Turn, Cwd, Runtime, Transcript, Subagents, Capabilities, Requests
-// and Owes are then what the session is, and a field left out is empty.
+// Reason, Turn, Cwd, Runtime, Transcript, Subagents, Capabilities, Requests,
+// Owes and StartedBy are then what the session is, and a field left out is
+// empty.
 type Event struct {
 	// LastHookAt is the session's last hook contact when the event was
 	// logged.
@@ -117,6 +118,9 @@ type Event struct {
 	// Owes are the answers the session owes other sessions, oldest first;
 	// on SessionEnd and Exit, those it ended owing.
 	Owes []Obligation `json:"owes,omitempty"`
+	// StartedBy is the proven agent session whose tmag start of the session
+	// was the first to record itself, in every report of the session.
+	StartedBy *Actor `json:"started_by,omitempty"`
 	// Pane is the pane an Attach, Detach, Send or Halt is about.
 	Pane *PaneRef `json:"pane,omitempty"`
 	// Evidence is what an Attach rests on.
@@ -154,8 +158,11 @@ const (
 	Idle   = "Idle"   // a native status file ended a turn no hook reported
 	Owes   = "Owes"   // what the session owes changed outside its hooks and a prompt to it
 	Start  = "Start"  // tmag started the session's agent in a window
-	Keys   = "Keys"   // the person typed into a pane through tmag keys
-	End    = "SessionEnd"
+	// StartedBy reports, after a Start, the agent session that started the
+	// session, which its record keeps from then on.
+	StartedBy = "StartedBy"
+	Keys      = "Keys" // the person typed into a pane through tmag keys
+	End       = "SessionEnd"
 )
 
 // Ended reports whether e ends its session.

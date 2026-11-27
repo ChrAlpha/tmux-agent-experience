@@ -31,8 +31,15 @@ const TemplateOption = "@tmag-start-"
 // adds worktrees in.
 const WorktreesOption = "@tmag-worktrees"
 
-// templateName is what a template may be called.
-var templateName = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
+// templateName is what a template may be called, and windowName what a
+// started agent's window may be, so that the name is a target tmag takes:
+// one made only of what a session id holds would be taken for an id's
+// prefix, which resolves first.
+var (
+	templateName = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
+	windowName   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$`)
+	idLike       = regexp.MustCompile(`^[0-9a-f-]+$`)
+)
 
 // ErrNoWindow reports a start from no tmux pane: tmag opens the agent's
 // window beside the pane it runs in.
@@ -44,6 +51,7 @@ type StartOptions struct {
 	Template string // the NAME of @tmag-start-NAME
 	Dir      string // the directory; "" for that of the pane tmag runs in
 	Worktree string // a branch to start in a worktree of its own
+	Name     string // the window's name; "" for the one tmux gives it
 	Text     string // the first prompt; "" for none
 	Ask      Ask
 }
@@ -75,6 +83,8 @@ func Start(ctx context.Context, log *eventlog.Log, o StartOptions) (Started, err
 		return Started{}, fmt.Errorf("%w: the prompt is empty", errUsage)
 	case strings.HasPrefix(strings.ToLower(first), Marker):
 		return Started{}, ErrMarker
+	case o.Name != "" && (!windowName.MatchString(o.Name) || idLike.MatchString(o.Name)):
+		return Started{}, fmt.Errorf("%w: a window is named by up to 32 letters, digits, - and _, starting with a letter or digit, and not only by 0-9, a-f and -, which a session id is made of", errUsage)
 	}
 	v, w, caller, err := prepareWorld(ctx, log)
 	if err != nil {
@@ -109,6 +119,14 @@ func Start(ctx context.Context, log *eventlog.Log, o StartOptions) (Started, err
 	if agent == proc.Codex {
 		command += " -- " + tmux.Quote(codexFirst)
 	}
+	taken := fmt.Errorf("%w: a window of tmux session %s is named %s already, and a name names one window", errUsage, here.Session, o.Name)
+	if o.Name != "" && o.Worktree != "" {
+		// A name taken now is refused before a worktree is added for nothing;
+		// the window's opening decides.
+		if n, err := srv.WindowsNamed(ctx, "="+here.Session+":", o.Name); err == nil && n > 0 {
+			return Started{}, taken
+		}
+	}
 	if o.Worktree != "" {
 		if dir, err = worktree(ctx, srv, dir, o.Worktree); err != nil {
 			return Started{}, err
@@ -116,7 +134,13 @@ func Start(ctx context.Context, log *eventlog.Log, o StartOptions) (Started, err
 	}
 	// The agent replaces the shell tmux runs its command with, as it does a
 	// person's shell, so it holds the pane's foreground.
-	id, err := srv.NewWindow(ctx, here, dir, "exec "+command)
+	id, err := srv.NewWindow(ctx, here, dir, o.Name, "exec "+command)
+	switch {
+	case errors.Is(err, tmux.ErrNameTaken) && o.Worktree != "":
+		return Started{}, fmt.Errorf("%w; the worktree %s stays", taken, dir)
+	case errors.Is(err, tmux.ErrNameTaken):
+		return Started{}, taken
+	}
 	if err != nil {
 		return Started{}, fmt.Errorf("opening a window for %s: %w", agent, err)
 	}
@@ -129,8 +153,10 @@ func Start(ctx context.Context, log *eventlog.Log, o StartOptions) (Started, err
 		}
 		return st, err
 	}
-	if st.Seq, err = logStart(ctx, log, st.Session, pane, dir, o.Template, caller); err != nil {
-		err = fmt.Errorf("%w: %w", ErrUnlogged, err)
+	if st.Seq, err = logStart(ctx, log, &st.Session, pane, dir, o.Template, caller); err != nil {
+		if !errors.Is(err, ErrEnded) {
+			err = fmt.Errorf("%w: %w", ErrUnlogged, err)
+		}
 		if text != "" {
 			err = errors.Join(ErrNotGiven, err)
 		}
@@ -326,11 +352,44 @@ func gitOutput(ctx context.Context, dir string, args ...string) (string, error) 
 }
 
 // logStart logs the Start event of a session tmag started: who started it,
-// in which pane and directory, and by which template.
-func logStart(ctx context.Context, log *eventlog.Log, s Session, pane eventlog.PaneRef, dir, template string, c Caller) (int64, error) {
+// in which pane and directory, and by which template. The first start of a
+// proven agent session to record itself under the session's lock becomes
+// its started_by, which no later start replaces: what a start proves is
+// that it launched an agent showing the session, not whether the session
+// ran before, as one a template resumes did, nor which of two starts at
+// once launched first. The StartedBy event that follows the Start reports
+// the session with it. s becomes the session as recorded.
+func logStart(ctx context.Context, log *eventlog.Log, s *Session, pane eventlog.PaneRef, dir, template string, c Caller) (int64, error) {
 	store := session.Store{Dir: log.Dir}
 	ev := eventlog.Event{Event: eventlog.Start, Agent: s.Agent, Session: s.ID, Cwd: dir, Pane: &pane, Template: template}
 	c.stamp(&ev)
-	err := store.Lock(ctx, s.Agent, s.ID, func() error { return log.Append(ctx, &ev) })
+	err := store.Lock(ctx, s.Agent, s.ID, func() error {
+		rec, ok, err := store.Get(ctx, s.Agent, s.ID)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			if err := log.Append(ctx, &ev); err != nil {
+				return err
+			}
+			return fmt.Errorf("%w: %s ended before its start was recorded", ErrEnded, s.ID)
+		}
+		if rec.StartedBy != nil || c.By == nil || c.By.Session == "" {
+			*s = sessionOf(rec, s.Panes)
+			return log.Append(ctx, &ev)
+		}
+		by := asker(c)
+		rec.StartedBy = &by
+		if err := store.Put(ctx, rec); err != nil {
+			return err
+		}
+		*s = sessionOf(rec, s.Panes)
+		if err := log.Append(ctx, &ev); err != nil {
+			return err
+		}
+		report := eventlog.Event{Event: eventlog.StartedBy}
+		rec.Report(&report)
+		return log.Append(ctx, &report)
+	})
 	return ev.Seq, err
 }

@@ -23,6 +23,7 @@ func (a *app) cmdStart(args []string) int {
 	fs.BoolVar(&a.json, "json", false, "")
 	dir := fs.String("dir", "", "")
 	branch := fs.String("worktree", "", "")
+	name := fs.String("name", "", "")
 	wait := fs.Bool("wait", false, "")
 	reply := fs.Bool("reply", false, "")
 	timeout := fs.Duration("timeout", 2*time.Minute, "")
@@ -36,10 +37,13 @@ func (a *app) cmdStart(args []string) int {
 	if err == nil && len(pos) == 1 && (*wait || *reply) {
 		err = errors.New("--wait and --reply ask about a prompt: give one, or - for stdin")
 	}
+	if err == nil && *name == "" && flagSet(fs, "name") {
+		err = errors.New("--name names the window: give a name, or leave --name out")
+	}
 	if err != nil {
 		return a.usageError("start", err)
 	}
-	o := query.StartOptions{Dir: *dir, Worktree: *branch, Ask: query.AskNoAnswer}
+	o := query.StartOptions{Dir: *dir, Worktree: *branch, Name: *name, Ask: query.AskNoAnswer}
 	if slices.Contains(proc.Agents, pos[0]) {
 		o.Agent = pos[0]
 	} else {
@@ -99,9 +103,10 @@ func (a *app) reportStart(st query.Started) {
 		}
 		a.emit(doc)
 	} else {
-		fmt.Fprintf(a.stdout, "started %s %s in %s (%s) seq %d\n", st.Session.Agent, shortID(st.Session.ID), where, st.Dir, st.Seq)
+		name := a.names()
+		fmt.Fprintf(a.stdout, "started %s %s in %s (%s) seq %d\n", st.Session.Agent, name(st.Session.ID), where, st.Dir, st.Seq)
 		if d := st.Delivery; d != nil {
-			fmt.Fprintf(a.stdout, "sent to %s (%s) seq %d\n", shortID(d.Session.ID), d.Via, d.Seq)
+			fmt.Fprintf(a.stdout, "sent to %s (%s) seq %d\n", name(d.Session.ID), d.Via, d.Seq)
 		}
 	}
 	if d := st.Delivery; d != nil {

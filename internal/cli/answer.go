@@ -38,7 +38,7 @@ func (a *app) cmdRequest(args []string) int {
 		a.emit(map[string]any{"session": asked.Session, "request": asked.Request, "tool": asked.Tool, "input": asked.Input})
 		return ExitOK
 	}
-	fmt.Fprintf(a.stdout, "%s %s asks: %s\n", shortID(asked.Session.ID), asked.Request.Kind, asked.Tool)
+	fmt.Fprintf(a.stdout, "%s %s asks: %s\n", a.names()(asked.Session.ID), asked.Request.Kind, asked.Tool)
 	var pretty bytes.Buffer
 	if json.Indent(&pretty, asked.Input, "", "  ") == nil {
 		fmt.Fprintln(a.stdout, pretty.String())

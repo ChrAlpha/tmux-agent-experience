@@ -28,7 +28,7 @@ func TestDeliveryNamesThePaneWithItsServer(t *testing.T) {
 		{"/run/agents/tmux.sock", "sent to 1787a44e (/run/agents/tmux.sock:%3) seq 7\n"},
 	} {
 		var stdout bytes.Buffer
-		a := app{ctx: context.Background(), stdout: &stdout}
+		a := app{ctx: context.Background(), log: eventlog.Open(t.TempDir()), stdout: &stdout}
 		a.reportDelivery("sent to", query.Delivery{
 			Session: query.Session{ID: "1787a44e-5b0c-4c39-9a6e-0d6c3c2f7b10"},
 			Pane:    &query.Pane{Server: c.server, ID: "%3"},
@@ -40,11 +40,39 @@ func TestDeliveryNamesThePaneWithItsServer(t *testing.T) {
 	}
 }
 
+// A receipt names its session as a target resolves it, among the sessions
+// that run: by more than 8 characters where another's id begins the same,
+// also when the session it names has ended and has no record left, and by
+// no more for a record whose host exited without SessionEnd.
+func TestReceiptsNameSessionsAsTargetsResolveThem(t *testing.T) {
+	t.Setenv("TMUX", "")
+	t.Setenv("TMUX_PANE", "")
+	t.Setenv("TMUX_TMPDIR", t.TempDir())
+	log := eventlog.Open(t.TempDir())
+	hub, worker, gone := "01a218ba-bdcd-7e83-861b-602aeb7d5f1e", "01a218ba-c97f-7830-8126-10d0a894cf82", "01a218ba-c98f-7830-8126-10d0a894cf82"
+	for _, rec := range []session.Record{
+		{Agent: "codex", ID: hub},
+		{Agent: "codex", ID: gone, Host: session.Host{PID: 1 << 30}}, // no system has this pid
+	} {
+		if err := (session.Store{Dir: log.Dir}).Put(context.Background(), rec); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var stdout bytes.Buffer
+	a := app{ctx: context.Background(), log: log, stdout: &stdout}
+	a.reportDelivery("sent to", query.Delivery{Session: query.Session{ID: worker}, Via: "service", Seq: 7})
+	a.reportWait(query.Session{ID: worker}, adapter.Idle, "", "", true)
+	a.reportWait(query.Session{ID: hub}, adapter.Idle, "", "", true)
+	if got, want := stdout.String(), "sent to 01a218ba-c (service) seq 7\n01a218ba-c idle\n01a218ba idle\n"; got != want {
+		t.Errorf("receipts are %q, want %q", got, want)
+	}
+}
+
 // A message Claude Code will hold is still delivered, and says so after the
 // delivery line; it is not a refusal.
 func TestDeliverySaysWhenClaudeHoldsAMessage(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	a := app{ctx: context.Background(), stdout: &stdout, stderr: &stderr}
+	a := app{ctx: context.Background(), log: eventlog.Open(t.TempDir()), stdout: &stdout, stderr: &stderr}
 	a.reportDelivery("sent to", query.Delivery{
 		Session: query.Session{ID: "1787a44e-5b0c-4c39-9a6e-0d6c3c2f7b10"},
 		Via:     "inbox", Seq: 7, Held: true,
