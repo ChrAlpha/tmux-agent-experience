@@ -62,10 +62,14 @@ tmag-flow start review --arg dir=. --arg reviewers=codex,claude
 
 Two reviewers start in windows beside yours and review the repository
 independently, each writing a report under the run's directory and ending
-with a verdict. If one fails, the run halts:
+with a verdict. Immediately before sending each review or recheck prompt,
+the runner samples Git in that reviewer's directory. The answer records
+`<sha>` for a clean worktree or `<sha> (dirty)` for one with changes. If
+the runner cannot read HEAD and the worktree state, the field is absent.
+If one reviewer fails, the run halts:
 
 ```text
-tmag-flow: round-1 halted: claude (fail): /repo/.tmag-flow/review-20261126-140200/artifacts/reports/claude-round-1.md. Fix the findings in /repo, write what you fixed and why you left any finding as it is to /repo/.tmag-flow/review-20261126-140200/artifacts/responses/round-1.md, then recheck; or stop.
+tmag-flow: round-1 halted: claude (fail): /repo/.tmag-flow/review-20261126-140200/artifacts/reports/claude-round-1.md. Fix the findings in /repo (1f0b205d4f9552e570b0b2f87379a8c3aef8941d), write what you fixed and why you left any finding as it is to /repo/.tmag-flow/review-20261126-140200/artifacts/responses/round-1.md, then recheck; or stop.
 next: tmag-flow decide review-20261126-140200 round-1 recheck|stop, then tmag-flow resume review-20261126-140200
 ```
 
@@ -77,7 +81,11 @@ tmag-flow resume review-20261126-140200
 ```
 
 The reviewer that failed checks your fixes, and your reasons for any
-finding you left, in the session it reviewed in.
+finding you left, in the session it reviewed in. The review result keeps
+each reviewer's latest verdict and revision, including earlier passes. If the
+revisions agree, `revision` is the shared value. If they differ, the summary lists
+the distinct values as `mixed (<value>; <value>)`. A missing sample counts
+as `revision unavailable`, which is also the result when all samples are missing.
 
 `units` takes work in units, each with the commands that accept it:
 
@@ -100,6 +108,14 @@ back; a unit that keeps failing halts for you. Once all pass, the reviewers
 check the worktree, the implementer fixes what they find, the acceptance
 commands run again, and those who found something check again.
 
+Immediately before each acceptance command, including on a retry, the runner
+samples the command's working directory. A passed or skipped unit's `revision`
+summarizes all commands in its final attempt using the same rules as a review.
+A stopped unit's summary appears beside `stopped` in the result. When any
+failed command has a sample, the fix prompt lists each failure as
+`$ command  (exit N; <revision>)`, using `revision unavailable` for a missing
+sample. When all failed commands lack samples, the lines show `$ command  (exit N)`.
+
 `tmag-flow plans` lists the plans that ship, and each plan's file starts
 with the arguments it takes.
 
@@ -108,7 +124,7 @@ with the arguments it takes.
 ```text
 tmag-flow start  <plan> [--run NAME] [--arg KEY=VALUE]... [--for D] [--concurrency N] [--agents N] [--ask-timeout D] [--json]
 tmag-flow resume <run> [--for D] [--concurrency N] [--agents N] [--ask-timeout D] [--json]
-tmag-flow status [<run>] [--json]
+tmag-flow status [<run>] [--json]   # completed gates and commands show their verdict and last non-empty output line
 tmag-flow decide <run> <step> <choice> [--note TEXT] [--json]
 tmag-flow list   [--json]
 tmag-flow plans  [--json]
@@ -138,9 +154,14 @@ halts, and another session is given the prompt only once you decide `rerun`.
 
 **Gates and commands.** `gate` runs a check in the runner, never in the
 agent, so an agent cannot pass its own acceptance by editing it. `exec` runs
-a command with effects. The journal keeps what each gate or command printed,
-so `status` ends its step with the last non-empty line and `status --json`
-includes the exit code and the last 4096 characters of output.
+a command with effects. The journal keeps their combined stdout and stderr.
+For a completed gate or command, `status` shows the verdict and, when
+present, the last non-empty output line (up to 80 characters). The text
+summary treats carriage returns as line breaks, strips ANSI escapes and
+removes remaining C0 controls except tabs. In `status --json`, `code` is the
+exit code and `output` holds the last 4096 characters of raw stored output,
+including terminal controls.
+Completed asks and commands also include `revision` when a sample was recorded.
 
 **Halts.** A run halts at a plan's `decide`, and on its own when it cannot
 tell what a step did (`rerun` or `abandon`; for an ask, a resume looks again
@@ -196,13 +217,16 @@ export default async function plan(flow: Flow) {
 | --- | --- |
 | `flow.role(name, { agent, dir?, worktree? })` | declares a role; its agent starts when first asked |
 | `flow.bind(role)` | starts the role's agent if needed; its session and directory |
-| `flow.ask(key, role, prompt, { timeout? })` | a turn of the agent's own; the reply that ended it |
-| `flow.gate(key, command, { cwd?, timeout? })` | a check without effects, run again if cut short |
-| `flow.exec(key, command, { cwd?, timeout? })` | a command with effects, which halts if cut short |
+| `flow.ask(key, role, prompt, { timeout?, revision? })` | the reply that ended the agent's turn, with `Answer.revision` when sampled |
+| `flow.gate(key, command, { cwd?, timeout?, revision? })` | a check without effects, run again if cut short, with `CommandResult.revision` when sampled |
+| `flow.exec(key, command, { cwd?, timeout?, revision? })` | a command with effects, which halts if cut short, with the same optional `CommandResult.revision` |
 | `flow.decide(key, question, choices)` | halts until someone decides; the choice |
 | `flow.freeze(key, path)` | a file's content, read once for the whole run |
 | `flow.path(...segments)` | a file in the run's artifacts |
 | `flow.args`, `flow.run`, `flow.dir`, `flow.project` | the run's arguments, name, directory and project |
+
+Set `revision: true` to request a sample for an ask, gate or exec. A replay
+uses the original step's result, including an absent sample in older journals.
 
 Every step has a key of its own: a resumed run replays the steps whose key
 and content are unchanged, so a plan may change below the step it halted at.

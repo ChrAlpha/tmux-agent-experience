@@ -44,6 +44,14 @@ Add `--json` for a document instead of text. A run's name is printed when it
 starts, and runs live in `.tmag-flow/` in the main worktree of the
 repository.
 
+With `revision: true`, the runner samples the role's directory immediately
+before sending an ask, or the command's directory immediately before running
+a gate or exec. The result's `revision` is `<sha>`, `<sha> (dirty)`, or absent.
+Review and unit results report a shared revision, `mixed (<value>; <value>)`,
+or `revision unavailable`. For commands, `tmag-flow status RUN` shows the
+verdict and last non-empty output line. Add `--json` for recorded revisions
+and, on command steps, the exit code and last 4096 characters of raw output.
+
 ## When it exits
 
 - **0**: the run is done; what the plan returned is printed.
