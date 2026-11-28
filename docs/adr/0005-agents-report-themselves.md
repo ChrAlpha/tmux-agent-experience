@@ -1,6 +1,6 @@
 # ADR 0005: Agents tmag does not know report themselves
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-11-28
 - Builds on: [ADR 0001](0001-agent-control-surface.md), whose verbs, drivers
   and callers it extends, and [ADR 0002](0002-agents-work-with-each-other.md),

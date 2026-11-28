@@ -34,7 +34,8 @@ broken or missing tmag never blocks a turn. Defaults are
 
 Requires **tmux 3.2+** on Linux or macOS (amd64 or arm64),
 [TPM](https://github.com/tmux-plugins/tpm), `curl`, and any of Claude Code,
-Codex, Pi or oh-my-pi.
+Codex, Pi or oh-my-pi, or an agent that
+[reports itself to tmag](docs/declared-agents.md).
 
 ### Ask your agent
 
