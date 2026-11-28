@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, it, type TestContext } from 'node:test'
 import { Journal, type StepKind } from '../../src/journal.ts'
-import { render, viewOf } from '../../src/view.ts'
+import { type RunView, render, viewOf } from '../../src/view.ts'
 
 function statusOf(t: TestContext, ...steps: [key: string, kind: StepKind, result: unknown][]) {
   const dir = mkdtempSync(join(tmpdir(), 'tmag-flow-view-'))
@@ -31,6 +31,46 @@ function statusOf(t: TestContext, ...steps: [key: string, kind: StepKind, result
 }
 
 describe('status', () => {
+  it('exposes recorded command and ask revisions in JSON and omits them for older results', (t) => {
+    const head = 'a'.repeat(40)
+    const view = statusOf(
+      t,
+      ['check', 'gate', { ok: true, code: 0, output: '', revision: head }],
+      ['review', 'ask', { text: 'done', turn: 't', session: 's', revision: `${head} (dirty)` }],
+      ['old', 'exec', { ok: true, code: 0, output: '' }],
+      ['old-ask', 'ask', { text: 'done', turn: 't', session: 's' }],
+    )
+    for (const v of [view, JSON.parse(JSON.stringify(view)) as RunView]) {
+      assert.deepEqual(
+        v.steps.map((s) => s.revision),
+        [head, `${head} (dirty)`, undefined, undefined],
+      )
+      for (const old of v.steps.slice(2)) assert.equal('revision' in old, false)
+    }
+    assert.ok(!render(view).includes(head))
+  })
+
+  it('renders the last printable line of commands and asks while preserving raw command output', (t) => {
+    const output = 'first\rsecond\n'
+    const colored = 'starting\r\n\x1b[31mpass\x1b[0m\x00\t3/3\x07\n\x1b[0m\n'
+    const answer = 'checking\r\x1b7done\x1b8\x1b]0;title\x07\x1bPmetadata\x1b\\'
+    const view = statusOf(
+      t,
+      ['progress', 'gate', { ok: true, code: 0, output }],
+      ['color', 'exec', { ok: true, code: 0, output: colored }],
+      ['review', 'ask', { text: answer, turn: 't', session: 's' }],
+    )
+    assert.deepEqual(
+      view.steps.map((s) => s.summary),
+      ['passed: second', 'passed: pass\t3/3', 'answered in turn t: done'],
+    )
+    const text = render(view)
+    assert.match(text, /passed: second$/m)
+    for (const control of ['\r', '\x1b', '\x00', '\x07']) assert.ok(!text.includes(control))
+    assert.equal(view.steps[0]?.output, output)
+    assert.equal(view.steps[1]?.output, colored)
+  })
+
   it('shows the verdict and last non-empty output line of each gate on one row', (t) => {
     const passed = 'running suites\nran: 3/3 suites\n\n'
     const failed = 'building\nmissing target\n'
