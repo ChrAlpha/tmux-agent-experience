@@ -12,7 +12,9 @@
   failure reasons reach the view; Pi interrupts through its proven inbox, and
   a Codex send into an active turn steers with `expectedTurnId`; amended
   2026-11-17: the person types into a pane with `keys`, on the screen they
-  read
+  read; extended by [ADR 0005](0005-agents-report-themselves.md): declared
+  agents take verbs through their inbox, and their tools and the programs
+  `@tmag-agents` names are callers of their own
 - Date: 2026-11-03
 - Evidence: [Claude Code control channels](../research/claude-control-channels.md)
   (2.1.317), [Codex control channels](../research/codex-control-channels.md)

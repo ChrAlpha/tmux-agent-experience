@@ -21,7 +21,10 @@ layers, in order of importance:
    `tmag answer-hook`, which also carries a decision made with `tmag answer`.
    `tmag-peers` is what an agent knows of tmag: the `peers` skill, which
    describes to the model when and how to use tmag's verbs on other agents,
-   and a launcher that runs the hooks' binary.
+   and a launcher that runs the hooks' binary. Any other agent reports
+   itself through the same `tmag hook`, under its own program's name, and
+   serves its own inbox ([docs/declared-agents.md](docs/declared-agents.md),
+   [ADR 0005](docs/adr/0005-agents-report-themselves.md)).
 3. **The `tmag` binary** is the substrate: sessions and their state, which
    panes show them, the event log and a versioned JSON contract (`tmag/v2`)
    for agents, scripts and remote clients.
@@ -117,8 +120,16 @@ promise is documented in the package, and changes with it.
   right before, that the pane shows the screen the person read.
 - **Callers are proven too.** Who runs a verb comes from process ancestry
   (`query.Caller`), never from a variable alone, and every control event
-  records it. An agent never acts on its own session, and answers for the
-  person only when `@tmag-answer` is `agents`.
+  records it: an agent tmag knows by its program, a declared agent by the
+  host its hooks proved, and a program `@tmag-agents` names by its name. An
+  agent never acts on its own session, and answers for the person only when
+  `@tmag-answer` is `agents`.
+- **A declared agent is what its process proves.** `tmag hook PROGRAM`
+  counts only under a process that runs PROGRAM, with no agent tmag knows
+  nearer; from then on the agent is that process, never its program's name,
+  and its session stays with that process while it runs.
+  Nothing a declared agent reports grants anything: tmag keeps no permission
+  class or transcript for it, and reaches it through its inbox alone.
 - **Locks.** A session changes under its lock, a pane under its own; whoever
   takes both takes the pane's first. Each change is decided again under the
   lock and logged before it is released.
@@ -148,18 +159,18 @@ promise is documented in the package, and changes with it.
 | `internal/notify` | An alert's variables, `@tmag-notify` run detached within a time limit, and the detached `notify --ended` that settles what a session's end leaves |
 | `internal/auth` | Persistent owner credentials, one-use invitations and revocation |
 | `internal/serve` | Local HTTP/SSE contract, admission and allowlisted in-process CLI operations |
-| `internal/adapter` | Hook payload → state transition, per agent |
+| `internal/adapter` | Hook payload → state transition, per agent, and for declared agents in the vocabulary hooks share |
 | `internal/session` | Session records, the state machine, the per-session file store and lock |
 | `internal/attach` | Clients, attachments and their evidence, the `@tmag_*` pane projection, reconciliation |
 | `internal/query` | list / send / reply / wait / start / snapshot over sessions and panes; the control verbs' gates; what agents' asks owe, and the bounds on waits and on passing work on |
 | `internal/driver` | Which channel (pane, service, hook, inbox) carries each verb for each agent and runtime |
 | `internal/codexsvc` | One-command client of the Codex daemon's control socket (JSON-RPC over WebSocket) |
-| `internal/inbox` | The socket a session's agent serves for messages and interrupts: dial, proof, Claude Code's envelope and the extension framing |
+| `internal/inbox` | The socket a session's agent serves for messages and interrupts: dial, proof, Claude Code's envelope and the extension framing, with a declared agent's turns |
 | `internal/answer` | The answer hook's socket, under `/tmp/tmag-<uid>`, its protocol, and the decision it prints for Claude Code |
 | `internal/transcript` | A session's turns, their prompts and replies, read backward from Claude Code's JSONL transcript, Codex's rollout or Pi's session file |
 | `internal/eventlog` | Append-only, sequence-numbered event log, and tails that know when they missed events |
 | `internal/tmux` | tmux CLI wrapper; sanitises every free-text field |
-| `internal/proc` | Process table, agent clients and services, hook hosts |
+| `internal/proc` | Process table, agent clients and services, hook hosts, declared agents' programs |
 | `internal/lockfile` | flock bounded by a context, and the fixed pools of pane and session locks |
 | `internal/binpath` | Where hooks look for the binary; the hook command and the agents' launcher |
 | `internal/e2e` | End-to-end tests with real tmux and a fake agent |
@@ -243,12 +254,15 @@ gh workflow run stress.yml --ref BRANCH -f run='^TestA$' -f count=20   # the sam
   (`harness.tmag`), and as an agent from a fake agent's tool.
 - E2E tests start private servers (`tmux -L e2e` under a temporary
   `TMUX_TMPDIR`) and run `internal/e2e/fakeagent` installed as `claude`,
-  `claude.exe` (as Claude Code's npm package runs), `codex`, `pi` and `omp`,
-  first on `PATH`, so process names and `pane_current_command` match real
+  `claude.exe` (as Claude Code's npm package runs), `codex`, `pi`, `omp`,
+  `acme` and `zeta`, first on `PATH`, so process names and `pane_current_command` match real
   agents and no agent's name reaches the developer's own, in a window opened
   from a pane either: tmux gives it the `PATH` of the client that asks; a
   last argument that is no option is its first prompt, as `codex TASK`
-  takes one; as `pi` and `omp` it reports what tmag's extensions report. Run
+  takes one; as `pi` and `omp` it reports what tmag's extensions report, and
+  as `acme` it is a declared agent, reporting with Codex's event names and
+  answering a turns request from its inbox, while as `zeta`, without
+  `FAKE_HOOKS`, it is an agent that reports nothing. Run
   as `codex app-server …` it is a Codex daemon outside every pane that runs
   hooks for any thread and serves a control socket under `CODEX_HOME`
   (`internal/codexsvc/svctest` is its server end), replaying the approvals a
