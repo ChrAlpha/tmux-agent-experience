@@ -39,6 +39,11 @@ const waitChunk = 5 * 60_000
 const startAtLeast = 15_000
 const startAtMost = 3 * 60_000
 const commandTimeout = 10 * 60_000
+const revisionProbe = String.raw`if ! out=$(git status --porcelain=v2 --branch --untracked-files=all 2>/dev/null); then echo 'no git'; exit 0; fi
+sha=$(printf '%s\n' "$out" | sed -n 's/^# branch.oid //p')
+if [ -z "$sha" ] || [ "$sha" = '(initial)' ]; then echo 'no git'; exit 0; fi
+if printf '%s\n' "$out" | grep -qv '^#'; then state=dirty; else state=clean; fi
+printf '%s %s\n' "$sha" "$state"`
 const outputTail = 64 << 10
 const maxFreeze = 1 << 20
 // How many rounds an ask may take in one invocation before it gives up:
@@ -442,14 +447,22 @@ export class Runtime {
     return this.#step(key, 'ask', fp, async (ctx) => {
       await this.#slots.take(this.signal)
       try {
-        return await this.#ask(key, role, prompt, fp, timeout, ctx)
+        return await this.#ask(key, role, prompt, fp, timeout, options.revision === true, ctx)
       } finally {
         this.#slots.give()
       }
     })
   }
 
-  async #ask(key: string, role: Role, prompt: string, fp: string, timeout: number, ctx: StepCtx): Promise<Answer> {
+  async #ask(
+    key: string,
+    role: Role,
+    prompt: string,
+    fp: string,
+    timeout: number,
+    recordRevision: boolean,
+    ctx: StepCtx,
+  ): Promise<Answer> {
     const j = this.o.journal
     let intent = j.intent(key)
     if (ctx.decision === 'abandon') this.#abandon(key, 'ask', fp, 'decided')
@@ -570,9 +583,12 @@ export class Runtime {
 
       if (state === 'deliver') {
         this.o.say(`${key}: asking ${role.name} (${short(session)})`)
+        const dir = recordRevision ? j.role(role.name).bound?.dir : undefined
+        const revision = dir ? await this.#revision(dir) : undefined
+        this.#checkStop()
         // Recorded before its process starts, and its end after: a send no
         // record ended may still deliver.
-        j.append({ t: 'send', key, attempt: intent.attempt })
+        j.append({ t: 'send', key, attempt: intent.attempt, ...(revision ? { revision } : {}) })
         let r: Result | undefined
         try {
           r = await this.o.tmag.run(['send', session, '--wait', '--timeout', deliverWithin, '-'], {
@@ -614,9 +630,12 @@ export class Runtime {
 
       const got = await this.#resolve(role, session, tag, until)
       if (typeof got === 'object') {
-        this.#finish(key, 'ask', fp, got)
+        // An earlier send in this attempt may have been refused busy.
+        const revision = j.sends(key, intent.attempt).at(-1)?.revision
+        const answer = revision ? { ...got, revision } : got
+        this.#finish(key, 'ask', fp, answer)
         this.o.say(`${key}: ${role.name} answered`)
-        return got
+        return answer
       }
       if (got === 'gone') continue
       if (got === 'lost') {
@@ -761,6 +780,14 @@ export class Runtime {
 
   // ---- commands ------------------------------------------------------------
 
+  async #revision(cwd: string): Promise<string | undefined> {
+    this.#checkStop()
+    const { ok, output } = await runCommand(revisionProbe, cwd, 10_000, this.signal)
+    const match = /(?:^|\n)([0-9a-f]{40}|[0-9a-f]{64}) (clean|dirty)\n?$/.exec(output)
+    if (!ok || !match) return undefined
+    return match[2] === 'dirty' ? `${match[1]} (dirty)` : match[1]
+  }
+
   command(kind: 'gate' | 'exec', key: string, command: string, options: CommandOptions = {}): Promise<CommandResult> {
     if (typeof command !== 'string' || !command.trim()) throw new UsageError(`step ${key} runs no command`)
     const cwd = options.cwd === undefined ? this.o.project : resolve(this.o.project, options.cwd)
@@ -780,11 +807,14 @@ export class Runtime {
         )
       }
       if (!existsSync(cwd) || !statSync(cwd).isDirectory()) throw new UsageError(`step ${key}: no directory ${cwd}`)
+      const revision = options.revision === true ? await this.#revision(cwd) : undefined
+      this.#checkStop()
       ctx.use()
       this.o.journal.append({ t: 'intent', key, kind, fp, attempt: this.o.journal.attempts(key) + 1 })
       this.o.say(`${key}: running ${command}`)
-      const result = await runCommand(command, cwd, timeout, kind === 'gate' ? this.signal : undefined)
+      const ran = await runCommand(command, cwd, timeout, kind === 'gate' ? this.signal : undefined)
       if (kind === 'gate') this.#checkStop() // a gate cut short runs again on resume
+      const result = revision ? { ...ran, revision } : ran
       this.#finish(key, kind, fp, result)
       this.o.say(`${key}: ${result.ok ? 'passed' : `failed (exit ${result.code})`}`)
       return result

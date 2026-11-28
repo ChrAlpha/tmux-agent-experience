@@ -1,15 +1,16 @@
 import assert from 'node:assert/strict'
-import { spawn } from 'node:child_process'
-import { appendFileSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { execFileSync, spawn } from 'node:child_process'
+import { appendFileSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { hostname, tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { after, describe, it } from 'node:test'
+import { after, describe, it, type TestContext } from 'node:test'
 import { formatDuration, parseDuration, after as timer } from '../../src/duration.ts'
 import { FlowError } from '../../src/errors.ts'
 import { Journal } from '../../src/journal.ts'
 import { acquire } from '../../src/lock.ts'
+import { hash } from '../../src/project.ts'
 import { Runtime, windowName } from '../../src/runtime.ts'
-import { type Result, short, type Tmag } from '../../src/tmag.ts'
+import { type Result, short, Tmag } from '../../src/tmag.ts'
 
 // scratch is a directory of a test's own, gone once the file's tests end.
 const made: string[] = []
@@ -89,6 +90,173 @@ describe('the journal', () => {
     j.append({ t: 'halt', key: 'b', fp: 'y', kind: 'decision', question: 'q', choices: ['go'] })
     j.append({ t: 'done', key: 'b', kind: 'decide', fp: 'y', result: 'go' })
     assert.equal(j.halt('b'), undefined, 'a done after a halt settles it')
+  })
+})
+
+describe('revision evidence', () => {
+  const git = (cwd: string, ...args: string[]) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' }).trim()
+
+  function initialCommit(cwd: string): string {
+    const author = ['-c', 'user.name=t', '-c', 'user.email=t@example.com']
+    git(cwd, ...author, '-c', 'core.hooksPath=/dev/null', 'commit', '--no-gpg-sign', '--allow-empty', '-qm', 'initial')
+    return git(cwd, 'rev-parse', 'HEAD')
+  }
+
+  function gitShim(t: TestContext, script: string): string {
+    const bin = scratch()
+    const shim = join(bin, 'git')
+    const path = process.env.PATH
+    writeFileSync(shim, `#!/bin/sh\n${script}\nPATH=\${PATH#*:} exec git "$@"\n`, { mode: 0o755 })
+    process.env.PATH = `${bin}:${path ?? ''}`
+    t.after(() => {
+      if (path === undefined) delete process.env.PATH
+      else process.env.PATH = path
+    })
+    return shim
+  }
+
+  function runner(dir: string, tmag = new Tmag('/bin/false')) {
+    return new Runtime({
+      journal: Journal.open(dir),
+      tmag,
+      run: 'r',
+      dir,
+      project: dir,
+      args: {},
+      budget: { concurrency: 1, agents: 1, askTimeout: 60_000 },
+      deadline: undefined,
+      caller: null,
+      startName: false,
+      say: () => {},
+    })
+  }
+
+  it('samples cwd before a requested command and replays only the evidence it recorded', async (t) => {
+    const dir = scratch()
+    const cwd = scratch()
+    const rt = runner(dir)
+    t.after(() => rt.o.journal.close())
+    const flow = rt.flow()
+    // The test's temporary directory may itself be inside a worktree.
+    const ceiling = process.env.GIT_CEILING_DIRECTORIES
+    process.env.GIT_CEILING_DIRECTORIES = tmpdir()
+    t.after(() => {
+      if (ceiling === undefined) delete process.env.GIT_CEILING_DIRECTORIES
+      else process.env.GIT_CEILING_DIRECTORIES = ceiling
+    })
+    assert.equal('revision' in (await flow.gate('outside', 'true', { cwd, revision: true })), false)
+    git(cwd, 'init', '-q')
+    assert.equal('revision' in (await flow.gate('unborn', 'true', { cwd, revision: true })), false)
+    const head = initialCommit(cwd)
+    assert.match(head, /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/)
+    const clean = await flow.gate('g', 'true', { cwd, revision: true })
+    assert.equal(clean.revision, head)
+    assert.deepEqual(rt.o.journal.done('g')?.result, clean)
+    assert.equal('revision' in (await flow.gate('n', 'true', { cwd })), false)
+    assert.equal((await flow.exec('write', 'touch changed', { cwd, revision: true })).revision, head)
+    assert.equal((await flow.gate('dirty', 'true', { cwd, revision: true })).revision, `${head} (dirty)`)
+    rt.o.journal.close()
+
+    const resumed = runner(dir)
+    t.after(() => resumed.o.journal.close())
+    const replay = resumed.flow()
+    assert.equal((await replay.gate('g', 'true', { cwd, revision: true })).revision, head)
+    assert.equal('revision' in (await replay.gate('n', 'true', { cwd, revision: true })), false)
+  })
+
+  it('reads HEAD, tracked changes and hidden untracked files with one Git status per sample', async (t) => {
+    const cwd = scratch()
+    git(cwd, 'init', '-q')
+    const tracked = join(cwd, 'tracked')
+    writeFileSync(tracked, 'initial\n')
+    git(cwd, 'add', 'tracked')
+    const head = initialCommit(cwd)
+    git(cwd, 'config', 'status.showUntrackedFiles', 'no')
+    const bare = scratch()
+    git(cwd, 'clone', '--bare', '-q', '.', bare)
+    const shim = gitShim(t, 'echo "$*" >> "$0.calls"')
+    const rt = runner(scratch())
+    t.after(() => rt.o.journal.close())
+    const flow = rt.flow()
+    assert.equal((await flow.gate('clean', 'true', { cwd, revision: true })).revision, head)
+    const untracked = join(cwd, 'input')
+    writeFileSync(untracked, 'new\n')
+    assert.equal((await flow.gate('untracked', 'true', { cwd, revision: true })).revision, `${head} (dirty)`)
+    rmSync(untracked)
+    writeFileSync(tracked, 'changed\n')
+    assert.equal((await flow.gate('tracked', 'true', { cwd, revision: true })).revision, `${head} (dirty)`)
+    assert.equal('revision' in (await flow.gate('bare', 'true', { cwd: bare, revision: true })), false)
+    assert.equal(
+      readFileSync(`${shim}.calls`, 'utf8'),
+      'status --porcelain=v2 --branch --untracked-files=all\n'.repeat(4),
+    )
+  })
+
+  it('resumes an exec stopped during its Git status probe without asking for a decision', async (t) => {
+    const cwd = scratch()
+    git(cwd, 'init', '-q')
+    const head = initialCommit(cwd)
+    const dir = scratch()
+    const rt = runner(dir)
+    t.after(() => rt.o.journal.close())
+    const shim = gitShim(t, 'if [ "$1" = status ]; then touch "$0.started"; sleep 30; fi')
+    const command = 'echo ran >> marker'
+    const pending = rt.flow().exec('write', command, { cwd, revision: true })
+    try {
+      await t.waitFor(() => assert.ok(existsSync(`${shim}.started`)), { timeout: 5000 })
+    } finally {
+      rt.stop('budget')
+      await rt.settle()
+    }
+    await assert.rejects(pending, { name: 'Stop', reason: 'budget' })
+    assert.equal(rt.o.journal.intent('write'), undefined)
+    const marker = join(cwd, 'marker')
+    assert.equal(existsSync(marker), false)
+    rt.o.journal.close()
+    rmSync(shim)
+
+    const resumed = runner(dir)
+    t.after(() => resumed.o.journal.close())
+    const result = await resumed.flow().exec('write', command, { cwd, revision: true })
+    assert.equal(result.ok, true)
+    assert.equal(result.revision, head)
+    assert.equal(readFileSync(marker, 'utf8'), 'ran\n')
+    assert.equal(resumed.o.journal.attempts('write'), 1)
+  })
+
+  it('uses only the final send when a delivered ask resumes, even when its revision is absent', async (t) => {
+    const key = 'review'
+    const session = 's'
+    const prompt = 'Review the files.'
+    const tag = 'tmag-flow run r, step review, attempt 1'
+    const fp = hash('ask', 'reviewer', prompt)
+    const tmag = new Tmag('/bin/false')
+    tmag.run = async ([verb, , mode]) => {
+      assert.ok(verb === 'inspect' || verb === 'read', `unexpected tmag ${verb}`)
+      const doc =
+        mode === '--turns'
+          ? { session: { state: 'idle' }, turns: [{ id: 't', prompts: [{ text: tag }], reply: 'done' }] }
+          : {}
+      return { code: 0, docs: [doc], stdout: '', stderr: '', error: undefined, message: undefined }
+    }
+
+    for (const revision of [undefined, `${'b'.repeat(40)} (dirty)`]) {
+      const dir = scratch()
+      const j = Journal.open(dir)
+      j.append({ t: 'intent', key, kind: 'ask', fp, attempt: 1, session, tag })
+      j.append({ t: 'send', key, attempt: 1, revision: 'a'.repeat(40) })
+      j.append({ t: 'send.end', key, attempt: 1, code: 3 })
+      j.append({ t: 'send', key, attempt: 1, ...(revision ? { revision } : {}) })
+      j.append({ t: 'send.end', key, attempt: 1, code: 0 })
+      j.append({ t: 'delivered', key, attempt: 1, session })
+      j.close()
+      const rt = runner(dir, tmag)
+      t.after(() => rt.o.journal.close())
+      const flow = rt.flow()
+      const answer = await flow.ask(key, flow.role('reviewer', { agent: 'codex' }), prompt, { revision: true })
+      assert.deepEqual(answer, { text: 'done', turn: 't', session, ...(revision ? { revision } : {}) })
+      assert.deepEqual(rt.o.journal.done(key)?.result, answer)
+    }
   })
 })
 

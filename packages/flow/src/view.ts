@@ -1,7 +1,7 @@
 import type { Journal, StepKind } from './journal.ts'
 import { holder } from './lock.ts'
 import { type Caller, type Doc, short } from './tmag.ts'
-import type { CommandResult } from './types.ts'
+import type { Answer, CommandResult } from './types.ts'
 
 // What a run is, read from its journal (and, when tmag answers, what its
 // roles' sessions do now): what status and list show.
@@ -18,9 +18,10 @@ export interface StepView {
   summary: string
   code?: number
   output?: string
+  revision?: string
 }
 
-type StepDetails = Pick<StepView, 'summary' | 'code' | 'output'>
+type StepDetails = Pick<StepView, 'summary' | 'code' | 'output' | 'revision'>
 
 export interface RoleView {
   name: string
@@ -161,15 +162,20 @@ function kindOfHalt(recs: { t: string }[]): StepKind | undefined {
 function summarize(kind: StepKind, result: unknown): StepDetails {
   switch (kind) {
     case 'ask': {
-      const a = result as { text?: string; turn?: string }
-      return { summary: `answered in turn ${a.turn}: ${oneLine(a.text ?? '')}` }
+      const { text, turn, revision } = result as Answer
+      return { summary: `answered in turn ${turn}: ${oneLine(text ?? '')}`, ...(revision ? { revision } : {}) }
     }
     case 'gate':
     case 'exec': {
-      const { ok, code, output } = result as CommandResult
+      const { ok, code, output, revision } = result as CommandResult
       const verdict = ok ? 'passed' : `failed (exit ${code})`
       const line = oneLine(output)
-      return { summary: line ? `${verdict}: ${line}` : verdict, code, output: output.slice(-4096) }
+      return {
+        summary: line ? `${verdict}: ${line}` : verdict,
+        code,
+        output: output.slice(-4096),
+        ...(revision ? { revision } : {}),
+      }
     }
     case 'decide':
       return { summary: `decided ${String(result)}` }
@@ -178,8 +184,18 @@ function summarize(kind: StepKind, result: unknown): StepDetails {
   }
 }
 
+// A terminal control string ends at ST (ESC backslash or its C1 byte).
+// OSC can also end at BEL. Remove the payload along with the delimiters.
+const controlStrings =
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: these bytes delimit control strings
+  /(?:\x1b\]|\x9d)[^\x07\x1b\x80-\x9f]*(?:\x07|\x1b\\|\x9c)|(?:\x1b[PX^_]|[\x90\x98\x9e\x9f])[^\x1b\x80-\x9f]*(?:\x1b\\|\x9c)/g
+// CSI parameters and final byte, other ESC sequences, and C0 except LF and tab.
+// biome-ignore lint/suspicious/noControlCharactersInRegex: terminal control bytes are what the summary drops
+const terminalControls = /(?:\x1b\[|\x9b)[0-?]*[ -/]*[@-~]|\x1b[ -/]*[0-~]|[\x00-\x08\x0b-\x1f]/g
+
 function oneLine(text: string): string {
-  const line = text.trim().split('\n').at(-1) ?? ''
+  const clean = text.replace(/\r\n?/g, '\n').replace(controlStrings, '').replace(terminalControls, '')
+  const line = clean.trim().split('\n').at(-1) ?? ''
   return line.length > 80 ? `${line.slice(0, 77)}...` : line
 }
 

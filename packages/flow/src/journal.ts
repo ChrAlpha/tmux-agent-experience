@@ -52,7 +52,7 @@ export type Entry =
       tag?: string
       before?: number
     }
-  | { t: 'send'; key: string; attempt: number }
+  | { t: 'send'; key: string; attempt: number; revision?: string }
   | { t: 'send.end'; key: string; attempt: number; code: number }
   | { t: 'delivered'; key: string; attempt: number; session: string }
   | { t: 'done'; key: string; kind: StepKind; fp: string; result: unknown }

@@ -64,12 +64,17 @@ export interface AskOptions {
   // How long the turn may take before the run halts (default 1h, or the
   // run's --ask-timeout), as 90s, 20m or 2h.
   timeout?: string
+  // Sample the role's bound directory immediately before sending the prompt.
+  revision?: boolean
 }
 
 export interface Answer {
   readonly text: string
   readonly turn: string
   readonly session: string
+  // HEAD, with ' (dirty)' for changes, at the send that delivered the prompt.
+  // Absent when no revision was requested or it could not be read.
+  readonly revision?: string
 }
 
 export interface CommandOptions {
@@ -77,6 +82,8 @@ export interface CommandOptions {
   cwd?: string
   // How long it may take (default 10m).
   timeout?: string
+  // Sample the command's directory immediately before running it.
+  revision?: boolean
 }
 
 export interface CommandResult {
@@ -85,4 +92,7 @@ export interface CommandResult {
   readonly code: number
   // What it printed, stdout and stderr together, its last 64 KiB.
   readonly output: string
+  // HEAD, with ' (dirty)' for changes, immediately before the command ran.
+  // Absent when no revision was requested or it could not be read.
+  readonly revision?: string
 }
