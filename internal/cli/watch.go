@@ -173,7 +173,9 @@ func (s *watchStream) run(ctx context.Context, since int64) error {
 			tail.Close()
 		}
 	}()
-	if since >= 0 {
+	// A client stores 0 from an empty log's snapshot. Tail(0) starts at
+	// the first retained event, even if earlier ones have rotated away.
+	if since > 0 {
 		tail = s.log.Tail(since)
 		events, complete, err := tail.Next(ctx)
 		if err != nil {

@@ -74,7 +74,15 @@ export async function act<T = unknown>(base: string, token: string, action: Acti
     headers: { ...bearer(token), ...json },
     body: JSON.stringify(action),
   })
-  return res.json().catch(() => ({}) as T)
+  const doc = await res.json().catch(() => null)
+  if (doc?.schema === 'tmag/v2' && typeof doc.seq === 'number') {
+    const matchesVerb =
+      action.verb === 'start'
+        ? typeof doc.dir === 'string' && typeof doc.session?.id === 'string' && doc.session.id !== ''
+        : typeof doc.via === 'string' && doc.via !== ''
+    if (matchesVerb) return doc as T
+  }
+  throw new Failure(res.status, 'receipt', 'the computer answered without a readable tmag receipt')
 }
 
 // pair redeems a code from `tmag auth pair` on the computer at base, for a
@@ -116,7 +124,10 @@ export async function watch(base: string, token: string, w: Watcher): Promise<vo
       const { value, done } = await frames.read()
       if (done) return
       w.onAlive()
-      if (value.event === 'doc') w.onDoc(JSON.parse(value.data) as WatchDoc, value.id || undefined)
+      // An empty log's snapshot has id 0. Reconnecting without it asks
+      // older servers for a fresh snapshot too.
+      if (value.event === 'doc')
+        w.onDoc(JSON.parse(value.data) as WatchDoc, value.id === '0' ? undefined : value.id || undefined)
     }
   } catch (err) {
     if (!w.signal.aborted) throw new Failure(0, 'network', `the stream broke: ${(err as Error).message}`)

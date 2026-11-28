@@ -45,10 +45,13 @@ const refusals: Record<string, string | Partial<Record<Verb, string>>> = {
   not_found: 'tmag no longer knows this session.',
 }
 
-// lost says whether an action's answer is lost: nothing answered, a proxy
-// failed on the way, or tmag ran it without saying how it ended.
+// lost says whether the request failed without saying how the action ended.
 const lost = (e: Failure) =>
-  e.code === 'network' || e.code === 'timeout' || e.code === 'backend' || (e.code === 'http' && e.status >= 500)
+  e.code === 'network' ||
+  e.code === 'timeout' ||
+  e.code === 'backend' ||
+  e.code === 'receipt' ||
+  (e.code === 'http' && e.status >= 500)
 
 // refusal is why tmag refused a verb, in what the person can do about it,
 // when it refused: a refused verb did nothing.
