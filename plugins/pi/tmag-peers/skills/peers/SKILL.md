@@ -60,7 +60,7 @@ command again with the permissions it needs.
 | `tmag send ID --reply -` | deliver now and ask it to answer with `tmag reply` when done |
 | `tmag send ID --wait --timeout 8m -` | a turn of its own, then wait until it is idle or blocked |
 | `tmag start claude --reply -` | start an agent in a window beside yours, and prompt it as send does |
-| `tmag read ID --last` | the reply that ended its last turn, from its transcript |
+| `tmag read ID --last` | the reply that ended its last turn, as the agent keeps it |
 | `tmag reply ID -` | reply with stdin to an agent whose prompt asked for it |
 | `tmag wait ID --for idle --timeout 8m` | wait until it is idle |
 | `tmag wait --asked --all --timeout 8m` | wait until every agent you asked owes you nothing more, or needs the user |

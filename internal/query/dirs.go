@@ -171,7 +171,7 @@ func templates(ctx context.Context, srv tmux.Server) ([]Template, error) {
 	}
 	for _, name := range names {
 		fields := strings.Fields(values[name])
-		if len(fields) == 0 || !proc.IsAgent(filepath.Base(fields[0])) {
+		if len(fields) == 0 || !proc.IsKind(filepath.Base(fields[0])) {
 			continue
 		}
 		list = append(list, Template{Name: strings.TrimPrefix(name, TemplateOption), Agent: filepath.Base(fields[0])})

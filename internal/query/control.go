@@ -73,7 +73,11 @@ func prepareWorld(ctx context.Context, log *eventlog.Log) (View, *attach.World, 
 	if err != nil {
 		return View{}, nil, Caller{}, err
 	}
-	return v, w, callerFor(ctx, v, w), nil
+	c, err := callerFor(ctx, v, w)
+	if err != nil {
+		return View{}, nil, Caller{}, err
+	}
+	return v, w, c, nil
 }
 
 // controlled resolves target to the session a verb acts on and the pane it

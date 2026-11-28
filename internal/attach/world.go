@@ -9,6 +9,7 @@ package attach
 
 import (
 	"context"
+	"slices"
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
@@ -81,13 +82,43 @@ func (c Client) Shows(rec session.Record) bool {
 // suspended to.
 func (c Client) Foreground() bool { return c.Process.Foreground() }
 
-// ClientIn returns the agent client running in the pane, if any.
+// ClientIn returns the agent client running in the pane, if any: the
+// declared agent the pane's attachment names, while that process runs in
+// the pane, or else the nearest agent tmag knows by its program. A declared
+// agent is known by the process its hooks proved, not by its program, which
+// any process may share; Check holds its attachment to its record's host.
 func (w *World) ClientIn(p tmux.Pane) (Client, bool) {
+	if a, ok := FromPane(p); ok && proc.Declarable(a.Agent) {
+		if q, ok := w.within(p, a.PID, a.Start); ok {
+			return Client{Pane: p, Agent: a.Agent, Process: q}, true
+		}
+	}
 	agent, kind, ok := w.Proc.FindAgent(p.PID)
 	if !ok {
 		return Client{}, false
 	}
 	return Client{Pane: p, Agent: kind, Process: agent}, true
+}
+
+// within returns process pid, as it started at start, when it runs in the
+// pane: it is the pane's process or one of its descendants.
+func (w *World) within(p tmux.Pane, pid int, start string) (proc.Process, bool) {
+	q, ok := w.Proc.Get(pid)
+	if !ok || q.Uncertain || q.Start != start || !slices.Contains(w.Proc.Ancestors(pid), p.PID) {
+		return proc.Process{}, false
+	}
+	return q, true
+}
+
+// Runs reports whether c is still its pane's client in w: tmag finds the
+// same client there, or c is a declared agent its pane shows nothing of yet,
+// whose process still runs in the pane beside no other client.
+func (w *World) Runs(c Client) bool {
+	if now, ok := w.ClientIn(c.Pane); ok {
+		return now.Agent == c.Agent && now.Process.PID == c.Process.PID && now.Process.Start == c.Process.Start
+	}
+	_, ok := w.within(c.Pane, c.Process.PID, c.Process.Start)
+	return ok && proc.Declarable(c.Agent)
 }
 
 // Clients returns every agent client, in pane order.
@@ -133,7 +164,8 @@ func (w *World) Enclosing(pid int) (tmux.Pane, bool) {
 // ClientOf returns the client that host is, when host is an interactive
 // agent process that is its pane's own agent. A hook whose nearest agent is
 // nested inside another agent's pane (codex exec run by Claude's Bash tool,
-// say) proves nothing about that pane.
+// say) proves nothing about that pane. A declared agent is its pane's own
+// while its pane holds no other client tmag finds.
 func (w *World) ClientOf(host proc.Host) (Client, bool) {
 	if host.Role != proc.Terminal {
 		return Client{}, false
@@ -143,6 +175,10 @@ func (w *World) ClientOf(host proc.Host) (Client, bool) {
 		return Client{}, false
 	}
 	c, ok := w.ClientIn(pane)
+	if !ok && proc.Declarable(host.Kind) {
+		q, ok := w.within(pane, host.Process.PID, host.Process.Start)
+		return Client{Pane: pane, Agent: host.Kind, Process: q}, ok
+	}
 	if !ok || c.Agent != host.Kind || c.Process.PID != host.Process.PID {
 		return Client{}, false
 	}

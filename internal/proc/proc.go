@@ -196,7 +196,7 @@ func ProgramKind(p Process) string {
 		// oh-my-pi names its process omp on Linux; elsewhere ps shows the
 		// command it was started as.
 		return OMP
-	case p.Comm == "node" || p.Comm == "bun":
+	case runtimeOf(p) == "node" || runtimeOf(p) == "bun":
 		switch {
 		case strings.Contains(p.Args, "claude-code") || claudeScriptRE.MatchString(p.Args):
 			return Claude
@@ -554,11 +554,13 @@ func parseProcStat(pid int, stat []byte) (Process, bool) {
 
 // candidateCommand reports whether a process with this executable name may be
 // an agent or an agent's launcher: only those need their command line read.
+// An interpreter's names the script it runs, and one Linux cut at commLen
+// the rest of a declared agent's program name (see ProgramName).
 func candidateCommand(comm string) bool {
 	switch {
 	case comm == "claude", comm == "claude.exe",
 		comm == "pi", comm == "pi-rpc", comm == "omp",
-		comm == "node", comm == "bun":
+		interpreter(comm), nodeThreads[comm], len(comm) == commLen:
 		return true
 	case strings.HasPrefix(comm, "codex"):
 		return true

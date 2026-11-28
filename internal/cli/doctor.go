@@ -225,7 +225,7 @@ func (a *app) checkHookErrors(ctx context.Context) check {
 			continue
 		}
 		category := "legacy"
-		if len(fields) == 3 && (proc.IsAgent(fields[1]) || fields[1] == "notify" || fields[1] == "hook") && hookCategory(fields[2]) {
+		if len(fields) == 3 && (proc.IsKind(fields[1]) || fields[1] == "notify" || fields[1] == "hook") && hookCategory(fields[2]) {
 			category = fields[2]
 			latest = fields[1] + " " + fields[2]
 		} else {

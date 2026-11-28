@@ -56,7 +56,7 @@ func snapshot(ctx context.Context) ([]Process, error) {
 					mu.Unlock()
 					return
 				}
-				p, found := readProcEntry(ctx, pids[i])
+				p, found := readProcEntry(ctx, pids[i], false)
 				if !found {
 					if ctx.Err() != nil {
 						mu.Lock()
@@ -103,7 +103,9 @@ func lineage(ctx context.Context, pid int) (*Table, error) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		p, ok := readProcEntry(ctx, pid)
+		// A hook's few ancestors are read in full: its proof names the
+		// program each runs, whatever its process is called.
+		p, ok := readProcEntry(ctx, pid, true)
 		if !ok {
 			if err := ctx.Err(); err != nil {
 				return nil, err
@@ -123,7 +125,7 @@ func lineage(ctx context.Context, pid int) (*Table, error) {
 // running reads one /proc entry. An entry that exists but cannot be read
 // counts as running.
 func running(ctx context.Context, pid int, start string) bool {
-	p, ok := readProcEntry(ctx, pid)
+	p, ok := readProcEntry(ctx, pid, false)
 	if ctx.Err() != nil {
 		return true
 	}
@@ -134,9 +136,9 @@ func running(ctx context.Context, pid int, start string) bool {
 	return start == "" || p.Start == start
 }
 
-// readProcEntry reads one /proc entry: stat always, cmdline only when
-// the executable name can be an agent or launcher.
-func readProcEntry(ctx context.Context, pid int) (Process, bool) {
+// readProcEntry reads one /proc entry: stat always, cmdline when all asks
+// for it or the executable name can be an agent or launcher.
+func readProcEntry(ctx context.Context, pid int, all bool) (Process, bool) {
 	dir := "/proc/" + strconv.Itoa(pid)
 	stat, err := readProcFile(ctx, dir+"/stat", 64<<10)
 	if err != nil {
@@ -146,7 +148,7 @@ func readProcEntry(ctx context.Context, pid int) (Process, bool) {
 	if !ok {
 		return Process{}, false
 	}
-	if candidateCommand(p.Comm) {
+	if all || candidateCommand(p.Comm) {
 		if cmdline, err := readProcFile(ctx, dir+"/cmdline", 4<<20); err == nil {
 			setCommandLine(&p, cmdline)
 		}

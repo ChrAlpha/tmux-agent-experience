@@ -187,6 +187,66 @@ func TestClientOfRejectsNestedAndServiceHosts(t *testing.T) {
 	}
 }
 
+// A declared agent is its pane's client by the process its hooks proved:
+// before its pane shows it, while no other client is there; after, while
+// that process runs there and its record names it as its host.
+func TestDeclaredClients(t *testing.T) {
+	rec := session.Record{Agent: "gemini", ID: "g1", Main: "idle", Host: session.Host{PID: 101, Start: "s%1", Role: proc.Terminal}}
+	host := proc.Host{Process: proc.Process{PID: 101, PPID: 100, Comm: "gemini", Args: "gemini", Start: "s%1"}, Kind: "gemini", Role: proc.Terminal}
+	var f fixture
+	f.pane("%1", 100, "gemini", 101, "", nil)
+	w := f.world()
+	if _, ok := w.ClientIn(f.panes[0]); ok {
+		t.Fatal("a pane shows a declared agent by its program's name")
+	}
+	c, ok := w.ClientOf(host)
+	if !ok || c.Pane.ID != "%1" || c.Agent != "gemini" || c.Process.PID != 101 || !w.Runs(c) {
+		t.Fatalf("a declared agent is not its pane's own: %+v %v", c, ok)
+	}
+
+	// Its pane shows it: the attachment names the client, and holds while
+	// its record names that process.
+	a := Attachment{Agent: "gemini", Session: "g1", PID: 101, Start: "s%1", Evidence: Process}
+	f = fixture{}
+	f.pane("%1", 100, "gemini", 101, "", stored(a))
+	// Its tool runs Claude Code, which tmag would take for the pane's agent.
+	f.procs = append(f.procs, proc.Process{PID: 102, PPID: 101, Comm: "claude", Args: "claude -p hi"})
+	l := linkOf(t, Links(f.world(), []session.Record{rec}), "%1")
+	if l.Session == nil || l.Session.ID != "g1" || !l.Stored || l.Client.Agent != "gemini" {
+		t.Fatalf("a declared agent's attachment does not hold: %+v", l)
+	}
+	if _, ok := f.world().ClientOf(proc.Host{Process: proc.Process{PID: 102, Comm: "claude"}, Kind: proc.Claude, Role: proc.Terminal}); ok {
+		t.Fatal("an agent a declared agent runs claimed its pane")
+	}
+	moved := rec
+	moved.Host.PID = 555
+	if l := linkOf(t, Links(f.world(), []session.Record{moved}), "%1"); l.Session != nil {
+		t.Fatalf("an attachment held for a process its record does not name: %+v", l)
+	}
+	serving := rec
+	serving.Host.Role = proc.Service
+	if l := linkOf(t, Links(f.world(), []session.Record{serving}), "%1"); l.Session != nil {
+		t.Fatalf("a pane shows a declared session that serves a program: %+v", l)
+	}
+
+	// Its process ended and the pane's shell runs Claude Code: the pane's
+	// client is Claude's.
+	f = fixture{}
+	f.pane("%1", 100, proc.Claude, 103, "", stored(a))
+	if c, ok := f.world().ClientIn(f.panes[0]); !ok || c.Agent != proc.Claude {
+		t.Fatalf("a gone declared agent kept its pane: %+v %v", c, ok)
+	}
+
+	// Another client in the pane keeps a declared agent off it.
+	f = fixture{}
+	f.pane("%1", 100, proc.Claude, 101, "", nil)
+	f.procs = append(f.procs, proc.Process{PID: 104, PPID: 101, Comm: "gemini", Args: "gemini", Start: "x"})
+	nested := proc.Host{Process: proc.Process{PID: 104, Comm: "gemini", Start: "x"}, Kind: "gemini", Role: proc.Terminal}
+	if c, ok := f.world().ClientOf(nested); ok {
+		t.Fatalf("a declared agent claimed another agent's pane: %+v", c)
+	}
+}
+
 func TestLiveDropsSessionsWhoseHostExited(t *testing.T) {
 	w := &World{Proc: proc.NewTable([]proc.Process{{PID: 900, Start: "1"}})}
 	running := session.Record{Agent: proc.Codex, ID: "a", Host: session.Host{PID: 900, Start: "1"}}
@@ -201,7 +261,7 @@ func TestLiveDropsSessionsWhoseHostExited(t *testing.T) {
 func TestFromPaneReadsOnlyAttachmentsTmagWrites(t *testing.T) {
 	valid := Attachment{Agent: proc.Claude, Session: "c1", PID: 101, Start: "s%1", Evidence: Process}
 	for name, spoil := range map[string]func(o map[string]string){
-		"unknown agent":     func(o map[string]string) { o[optAgent] = "aider" },
+		"no agent's name":   func(o map[string]string) { o[optAgent] = "bash" },
 		"path as session":   func(o map[string]string) { o[optSession] = "../c1" },
 		"oversized session": func(o map[string]string) { o[optSession] = strings.Repeat("c", 200) },
 		"no process":        func(o map[string]string) { o[optPID] = "0" },

@@ -10,7 +10,8 @@
   (relations stay flat and become legible to the caller: a session keeps
   the agent session that started it, a list marks how each session is tied
   to the caller, a start names its window, and a name addresses one window
-  exactly)
+  exactly); extended by [ADR 0005](0005-agents-report-themselves.md): a start
+  template may run a declared agent
 - Date: 2026-11-04
 - Builds on: [ADR 0001](0001-agent-control-surface.md), whose verbs agents
   use here unchanged.

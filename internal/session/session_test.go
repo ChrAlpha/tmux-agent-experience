@@ -2,6 +2,8 @@ package session
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -335,8 +337,23 @@ func TestStore(t *testing.T) {
 			t.Errorf("Put accepted id %q", id)
 		}
 	}
-	if err := s.Put(ctx, Record{Agent: "aider", ID: "s1"}); err == nil {
-		t.Error("Put accepted an unknown agent")
+	for _, agent := range []string{"bash", "../x", "Gemini", ""} {
+		if err := s.Put(ctx, Record{Agent: agent, ID: "s1"}); err == nil {
+			t.Errorf("Put accepted agent %q", agent)
+		}
+	}
+	// A declared agent's sessions are kept beside the others, after them.
+	for _, r := range []Record{{Agent: "gemini", ID: "g1"}, {Agent: proc.Pi, ID: "p1"}} {
+		if err := s.Put(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(s.Dir, "sessions", "bash"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	all, faults, err = s.All(ctx)
+	if err != nil || len(faults) != 0 || len(all) != 2 || all[0].Agent != proc.Pi || all[1].Agent != "gemini" {
+		t.Fatalf("All = %+v, %v, %v", all, faults, err)
 	}
 }
 

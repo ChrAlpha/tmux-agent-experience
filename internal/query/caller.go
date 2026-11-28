@@ -4,12 +4,16 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"slices"
+	"strings"
+	"unicode"
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/attach"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/auth"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/tmux"
 )
 
 // Caller is who runs this tmag command, as far as the process table proves
@@ -34,16 +38,65 @@ var sessionVars = map[string]string{
 }
 
 // Caller identifies the process running this command in the world v was
-// built from.
-func (v View) Caller(w *attach.World) Caller { return identify(v, w, os.Getpid(), os.Getenv) }
+// built from. It reads which programs the person counts as agents from the
+// world's servers, and fails when a server cannot tell: a caller it could
+// not tell from the person would pass for them.
+func (v View) Caller(ctx context.Context, w *attach.World) (Caller, error) {
+	counted, err := countedAgents(ctx, w)
+	if err != nil {
+		return Caller{}, err
+	}
+	return identify(v, w, os.Getpid(), os.Getenv, counted), nil
+}
+
+// AgentsOption names the programs the person counts as agents, which tmag
+// neither knows nor hears from: an agent that adapted nothing, whose
+// commands would otherwise pass for the person's.
+const AgentsOption = "@tmag-agents"
+
+// countedAgents are the programs @tmag-agents names on any of the world's
+// servers.
+func countedAgents(ctx context.Context, w *attach.World) ([]string, error) {
+	var values []string
+	seen := map[string]bool{}
+	for _, p := range w.Panes {
+		if seen[p.Server] {
+			continue
+		}
+		seen[p.Server] = true
+		v, err := (tmux.Server{Socket: p.Server}).Option(ctx, AgentsOption)
+		if err != nil {
+			return nil, fmt.Errorf("read %s: %w", AgentsOption, err)
+		}
+		values = append(values, v)
+	}
+	return parseAgents(values...), nil
+}
+
+// parseAgents are the programs values of @tmag-agents name, separated by
+// spaces or commas: each a name a declared agent may have.
+func parseAgents(values ...string) []string {
+	var out []string
+	for _, v := range values {
+		for _, name := range strings.FieldsFunc(v, func(r rune) bool { return r == ',' || unicode.IsSpace(r) }) {
+			if proc.Declarable(name) && !slices.Contains(out, name) {
+				out = append(out, name)
+			}
+		}
+	}
+	return out
+}
 
 // identify finds who process pid is. Its pane is the one whose process tree
 // holds it outside any agent service. It is an agent's when an agent client
-// or service is among its ancestors; its session is one of those the
-// nearest such process that hosts sessions runs: the one the agent's
-// variable names, or else the only one. Anything else leaves the session
+// or service is among its ancestors: one tmag knows by its program, a
+// declared agent's host its hooks proved, or a program counted as an agent
+// (@tmag-agents). Its session is one of those the nearest such process that
+// hosts sessions runs: the one the agent's variable names, or else the only
+// one. A counted program hosts none, and ends the search: what runs below it
+// is its own, never an agent's above it. Anything else leaves the session
 // unknown.
-func identify(v View, w *attach.World, pid int, getenv func(string) string) Caller {
+func identify(v View, w *attach.World, pid int, getenv func(string) string, counted []string) Caller {
 	var c Caller
 	if p, ok := w.Enclosing(pid); ok {
 		c.Pane = &eventlog.PaneRef{Server: p.Server, ID: p.ID}
@@ -56,6 +109,17 @@ func identify(v View, w *attach.World, pid int, getenv func(string) string) Call
 		kind := proc.ServiceKind(p)
 		if kind == "" {
 			kind = proc.AgentKind(p)
+		}
+		if kind == "" {
+			kind = declaredHost(v, p)
+		}
+		if kind == "" && len(counted) > 0 && slices.Contains(counted, proc.ProgramName(p)) {
+			// A counted program hosts no session: what runs below it is its
+			// own, whatever agent runs above it.
+			if c.By == nil {
+				c.By = &eventlog.Actor{Agent: proc.ProgramName(p)}
+			}
+			break
 		}
 		if kind == "" {
 			continue
@@ -87,6 +151,18 @@ func identify(v View, w *attach.World, pid int, getenv func(string) string) Call
 	return c
 }
 
+// declaredHost is the declared agent whose host p is, as its live sessions
+// record it, or "". A declared agent is its process, not its program's
+// name, which any process may share.
+func declaredHost(v View, p proc.Process) string {
+	for _, r := range v.records {
+		if r.Host.PID == p.PID && r.Host.Start != "" && r.Host.Start == p.Start && proc.Declarable(r.Agent) {
+			return r.Agent
+		}
+	}
+	return ""
+}
+
 // Is reports whether the caller is s's own agent.
 func (c Caller) Is(s Session) bool {
 	return c.By != nil && c.By.Session != "" && c.By.Agent == s.Agent && c.By.Session == s.ID
@@ -111,11 +187,11 @@ type ownerKey struct{}
 func WithOwner(ctx context.Context, grant auth.Grant) context.Context {
 	return context.WithValue(ctx, ownerKey{}, grant)
 }
-func callerFor(ctx context.Context, v View, w *attach.World) Caller {
+func callerFor(ctx context.Context, v View, w *attach.World) (Caller, error) {
 	if g, ok := ctx.Value(ownerKey{}).(auth.Grant); ok && g.ID() != "" {
-		return Caller{Credential: g.ID()}
+		return Caller{Credential: g.ID()}, nil
 	}
-	return v.Caller(w)
+	return v.Caller(ctx, w)
 }
 
 // OwnerGrant returns only the previously authenticated grant carried by ctx.

@@ -22,6 +22,9 @@ func TestAgentKind(t *testing.T) {
 		{"node", "node /usr/local/bin/claude --model haiku", Claude},
 		{"node", "node /usr/lib/node_modules/@anthropic-ai/claude-code/cli.js", Claude},
 		{"node", "node /home/me/claudette/index.js", ""},
+		// Node 26 names its process node-MainThread.
+		{"node-MainThread", "node /usr/local/bin/claude --model haiku", Claude},
+		{"MainThread", "/opt/node/bin/node /usr/local/bin/claude", Claude},
 		{"codex", "codex", Codex},
 		{"codex", "codex resume --last", Codex},
 		{"node", "node /usr/lib/node_modules/@openai/codex/bin/codex.js", Codex},
@@ -279,7 +282,7 @@ func TestLineageIsIncompleteAndCoversTheHook(t *testing.T) {
 }
 
 func TestCandidateCommandsCoverEveryAgentAndLauncher(t *testing.T) {
-	for _, comm := range []string{"claude", "claude.exe", "codex", "codex-code-mode", "pi", "pi-rpc", "omp", "node", "bun"} {
+	for _, comm := range []string{"claude", "claude.exe", "codex", "codex-code-mode", "pi", "pi-rpc", "omp", "node", "MainThread", "node-MainThread", "bun", "deno", "python3", "claude-code-rou"} {
 		if !candidateCommand(comm) {
 			t.Errorf("%s is not read for its arguments", comm)
 		}

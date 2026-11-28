@@ -80,6 +80,39 @@ func TestExtensionFraming(t *testing.T) {
 	}
 }
 
+func TestExtensionTurns(t *testing.T) {
+	lines := make(chan string, 1)
+	sock := serve(t, func(conn net.Conn) {
+		line, _ := bufio.NewReader(conn).ReadString('\n')
+		lines <- line
+		// An agent that holds more turns than were asked gives the last.
+		_, _ = io.WriteString(conn, `{"ok":true,"turns":[{"id":"t1","prompts":[{"text":"a"}],"reply":"x"},`+
+			`{"id":"t2","prompts":[{"text":"b","from":"peer"}],"reply":"answered: b"}]}`)
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	turns, err := dial(t, sock).Turns(ctx, "s1", 1)
+	if err != nil || len(turns) != 1 || turns[0].ID != "t2" || turns[0].Reply != "answered: b" || turns[0].Prompts[0].From != "peer" {
+		t.Fatalf("turns = %+v, %v", turns, err)
+	}
+	var req struct {
+		Turns   int    `json:"turns"`
+		Session string `json:"session"`
+	}
+	if line := <-lines; json.Unmarshal([]byte(line), &req) != nil || req.Turns != 1 || req.Session != "s1" {
+		t.Fatalf("request %q", line)
+	}
+
+	sock = serve(t, func(conn net.Conn) {
+		_, _ = bufio.NewReader(conn).ReadString('\n')
+		_, _ = io.WriteString(conn, `{"ok":false,"refused":"changed","error":"this agent now serves s2"}`+"\n")
+	})
+	var refused *Refusal
+	if _, err := dial(t, sock).Turns(ctx, "s1", 1); !errors.As(err, &refused) || refused.Reason != "changed" {
+		t.Fatalf("a refused turns request = %v", err)
+	}
+}
+
 func TestExtensionInterruptFraming(t *testing.T) {
 	lines := make(chan string, 1)
 	sock := serve(t, func(conn net.Conn) {

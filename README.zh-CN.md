@@ -18,7 +18,7 @@
 
 ## 安装
 
-需要 Linux 或 macOS（amd64 或 arm64）、**tmux 3.2+**、[TPM](https://github.com/tmux-plugins/tpm)、`curl`，以及 Claude Code、Codex、Pi、oh-my-pi 中的任意一个或多个。
+需要 Linux 或 macOS（amd64 或 arm64）、**tmux 3.2+**、[TPM](https://github.com/tmux-plugins/tpm)、`curl`，以及 Claude Code、Codex、Pi、oh-my-pi 中的任意一个或多个，或一个[自行向 tmag 报告](docs/declared-agents.md)的 agent。
 
 ### 交给 agent 安装
 

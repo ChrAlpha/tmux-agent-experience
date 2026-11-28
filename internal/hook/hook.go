@@ -102,7 +102,7 @@ type self struct {
 	tmux  bool // and a tmux server is among its ancestors
 }
 
-func (s Sources) self(ctx context.Context, pid int, p adapter.Payload) self {
+func (s Sources) self(ctx context.Context, pid int, agent string, p adapter.Payload) self {
 	read := proc.Lineage
 	if s.Lineage != nil {
 		read = s.Lineage
@@ -112,7 +112,11 @@ func (s Sources) self(ctx context.Context, pid int, p adapter.Payload) self {
 		return self{}
 	}
 	me := self{table: t, tmux: t.UnderTmux(pid)}
-	me.host, me.known = t.HostOf(pid)
+	if proc.IsAgent(agent) {
+		me.host, me.known = t.HostOf(pid)
+	} else {
+		me.host, me.known = t.DeclaredHost(pid, agent)
+	}
 	if me.known && p.Mode != "" && p.Mode != "tui" {
 		// Pi and oh-my-pi say when they run for a program rather than a
 		// person, which their process does not show: such a session runs as
@@ -147,15 +151,15 @@ func (me self) unproven(rec session.Record) bool {
 // The session's record and event are saved before the hook asks tmux
 // anything. The panes the record lists are then updated without listing panes
 // or the process table, when the projection changed; only a session's start
-// or end, or a host in a pane the record does not list or Project could not
-// write, takes the full path.
+// or end, a change of how its host runs it, or a host in a pane the record
+// does not list or Project could not write, takes the full path.
 func Run(parent context.Context, in Input) error {
 	ctx, cancel := context.WithTimeout(parent, Deadline)
 	defer cancel()
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if !proc.IsAgent(in.Agent) {
+	if !proc.IsKind(in.Agent) {
 		return fmt.Errorf("unknown agent %q", in.Agent)
 	}
 	data, err := contextio.ReadAtMost(in.Payload, maxPayload)
@@ -183,7 +187,13 @@ func Run(parent context.Context, in Input) error {
 	if in.Now != nil {
 		now = in.Now
 	}
-	me := in.Sources.self(ctx, in.PID, p)
+	me := in.Sources.self(ctx, in.PID, in.Agent, p)
+	if !me.known && !proc.IsAgent(in.Agent) {
+		// A declared agent is only what the process table proves: a hook
+		// that runs under no process of the program it names records
+		// nothing.
+		return fmt.Errorf("no %s runs above the hook", in.Agent)
+	}
 	env := attach.Env{Log: in.Log, Store: session.Store{Dir: in.Log.Dir}}
 	prev, rec, wrote, err := save(ctx, env, in, p, tr, me, now)
 	if err != nil {
@@ -200,7 +210,7 @@ func Run(parent context.Context, in Input) error {
 	}
 	answer.Close(ctx, in.Log.Dir, closed...)
 
-	if tr.Action == adapter.End || reconcileEvent(p.HookEventName) || me.unproven(rec) {
+	if tr.Action == adapter.End || reconciles(p, prev, rec) || me.unproven(rec) {
 		return prove(ctx, env, in, p, prev, rec, wrote, me)
 	}
 	if attach.ProjectionOf(prev) == attach.ProjectionOf(rec) {
@@ -261,9 +271,12 @@ func save(ctx context.Context, env attach.Env, in Input, p adapter.Payload, tr a
 		ev.Event = eventlog.End
 		var seq int64
 		err = env.Store.Lock(ctx, in.Agent, p.SessionID, func() error {
-			cur, _, err := get()
+			cur, found, err := get()
 			if err != nil {
 				return err
+			}
+			if found && taken(ctx, in.Agent, cur, me) {
+				return errTaken(cur)
 			}
 			prev = cur
 			seq, err = env.Store.End(ctx, in.Log, cur, ev)
@@ -287,9 +300,17 @@ func save(ctx context.Context, env attach.Env, in Input, p adapter.Payload, tr a
 		if err != nil {
 			return err
 		}
+		if found && taken(ctx, in.Agent, cur, me) {
+			return errTaken(cur)
+		}
 		base := cur
 		if p.Cwd != "" {
 			base.Cwd = p.Cwd
+		}
+		if proc.Declarable(in.Agent) && !sameHost(cur.Host, me.host.Process) {
+			// A declared agent's inbox is its host's: a process that takes
+			// the session over keeps none its hook does not name.
+			base.Inbox = nil
 		}
 		if me.known {
 			base.Host = session.Host{PID: me.host.Process.PID, Start: me.host.Process.Start, Role: me.host.Role}
@@ -297,13 +318,16 @@ func save(ctx context.Context, env attach.Env, in Input, p adapter.Payload, tr a
 				base.StatusFile = status
 			}
 		}
-		if p.TranscriptPath != "" {
+		// A declared agent's transcript is in a format tmag does not read,
+		// and its permission class would be its own claim, which would grant
+		// its messages what a class attests: tmag keeps neither.
+		if p.TranscriptPath != "" && proc.IsAgent(in.Agent) {
 			base.Transcript = p.TranscriptPath
 		}
 		if inbox != nil {
 			base.Inbox = inbox
 		}
-		if class := p.PermissionClass(); class != "" {
+		if class := p.PermissionClass(); class != "" && proc.IsAgent(in.Agent) {
 			base.Permission = class
 		}
 		next, changed := session.Apply(base, tr, now())
@@ -325,6 +349,25 @@ func save(ctx context.Context, env attach.Env, in Input, p adapter.Payload, tr a
 	return prev, rec, wrote, err
 }
 
+// taken reports whether a declared agent's session belongs to another
+// process that still runs, which a hook from this one would take from it. A
+// declared agent is its process: another of the same program takes its
+// session over only once it is gone, as a resume does. A process tmag
+// cannot see end keeps the session.
+func taken(ctx context.Context, agent string, cur session.Record, me self) bool {
+	h := cur.Host
+	return proc.Declarable(agent) && h.PID > 0 && !sameHost(h, me.host.Process) && proc.Running(ctx, h.PID, h.Start)
+}
+
+// sameHost reports whether h is the process p.
+func sameHost(h session.Host, p proc.Process) bool { return h.PID == p.PID && h.Start == p.Start }
+
+// errTaken reports a hook from a process other than the live one a
+// declared agent's session runs in.
+func errTaken(cur session.Record) error {
+	return fmt.Errorf("session %s of %s runs in process %d", cur.ID, cur.Agent, cur.Host.PID)
+}
+
 // prove takes the full path: it lists every server's panes and reads the
 // process table, attaches the hook's own pane when the hook proves its host
 // is the pane's own agent, updates the other panes that show the session,
@@ -336,7 +379,7 @@ func prove(ctx context.Context, env attach.Env, in Input, p adapter.Payload, pre
 	if err != nil {
 		return err
 	}
-	if complete && reconcileEvent(p.HookEventName) {
+	if complete && reconciles(p, prev, rec) {
 		defer func() {
 			err = errors.Join(err, attach.Reconcile(ctx, env, w))
 		}()
@@ -381,9 +424,16 @@ func prove(ctx context.Context, env attach.Env, in Input, p adapter.Payload, pre
 	return tell(ctx, rec, shown, ring, nil)
 }
 
-// reconcileEvent reports whether a hook reconciles the world: session start
-// and end only, in each agent's own event names, so tool events stay off the
-// full scan.
+// reconciles reports whether a hook reconciles the world: a session's start
+// or end, in each agent's own event names, or a hook that changed how its
+// host runs it, as one that turns to serve a program leaves the panes that
+// showed it. Tool events stay off the full scan.
+func reconciles(p adapter.Payload, prev, rec session.Record) bool {
+	return reconcileEvent(p.HookEventName) || rec.ID != "" && prev.Host.PID > 0 && prev.Host.Role != rec.Host.Role
+}
+
+// reconcileEvent reports whether an event starts or ends a session, in each
+// agent's own event names.
 func reconcileEvent(event string) bool {
 	switch event {
 	case "SessionStart", "SessionEnd", "session_start", "session_shutdown", "session_switch":
@@ -551,7 +601,7 @@ func RecordSlow(parent context.Context, dir, agent string) {
 func recordHookLog(parent context.Context, dir, agent, category string) {
 	ctx, cancel := context.WithTimeout(parent, 100*time.Millisecond)
 	defer cancel()
-	if !proc.IsAgent(agent) && agent != "notify" {
+	if !proc.IsKind(agent) && agent != "notify" {
 		agent = "hook"
 	}
 	// The line contains fixed categories only, never err.Error(), command output

@@ -246,7 +246,11 @@ func TakeSnapshot(ctx context.Context, log *eventlog.Log) (Snapshot, error) {
 		}
 	}
 	v := Build(w, recs)
-	return Snapshot{Seq: seq, Caller: callerFor(ctx, v, w), View: v}, ctx.Err()
+	c, err := callerFor(ctx, v, w)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	return Snapshot{Seq: seq, Caller: c, View: v}, ctx.Err()
 }
 
 // Errors returned by target resolution and waiting.

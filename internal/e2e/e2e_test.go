@@ -64,7 +64,7 @@ func TestMain(m *testing.M) {
 	}
 	build("github.com/ChrAlpha/tmux-agent-experience/cmd/tmag", "tmag")
 	build("github.com/ChrAlpha/tmux-agent-experience/internal/e2e/fakeagent", "claude")
-	for _, agent := range []string{"claude.exe", "codex", "pi", "omp"} {
+	for _, agent := range []string{"claude.exe", "codex", "pi", "omp", declared, unaware} {
 		if err := os.Link(filepath.Join(dir, "claude"), filepath.Join(dir, agent)); err != nil {
 			panic(err)
 		}

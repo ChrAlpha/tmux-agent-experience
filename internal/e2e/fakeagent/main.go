@@ -1,7 +1,12 @@
 // Command fakeagent impersonates an interactive coding agent in end-to-end
 // tests. Install it as "claude", "claude.exe", "codex", "pi" or "omp"; the name
 // selects the agent, and with it the names its hooks give events (for Pi and oh-my-pi,
-// those tmag's extensions report) and its transcript's format.
+// those tmag's extensions report) and its transcript's format. Installed
+// under any other name a declared agent could have, it is an agent tmag does
+// not know: its hooks run `tmag hook NAME` with Codex's event names, its
+// inbox speaks the extension framing and answers a turns request from the
+// turns it holds, and it writes no transcript; without FAKE_HOOKS it is an
+// agent that adapted nothing at all.
 //
 // Environment:
 //
@@ -146,6 +151,10 @@ func main() {
 		return
 	}
 	ev := eventNames[agent]
+	declared := proc.Declarable(agent)
+	if declared {
+		ev = eventNames["codex"]
+	}
 	if agent == "codex" && len(os.Args) > 1 && os.Args[1] == "app-server" {
 		daemon()
 		return
@@ -180,6 +189,8 @@ func main() {
 	// short path: the harness keeps $TMUX_TMPDIR short, and a test's temporary
 	// directory can exceed the platform's Unix socket limit.
 	var inbox string
+	// A declared agent holds its turns itself, which its inbox gives.
+	var held history
 	// The agent takes messages into a queue of its own while its loop is busy,
 	// as Claude Code's holds up to 50 accepted messages, so a delivery ends
 	// once the message is queued, not once the agent's loop reads it.
@@ -199,7 +210,7 @@ func main() {
 					ln.Close()
 					os.RemoveAll(dir)
 				}()
-				go serveInbox(ln, agent, messages)
+				go serveInbox(ln, agent, messages, &held)
 			}
 		}
 	}
@@ -215,7 +226,7 @@ func main() {
 		if mode := os.Getenv("FAKE_PERMISSION_MODE"); mode != "" {
 			payload["permission_mode"] = mode
 		}
-		if inbox != "" && piLike(agent) {
+		if inbox != "" && (piLike(agent) || declared) {
 			payload["inbox"] = inbox
 		}
 		for k, v := range extra {
@@ -286,12 +297,20 @@ func main() {
 	// begin starts a turn of the prompt, end finishes it with its reply.
 	begin := func(line string) {
 		turn, asked = fmt.Sprintf("t%d", n), line
-		writeTurn(agent, session, transcript, turn, line, "")
+		if declared {
+			held.begin(turn, line)
+		} else {
+			writeTurn(agent, session, transcript, turn, line, "")
+		}
 		hook(ev.prompt, map[string]any{turnKey: turn, "prompt": line})
 		writeStatus("busy")
 	}
 	end := func() {
-		writeTurn(agent, session, transcript, turn, "", reply(asked))
+		if declared {
+			held.end(reply(asked))
+		} else {
+			writeTurn(agent, session, transcript, turn, "", reply(asked))
+		}
 		stopped(turn, "stop")
 		writeStatus("idle")
 	}
@@ -401,7 +420,7 @@ loop:
 				writeStatus("idle")
 				record("interrupted")
 				switch {
-				case agent == "codex":
+				case agent == "codex" || declared:
 					hook("Interrupt", map[string]any{turnKey: turn})
 				case piLike(agent):
 					stopped(turn, "aborted")
@@ -432,8 +451,11 @@ loop:
 					ends = nil
 					dialog = nil
 					record("interrupted")
-					if piLike(agent) {
+					switch {
+					case piLike(agent):
 						stopped(turn, "aborted")
+					case declared:
+						hook("Interrupt", map[string]any{turnKey: turn})
 					}
 					m.done <- nil
 				}
@@ -453,6 +475,7 @@ loop:
 			case ends != nil || dialog != nil:
 				// Working: the message is read at the agent's next step.
 				record("message " + m.text)
+				held.given(m.text)
 			case strings.HasPrefix(lastLine(m.text), "tmag "):
 				n++
 				toolTurn(m.text, lastLine(m.text))
@@ -460,6 +483,10 @@ loop:
 				n++
 				begin(m.text)
 				ends = time.After(time.Duration(turnMS) * time.Millisecond)
+				if m.text == "sleep" || strings.HasPrefix(m.text, "sleep ") {
+					// As typed: a minute unless "/end" or an interrupt ends it.
+					ends = time.After(time.Minute)
+				}
 			}
 		case d := <-decided:
 			// Claude Code ignores what a hook prints once its dialog closed.
@@ -589,7 +616,10 @@ func lastLine(prompt string) string { return prompt[strings.LastIndex(prompt, "\
 
 func tool(agent, session string, args []string) (int, string) {
 	cmd := exec.Command(os.Getenv("TMAG_BIN"), args...)
-	cmd.Env = setEnv(os.Environ(), toolVars[agent], session)
+	cmd.Env = os.Environ()
+	if v := toolVars[agent]; v != "" {
+		cmd.Env = setEnv(cmd.Env, v, session)
+	}
 	if agent == "claude" && fakeInbox != "" {
 		cmd.Env = setEnv(cmd.Env, "CLAUDE_CODE_MESSAGING_SOCKET", fakeInbox)
 	}
@@ -597,11 +627,52 @@ func tool(agent, session string, args []string) (int, string) {
 	return cmd.ProcessState.ExitCode(), string(out)
 }
 
+// history is the turns a declared agent holds: the prompts each was given
+// and the reply that ended it.
+type history struct {
+	mu    sync.Mutex
+	turns []map[string]any
+}
+
+func (h *history) begin(turn, prompt string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.turns = append(h.turns, map[string]any{"id": turn, "prompts": []map[string]string{{"text": prompt}}, "reply": ""})
+}
+
+// given adds a prompt that arrived while the last turn runs.
+func (h *history) given(prompt string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.turns) > 0 {
+		last := h.turns[len(h.turns)-1]
+		last["prompts"] = append(last["prompts"].([]map[string]string), map[string]string{"text": prompt})
+	}
+}
+
+func (h *history) end(reply string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.turns) > 0 {
+		h.turns[len(h.turns)-1]["reply"] = reply
+	}
+}
+
+// last answers a turns request: the last n turns, oldest first.
+func (h *history) last(n int) []byte {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	turns := h.turns[max(0, len(h.turns)-n):]
+	b, _ := json.Marshal(map[string]any{"ok": true, "turns": turns})
+	return append(b, '\n')
+}
+
 // serveInbox serves the fake's inbox: one line per send or interrupt,
-// Claude Code's envelope or the extension's request. Claude Code answers
-// nothing: it reads the frame to tmag's EOF, then closes; the extension
-// answers after taking the text or stopping the turn.
-func serveInbox(ln net.Listener, agent string, messages chan<- message) {
+// Claude Code's envelope or the extension's request, and a declared agent's
+// turns request. Claude Code answers nothing: it reads the frame to tmag's
+// EOF, then closes; the extension answers after taking the text or stopping
+// the turn, and a declared agent with the turns it holds.
+func serveInbox(ln net.Listener, agent string, messages chan<- message, held *history) {
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -637,9 +708,18 @@ func serveInbox(ln net.Listener, agent string, messages chan<- message) {
 			var msg struct {
 				Send      string `json:"send"`
 				Interrupt bool   `json:"interrupt"`
+				Turns     int    `json:"turns"`
 				Session   string `json:"session"`
 			}
 			if json.Unmarshal([]byte(line), &msg) != nil {
+				return
+			}
+			if msg.Turns > 0 && proc.Declarable(agent) {
+				if msg.Session != os.Getenv("FAKE_SESSION") {
+					_, _ = conn.Write([]byte(`{"ok":false,"refused":"changed","error":"this agent now serves another session"}` + "\n"))
+					return
+				}
+				_, _ = conn.Write(held.last(msg.Turns))
 				return
 			}
 			if msg.Interrupt {

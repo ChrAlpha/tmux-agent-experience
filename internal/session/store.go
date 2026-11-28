@@ -45,7 +45,7 @@ func ValidID(id string) bool {
 func (s Store) root() string { return filepath.Join(s.Dir, "sessions") }
 
 func (s Store) path(agent, id string) (string, error) {
-	if !proc.IsAgent(agent) || !ValidID(id) {
+	if !proc.IsKind(agent) || !ValidID(id) {
 		return "", fmt.Errorf("invalid session %s/%q", agent, id)
 	}
 	return filepath.Join(s.root(), agent, id+".json"), nil

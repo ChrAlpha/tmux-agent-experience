@@ -74,7 +74,7 @@ Usage:
                                                install or update the agent plugins
   tmag doctor   [--json]                       check the installation
   tmag uninstall [--purge]                     print removal steps; --purge clears tmag state
-  tmag hook     <claude|codex|pi|omp>          agent hook entry point (reads stdin)
+  tmag hook     <claude|codex|pi|omp|PROGRAM>  agent hook entry point (reads stdin)
   tmag answer-hook <claude>                    Claude's PermissionRequest hook: waits for answer
   tmag version
 

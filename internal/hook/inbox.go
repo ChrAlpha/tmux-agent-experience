@@ -14,13 +14,13 @@ import (
 const claudeInboxVar = "CLAUDE_CODE_MESSAGING_SOCKET"
 
 // inboxOf is the socket path a hook's agent named for its inbox: Claude Code
-// exports it to the hook, Pi's and oh-my-pi's extensions send it in every
-// payload. A hook that names none records nothing new.
+// exports it to the hook, Pi's and oh-my-pi's extensions and declared agents
+// send it in every payload. A hook that names none records nothing new.
 func inboxOf(agent string, p adapter.Payload, getenv func(string) string) string {
-	switch agent {
-	case proc.Claude:
+	switch {
+	case agent == proc.Claude:
 		return inboxPath(getenv(claudeInboxVar))
-	case proc.Pi, proc.OMP:
+	case agent == proc.Pi, agent == proc.OMP, proc.Declarable(agent):
 		return inboxPath(p.Inbox)
 	}
 	return ""
@@ -41,7 +41,7 @@ func inboxPath(s string) string {
 // its role: a background session's listener is a worker, not the service host
 // the session records. The process is the one that set the variable or ran
 // the extension, so a message delivered to its listener is one the session's
-// agent takes.
+// agent takes. A declared agent's is its host, the process its hook proved.
 func inboxFor(t *proc.Table, pid int, agent, path string) *session.Inbox {
 	if path == "" || t == nil {
 		return nil
@@ -51,7 +51,7 @@ func inboxFor(t *proc.Table, pid int, agent, path string) *session.Inbox {
 		if !ok {
 			continue
 		}
-		if proc.ProgramKind(p) == agent {
+		if proc.ProgramKind(p) == agent || proc.Declarable(agent) && proc.ProgramName(p) == agent {
 			return &session.Inbox{Path: path, PID: p.PID, Start: p.Start}
 		}
 	}

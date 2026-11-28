@@ -15,7 +15,8 @@
 #   @tmag-answer      on          who may decide prompts with `tmag answer`: on (people), agents, off
 #   @tmag-peers       on          tmag setup gives agents the tmag-peers skill, to work with each other
 #   @tmag-peer-depth  3           how many times agents may pass on work they were asked for, or off
-#   @tmag-start-NAME  (unset)     a command `tmag start NAME` runs, starting with claude, codex, pi or omp
+#   @tmag-start-NAME  (unset)     a command `tmag start NAME` runs, starting with an agent's program
+#   @tmag-agents      (unset)     programs whose commands are an agent's, for agents that report nothing
 #   @tmag-worktrees   .worktrees  where `tmag start --worktree` adds worktrees, in the repository unless absolute
 #   #{tmag_status}               placeholder for status-left / status-right
 #

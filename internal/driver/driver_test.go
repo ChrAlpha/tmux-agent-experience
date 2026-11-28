@@ -32,7 +32,11 @@ func TestSendPlan(t *testing.T) {
 		{"an agent's idle oh-my-pi prompt tries its inbox, then the pane", "omp", "terminal", Agent, false, true, Plan{Try: []string{Inbox, Pane}}},
 		{"Pi serving a program takes no prompt", "pi", "service", Agent, false, true, Plan{}},
 		{"oh-my-pi serving a program takes no prompt", "omp", "service", Person, false, false, Plan{}},
-		{"an agent tmag does not know", "aider", "terminal", Person, false, true, Plan{}},
+		{"a person's idle declared prompt goes to its inbox", "gemini", "terminal", Person, false, true, Plan{Try: inbox}},
+		{"a person's declared wait goes to its inbox", "gemini", "terminal", Person, true, true, Plan{Try: inbox}},
+		{"an agent's working declared prompt goes to its inbox, never busy", "gemini", "terminal", Agent, false, false, Plan{Try: inbox}},
+		{"a declared agent serving a program takes no prompt", "gemini", "service", Agent, false, true, Plan{}},
+		{"a program that names no agent", "bash", "terminal", Person, false, true, Plan{}},
 	} {
 		got := SendPlan(c.agent, c.runtime, c.caller, c.wait, c.idle)
 		if !slices.Equal(got.Try, c.want.Try) || got.Busy != c.want.Busy {
@@ -55,13 +59,30 @@ func TestInterruptPlanAndAnswerChannel(t *testing.T) {
 		{"pi", "service", nil, ""},
 		{"omp", "terminal", []string{Pane}, ""},
 		{"omp", "service", nil, ""},
-		{"aider", "terminal", nil, ""},
+		{"gemini", "terminal", []string{Inbox}, ""},
+		{"gemini", "service", nil, ""},
+		{"bash", "terminal", nil, ""},
 	} {
 		if got := InterruptPlan(c.agent, c.runtime); !slices.Equal(got.Try, c.interrupt) || got.Busy {
 			t.Errorf("InterruptPlan(%s, %s) = %+v, want %v", c.agent, c.runtime, got, c.interrupt)
 		}
 		if got := AnswerChannel(c.agent, c.runtime); got != c.answer {
 			t.Errorf("AnswerChannel(%s, %s) = %q, want %q", c.agent, c.runtime, got, c.answer)
+		}
+	}
+}
+
+func TestTurnsChannel(t *testing.T) {
+	for _, c := range []struct {
+		agent, runtime, want string
+	}{
+		{"gemini", "terminal", Inbox},
+		{"gemini", "service", ""},
+		{"claude", "terminal", ""},
+		{"pi", "terminal", ""},
+	} {
+		if got := TurnsChannel(c.agent, c.runtime); got != c.want {
+			t.Errorf("TurnsChannel(%s, %s) = %q, want %q", c.agent, c.runtime, got, c.want)
 		}
 	}
 }
@@ -79,6 +100,8 @@ func TestCapabilities(t *testing.T) {
 		{"pi", "service", nil},
 		{"omp", "terminal", []string{Send, Interrupt}},
 		{"omp", "service", nil},
+		{"gemini", "terminal", []string{Send, Interrupt}},
+		{"gemini", "service", nil},
 	} {
 		got := Capabilities(c.agent, c.runtime)
 		if len(got) == 0 && len(c.want) == 0 {
@@ -88,7 +111,7 @@ func TestCapabilities(t *testing.T) {
 			t.Errorf("%s %s takes %v, want %v", c.agent, c.runtime, got, c.want)
 		}
 	}
-	for agent, reports := range map[string]bool{"claude": false, "codex": true, "pi": true, "omp": true} {
+	for agent, reports := range map[string]bool{"claude": false, "codex": true, "pi": true, "omp": true, "gemini": true} {
 		if ReportsInterrupt(agent) != reports {
 			t.Errorf("ReportsInterrupt(%s) = %v", agent, !reports)
 		}
