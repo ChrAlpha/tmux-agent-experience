@@ -30,7 +30,6 @@ jobs:
       - uses: ./.github/actions/setup-packages
         with:
           node-version: 26
-          registry-url: https://registry.npmjs.org
       - working-directory: packages/flow
         run: pnpm check
       - name: Pack
