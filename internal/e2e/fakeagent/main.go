@@ -483,6 +483,10 @@ loop:
 				n++
 				begin(m.text)
 				ends = time.After(time.Duration(turnMS) * time.Millisecond)
+				if m.text == "sleep" || strings.HasPrefix(m.text, "sleep ") {
+					// As typed: a minute unless "/end" or an interrupt ends it.
+					ends = time.After(time.Minute)
+				}
 			}
 		case d := <-decided:
 			// Claude Code ignores what a hook prints once its dialog closed.

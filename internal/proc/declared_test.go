@@ -44,6 +44,10 @@ func TestProgramName(t *testing.T) {
 		// npm's launcher does; Node 26 names its process node-MainThread.
 		{Process{Comm: "node", Argv: []string{"node", "/usr/local/bin/gemini", "--yolo"}}, "gemini"},
 		{Process{Comm: "node-MainThread", Argv: []string{"/opt/node/bin/node", "/usr/local/bin/gemini"}}, "gemini"},
+		// Earlier Node names its main thread MainThread; macOS's framework
+		// Python runs as Python.
+		{Process{Comm: "MainThread", Argv: []string{"/opt/hostedtoolcache/node/24.11.0/x64/bin/node", "/tmp/myagent"}}, "myagent"},
+		{Process{Comm: "Python", Args: "/Library/Frameworks/Python.framework/Versions/3.13/Resources/Python.app/Contents/MacOS/Python /tmp/myagent"}, "myagent"},
 		{Process{Comm: "python3.12", Argv: []string{"/usr/bin/python3.12", "/home/me/.local/bin/aider"}}, "aider"},
 		{Process{Comm: "aider", Argv: []string{"/usr/bin/python3", "/home/me/.local/bin/aider"}}, "aider"},
 		{Process{Comm: "python3", Argv: []string{"python3", "-m", "aider.main", "--yes"}}, "aider"},

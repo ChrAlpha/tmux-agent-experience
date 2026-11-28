@@ -46,8 +46,11 @@ is its process's, as its executable gives it or the program sets it (Linux
 keeps the first 15 bytes of it, and the command line the rest), or the
 script an interpreter runs as its first argument, as a script's `#!` line
 runs it (`node /usr/local/bin/gemini` runs `gemini`), with `python -m
-MODULE`, `bun run SCRIPT` and `deno run SCRIPT`. tmag tells node by its
-command line too, as Node 26 names its process `node-MainThread`. It guesses
+MODULE`, `bun run SCRIPT` and `deno run SCRIPT`. tmag tells an interpreter
+by the executable its command line names, which it keeps whatever it names
+its process: Node names its main thread `MainThread`, or `node-MainThread`
+from Node 26, and macOS's framework Python runs as `Python`. A hook reads
+every process above it in full, so its proof needs no process name. It guesses
 at no other argument: which of an interpreter's options take a value is the
 interpreter's to say and changes with it, so an interpreter given options
 before its script proves no program, and an agent started that way names

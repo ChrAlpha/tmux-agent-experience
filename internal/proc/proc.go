@@ -196,7 +196,7 @@ func ProgramKind(p Process) string {
 		// oh-my-pi names its process omp on Linux; elsewhere ps shows the
 		// command it was started as.
 		return OMP
-	case runtimeName(p.Comm) == "node" || p.Comm == "bun":
+	case runtimeOf(p) == "node" || runtimeOf(p) == "bun":
 		switch {
 		case strings.Contains(p.Args, "claude-code") || claudeScriptRE.MatchString(p.Args):
 			return Claude
@@ -560,7 +560,7 @@ func candidateCommand(comm string) bool {
 	switch {
 	case comm == "claude", comm == "claude.exe",
 		comm == "pi", comm == "pi-rpc", comm == "omp",
-		interpreter(comm), len(comm) == commLen:
+		interpreter(comm), nodeThreads[comm], len(comm) == commLen:
 		return true
 	case strings.HasPrefix(comm, "codex"):
 		return true

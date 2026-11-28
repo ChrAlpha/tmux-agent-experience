@@ -46,18 +46,43 @@ func IsKind(kind string) bool { return IsAgent(kind) || Declarable(kind) }
 // arguments name, which is then the program it runs.
 func interpreter(comm string) bool { return runtimeName(comm) != "" }
 
-// runtimeName is the interpreter an executable's name is, or "": node,
-// which Node 26 names node-MainThread, bun, deno, or a python.
+// runtimeName is the interpreter an executable's name is, or "": node, bun,
+// deno, or a python, which macOS's framework build names Python.
 func runtimeName(name string) string {
 	switch {
-	case name == "node" || name == "node-MainThread":
-		return "node"
-	case name == "bun" || name == "deno":
+	case name == "node", name == "bun", name == "deno":
 		return name
-	case strings.HasPrefix(name, "python"):
+	case strings.HasPrefix(strings.ToLower(name), "python"):
 		return "python"
 	}
 	return ""
+}
+
+// runtimeOf is the interpreter p runs, or "": by the executable its command
+// line names, which an interpreter keeps whatever it names its process (Node
+// names its main thread MainThread, or node-MainThread from Node 26), or by
+// its process's name when the table has no command line.
+func runtimeOf(p Process) string {
+	if argv := commandLine(p); len(argv) > 0 {
+		return runtimeName(filepath.Base(argv[0]))
+	}
+	return runtimeName(p.Comm)
+}
+
+// nodeThreads are the names Node gives its process: its main thread's.
+var nodeThreads = map[string]bool{"MainThread": true, "node-MainThread": true}
+
+// commandLine is p's arguments, as the platform keeps their boundaries or
+// else split on spaces; a process that names itself pads them with spaces.
+func commandLine(p Process) []string {
+	argv := p.Argv
+	if argv == nil {
+		argv = strings.Fields(p.Args)
+	}
+	if len(argv) > 0 {
+		argv = append([]string{strings.TrimRight(argv[0], " ")}, argv[1:]...)
+	}
+	return argv
 }
 
 // commLen is how much of its executable's name Linux keeps as a process's
@@ -77,19 +102,15 @@ func ProgramName(p Process) string {
 	if p.Uncertain {
 		return ""
 	}
-	argv := p.Argv
-	if argv == nil {
-		argv = strings.Fields(p.Args)
-	}
+	argv := commandLine(p)
 	name := p.Comm
 	if len(argv) > 0 {
-		// A process that names itself pads its command line with spaces.
-		full := filepath.Base(strings.TrimRight(argv[0], " "))
+		full := filepath.Base(argv[0])
 		if len(name) == commLen && strings.HasPrefix(full, name) || runtimeName(full) != "" {
 			name = full
 		}
 	}
-	rt := runtimeName(name)
+	rt := runtimeOf(p)
 	if rt == "" || len(argv) < 2 {
 		return name
 	}
