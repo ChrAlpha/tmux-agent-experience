@@ -13,6 +13,7 @@ describe('tmag-flow over tmag', { skip: why }, () => {
 
   const sends = (session: string) => w.events(session).filter((e) => e.event === 'Send').length
   const records = (run: string, t: string) => w.journal(run).filter((r) => r.t === t)
+  const revisionAt = (ref: string) => new RegExp(`^${w.git('rev-parse', ref)}(?: \\(dirty\\))?$`)
   const bound = (run: string, role: string) =>
     records(run, 'role.bound')
       .filter((r) => r.role === role)
@@ -472,7 +473,7 @@ describe('tmag-flow over tmag', { skip: why }, () => {
     )
     assert.equal(u.code, 0, u.out)
     const doc = JSON.parse(u.out.trim().split('\n').at(-1) as string) as {
-      result: { units: { unit: string; result: string }[] }
+      result: { units: { unit: string; result: string; revision: string }[] }
     }
     assert.deepEqual(
       doc.result.units.map((x) => [x.unit, x.result]),
@@ -481,6 +482,8 @@ describe('tmag-flow over tmag', { skip: why }, () => {
         ['two', 'passed'],
       ],
     )
+    const head = revisionAt('feat/u')
+    for (const unit of doc.result.units) assert.match(unit.revision, head, unit.unit)
 
     const r = await w.person('tmag-flow start review --run v1 --arg dir=. --arg reviewers=sol')
     assert.equal(r.code, 5, r.out)
@@ -488,7 +491,34 @@ describe('tmag-flow over tmag', { skip: why }, () => {
     assert.equal((await w.person('tmag-flow decide v1 round-1 stop')).code, 0)
     const done = await w.person('tmag-flow resume v1 --json')
     assert.equal(done.code, 0, done.out)
-    assert.match(done.out, /"passed":false/)
+    const review = JSON.parse(done.out.trim().split('\n').at(-1) as string) as {
+      result: { passed: boolean; revision: string }
+    }
+    assert.equal(review.result.passed, false)
+    assert.match(review.result.revision, revisionAt('HEAD'))
+  })
+
+  it('runs a unit named review and starts its final reviewer', async () => {
+    w = new World()
+    const spec = join(w.dir, 'units.json')
+    writeFileSync(spec, JSON.stringify({ units: [{ name: 'review', task: 'Do the work.', accept: ['true'] }] }))
+    const run = await w.person(
+      `tmag-flow start units --run u2 --arg units=${spec} --arg implementer=impl --arg branch=feat/review --arg reviewers=sol --arg rounds=1 --json`,
+    )
+    assert.doesNotMatch(run.out, /step .* is used twice/)
+    assert.equal(run.code, 0, run.out)
+    const { result } = JSON.parse(run.out.trim().split('\n').at(-1) as string) as {
+      result: {
+        units: { unit: string; result: string }[]
+        review: { passed: boolean; round: number; revision: string }
+      }
+    }
+    assert.equal(result.units[0]?.unit, 'review')
+    assert.equal(result.units[0]?.result, 'passed')
+    assert.equal(bound('u2', 'sol').length, 1)
+    assert.equal(result.review.round, 1)
+    assert.equal(result.review.passed, false)
+    assert.match(result.review.revision, revisionAt('feat/review'))
   })
 
   it('is the agent whose tool runs it', async () => {
