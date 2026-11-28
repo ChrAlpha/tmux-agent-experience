@@ -295,7 +295,6 @@ export function Start({ at, dir: linked }: { at: string; dir?: string }) {
     }
     try {
       const doc = await c.act<StartDoc>(action)
-      if (!doc?.session?.id) return ended(new Failure(200, 'network', 'its answer was cut short'))
       gave()
       const now = holding(on.instance, on.c)
       const to: Route | undefined = now && { name: 'session', at: now.name, id: doc.session.id }

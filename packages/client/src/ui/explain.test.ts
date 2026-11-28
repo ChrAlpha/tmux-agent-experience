@@ -30,6 +30,7 @@ describe('outcome', () => {
     const unknown =
       'The computer did not say how it went, so it may or may not have happened: check before trying again.'
     expect(outcome(new Failure(0, 'network', 'the computer did not answer'), 'send')).toBe(unknown)
+    expect(outcome(new Failure(200, 'receipt', 'no readable tmag receipt'), 'answer')).toBe(unknown)
     expect(outcome(new Failure(504, 'timeout', 'timed out'), 'answer')).toBe(unknown)
     expect(outcome(new Failure(502, 'backend', 'local command returned no JSON document'), 'send')).toBe(unknown)
     expect(outcome(new Failure(502, 'http', 'no tmag serve answered /v2/act (HTTP 502)'), 'interrupt')).toBe(unknown)

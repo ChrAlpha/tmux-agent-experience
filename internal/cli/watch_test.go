@@ -95,6 +95,43 @@ func TestWatchResumeFromALostCursorStartsWithASnapshot(t *testing.T) {
 	}
 }
 
+func TestWatchZeroCursorStartsWithASnapshot(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	log := eventlog.Open(t.TempDir())
+	log.MaxBytes = 1
+	watchPulse(t, ctx, log, 3) // one event per file, so the first has rotated away
+	head, err := log.Head(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stop := errors.New("followed both events after the snapshot")
+	var frame int64
+	s := watchStream{
+		log:     log,
+		capture: func(context.Context) (query.Snapshot, error) { return query.Snapshot{Seq: head}, nil },
+		rescan:  func(context.Context) ([]query.Pane, error) { return nil, nil },
+		emit: func(doc map[string]any) error {
+			if frame == 0 {
+				if doc["type"] != "snapshot" || doc["seq"] != head {
+					t.Fatalf("first frame = %v at %v, want snapshot at %d", doc["type"], doc["seq"], head)
+				}
+				watchPulse(t, ctx, log, 2)
+			} else if want := head + frame; doc["type"] != "event" || doc["event"].(eventlog.Event).Seq != want {
+				t.Fatalf("frame %d = %v, want event %d", frame, doc, want)
+			}
+			frame++
+			if frame == 3 {
+				return stop
+			}
+			return nil
+		},
+	}
+	if err := s.run(ctx, 0); !errors.Is(err, stop) {
+		t.Fatalf("watch = %v", err)
+	}
+}
+
 func TestWatchNumericResumeKeepsEventsThenPanes(t *testing.T) {
 	ctx := context.Background()
 	log := eventlog.Open(t.TempDir())

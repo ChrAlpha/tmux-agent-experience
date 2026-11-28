@@ -74,7 +74,15 @@ export async function act<T = unknown>(base: string, token: string, action: Acti
     headers: { ...bearer(token), ...json },
     body: JSON.stringify(action),
   })
-  return res.json().catch(() => ({}) as T)
+  const doc = await res.json().catch(() => null)
+  if (doc?.schema === 'tmag/v2' && typeof doc.seq === 'number') {
+    const matchesVerb =
+      action.verb === 'start'
+        ? typeof doc.dir === 'string' && typeof doc.session?.id === 'string' && doc.session.id !== ''
+        : typeof doc.via === 'string' && doc.via !== ''
+    if (matchesVerb) return doc as T
+  }
+  throw new Failure(res.status, 'receipt', 'the computer answered without a readable tmag receipt')
 }
 
 // pair redeems a code from `tmag auth pair` on the computer at base, for a

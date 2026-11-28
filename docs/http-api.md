@@ -51,6 +51,12 @@ Successful commands and command failures preserve their `tmag/v2` documents.
 | POST /v2/act | JSON action | send, interrupt, answer, start or keys result |
 | POST /v2/pair | JSON `{code}`; no bearer needed | `{schema,credential:{id,label,created,expires?,token}}` |
 
+A successful action returns its `tmag/v2` CLI document, whose `schema` names the
+contract and whose `seq` is the sequence number at which tmag logged the action.
+A delivery carries `session`, `pane` and the channel in `via`, and a start
+carries `session`, `pane` and the directory in `dir`. Lists and watch snapshots
+also carry `schema` and `seq`, so clients use the verb's fields to recognize its
+receipt.
 Actions contain `verb` and `target`. A send carries `text`; an answer carries
 `request` and `decision` (`allow` or `deny`), with optional `message` and
 `answers` (question text to selected answer). A send delivers now: an idle
@@ -89,7 +95,8 @@ Snapshot and event frames also carry an SSE id equal to their sequence number.
 Pane-list frames do not advance the cursor. `event: ping` with data `1` is a
 keepalive, not state. Reconnect with the last snapshot/event cursor: the local
 watch replays the events after it when the log still holds every one of them,
-and otherwise starts with a fresh snapshot. A running subscription likewise
+and otherwise starts with a fresh snapshot. A cursor of `0` is no cursor, so
+reconnecting with it starts with a snapshot. A running subscription likewise
 sends a fresh snapshot whenever it cannot vouch that it sent every event since
 the last, because events rotated away or the log was recreated. Each snapshot
 replaces both sessions and panes, including when either is empty. Events
