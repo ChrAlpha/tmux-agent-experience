@@ -405,8 +405,7 @@ func (env Env) Attach(ctx context.Context, w *World, c Client, rec session.Recor
 		if err != nil {
 			return err
 		}
-		now, ok := (&World{Panes: []tmux.Pane{fresh}, Proc: pt}).ClientIn(fresh)
-		if !ok || now.Agent != c.Agent || now.Process.PID != c.Process.PID || now.Process.Start != c.Process.Start {
+		if !(&World{Panes: []tmux.Pane{fresh}, Proc: pt}).Runs(Client{Pane: fresh, Agent: c.Agent, Process: c.Process}) {
 			return nil // the client the proof was about no longer runs in the pane
 		}
 		replaced := had && (cur.Agent != next.Agent || cur.Session != next.Session)

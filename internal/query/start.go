@@ -222,7 +222,8 @@ func IsUsage(err error) bool { return errors.Is(err, errUsage) }
 
 // startCommand is the agent o names and the command its window runs: the
 // agent's own name, or the template's command, whose first word must run
-// one of the agents.
+// an agent's program: one tmag knows, or a declared agent's. A declared
+// agent starts only from a template: what a start runs is the person's.
 func startCommand(ctx context.Context, srv tmux.Server, o StartOptions) (agent, command string, err error) {
 	if o.Template == "" {
 		if !proc.IsAgent(o.Agent) {
@@ -243,8 +244,8 @@ func startCommand(ctx context.Context, srv tmux.Server, o StartOptions) (agent, 
 	}
 	fields := strings.Fields(command)
 	agent = filepath.Base(fields[0])
-	if !proc.IsAgent(agent) {
-		return "", "", fmt.Errorf("%w: %s%s runs %s, which is none of %s", errUsage, TemplateOption, o.Template, fields[0], strings.Join(proc.Agents, ", "))
+	if !proc.IsKind(agent) {
+		return "", "", fmt.Errorf("%w: %s%s runs %s, which is no agent's program", errUsage, TemplateOption, o.Template, fields[0])
 	}
 	return agent, command, nil
 }

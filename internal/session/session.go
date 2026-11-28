@@ -34,7 +34,7 @@ type Host struct {
 type Record struct {
 	// LastHookAt is accepted hook contact, independent of state age or authority.
 	LastHookAt time.Time `json:"last_hook_at,omitzero"`
-	Agent      string    `json:"agent"` // one of proc.Agents
+	Agent      string    `json:"agent"` // one of proc.Agents, or a declared agent's program
 	ID         string    `json:"id"`
 	Cwd        string    `json:"cwd,omitempty"`
 	Host       Host      `json:"host"`

@@ -76,7 +76,7 @@ func Turns(ctx context.Context, path, format string, n int) ([]Turn, error) {
 	}
 	turns, err := read(ctx, path, format, n, maxLine)
 	for i := range turns {
-		turns[i] = bound(turns[i])
+		turns[i] = Bound(turns[i])
 	}
 	return turns, err
 }
@@ -185,9 +185,9 @@ func reversed(p []Prompt) []Prompt {
 	return p
 }
 
-// bound keeps a turn within the bounds Turns promises: its first prompt and
+// Bound keeps a turn within the bounds Turns promises: its first prompt and
 // last ones, each text cut.
-func bound(t Turn) Turn {
+func Bound(t Turn) Turn {
 	if t.Prompts == nil {
 		t.Prompts = []Prompt{}
 	}

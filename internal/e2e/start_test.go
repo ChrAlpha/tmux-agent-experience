@@ -100,7 +100,7 @@ func TestAPersonStartsATemplateInAWorktree(t *testing.T) {
 	readEventually(t, out,
 		"tmag start: usage: a template is named by lowercase letters, digits, - and _\nexit 2",
 		"tmag start: usage: no @tmag-start-unset is set on this tmux server\nexit 2",
-		"tmag start: usage: @tmag-start-shell runs /bin/sh, which is none of claude, codex, pi, omp\nexit 2",
+		"tmag start: usage: @tmag-start-shell runs /bin/sh, which is no agent's program\nexit 2",
 		"tmag start: --wait and --reply ask about a prompt: give one, or - for stdin\nexit 2",
 		"started claude "+sidC[:8]+" in %", "sent to "+sidC[:8]+" (pane)", "exit 0")
 	tree := resolved(t, filepath.Join(repo, ".worktrees", "feat", "x"))

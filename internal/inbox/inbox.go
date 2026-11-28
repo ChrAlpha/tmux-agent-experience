@@ -1,6 +1,7 @@
 // Package inbox hands a message to an agent through the socket the agent
-// itself serves for messages: Claude Code's cross-session inbox, or tmag's
-// extension in Pi and oh-my-pi. tmag writes the message and keeps none of it.
+// itself serves for messages: Claude Code's cross-session inbox, or the
+// extension framing tmag's extensions in Pi and oh-my-pi and declared agents
+// serve. tmag writes the message and keeps none of it.
 //
 // A connection proves its peer: the process at the other end (SO_PEERCRED,
 // LOCAL_PEERPID on macOS) must be the process that named the socket, still
@@ -24,6 +25,7 @@ import (
 	"github.com/ChrAlpha/tmux-agent-experience/internal/adapter"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/transcript"
 )
 
 // ErrNotTaken reports an agent that answered it took nothing: the message
@@ -192,10 +194,53 @@ func (c *Conn) Interrupt(ctx context.Context, session string) error {
 	}{Interrupt: true, Session: session})
 }
 
-// extension writes request as one line and reads the extension's answer,
-// with the framing both requests share.
+// Bounds of an extension's answer: an acknowledgement is a short line, and a
+// declared agent's turns, which are its own, no longer than a transcript's
+// line tmag reads.
+const (
+	maxAnswer = 64 << 10
+	maxTurns  = 64 << 20
+)
+
+// answer is what an extension answers on its socket: whether it carried the
+// request out, and with turns, the turns it was asked for.
+type answer struct {
+	OK      *bool             `json:"ok"`
+	Refused string            `json:"refused"`
+	Error   string            `json:"error"`
+	Turns   []transcript.Turn `json:"turns"`
+}
+
+// Turns asks a declared agent's inbox for session's last n turns, oldest
+// first, as the agent holds them: the prompts each was given and the reply
+// that ended it, the last one possibly running. The agent refuses a session
+// it no longer serves. tmag prints them and keeps nothing.
+func (c *Conn) Turns(ctx context.Context, session string, n int) ([]transcript.Turn, error) {
+	r, err := c.exchange(ctx, struct {
+		Turns   int    `json:"turns"`
+		Session string `json:"session"`
+	}{Turns: n, Session: session}, maxTurns)
+	if err != nil {
+		return nil, err
+	}
+	if len(r.Turns) > n {
+		r.Turns = r.Turns[len(r.Turns)-n:]
+	}
+	return r.Turns, nil
+}
+
+// extension writes request as one line and reads the extension's
+// acknowledgement, with the framing every request shares.
 func (c *Conn) extension(ctx context.Context, request any) error {
-	return c.within(ctx, func() error {
+	_, err := c.exchange(ctx, request, maxAnswer)
+	return err
+}
+
+// exchange writes request as one line and reads the answer, of at most limit
+// bytes: one line, or what came before the extension closed.
+func (c *Conn) exchange(ctx context.Context, request any, limit int64) (answer, error) {
+	var r answer
+	err := c.within(ctx, func() error {
 		line, err := json.Marshal(request)
 		if err != nil {
 			return err
@@ -204,12 +249,7 @@ func (c *Conn) extension(ctx context.Context, request any) error {
 			return err
 		}
 		_ = c.conn.SetReadDeadline(deadline(ctx))
-		var r struct {
-			OK      *bool  `json:"ok"`
-			Refused string `json:"refused"`
-			Error   string `json:"error"`
-		}
-		if err := json.NewDecoder(c.conn).Decode(&r); err != nil {
+		if err := json.NewDecoder(io.LimitReader(c.conn, limit)).Decode(&r); err != nil {
 			return fmt.Errorf("the extension answered nothing: %w", err)
 		}
 		switch {
@@ -226,6 +266,7 @@ func (c *Conn) extension(ctx context.Context, request any) error {
 		}
 		return nil
 	})
+	return r, err
 }
 
 // within runs one exchange, ending its I/O when ctx ends: a canceled send

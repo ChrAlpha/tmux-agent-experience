@@ -28,8 +28,8 @@ import (
 // cmdHook always exits 0 and never writes stdout: a broken tmag must not
 // disturb the agent. Failures go to <state dir>/hook.log.
 func (a *app) cmdHook(args []string) (code int) {
-	if len(args) != 1 || !proc.IsAgent(args[0]) {
-		fmt.Fprintln(a.stderr, "usage: tmag hook <"+strings.Join(proc.Agents, "|")+">")
+	if len(args) != 1 || !proc.IsKind(args[0]) {
+		fmt.Fprintln(a.stderr, "usage: tmag hook <"+strings.Join(proc.Agents, "|")+"|PROGRAM>")
 		return ExitOK
 	}
 	start := a.startedAt()
@@ -798,7 +798,11 @@ func (a *app) waitMany(ctx context.Context, pos, want []string, asked, all bool,
 		awaited = append(awaited, query.Awaited{Session: *t.Session, States: want})
 	}
 	if asked {
-		owing, err := query.Owing(v, v.Caller(w))
+		caller, err := v.Caller(ctx, w)
+		if err != nil {
+			return a.fail("wait", err)
+		}
+		owing, err := query.Owing(v, caller)
 		if err != nil {
 			return a.fail("wait", err)
 		}

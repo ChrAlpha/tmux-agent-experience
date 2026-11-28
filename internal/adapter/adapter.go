@@ -294,6 +294,9 @@ func Map(agent string, p Payload) Transition {
 	case proc.OMP:
 		return mapOMP(p)
 	}
+	if proc.Declarable(agent) {
+		return mapDeclared(p)
+	}
 	return Transition{}
 }
 
@@ -468,6 +471,52 @@ func mapCodex(p Payload) Transition {
 			return Transition{Action: Set, State: Idle, Turn: turn(p), KeepSubagents: true}
 		}
 		return Transition{Action: Set, State: Working, Turn: turn(p), KeepSubagents: true}
+	case "SessionEnd":
+		return Transition{Action: End}
+	}
+	return Transition{}
+}
+
+// mapDeclared maps the events of a declared agent, a program tmag does not
+// know that reports itself under its own name (see proc.Declarable): the
+// hook events Claude Code and Codex share, in their meaning there, with
+// PostToolUseFailure, PostToolBatch, StopFailure and Elicitation as Claude
+// Code has them, and PreModelRequest and Interrupt as Codex does. Nothing
+// here depends on a tool's name: a declared agent's tools are its own.
+func mapDeclared(p Payload) Transition {
+	if subagentLifecycle(p) {
+		return Transition{}
+	}
+	switch p.HookEventName {
+	case "SessionStart":
+		return started(p)
+	case "UserPromptSubmit":
+		return promptSubmitted(p)
+	case "PreToolUse":
+		return start(p)
+	case "PermissionRequest":
+		return ask(p, p.ToolName)
+	case "Elicitation":
+		// A question for the person that is about no tool call.
+		return ask(p, elicitation)
+	case "ElicitationResult":
+		return answer(p, elicitation)
+	case "PostToolUse", "PostToolUseFailure":
+		return finish(p)
+	case "PostToolBatch", "PreModelRequest":
+		return settle(p)
+	case "SubagentStart":
+		return spawn(p)
+	case "SubagentStop":
+		return reap(p)
+	case "Stop", "Interrupt":
+		return Transition{Action: Set, State: Idle, Turn: turn(p)}
+	case "StopFailure":
+		return Transition{Action: Set, State: Idle, Kind: KindError, Turn: turn(p), Reason: p.Error, KeepSubagents: true}
+	case "PreCompact":
+		return Transition{Action: Set, State: Working, Kind: KindCompacting, Turn: turn(p), KeepSubagents: true}
+	case "PostCompact":
+		return compacted(p)
 	case "SessionEnd":
 		return Transition{Action: End}
 	}

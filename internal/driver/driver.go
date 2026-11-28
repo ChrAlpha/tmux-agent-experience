@@ -62,6 +62,10 @@ type Plan struct {
 // SendPlan is how a prompt from caller reaches a session of agent with
 // runtime, idle or not, as a turn of its own (wait) or not.
 //
+// A declared agent takes every prompt through its inbox, as tmag's
+// extension frames it, in any state: tmag has not seen how its terminal
+// takes a paste, and it serves no program it runs for.
+//
 // An agent's prompt goes through the session's own message channel in any
 // state, and through the pane while the session is idle. A person's or
 // owner's prompt keeps the person's authority: typed through the pane while
@@ -70,6 +74,9 @@ type Plan struct {
 // itself, Claude Code's supervisor through the session's inbox, and Pi or
 // oh-my-pi serving a program none.
 func SendPlan(agent, runtime string, caller Caller, wait, idle bool) Plan {
+	if proc.Declarable(agent) {
+		return declared(runtime)
+	}
 	if runtime == service {
 		switch {
 		case agent == proc.Codex:
@@ -104,9 +111,13 @@ func SendPlan(agent, runtime string, caller Caller, wait, idle bool) Plan {
 
 // InterruptPlan is how an interrupt reaches a session of agent with
 // runtime: the Codex daemon interrupts its own turns, Pi's extension aborts
-// a turn and the pane takes Escape where it cannot, and every other
-// interactive agent takes Escape in its pane.
+// a turn and the pane takes Escape where it cannot, a declared agent's inbox
+// stops its turn, and every other interactive agent takes Escape in its
+// pane.
 func InterruptPlan(agent, runtime string) Plan {
+	if proc.Declarable(agent) {
+		return declared(runtime)
+	}
 	if runtime == service {
 		if agent == proc.Codex {
 			return Plan{Try: []string{Service}}
@@ -120,6 +131,25 @@ func InterruptPlan(agent, runtime string) Plan {
 		return Plan{Try: []string{Pane}}
 	}
 	return Plan{}
+}
+
+// declared is how a verb reaches a declared agent's session: its inbox in a
+// terminal, and nothing while it serves a program.
+func declared(runtime string) Plan {
+	if runtime == service {
+		return Plan{}
+	}
+	return Plan{Try: []string{Inbox}}
+}
+
+// TurnsChannel carries a request for a session's turns, which read --last
+// and read --turns print, when no transcript tmag reads holds them: a
+// declared agent's inbox in a terminal, or "".
+func TurnsChannel(agent, runtime string) string {
+	if proc.Declarable(agent) && runtime != service {
+		return Inbox
+	}
+	return ""
 }
 
 // AnswerChannel carries an answer to a session of agent with runtime, or is
@@ -137,10 +167,12 @@ func AnswerChannel(agent, runtime string) string {
 
 // ReportsInterrupt says whether the agent reports an interrupted turn to its
 // hooks. Codex does (Interrupt), and so do Pi and oh-my-pi, whose aborted
-// runs end as any other; Claude Code reports nothing, not even its idle
-// notification, so tmag records the interrupt it delivered itself.
+// runs end as any other, and a declared agent, whose inbox stops a turn only
+// as its Stop or Interrupt then reports; Claude Code reports nothing, not
+// even its idle notification, so tmag records the interrupt it delivered
+// itself.
 func ReportsInterrupt(agent string) bool {
-	return agent == proc.Codex || agent == proc.Pi || agent == proc.OMP
+	return agent == proc.Codex || agent == proc.Pi || agent == proc.OMP || proc.Declarable(agent)
 }
 
 // Capabilities are the verbs some channel carries to a session of agent with

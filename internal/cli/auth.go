@@ -35,7 +35,11 @@ func (a *app) cmdAuth(args []string) int {
 		if err != nil {
 			return a.fail("auth", err)
 		}
-		if v.Caller(w).By != nil {
+		caller, err := v.Caller(ctx, w)
+		if err != nil {
+			return a.fail("auth", err)
+		}
+		if caller.By != nil {
 			return a.fail("auth", &query.RefusedError{Reason: query.RefuseAgent, Detail: "manage owner credentials from the person's terminal"})
 		}
 	}

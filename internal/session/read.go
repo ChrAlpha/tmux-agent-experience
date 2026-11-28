@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/ChrAlpha/tmux-agent-experience/internal/contextio"
@@ -78,7 +79,11 @@ func (s Store) Get(ctx context.Context, agent, id string) (Record, bool, error) 
 func (s Store) All(ctx context.Context) ([]Record, []*RecordError, error) {
 	var recs []Record
 	var faults []*RecordError
-	for _, agent := range proc.Agents {
+	agents, err := s.agents()
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, agent := range agents {
 		if err := ctx.Err(); err != nil {
 			return nil, nil, err
 		}
@@ -104,4 +109,21 @@ func (s Store) All(ctx context.Context) ([]Record, []*RecordError, error) {
 		}
 	}
 	return recs, faults, nil
+}
+
+// agents are the agents whose sessions the store may hold: those tmag knows,
+// in proc.Agents order, then each declared agent that has a directory of its
+// own, by name.
+func (s Store) agents() ([]string, error) {
+	agents := slices.Clone(proc.Agents)
+	entries, err := os.ReadDir(s.root())
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("read sessions: %w", err)
+	}
+	for _, e := range entries {
+		if e.IsDir() && proc.Declarable(e.Name()) {
+			agents = append(agents, e.Name())
+		}
+	}
+	return agents, nil
 }

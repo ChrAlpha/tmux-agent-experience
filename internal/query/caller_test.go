@@ -84,15 +84,82 @@ func TestCallerIsProvenByAncestry(t *testing.T) {
 		{"oh-my-pi naming its session", 42, map[string]string{"PI_SESSION_ID": "o1"}, Caller{Pane: pane("%3"), By: &eventlog.Actor{Agent: proc.OMP, Session: "o1"}}},
 		{"oh-my-pi naming another", 42, map[string]string{"PI_SESSION_ID": "s1"}, Caller{Pane: pane("%3"), By: &eventlog.Actor{Agent: proc.OMP}}},
 	} {
-		if got := identify(v, w, c.pid, env(c.vars)); !reflect.DeepEqual(got, c.want) {
+		if got := identify(v, w, c.pid, env(c.vars), nil); !reflect.DeepEqual(got, c.want) {
 			t.Errorf("%s: %+v (by %+v), want %+v (by %+v)", c.name, got, got.By, c.want, c.want.By)
 		}
 	}
 }
 
+// A declared agent's tool is its agent's by the host its hooks proved; a
+// program the person counts as an agent makes its tool an agent's whose
+// session tmag cannot tell, even below an agent whose session it can;
+// anything else is still the person.
+func TestDeclaredAndCountedCallers(t *testing.T) {
+	pane := func(id string) *eventlog.PaneRef { return &eventlog.PaneRef{Server: sock, ID: id} }
+	w := &attach.World{
+		Panes: []tmux.Pane{
+			{Server: sock, ID: "%1", PID: 10, Command: "node"},
+			{Server: sock, ID: "%2", PID: 30, Command: "aider"},
+			{Server: sock, ID: "%3", PID: 50, Command: "gemini"},
+			{Server: sock, ID: "%4", PID: 60, Command: "claude"},
+		},
+		Proc: proc.NewTable([]proc.Process{
+			{PID: 1, Comm: "init"},
+			// A declared agent in %1, its hooks' host, its tool running tmag.
+			{PID: 10, PPID: 1, Comm: "zsh"},
+			{PID: 11, PPID: 10, Comm: "node-MainThread", Argv: []string{"node", "/usr/local/bin/gemini"}, Start: "g"},
+			{PID: 12, PPID: 11, Comm: "bash"},
+			{PID: 13, PPID: 12, Comm: "tmag"},
+			// An agent that adapted nothing in %2, run by Python.
+			{PID: 30, PPID: 1, Comm: "zsh"},
+			{PID: 31, PPID: 30, Comm: "python3", Argv: []string{"python3", "/home/me/.local/bin/aider"}},
+			{PID: 32, PPID: 31, Comm: "tmag"},
+			// Another gemini in %3 whose hooks never reported: its program's
+			// name proves nothing.
+			{PID: 50, PPID: 1, Comm: "zsh"},
+			{PID: 51, PPID: 50, Comm: "gemini", Args: "gemini", Start: "x"},
+			{PID: 52, PPID: 51, Comm: "tmag"},
+			// Claude Code in %4 runs aider as its tool, whose tool runs tmag.
+			{PID: 60, PPID: 1, Comm: "zsh"},
+			{PID: 61, PPID: 60, Comm: "claude", Args: "claude", Start: "c"},
+			{PID: 62, PPID: 61, Comm: "aider", Args: "aider"},
+			{PID: 63, PPID: 62, Comm: "tmag"},
+		}),
+	}
+	recs := []session.Record{
+		{Agent: "gemini", ID: "g1", Main: adapter.Idle, Host: session.Host{PID: 11, Start: "g", Role: proc.Terminal}},
+		{Agent: proc.Claude, ID: "c1", Main: adapter.Working, Host: session.Host{PID: 61, Start: "c", Role: proc.Terminal}},
+	}
+	v := Build(w, recs)
+	none := func(string) string { return "" }
+	if got := identify(v, w, 13, none, nil); got.By == nil || *got.By != (eventlog.Actor{Agent: "gemini", Session: "g1"}) || *got.Pane != *pane("%1") {
+		t.Errorf("a declared agent's tool: %+v (by %+v)", got, got.By)
+	}
+	for _, pid := range []int{32, 52} {
+		if got := identify(v, w, pid, none, nil); got.By != nil {
+			t.Errorf("%d passes for an agent: %+v", pid, got.By)
+		}
+	}
+	if got := identify(v, w, 63, none, nil); got.By == nil || *got.By != (eventlog.Actor{Agent: proc.Claude, Session: "c1"}) {
+		t.Errorf("a tool below a program nobody counts is its agent's: %+v (by %+v)", got, got.By)
+	}
+	counted := parseAgents("aider, gemini bash", "Aider,aider")
+	if !reflect.DeepEqual(counted, []string{"aider", "gemini"}) {
+		t.Fatalf("@tmag-agents counts %v", counted)
+	}
+	for pid, want := range map[int]eventlog.Actor{32: {Agent: "aider"}, 52: {Agent: "gemini"}, 63: {Agent: "aider"}} {
+		if got := identify(v, w, pid, none, counted); got.By == nil || *got.By != want {
+			t.Errorf("%d: %+v (by %+v), want %+v", pid, got, got.By, want)
+		}
+	}
+	if got := identify(v, w, 13, none, counted); got.By == nil || *got.By != (eventlog.Actor{Agent: "gemini", Session: "g1"}) {
+		t.Errorf("a declared agent's host its program is counted: %+v (by %+v)", got, got.By)
+	}
+}
+
 func TestCallerGates(t *testing.T) {
 	v, w := callers()
-	self := identify(v, w, 13, func(string) string { return "" })
+	self := identify(v, w, 13, func(string) string { return "" }, nil)
 	s1, _ := v.Session(proc.Claude, "s1")
 	th1, _ := v.Session(proc.Codex, "th1")
 	if err := self.selfGate(s1, "interrupt"); !isRefused(err, RefuseSelf) {
@@ -102,7 +169,7 @@ func TestCallerGates(t *testing.T) {
 		t.Fatalf("an agent interrupting another: %v", err)
 	}
 	// An agent whose session is untold is refused nothing as itself.
-	untold := identify(v, w, 23, func(string) string { return "" })
+	untold := identify(v, w, 23, func(string) string { return "" }, nil)
 	if err := untold.selfGate(th1, "prompt"); err != nil {
 		t.Fatalf("untold: %v", err)
 	}
@@ -116,11 +183,12 @@ func TestCallerGates(t *testing.T) {
 func TestOnlyAValidatedGrantEstablishesOwnerAuthority(t *testing.T) {
 	v, w := callers()
 	w.Proc = proc.NewTable([]proc.Process{{PID: 1}, {PID: 11, PPID: 1, Comm: "claude", Args: "claude", Start: "c"}, {PID: os.Getpid(), PPID: 11, Comm: "tmag"}})
+	w.Panes = nil // no server to read @tmag-agents from
 	ctx := context.Background()
-	if c := callerFor(ctx, v, w); c.By == nil {
+	if c, err := callerFor(ctx, v, w); err != nil || c.By == nil {
 		t.Fatal("ordinary CLI lost agent ancestry")
 	}
-	if c := callerFor(WithOwner(ctx, auth.Grant{}), v, w); c.By == nil {
+	if c, err := callerFor(WithOwner(ctx, auth.Grant{}), v, w); err != nil || c.By == nil {
 		t.Fatal("zero grant claimed owner")
 	}
 	store := auth.Store{Dir: t.TempDir()}
@@ -132,8 +200,8 @@ func TestOnlyAValidatedGrantEstablishesOwnerAuthority(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	owner := callerFor(WithOwner(ctx, grant), v, w)
-	if owner.By != nil || owner.Credential != issued.ID {
+	owner, err := callerFor(WithOwner(ctx, grant), v, w)
+	if err != nil || owner.By != nil || owner.Credential != issued.ID {
 		t.Fatal("authenticated HTTP inherited launcher's agent identity")
 	}
 	var event eventlog.Event

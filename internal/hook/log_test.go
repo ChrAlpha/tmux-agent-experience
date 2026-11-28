@@ -14,6 +14,7 @@ import (
 	"github.com/ChrAlpha/tmux-agent-experience/internal/eventlog"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/proc"
 	"github.com/ChrAlpha/tmux-agent-experience/internal/session"
+	"github.com/ChrAlpha/tmux-agent-experience/internal/tmux"
 )
 
 // A hook that changes nothing but contact records it at most every
@@ -110,5 +111,66 @@ func TestHookFailureLogIsBoundedMetadataAndHonorsCancellation(t *testing.T) {
 	after, err := os.ReadFile(path)
 	if err != nil || !bytes.Equal(data, after) {
 		t.Fatal("canceled logger wrote after its budget", err)
+	}
+}
+
+// A declared agent's session is the process that reported it: another
+// process of the same program reports it only once that one is gone, and
+// then keeps no inbox its hook does not name.
+func TestADeclaredSessionStaysWithItsLiveHost(t *testing.T) {
+	t.Setenv("TMUX", "")
+	t.Setenv("TMUX_PANE", "")
+	t.Setenv("TMUX_TMPDIR", t.TempDir())
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	me, err := proc.Lineage(ctx, os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	self, _ := me.Get(os.Getpid())
+	root := t.TempDir()
+	log := eventlog.Open(root)
+	store := session.Store{Dir: root}
+	// The other process: a gemini whose hook runs tmag, in no pane.
+	table := func(context.Context, int) (*proc.Table, error) {
+		return proc.NewTable([]proc.Process{{PID: 1, Comm: "init"}, {PID: 400, PPID: 1, Comm: "gemini", Start: "new"}, {PID: 500, PPID: 400, Comm: "tmag"}}), nil
+	}
+	other := Sources{
+		Lineage:   table,
+		Panes:     func(context.Context) ([]tmux.Pane, error) { return nil, nil },
+		Processes: func(ctx context.Context) (*proc.Table, error) { return table(ctx, 0) },
+	}
+	hook := func(payload string) error {
+		return Run(ctx, Input{Agent: "gemini", Payload: strings.NewReader(payload), Log: log, PID: 500, Sources: other})
+	}
+	for name, c := range map[string]struct {
+		host session.Host
+		live bool
+	}{
+		"live":  {session.Host{PID: self.PID, Start: self.Start, Role: proc.Terminal}, true},
+		"ended": {session.Host{PID: 1 << 30, Start: "gone", Role: proc.Terminal}, false},
+	} {
+		id := "g-" + name
+		inbox := &session.Inbox{Path: "/tmp/old.sock", PID: c.host.PID, Start: c.host.Start}
+		rec := session.Record{Agent: "gemini", ID: id, Main: adapter.Working, Turn: "t1", Host: c.host, Inbox: inbox}
+		if err := store.Put(ctx, rec); err != nil {
+			t.Fatal(err)
+		}
+		err := hook(`{"session_id":"` + id + `","hook_event_name":"UserPromptSubmit","turn_id":"t2"}`)
+		got, ok, _ := store.Get(ctx, "gemini", id)
+		switch {
+		case c.live && (err == nil || !ok || got.Host != c.host || got.Turn != "t1" || !session.SameInbox(got.Inbox, inbox)):
+			t.Fatalf("%s: another process took the session: %v, %+v", name, err, got)
+		case !c.live && (err != nil || !ok || got.Host.PID != 400 || got.Turn != "t2" || got.Inbox != nil):
+			t.Fatalf("%s: the session did not move to the process that reports it: %v, %+v", name, err, got)
+		}
+		if c.live {
+			if err := hook(`{"session_id":"` + id + `","hook_event_name":"SessionEnd"}`); err == nil {
+				t.Fatalf("%s: another process ended the session", name)
+			}
+			if _, ok, _ := store.Get(ctx, "gemini", id); !ok {
+				t.Fatalf("%s: the session ended", name)
+			}
+		}
 	}
 }

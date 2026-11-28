@@ -90,7 +90,7 @@ func FromPane(p tmux.Pane) (Attachment, bool) {
 
 // named reports whether agent and id name a session as the store does.
 func named(agent, id string) bool {
-	return proc.IsAgent(agent) && session.ValidID(id)
+	return proc.IsKind(agent) && session.ValidID(id)
 }
 
 // Projection is what tmux displays for an attached pane.
@@ -225,6 +225,11 @@ func (w *World) Check(p tmux.Pane, a Attachment, rec session.Record) (view strin
 		return "", false
 	}
 	if rec.Agent != a.Agent || rec.ID != a.Session {
+		return "", false
+	}
+	if proc.Declarable(rec.Agent) && (rec.Host.PID != a.PID || rec.Host.Start != a.Start || rec.Host.Role != proc.Terminal) {
+		// A declared agent's client is the process its hooks proved, while
+		// it runs for a person at its terminal.
 		return "", false
 	}
 	if c.Agent == proc.Codex {
