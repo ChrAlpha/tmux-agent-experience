@@ -138,7 +138,9 @@ halts, and another session is given the prompt only once you decide `rerun`.
 
 **Gates and commands.** `gate` runs a check in the runner, never in the
 agent, so an agent cannot pass its own acceptance by editing it. `exec` runs
-a command with effects.
+a command with effects. The journal keeps what each gate or command printed,
+so `status` ends its step with the last non-empty line and `status --json`
+includes the exit code and the last 4096 characters of output.
 
 **Halts.** A run halts at a plan's `decide`, and on its own when it cannot
 tell what a step did (`rerun` or `abandon`; for an ask, a resume looks again

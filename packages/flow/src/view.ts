@@ -1,6 +1,7 @@
 import type { Journal, StepKind } from './journal.ts'
 import { holder } from './lock.ts'
 import { type Caller, type Doc, short } from './tmag.ts'
+import type { CommandResult } from './types.ts'
 
 // What a run is, read from its journal (and, when tmag answers, what its
 // roles' sessions do now): what status and list show.
@@ -15,7 +16,11 @@ export interface StepView {
   state: 'done' | 'abandoned' | 'halted' | 'decided' | 'started'
   attempts: number
   summary: string
+  code?: number
+  output?: string
 }
+
+type StepDetails = Pick<StepView, 'summary' | 'code' | 'output'>
 
 export interface RoleView {
   name: string
@@ -103,26 +108,26 @@ export function viewOf(j: Journal, dir: string, live?: Map<string, Doc>): RunVie
     const kind = (done?.kind ?? intent?.kind ?? kindOfHalt(recs)) as StepKind | undefined
     if (!kind) continue
     let s: StepView['state'] = 'started'
-    let summary = ''
+    let details: StepDetails = { summary: '' }
     if (h && !h.decision) {
       s = 'halted'
-      summary = h.halt.question
+      details.summary = h.halt.question
     } else if (h?.decision) {
       s = 'decided'
-      summary = `decided ${h.decision.choice}${h.used ? '' : ', not carried out yet'}`
+      details.summary = `decided ${h.decision.choice}${h.used ? '' : ', not carried out yet'}`
     } else if (done) {
-      const res = done.result as Record<string, unknown> | string
+      const res = done.result
       if (res && typeof res === 'object' && 'abandoned' in res) {
         s = 'abandoned'
-        summary = `abandoned (${String(res.abandoned)})`
+        details.summary = `abandoned (${String(res.abandoned)})`
       } else {
         s = 'done'
-        summary = summarize(kind, done.result)
+        details = summarize(kind, res)
       }
     } else if (intent) {
-      summary = intent.session ? `under way with ${short(intent.session, among)}` : 'under way'
+      details.summary = intent.session ? `under way with ${short(intent.session, among)}` : 'under way'
     }
-    steps.push({ key, kind, state: s, attempts: intent?.attempt ?? 0, summary })
+    steps.push({ key, kind, state: s, attempts: intent?.attempt ?? 0, ...details })
   }
 
   return {
@@ -153,21 +158,23 @@ function kindOfHalt(recs: { t: string }[]): StepKind | undefined {
   return recs.some((r) => r.t === 'halt') ? 'decide' : undefined
 }
 
-function summarize(kind: StepKind, result: unknown): string {
+function summarize(kind: StepKind, result: unknown): StepDetails {
   switch (kind) {
     case 'ask': {
       const a = result as { text?: string; turn?: string }
-      return `answered in turn ${a.turn}: ${oneLine(a.text ?? '')}`
+      return { summary: `answered in turn ${a.turn}: ${oneLine(a.text ?? '')}` }
     }
     case 'gate':
     case 'exec': {
-      const c = result as { ok?: boolean; code?: number }
-      return c.ok ? 'passed' : `failed (exit ${c.code})`
+      const { ok, code, output } = result as CommandResult
+      const verdict = ok ? 'passed' : `failed (exit ${code})`
+      const line = oneLine(output)
+      return { summary: line ? `${verdict}: ${line}` : verdict, code, output: output.slice(-4096) }
     }
     case 'decide':
-      return `decided ${String(result)}`
+      return { summary: `decided ${String(result)}` }
     case 'freeze':
-      return `${String(result).length} characters kept`
+      return { summary: `${String(result).length} characters kept` }
   }
 }
 
