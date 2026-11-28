@@ -124,7 +124,10 @@ export async function watch(base: string, token: string, w: Watcher): Promise<vo
       const { value, done } = await frames.read()
       if (done) return
       w.onAlive()
-      if (value.event === 'doc') w.onDoc(JSON.parse(value.data) as WatchDoc, value.id || undefined)
+      // An empty log's snapshot has id 0. Reconnecting without it asks
+      // older servers for a fresh snapshot too.
+      if (value.event === 'doc')
+        w.onDoc(JSON.parse(value.data) as WatchDoc, value.id === '0' ? undefined : value.id || undefined)
     }
   } catch (err) {
     if (!w.signal.aborted) throw new Failure(0, 'network', `the stream broke: ${(err as Error).message}`)

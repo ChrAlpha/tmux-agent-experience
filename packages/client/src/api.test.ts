@@ -16,31 +16,40 @@ describe('watch', () => {
   // tmag serve's frames, as they arrive in chunks that split lines anywhere,
   // from a computer the page reaches at a path of its own.
   it('reads documents and cursors from frames in any chunks', async () => {
-    const text =
-      ': watching\n\nid: 18\nevent: doc\ndata: {"type":"panes","panes":[]}\n\nevent: ping\ndata: 1\n\n' +
+    const empty = ': watching\n\nid: 0\nevent: doc\ndata: {"type":"snapshot","seq":0}\n\n'
+    const later =
+      `${empty}event: ping\ndata: 1\n\n` +
       'id: 29\r\nevent: doc\r\ndata: {"type":"snapshot",\r\ndata: "seq":29}\r\n\r\n'
-    for (const size of [1, 3, 7, text.length]) {
-      const chunks: string[] = []
-      for (let i = 0; i < text.length; i += size) chunks.push(text.slice(i, i + size))
-      const fetch = vi.fn(async () => new Response(stream(chunks)))
+    const panes = 'event: doc\ndata: {"type":"panes","panes":[]}\n\n'
+    for (const size of [1, 3, 7, later.length]) {
+      const fetch = vi.fn<typeof globalThis.fetch>()
       vi.stubGlobal('fetch', fetch)
       const docs: [WatchDoc, string | undefined][] = []
       let alive = 0
-      await watch('/two', 'secret', {
-        since: '17',
-        signal: new AbortController().signal,
-        onDoc: (d, c) => docs.push([d, c]),
-        onAlive: () => alive++,
-      })
-      expect(docs, `chunks of ${size}`).toEqual([
-        [{ type: 'panes', panes: [] }, '18'],
-        [{ type: 'snapshot', seq: 29 }, '29'],
+      for (const text of [empty, later, panes]) {
+        const chunks: string[] = []
+        for (let i = 0; i < text.length; i += size) chunks.push(text.slice(i, i + size))
+        fetch.mockResolvedValueOnce(new Response(stream(chunks)))
+        await watch('/two', 'secret', {
+          since: docs.at(-1)?.[1] ?? null,
+          signal: new AbortController().signal,
+          onDoc: (d, c) => docs.push([d, c]),
+          onAlive: () => alive++,
+        })
+      }
+      const options = expect.objectContaining({ headers: { Authorization: 'Bearer secret' } })
+      expect(fetch.mock.calls).toEqual([
+        ['/two/v2/watch', options],
+        ['/two/v2/watch', options],
+        ['/two/v2/watch?since=29', options],
       ])
-      expect(alive).toBe(3)
-      expect(fetch).toHaveBeenCalledWith(
-        '/two/v2/watch?since=17',
-        expect.objectContaining({ headers: { Authorization: 'Bearer secret' } }),
-      )
+      expect(docs, `chunks of ${size}`).toEqual([
+        [{ type: 'snapshot', seq: 0 }, undefined],
+        [{ type: 'snapshot', seq: 0 }, undefined],
+        [{ type: 'snapshot', seq: 29 }, '29'],
+        [{ type: 'panes', panes: [] }, undefined],
+      ])
+      expect(alive).toBe(5)
     }
   })
 })
