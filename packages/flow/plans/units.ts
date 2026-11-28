@@ -1,6 +1,6 @@
 import { writeFileSync } from 'node:fs'
 import type { CommandResult, Flow, Role } from '../src/types.ts'
-import { list, type Reviewed, reviewers, round } from './lib/review.ts'
+import { list, type Reviewed, reviewers, revisionsOf, revisionUnavailable, round } from './lib/review.ts'
 
 export const description =
   'an implementer does units in order, each gated by its acceptance commands, then reviewers check'
@@ -42,7 +42,7 @@ export default async function units(flow: Flow) {
   const brief = args.brief ? await flow.freeze('brief', args.brief) : undefined
   const impl = flow.role('impl', { agent: args.implementer as string, worktree: args.branch as string })
 
-  const done: { unit: string; result: 'passed' | 'skipped'; tries: number }[] = []
+  const done: { unit: string; result: 'passed' | 'skipped'; tries: number; revision: string }[] = []
   for (const [i, unit] of plan.entries()) {
     await flow.ask(`${unit.name}/task`, impl, task(unit, i + 1, plan.length, brief))
     const dir = (await flow.bind(impl)).dir
@@ -51,19 +51,25 @@ export default async function units(flow: Flow) {
       'skip',
       'stop',
     ])
-    if (got.outcome === 'stop') return { stopped: unit.name, units: done }
-    done.push({ unit: unit.name, result: got.outcome === 'skip' ? 'skipped' : 'passed', tries: got.tries })
+    if (got.outcome === 'stop') return { stopped: unit.name, revision: got.revision, units: done }
+    done.push({
+      unit: unit.name,
+      result: got.outcome === 'skip' ? 'skipped' : 'passed',
+      tries: got.tries,
+      revision: got.revision,
+    })
   }
 
   const names = list(args.reviewers)
   if (!names.length) return { units: done }
+  const reviewTries = done.find((u) => u.unit === 'review')?.tries ?? 0
   const dir = (await flow.bind(impl)).dir
   const team = reviewers(flow, names, dir)
   const latest = new Map<string, Reviewed>()
   let asked = team
   let previous = new Map<string, Reviewed>()
   let response: string | undefined
-  for (let n = 1; n <= rounds; n++) {
+  for (let n = 1; ; n++) {
     const reviewed = await round(flow, asked, n, {
       dir,
       ...(brief ? { brief } : {}),
@@ -71,11 +77,14 @@ export default async function units(flow: Flow) {
       ...(response ? { response } : {}),
     })
     for (const r of reviewed) latest.set(r.reviewer, r)
-    const failing = [...latest.values()].filter((r) => r.verdict !== 'pass')
-    if (!failing.length) return { units: done, review: { passed: true, round: n, reviews: [...latest.values()] } }
-    if (n === rounds) break
+    const reviews = [...latest.values()]
+    const failing = reviews.filter((r) => r.verdict !== 'pass')
+    const review = { passed: !failing.length, round: n, revision: revisionsOf(reviews.map((r) => r.revision)), reviews }
+    if (review.passed || n === rounds) return { units: done, review }
+    // Keep the 0.1.0 final fix key unless the unit named review used it before its next try.
+    const fixKey = reviewTries > n ? `review/final-fix-${n}` : `review/fix-${n}`
     const fixed = await flow.ask(
-      `review/fix-${n}`,
+      fixKey,
       impl,
       [
         'Reviewers found issues in your work. Read their reports and fix every finding that holds:',
@@ -95,13 +104,10 @@ export default async function units(flow: Flow) {
       attempts,
       ['retry', 'stop'],
     )
-    if (got.outcome !== 'passed') {
-      return { units: done, review: { passed: false, round: n, reviews: [...latest.values()] } }
-    }
+    if (got.outcome !== 'passed') return { units: done, review }
     asked = team.filter((t) => failing.some((f) => f.reviewer === t.name))
     previous = new Map(asked.map((t) => [t.role.name, latest.get(t.name) as Reviewed]))
   }
-  return { units: done, review: { passed: false, round: rounds, reviews: [...latest.values()] } }
 }
 
 // accepted runs commands in dir until they all pass: each failure goes back
@@ -115,18 +121,21 @@ async function accepted(
   dir: string,
   attempts: number,
   choices: ('retry' | 'skip' | 'stop')[],
-): Promise<{ outcome: 'passed' | 'skip' | 'stop'; tries: number }> {
+): Promise<{ outcome: 'passed' | 'skip' | 'stop'; tries: number; revision: string }> {
   for (let n = 1; ; n++) {
-    const failed = await check(flow, `${at}/try-${n}`, commands, dir)
-    if (!failed.length) return { outcome: 'passed', tries: n }
+    const checked = await check(flow, `${at}/try-${n}`, commands, dir)
+    const revision = revisionsOf(checked.map((c) => c.result.revision))
+    const failed = checked.filter((c) => !c.result.ok)
+    if (!failed.length) return { outcome: 'passed', tries: n, revision }
     if (n % attempts === 0) {
       const others = choices.filter((c) => c !== 'retry')
+      const evidence = revision === revisionUnavailable ? '' : ` The last attempt recorded ${revision}.`
       const choice = (await flow.decide(
         `${at}/after-${n}`,
-        `${what} failed its acceptance commands ${n} times (${failed.map((f) => f.command).join('; ')}). Fix it or narrow it, then retry; or ${others.map((c) => (c === 'skip' ? 'skip it' : c)).join(', or ')}.`,
+        `${what} failed its acceptance commands ${n} times (${failed.map((f) => f.command).join('; ')}).${evidence} Fix it or narrow it, then retry; or ${others.map((c) => (c === 'skip' ? 'skip it' : c)).join(', or ')}.`,
         choices,
       )) as 'retry' | 'skip' | 'stop'
-      if (choice !== 'retry') return { outcome: choice, tries: n }
+      if (choice !== 'retry') return { outcome: choice, tries: n, revision }
     }
     await flow.ask(`${at}/fix-${n}`, impl, fix(what, failed))
   }
@@ -182,11 +191,12 @@ function task(unit: Unit, n: number, total: number, brief: string | undefined): 
 }
 
 function fix(what: string, failed: { command: string; result: CommandResult }[]): string {
+  const showRevision = failed.some((f) => f.result.revision !== undefined)
   return [
     `The acceptance commands of ${what} failed. Fix your work, not the commands:`,
     ...failed.flatMap((f) => [
       '',
-      `$ ${f.command}  (exit ${f.result.code})`,
+      `$ ${f.command}  (exit ${f.result.code}${showRevision ? `; ${f.result.revision ?? revisionUnavailable}` : ''})`,
       f.result.output.length > outputShown ? `...\n${f.result.output.slice(-outputShown)}` : f.result.output,
     ]),
     '',
@@ -195,10 +205,10 @@ function fix(what: string, failed: { command: string; result: CommandResult }[])
 }
 
 async function check(flow: Flow, key: string, commands: string[], dir: string) {
-  const failed: { command: string; result: CommandResult }[] = []
+  const checked: { command: string; result: CommandResult }[] = []
   for (const [i, command] of commands.entries()) {
-    const result = await flow.gate(`${key}/accept-${i + 1}`, command, { cwd: dir })
-    if (!result.ok) failed.push({ command, result })
+    const result = await flow.gate(`${key}/accept-${i + 1}`, command, { cwd: dir, revision: true })
+    checked.push({ command, result })
   }
-  return failed
+  return checked
 }

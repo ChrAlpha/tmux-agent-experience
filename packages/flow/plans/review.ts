@@ -1,6 +1,6 @@
 import { resolve } from 'node:path'
 import type { Flow } from '../src/types.ts'
-import { list, type Reviewed, reviewers, round } from './lib/review.ts'
+import { list, type Reviewed, reviewers, revisionsOf, round } from './lib/review.ts'
 
 export const description =
   'reviewers check a directory in parallel; their findings are fixed and re-checked by who raised them'
@@ -33,7 +33,7 @@ export default async function review(flow: Flow) {
   let previous = new Map<string, Reviewed>()
   let response: string | undefined
   const latest = new Map<string, Reviewed>()
-  for (let n = 1; n <= rounds; n++) {
+  for (let n = 1; ; n++) {
     const got = await round(flow, asked, n, {
       dir,
       ...(brief ? { brief } : {}),
@@ -42,20 +42,22 @@ export default async function review(flow: Flow) {
       ...(response ? { response } : {}),
     })
     for (const r of got) latest.set(r.reviewer, r)
-    const failing = [...latest.values()].filter((r) => r.verdict !== 'pass')
-    if (!failing.length) return { passed: true, round: n, reviews: [...latest.values()] }
-    if (n === rounds) break
+    const reviews = [...latest.values()]
+    const failing = reviews.filter((r) => r.verdict !== 'pass')
+    const revision = revisionsOf(reviews.map((r) => r.revision))
+    const result = { passed: !failing.length, round: n, revision, reviews }
+    if (result.passed || n === rounds) return result
     response = flow.path('responses', `round-${n}.md`)
+    const reviewedDir = reviews.some((r) => r.revision !== undefined) ? `${dir} (${revision})` : dir
     const choice = await flow.decide(
       `round-${n}`,
-      `${failing.map((r) => `${r.reviewer} (${r.verdict}): ${r.report ?? 'no report'}`).join('; ')}. Fix the findings in ${dir}, write what you fixed and why you left any finding as it is to ${response}, then recheck; or stop.`,
+      `${failing.map((r) => `${r.reviewer} (${r.verdict}): ${r.report ?? 'no report'}`).join('; ')}. Fix the findings in ${reviewedDir}, write what you fixed and why you left any finding as it is to ${response}, then recheck; or stop.`,
       ['recheck', 'stop'],
     )
-    if (choice === 'stop') return { passed: false, round: n, reviews: [...latest.values()] }
+    if (choice === 'stop') return result
     asked = args.recheck === 'all' ? team : team.filter((t) => failing.some((f) => f.reviewer === t.name))
     previous = new Map(asked.map((t) => [t.role.name, latest.get(t.name) as Reviewed]))
   }
-  return { passed: false, round: rounds, reviews: [...latest.values()] }
 }
 
 // focusOf joins what every reviewer and what this one looks at first.

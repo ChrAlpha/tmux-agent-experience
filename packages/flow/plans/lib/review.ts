@@ -16,6 +16,15 @@ export interface Reviewed {
   report?: string
   // The session that answered; none when a decision abandoned the ask.
   session?: string
+  // The revision recorded when that reviewer's prompt was sent.
+  revision?: string
+}
+
+export const revisionUnavailable = 'revision unavailable'
+
+export function revisionsOf(values: readonly (string | undefined)[]): string {
+  const distinct = [...new Set(values.map((v) => v ?? revisionUnavailable))]
+  return distinct.length > 1 ? `mixed (${distinct.join('; ')})` : (distinct[0] ?? revisionUnavailable)
 }
 
 // verdictOf reads the verdict a reply ends with, on a line of its own as
@@ -98,11 +107,11 @@ export async function round(
       const previous = o.previous?.get(r.role.name)?.report
       const focus = o.focus?.(r)
       const prompt = previous
-        ? recheck({ dir: o.dir, report, previous, ...(o.response ? { response: o.response } : {}) })
-        : firstReview({ dir: o.dir, report, ...(o.brief ? { brief: o.brief } : {}), ...(focus ? { focus } : {}) })
+        ? recheck({ dir: o.dir, report, previous, response: o.response })
+        : firstReview({ dir: o.dir, report, brief: o.brief, focus })
       let a: Answer
       try {
-        a = await flow.ask(key, r.role, prompt)
+        a = await flow.ask(key, r.role, prompt, { revision: true })
       } catch (e) {
         if ((e as Error).name === 'Abandoned') return { reviewer: r.name, verdict: 'unclear' }
         throw e
@@ -110,8 +119,13 @@ export async function round(
       // A verdict stands on the report it was asked for, as the turn left
       // it: the check is a step, so a resumed run judges the round alike.
       const wrote = (await flow.gate(`${key}/report`, `test -f ${quote(report)}`)).ok
-      if (!wrote) return { reviewer: r.name, verdict: 'unclear', session: a.session }
-      return { reviewer: r.name, verdict: verdictOf(a.text), report, session: a.session }
+      return {
+        reviewer: r.name,
+        verdict: wrote ? verdictOf(a.text) : 'unclear',
+        ...(wrote ? { report } : {}),
+        session: a.session,
+        ...(a.revision ? { revision: a.revision } : {}),
+      }
     }),
   )
 }
